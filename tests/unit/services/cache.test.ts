@@ -46,6 +46,26 @@ describe('Cache', () => {
       expect(cache.get('short')).toBeUndefined();
       expect(cache.get('long')).toBe('value');
     });
+
+    it('should throw on NaN TTL', () => {
+      const cache = new Cache();
+      expect(() => cache.set('key', 'value', NaN)).toThrow('Invalid TTL');
+    });
+
+    it('should throw on Infinity TTL', () => {
+      const cache = new Cache();
+      expect(() => cache.set('key', 'value', Infinity)).toThrow('Invalid TTL');
+    });
+
+    it('should throw on negative TTL', () => {
+      const cache = new Cache();
+      expect(() => cache.set('key', 'value', -1000)).toThrow('Invalid TTL');
+    });
+
+    it('should throw on zero TTL', () => {
+      const cache = new Cache();
+      expect(() => cache.set('key', 'value', 0)).toThrow('Invalid TTL');
+    });
   });
 
   describe('delete', () => {

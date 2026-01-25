@@ -39,9 +39,15 @@ export class Cache {
 
   /**
    * Set a value in the cache.
+   * Guards against non-finite TTLs to prevent never-expiring entries.
    */
   set<T>(key: string, value: T, ttlMs?: number): void {
-    const expiresAt = Date.now() + (ttlMs ?? this.defaultTtlMs);
+    const ttl = ttlMs ?? this.defaultTtlMs;
+    // Guard against NaN/Infinity to prevent never-expiring entries
+    if (!Number.isFinite(ttl) || ttl <= 0) {
+      throw new Error(`Invalid TTL: ${ttl}. TTL must be a positive finite number.`);
+    }
+    const expiresAt = Date.now() + ttl;
     this.store.set(key, { value, expiresAt });
   }
 

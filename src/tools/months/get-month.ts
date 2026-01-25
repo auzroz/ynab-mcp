@@ -8,8 +8,10 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { getCurrentMonth } from '../../utils/dates.js';
+import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
-// Input schema
+// Input schema - accepts YYYY-MM-DD format or "current"
 const inputSchema = z.object({
   budget_id: z
     .string()
@@ -17,8 +19,11 @@ const inputSchema = z.object({
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   month: z
     .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .describe('The budget month in YYYY-MM-DD format (use first of month, e.g., 2024-01-01)'),
+    .refine(
+      (val) => val === 'current' || /^\d{4}-\d{2}-\d{2}$/.test(val),
+      { message: 'Month must be in YYYY-MM-DD format or "current"' }
+    )
+    .describe('The budget month in YYYY-MM-DD format (use first of month) or "current"'),
 });
 
 // Tool definition
@@ -59,7 +64,10 @@ export async function handleGetMonth(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
-  const response = await client.getBudgetMonth(budgetId, validated.month);
+  // Convert "current" to actual month date
+  const monthParam = validated.month === 'current' ? getCurrentMonth() : validated.month;
+
+  const response = await client.getBudgetMonth(budgetId, monthParam);
   const month = response.data.month;
 
   // Group categories by category group
@@ -81,7 +89,7 @@ export async function handleGetMonth(
       categoriesByGroup[groupId] = [];
     }
     categoriesByGroup[groupId].push({
-      name: category.name,
+      name: sanitizeName(category.name),
       budgeted: formatCurrency(category.budgeted),
       activity: formatCurrency(category.activity),
       balance: formatCurrency(category.balance),
@@ -92,7 +100,7 @@ export async function handleGetMonth(
     {
       month: month.month,
       summary: {
-        note: month.note,
+        note: sanitizeMemo(month.note),
         income: formatCurrency(month.income),
         budgeted: formatCurrency(month.budgeted),
         activity: formatCurrency(month.activity),
