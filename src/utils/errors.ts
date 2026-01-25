@@ -123,7 +123,7 @@ export function formatErrorResponse(error: unknown): string {
       type: 'rate_limit',
       message: 'Rate limit exceeded',
       retry_after_ms: error.retryAfterMs,
-      suggestion: 'Wait before making more requests. The server has a budget of 180 requests per hour.',
+      suggestion: 'Wait before making more requests. Check ynab_rate_limit_status for current limits.',
     }, null, 2);
   }
 

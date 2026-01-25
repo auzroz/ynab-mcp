@@ -84,25 +84,30 @@ Add to your Claude Desktop configuration (`~/.config/claude/claude_desktop_confi
 ## Available Tools (55 Total)
 
 ### User Tools (1)
+
 - `ynab_get_user` - Get authenticated user information
 
 ### Budget Tools (3)
+
 - `ynab_list_budgets` - List all accessible budgets
 - `ynab_get_budget` - Get detailed budget information
 - `ynab_get_budget_settings` - Get budget settings (currency format, etc.)
 
 ### Account Tools (3)
+
 - `ynab_list_accounts` - List all accounts with balances
 - `ynab_get_account` - Get specific account details
 - `ynab_create_account` - Create a new account *(requires YNAB_READ_ONLY=false)*
 
 ### Category Tools (4)
+
 - `ynab_list_categories` - List all category groups and categories
 - `ynab_get_category` - Get category details
 - `ynab_get_month_category` - Get category budget for specific month
 - `ynab_update_category` - Update category budgeted amount *(requires YNAB_READ_ONLY=false)*
 
 ### Payee Tools (5)
+
 - `ynab_list_payees` - List all payees (merchants/vendors)
 - `ynab_get_payee` - Get specific payee details
 - `ynab_list_payee_locations` - List all payee locations for mapping
@@ -110,10 +115,12 @@ Add to your Claude Desktop configuration (`~/.config/claude/claude_desktop_confi
 - `ynab_list_payee_locations_by_payee` - List locations for a specific payee
 
 ### Month Tools (2)
+
 - `ynab_list_months` - List all budget months
 - `ynab_get_month` - Get detailed month summary with categories
 
 ### Transaction Tools (10)
+
 - `ynab_list_transactions` - List transactions with filters (date, category, payee)
 - `ynab_get_transaction` - Get transaction details
 - `ynab_create_transaction` - Create a new transaction *(requires YNAB_READ_ONLY=false)*
@@ -126,10 +133,12 @@ Add to your Claude Desktop configuration (`~/.config/claude/claude_desktop_confi
 - `ynab_import_transactions` - Trigger import from linked bank accounts *(requires YNAB_READ_ONLY=false)*
 
 ### Scheduled Transaction Tools (2)
+
 - `ynab_list_scheduled_transactions` - List scheduled/recurring transactions
 - `ynab_get_scheduled_transaction` - Get scheduled transaction details
 
 ### Analytics Tools (22)
+
 - `ynab_detect_recurring` - Find subscription patterns and recurring payments
 - `ynab_spending_analysis` - Analyze spending trends by category
 - `ynab_budget_health` - Assess overall budget health with score and alerts
@@ -154,6 +163,7 @@ Add to your Claude Desktop configuration (`~/.config/claude/claude_desktop_confi
 - `ynab_age_of_money` - Age of money metric with explanation
 
 ### System Tools (3)
+
 - `ynab_rate_limit_status` - Check API rate limit status
 - `ynab_audit_log` - View write operation audit log
 - `ynab_health_check` - Test API connectivity
