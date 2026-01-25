@@ -151,8 +151,8 @@ export function formatErrorResponse(error: unknown): string {
       message: 'Unknown error',
       suggestion: 'Check the YNAB API documentation for more information.',
     };
-    // Log full error server-side for debugging
-    console.error('[YnabApiError]', error.code, error.message, error.details);
+    // Log sanitized error server-side for debugging (no raw details)
+    console.error('[YnabApiError]', error.code, sanitizeErrorMessage(error.message));
     // Return sanitized response without raw details
     return JSON.stringify({
       error: true,
@@ -170,8 +170,8 @@ export function formatErrorResponse(error: unknown): string {
       message: 'Unknown error',
       suggestion: 'Check the YNAB API documentation.',
     };
-    // Log full error server-side for debugging
-    console.error('[YnabSdkError]', statusCode, error.error?.detail);
+    // Log sanitized error server-side for debugging
+    console.error('[YnabSdkError]', statusCode, sanitizeErrorMessage(error.error?.detail));
     // Return sanitized response
     return JSON.stringify({
       error: true,
@@ -197,8 +197,8 @@ export function formatErrorResponse(error: unknown): string {
     }, null, 2);
   }
 
-  // Generic error - log full error server-side, return sanitized message
-  console.error('[UnknownError]', error);
+  // Generic error - log sanitized error server-side, return sanitized message
+  console.error('[UnknownError]', sanitizeErrorMessage(error));
   return JSON.stringify({
     error: true,
     type: 'unknown_error',
