@@ -191,8 +191,11 @@ export async function handleMonthlyComparison(
 
   // Calculate changes
   const spendingChange = currentSpending - previousSpending;
+  // Handle previousSpending = 0 case: if current > 0, treat as 100% increase
   const spendingChangePercent =
-    previousSpending !== 0 ? ((spendingChange / previousSpending) * 100) : 0;
+    previousSpending !== 0
+      ? ((spendingChange / previousSpending) * 100)
+      : currentSpending > 0 ? 100 : 0;
 
   const incomeChange = currentIncome - previousIncome;
   const budgetedChange = currentBudgeted - previousBudgeted;

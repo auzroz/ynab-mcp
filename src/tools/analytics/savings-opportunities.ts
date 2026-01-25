@@ -100,8 +100,9 @@ export async function handleSavingsOpportunities(
   const budgetId = client.resolveBudgetId(validated.budget_id);
   const months = validated.months ?? 3;
 
-  // Calculate since_date
+  // Calculate since_date - pin to day 1 to avoid month overflow on 29th-31st
   const sinceDate = new Date();
+  sinceDate.setDate(1); // Pin to first of month before subtracting
   sinceDate.setMonth(sinceDate.getMonth() - months);
   const sinceDateStr = sinceDate.toISOString().split('T')[0] ?? '';
   const options: { sinceDate: string } = { sinceDate: sinceDateStr };
