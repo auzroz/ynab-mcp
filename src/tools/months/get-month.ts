@@ -70,10 +70,21 @@ export async function handleGetMonth(
   // Convert "current" to actual month date
   const monthParam = validated.month === 'current' ? getCurrentMonth() : validated.month;
 
-  const response = await client.getBudgetMonth(budgetId, monthParam);
-  const month = response.data.month;
+  // Fetch month data and categories in parallel
+  const [monthResponse, categoriesResponse] = await Promise.all([
+    client.getBudgetMonth(budgetId, monthParam),
+    client.getCategories(budgetId),
+  ]);
 
-  // Group categories by category group
+  const month = monthResponse.data.month;
+
+  // Build category group ID to name lookup
+  const groupNameLookup = new Map<string, string>();
+  for (const group of categoriesResponse.data.category_groups) {
+    groupNameLookup.set(group.id, group.name);
+  }
+
+  // Group categories by category group name (not ID)
   const categoriesByGroup: Record<
     string,
     Array<{
@@ -87,11 +98,11 @@ export async function handleGetMonth(
   for (const category of month.categories) {
     if (category.hidden) continue;
 
-    const groupId = category.category_group_id;
-    if (categoriesByGroup[groupId] === undefined) {
-      categoriesByGroup[groupId] = [];
+    const groupName = sanitizeName(groupNameLookup.get(category.category_group_id) ?? 'Other');
+    if (categoriesByGroup[groupName] === undefined) {
+      categoriesByGroup[groupName] = [];
     }
-    categoriesByGroup[groupId].push({
+    categoriesByGroup[groupName].push({
       name: sanitizeName(category.name),
       budgeted: formatCurrency(category.budgeted),
       activity: formatCurrency(category.activity),

@@ -34,6 +34,7 @@ const inputSchema = z.object({
     .describe('The type of account (checking, savings, creditCard, etc.)'),
   balance: z
     .number()
+    .finite()
     .describe('The starting balance in dollars (e.g., 1000.50 for $1,000.50)'),
 });
 
