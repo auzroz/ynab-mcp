@@ -60,11 +60,15 @@ Returns top payees ranked by total spending with transaction counts and averages
       },
       months: {
         type: 'number',
-        description: 'Number of months to analyze (default 3)',
+        description: 'Number of months to analyze (1-12, default 3)',
+        minimum: 1,
+        maximum: 12,
       },
       limit: {
         type: 'number',
-        description: 'Maximum number of payees to return (default 20)',
+        description: 'Maximum number of payees to return (1-50, default 20)',
+        minimum: 1,
+        maximum: 50,
       },
       min_transactions: {
         type: 'number',

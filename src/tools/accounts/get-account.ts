@@ -40,6 +40,7 @@ Requires an account_id. Use ynab_list_accounts first to find the account ID.`,
       },
       account_id: {
         type: 'string',
+        format: 'uuid',
         description: 'The account UUID to retrieve',
       },
     },

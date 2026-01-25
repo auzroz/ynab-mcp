@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { formatCurrency, formatCurrencyWithFormat } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
@@ -57,6 +57,12 @@ export async function handleGetBudget(
   const response = await client.getBudgetById(budgetId, lastKnowledge);
   const budget = response.data.budget;
 
+  // Helper to format currency using budget's format if available
+  const fmt = (milliunits: number): string =>
+    budget.currency_format
+      ? formatCurrencyWithFormat(milliunits, budget.currency_format)
+      : formatCurrency(milliunits);
+
   // Summarize accounts by type
   const accountsByType: Record<string, Array<{ name: string; balance: string }>> = {};
   for (const account of budget.accounts ?? []) {
@@ -67,7 +73,7 @@ export async function handleGetBudget(
     }
     accountsByType[type].push({
       name: sanitizeName(account.name),
-      balance: formatCurrency(account.balance),
+      balance: fmt(account.balance),
     });
   }
 
@@ -102,9 +108,9 @@ export async function handleGetBudget(
         .filter((c) => c.category_group_id === group.id && !c.hidden)
         .map((c) => ({
           name: sanitizeName(c.name),
-          budgeted: formatCurrency(c.budgeted),
-          activity: formatCurrency(c.activity),
-          balance: formatCurrency(c.balance),
+          budgeted: fmt(c.budgeted),
+          activity: fmt(c.activity),
+          balance: fmt(c.balance),
         })),
     }));
 
@@ -114,9 +120,9 @@ export async function handleGetBudget(
       name: sanitizeName(budget.name),
       last_modified: budget.last_modified_on,
       summary: {
-        total_assets: formatCurrency(totalAssets),
-        total_liabilities: formatCurrency(totalLiabilities),
-        net_worth: formatCurrency(totalAssets - totalLiabilities),
+        total_assets: fmt(totalAssets),
+        total_liabilities: fmt(totalLiabilities),
+        net_worth: fmt(totalAssets - totalLiabilities),
         account_count: (budget.accounts ?? []).filter((a) => !a.closed).length,
         category_count: (budget.categories ?? []).filter((c) => !c.hidden).length,
         payee_count: (budget.payees ?? []).length,

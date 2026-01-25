@@ -212,12 +212,10 @@ export async function handleGoalProgress(
     0
   );
 
-  const statusCounts = {
-    complete: goalsInfo.filter((g) => g.status === 'complete').length,
-    on_track: goalsInfo.filter((g) => g.status === 'on_track').length,
-    behind: goalsInfo.filter((g) => g.status === 'behind').length,
-    underfunded: goalsInfo.filter((g) => g.status === 'underfunded').length,
-  };
+  const statusCounts = { complete: 0, on_track: 0, behind: 0, underfunded: 0 };
+  for (const g of goalsInfo) {
+    statusCounts[g.status]++;
+  }
 
   // Determine overall status
   let overallStatus: 'healthy' | 'attention_needed' | 'critical';

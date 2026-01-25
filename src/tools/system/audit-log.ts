@@ -30,7 +30,7 @@ const inputSchema = z.object({
     .boolean()
     .optional()
     .describe('Return only summary statistics'),
-});
+}).strict();
 
 // Tool definition
 export const auditLogTool: Tool = {
@@ -77,6 +77,7 @@ Shows all create, update, and delete operations with timestamps.`,
 // Handler function
 /**
  * Handler for the ynab_audit_log tool.
+ * Note: client param intentionally omitted; this tool only uses the local AuditLog service.
  */
 export async function handleAuditLog(
   args: Record<string, unknown>

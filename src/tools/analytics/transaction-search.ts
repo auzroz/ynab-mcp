@@ -19,10 +19,11 @@ const inputSchema = z.object({
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   query: z
     .string()
+    .max(500)
     .optional()
     .describe('Search text to match in payee name, memo, or category'),
-  payee: z.string().optional().describe('Filter by payee name (partial match)'),
-  category: z.string().optional().describe('Filter by category name (partial match)'),
+  payee: z.string().max(200).optional().describe('Filter by payee name (partial match)'),
+  category: z.string().max(200).optional().describe('Filter by category name (partial match)'),
   min_amount: z
     .number()
     .optional()

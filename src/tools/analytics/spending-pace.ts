@@ -142,7 +142,7 @@ export async function handleSpendingPace(
   }
 
   // Sort by status (overspent first, then behind, etc.)
-  const statusPriority: Record<string, number> = {
+  const statusPriority: Record<CategoryPace['status'], number> = {
     overspent: 0,
     behind: 1,
     on_track: 2,
