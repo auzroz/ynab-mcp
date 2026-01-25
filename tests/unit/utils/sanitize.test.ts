@@ -4,6 +4,7 @@ import {
   sanitizeStringOrEmpty,
   sanitizeMemo,
   sanitizeName,
+  sanitizeErrorMessage,
 } from '../../../src/utils/sanitize.js';
 
 describe('sanitize utilities', () => {
@@ -158,6 +159,95 @@ describe('sanitize utilities', () => {
 
     it('returns "Unknown" for empty string input', () => {
       expect(sanitizeName('')).toBe('Unknown');
+    });
+  });
+
+  describe('sanitizeErrorMessage', () => {
+    it('extracts message from Error objects', () => {
+      const error = new Error('Something went wrong');
+      expect(sanitizeErrorMessage(error)).toBe('Something went wrong');
+    });
+
+    it('handles string errors', () => {
+      expect(sanitizeErrorMessage('A string error')).toBe('A string error');
+    });
+
+    it('returns generic message for non-string/Error values', () => {
+      expect(sanitizeErrorMessage(null)).toBe('An error occurred');
+      expect(sanitizeErrorMessage(undefined)).toBe('An error occurred');
+      expect(sanitizeErrorMessage({})).toBe('An error occurred');
+      expect(sanitizeErrorMessage(123)).toBe('An error occurred');
+    });
+
+    it('redacts Bearer tokens', () => {
+      const error = 'Failed with Bearer abc123xyz456 in request';
+      expect(sanitizeErrorMessage(error)).toBe('Failed with Bearer [REDACTED] in request');
+    });
+
+    it('redacts token= patterns', () => {
+      const error = 'Failed with token=secret123';
+      expect(sanitizeErrorMessage(error)).toBe('Failed with token=[REDACTED]');
+    });
+
+    it('redacts access_token patterns', () => {
+      const error = 'access_token: "my-secret-token"';
+      expect(sanitizeErrorMessage(error)).toBe('access_token=[REDACTED]');
+    });
+
+    it('redacts api_key patterns', () => {
+      const error = 'api_key=supersecret123';
+      expect(sanitizeErrorMessage(error)).toBe('api_key=[REDACTED]');
+    });
+
+    it('redacts Unix file paths', () => {
+      const error = 'Error in /Users/john/projects/app/config.ts';
+      expect(sanitizeErrorMessage(error)).toBe('Error in [PATH_REDACTED]');
+    });
+
+    it('redacts Windows file paths', () => {
+      const error = 'Error in C:\\Users\\john\\Documents\\secret.txt';
+      expect(sanitizeErrorMessage(error)).toBe('Error in [PATH_REDACTED]');
+    });
+
+    it('redacts stack trace file references', () => {
+      // Path matching happens before file reference matching
+      const error = 'Error at (/home/user/app/src/index.ts:42:10)';
+      expect(sanitizeErrorMessage(error)).toContain('[PATH_REDACTED]');
+      expect(sanitizeErrorMessage(error)).not.toContain('/home/user');
+    });
+
+    it('redacts full stack trace at statements', () => {
+      // Use a non-matching path prefix to test the stack pattern
+      const error = 'at processRequest (app/server.js:100:5)';
+      expect(sanitizeErrorMessage(error)).toBe('at [STACK_REDACTED]');
+    });
+
+    it('removes control characters', () => {
+      const error = new Error('Error\x00with\x1Fcontrol\x7Fchars');
+      expect(sanitizeErrorMessage(error)).toBe('Errorwithcontrolchars');
+    });
+
+    it('respects maxLength parameter', () => {
+      const error = new Error('a'.repeat(600));
+      const result = sanitizeErrorMessage(error, 100);
+      expect(result.length).toBe(100);
+      expect(result).toBe('a'.repeat(97) + '...');
+    });
+
+    it('handles multiple sensitive patterns in one message', () => {
+      const error = 'Request to /Users/dev/app failed with token=secret123 and api_key=abc';
+      const result = sanitizeErrorMessage(error);
+      expect(result).not.toContain('/Users/dev/app');
+      expect(result).not.toContain('secret123');
+      expect(result).not.toContain('abc');
+      expect(result).toContain('[PATH_REDACTED]');
+      expect(result).toContain('token=[REDACTED]');
+      expect(result).toContain('api_key=[REDACTED]');
+    });
+
+    it('handles Error with empty message', () => {
+      const error = new Error('');
+      expect(sanitizeErrorMessage(error)).toBe('');
     });
   });
 });

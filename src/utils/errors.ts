@@ -4,6 +4,8 @@
  * Provides structured error handling for the YNAB MCP server.
  */
 
+import { sanitizeErrorMessage } from './sanitize.js';
+
 /**
  * Error thrown when a write operation is attempted in read-only mode.
  */
@@ -149,13 +151,15 @@ export function formatErrorResponse(error: unknown): string {
       message: 'Unknown error',
       suggestion: 'Check the YNAB API documentation for more information.',
     };
+    // Log full error server-side for debugging
+    console.error('[YnabApiError]', error.code, error.message, error.details);
+    // Return sanitized response without raw details
     return JSON.stringify({
       error: true,
       type: 'ynab_api_error',
       code: error.code,
-      message: error.message || errorInfo.message,
+      message: sanitizeErrorMessage(error.message) || errorInfo.message,
       suggestion: errorInfo.suggestion,
-      details: error.details,
     }, null, 2);
   }
 
@@ -166,11 +170,14 @@ export function formatErrorResponse(error: unknown): string {
       message: 'Unknown error',
       suggestion: 'Check the YNAB API documentation.',
     };
+    // Log full error server-side for debugging
+    console.error('[YnabSdkError]', statusCode, error.error?.detail);
+    // Return sanitized response
     return JSON.stringify({
       error: true,
       type: 'ynab_api_error',
       code: statusCode,
-      message: error.error?.detail ?? errorInfo.message,
+      message: sanitizeErrorMessage(error.error?.detail) || errorInfo.message,
       suggestion: errorInfo.suggestion,
     }, null, 2);
   }
@@ -190,12 +197,12 @@ export function formatErrorResponse(error: unknown): string {
     }, null, 2);
   }
 
-  // Generic error
-  const message = error instanceof Error ? error.message : String(error);
+  // Generic error - log full error server-side, return sanitized message
+  console.error('[UnknownError]', error);
   return JSON.stringify({
     error: true,
     type: 'unknown_error',
-    message,
+    message: sanitizeErrorMessage(error),
     suggestion: 'An unexpected error occurred. Check the server logs for details.',
   }, null, 2);
 }

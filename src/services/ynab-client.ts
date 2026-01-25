@@ -9,6 +9,7 @@ import type { RateLimiter } from './rate-limiter.js';
 import type { Cache } from './cache.js';
 import { ReadOnlyModeError } from '../utils/errors.js';
 import { getAuditLog } from './audit-log.js';
+import { sanitizeErrorMessage } from '../utils/sanitize.js';
 
 export class YnabClient {
   private readonly api: ynab.API;
@@ -179,7 +180,7 @@ export class YnabClient {
         resourceType: 'account',
         details: { type: data.account.type, has_name: !!data.account.name },
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(error),
       });
       throw error;
     }
@@ -245,7 +246,7 @@ export class YnabClient {
         resourceId: categoryId,
         details: { month, budgeted: data.category.budgeted },
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(error),
       });
       throw error;
     }
@@ -326,7 +327,7 @@ export class YnabClient {
           account_id: txn?.account_id,
         },
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(error),
       });
       throw error;
     }
@@ -374,7 +375,7 @@ export class YnabClient {
           category_id: txn.category_id,
         },
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(error),
       });
       throw error;
     }
@@ -413,7 +414,7 @@ export class YnabClient {
         resourceId: transactionId,
         details: {},
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(error),
       });
       throw error;
     }
@@ -443,7 +444,7 @@ export class YnabClient {
         resourceType: 'transaction',
         details: {},
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(error),
       });
       throw error;
     }

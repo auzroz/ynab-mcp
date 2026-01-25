@@ -74,3 +74,60 @@ export function sanitizeName(input: string | null | undefined): string {
   const sanitized = sanitizeString(input, 200);
   return sanitized && sanitized.length > 0 ? sanitized : 'Unknown';
 }
+
+/**
+ * Patterns that may indicate sensitive data in error messages.
+ * Used to redact potential tokens, paths, and other sensitive information.
+ */
+const SENSITIVE_PATTERNS: { pattern: RegExp; replacement: string }[] = [
+  // API tokens and keys (various formats)
+  { pattern: /Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, replacement: 'Bearer [REDACTED]' },
+  { pattern: /token[=:]\s*["']?[A-Za-z0-9\-._~+/]+["']?/gi, replacement: 'token=[REDACTED]' },
+  { pattern: /key[=:]\s*["']?[A-Za-z0-9\-._~+/]+["']?/gi, replacement: 'key=[REDACTED]' },
+  { pattern: /api[_-]?key[=:]\s*["']?[A-Za-z0-9\-._~+/]+["']?/gi, replacement: 'api_key=[REDACTED]' },
+  { pattern: /access[_-]?token[=:]\s*["']?[A-Za-z0-9\-._~+/]+["']?/gi, replacement: 'access_token=[REDACTED]' },
+  { pattern: /authorization[=:]\s*["']?[A-Za-z0-9\-._~+/]+["']?/gi, replacement: 'authorization=[REDACTED]' },
+  // File paths (Unix and Windows)
+  { pattern: /\/(?:Users|home|var|etc|tmp)\/[^\s"']+/gi, replacement: '[PATH_REDACTED]' },
+  { pattern: /[A-Z]:\\(?:Users|Windows|Program Files)[^\s"']*/gi, replacement: '[PATH_REDACTED]' },
+  // Stack trace file references
+  { pattern: /at\s+[^\s]+\s+\([^)]+:\d+:\d+\)/g, replacement: 'at [STACK_REDACTED]' },
+  { pattern: /\([^)]+\.(?:ts|js):\d+:\d+\)/g, replacement: '([FILE_REDACTED])' },
+];
+
+/**
+ * Sanitize an error message to remove sensitive data.
+ *
+ * Removes:
+ * - API tokens and authentication headers
+ * - File system paths
+ * - Stack trace details
+ * - Control characters
+ *
+ * @param error - The error to sanitize (Error object, string, or unknown)
+ * @param maxLength - Maximum length of the output (default 500)
+ * @returns A sanitized error message safe for logging and responses
+ */
+export function sanitizeErrorMessage(
+  error: unknown,
+  maxLength: number = 500
+): string {
+  // Extract message from error
+  let message: string;
+  if (error instanceof Error) {
+    message = error.message;
+  } else if (typeof error === 'string') {
+    message = error;
+  } else {
+    message = 'An error occurred';
+  }
+
+  // Apply sensitive pattern redactions
+  let sanitized = message;
+  for (const { pattern, replacement } of SENSITIVE_PATTERNS) {
+    sanitized = sanitized.replace(pattern, replacement);
+  }
+
+  // Remove control characters and enforce length limit
+  return sanitizeStringOrEmpty(sanitized, maxLength);
+}

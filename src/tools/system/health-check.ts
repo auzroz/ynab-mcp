@@ -4,8 +4,16 @@
  * Verifies the YNAB API connection and server status.
  */
 
+import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
+import { sanitizeErrorMessage } from '../../utils/sanitize.js';
+
+/**
+ * Input schema for health check tool.
+ * Accepts an empty object (no parameters required).
+ */
+const inputSchema = z.object({}).strict();
 
 // Tool definition
 export const healthCheckTool: Tool = {
@@ -27,9 +35,12 @@ Returns server status, API connectivity, and configuration details.`,
 
 // Handler function
 export async function handleHealthCheck(
-  _args: Record<string, unknown>,
+  args: Record<string, unknown>,
   client: YnabClient
 ): Promise<string> {
+  // Validate inputs (rejects unexpected properties)
+  inputSchema.parse(args);
+
   const startTime = Date.now();
   const checks: {
     name: string;
@@ -62,8 +73,8 @@ export async function handleHealthCheck(
     });
   } catch (err) {
     const apiCheckDuration = Date.now() - apiCheckStart;
-    // Log error internally for debugging (not exposed in response)
-    console.error('Health check API connectivity failed:', err);
+    // Log sanitized error internally for debugging (not exposed in response)
+    console.error('Health check API connectivity failed:', sanitizeErrorMessage(err));
     checks.push({
       name: 'api_connectivity',
       status: 'fail',
