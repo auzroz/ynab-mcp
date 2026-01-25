@@ -57,6 +57,9 @@ Use "current" for the current month.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_get_month tool.
+ */
 export async function handleGetMonth(
   args: Record<string, unknown>,
   client: YnabClient

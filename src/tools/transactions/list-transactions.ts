@@ -78,6 +78,9 @@ Returns transaction details including date, payee, amount, category, and status.
 };
 
 // Handler function
+/**
+ * Handler for the ynab_list_transactions tool.
+ */
 export async function handleListTransactions(
   args: Record<string, unknown>,
   client: YnabClient

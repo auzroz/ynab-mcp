@@ -70,6 +70,9 @@ Requires an account_id. Use ynab_list_accounts first to find the account ID.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_list_account_transactions tool.
+ */
 export async function handleListAccountTransactions(
   args: Record<string, unknown>,
   client: YnabClient

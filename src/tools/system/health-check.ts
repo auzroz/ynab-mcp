@@ -34,6 +34,9 @@ Returns server status, API connectivity, and configuration details.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_health_check tool.
+ */
 export async function handleHealthCheck(
   args: Record<string, unknown>,
   client: YnabClient

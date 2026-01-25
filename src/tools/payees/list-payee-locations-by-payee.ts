@@ -46,6 +46,9 @@ Returns all recorded locations for a specific payee.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_list_payee_locations_by_payee tool.
+ */
 export async function handleListPayeeLocationsByPayee(
   args: Record<string, unknown>,
   client: YnabClient

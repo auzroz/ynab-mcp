@@ -95,6 +95,9 @@ const DISCRETIONARY_CATEGORIES = [
 ];
 
 // Handler function
+/**
+ * Handler for the ynab_savings_opportunities tool.
+ */
 export async function handleSavingsOpportunities(
   args: Record<string, unknown>,
   client: YnabClient

@@ -45,6 +45,9 @@ Requires a payee_id. Use ynab_list_payees first to find the payee ID.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_get_payee tool.
+ */
 export async function handleGetPayee(
   args: Record<string, unknown>,
   client: YnabClient

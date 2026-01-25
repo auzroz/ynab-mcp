@@ -70,6 +70,9 @@ Requires a category_id. Use ynab_list_categories first to find the category ID.`
 };
 
 // Handler function
+/**
+ * Handler for the ynab_list_category_transactions tool.
+ */
 export async function handleListCategoryTransactions(
   args: Record<string, unknown>,
   client: YnabClient

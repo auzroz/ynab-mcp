@@ -67,6 +67,9 @@ interface CategorySuggestion {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_budget_suggestions tool.
+ */
 export async function handleBudgetSuggestions(
   args: Record<string, unknown>,
   client: YnabClient

@@ -77,6 +77,9 @@ Balance should be provided in dollars (e.g., 1000.50). For credit cards and debt
 };
 
 // Handler function
+/**
+ * Handler for the ynab_create_account tool.
+ */
 export async function handleCreateAccount(
   args: Record<string, unknown>,
   client: YnabClient

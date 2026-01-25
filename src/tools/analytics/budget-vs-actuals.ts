@@ -84,6 +84,9 @@ interface GroupReport {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_budget_vs_actuals tool.
+ */
 export async function handleBudgetVsActuals(
   args: Record<string, unknown>,
   client: YnabClient

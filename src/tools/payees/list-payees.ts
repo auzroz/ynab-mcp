@@ -41,6 +41,9 @@ Returns payee names and IDs. Payees are merchants, people, or places you transac
 };
 
 // Handler function
+/**
+ * Handler for the ynab_list_payees tool.
+ */
 export async function handleListPayees(
   args: Record<string, unknown>,
   client: YnabClient

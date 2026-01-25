@@ -120,6 +120,9 @@ Amount should be negative for expenses/outflows and positive for income/inflows.
 };
 
 // Handler function
+/**
+ * Handler for the ynab_create_transaction tool.
+ */
 export async function handleCreateTransaction(
   args: Record<string, unknown>,
   client: YnabClient

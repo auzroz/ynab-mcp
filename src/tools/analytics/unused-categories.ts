@@ -75,6 +75,9 @@ interface UnusedCategory {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_unused_categories tool.
+ */
 export async function handleUnusedCategories(
   args: Record<string, unknown>,
   client: YnabClient

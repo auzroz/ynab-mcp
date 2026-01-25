@@ -127,6 +127,9 @@ interface SearchResult {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_transaction_search tool.
+ */
 export async function handleTransactionSearch(
   args: Record<string, unknown>,
   client: YnabClient

@@ -57,6 +57,9 @@ Requires a category_id. Use ynab_list_categories first to find the category ID.`
 };
 
 // Handler function
+/**
+ * Handler for the ynab_get_month_category tool.
+ */
 export async function handleGetMonthCategory(
   args: Record<string, unknown>,
   client: YnabClient

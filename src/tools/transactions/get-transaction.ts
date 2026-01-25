@@ -47,6 +47,9 @@ Requires a transaction_id. Use ynab_list_transactions first to find the transact
 };
 
 // Handler function
+/**
+ * Handler for the ynab_get_transaction tool.
+ */
 export async function handleGetTransaction(
   args: Record<string, unknown>,
   client: YnabClient

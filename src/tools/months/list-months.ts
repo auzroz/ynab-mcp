@@ -53,6 +53,9 @@ function formatAmount(milliunits: number, currencyFormat?: CurrencyFormat | null
 }
 
 // Handler function
+/**
+ * Handler for the ynab_list_months tool.
+ */
 export async function handleListMonths(
   args: Record<string, unknown>,
   client: YnabClient

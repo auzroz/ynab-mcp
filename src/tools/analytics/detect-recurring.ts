@@ -82,6 +82,9 @@ interface RecurringTransaction {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_detect_recurring tool.
+ */
 export async function handleDetectRecurring(
   args: Record<string, unknown>,
   client: YnabClient

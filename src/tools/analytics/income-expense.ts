@@ -65,6 +65,9 @@ interface MonthData {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_income_expense tool.
+ */
 export async function handleIncomeExpense(
   args: Record<string, unknown>,
   client: YnabClient

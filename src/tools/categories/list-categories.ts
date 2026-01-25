@@ -51,6 +51,9 @@ Returns category groups with their categories, including budgeted amounts, activ
 };
 
 // Handler function
+/**
+ * Handler for the ynab_list_categories tool.
+ */
 export async function handleListCategories(
   args: Record<string, unknown>,
   client: YnabClient

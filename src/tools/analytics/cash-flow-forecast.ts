@@ -72,6 +72,9 @@ interface DailyForecast {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_cash_flow_forecast tool.
+ */
 export async function handleCashFlowForecast(
   args: Record<string, unknown>,
   client: YnabClient

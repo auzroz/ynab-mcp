@@ -79,6 +79,9 @@ interface MonthlySpending {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_spending_analysis tool.
+ */
 export async function handleSpendingAnalysis(
   args: Record<string, unknown>,
   client: YnabClient

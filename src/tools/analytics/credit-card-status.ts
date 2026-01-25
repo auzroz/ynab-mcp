@@ -56,6 +56,9 @@ interface CreditCardInfo {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_credit_card_status tool.
+ */
 export async function handleCreditCardStatus(
   args: Record<string, unknown>,
   client: YnabClient

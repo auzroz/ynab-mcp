@@ -41,6 +41,9 @@ Returns currency format, date format, and currency ISO code.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_get_budget_settings tool.
+ */
 export async function handleGetBudgetSettings(
   args: Record<string, unknown>,
   client: YnabClient

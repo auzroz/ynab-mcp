@@ -75,6 +75,9 @@ Shows all create, update, and delete operations with timestamps.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_audit_log tool.
+ */
 export async function handleAuditLog(
   args: Record<string, unknown>
 ): Promise<string> {

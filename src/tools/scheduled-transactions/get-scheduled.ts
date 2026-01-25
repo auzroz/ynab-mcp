@@ -46,6 +46,9 @@ Requires a scheduled_transaction_id. Use ynab_list_scheduled_transactions first 
 };
 
 // Handler function
+/**
+ * Handler for the ynab_get_scheduled_transaction tool.
+ */
 export async function handleGetScheduledTransaction(
   args: Record<string, unknown>,
   client: YnabClient

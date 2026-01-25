@@ -56,6 +56,9 @@ Returns account names, types, and current/cleared/uncleared balances.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_list_accounts tool.
+ */
 export async function handleListAccounts(
   args: Record<string, unknown>,
   client: YnabClient

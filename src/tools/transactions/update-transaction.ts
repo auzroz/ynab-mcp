@@ -134,6 +134,9 @@ Only provide the fields you want to change.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_update_transaction tool.
+ */
 export async function handleUpdateTransaction(
   args: Record<string, unknown>,
   client: YnabClient

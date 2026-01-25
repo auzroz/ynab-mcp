@@ -88,6 +88,9 @@ interface PayeeSpending {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_spending_by_payee tool.
+ */
 export async function handleSpendingByPayee(
   args: Record<string, unknown>,
   client: YnabClient

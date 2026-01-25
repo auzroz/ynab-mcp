@@ -43,6 +43,9 @@ Returns the current age of money with context and improvement tips.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_age_of_money tool.
+ */
 export async function handleAgeOfMoney(
   args: Record<string, unknown>,
   client: YnabClient

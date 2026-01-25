@@ -42,6 +42,9 @@ Returns scheduled transaction details including frequency, next occurrence, and 
 };
 
 // Handler function
+/**
+ * Handler for the ynab_list_scheduled_transactions tool.
+ */
 export async function handleListScheduledTransactions(
   args: Record<string, unknown>,
   client: YnabClient

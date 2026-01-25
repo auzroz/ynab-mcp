@@ -65,6 +65,9 @@ interface OverspentCategory {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_overspending_alerts tool.
+ */
 export async function handleOverspendingAlerts(
   args: Record<string, unknown>,
   client: YnabClient

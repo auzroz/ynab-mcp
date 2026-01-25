@@ -40,6 +40,9 @@ Returns the details of a single payee location including coordinates.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_get_payee_location tool.
+ */
 export async function handleGetPayeeLocation(
   args: Record<string, unknown>,
   client: YnabClient

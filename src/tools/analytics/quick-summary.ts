@@ -46,6 +46,9 @@ This is the best tool to use for general budget status questions.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_quick_summary tool.
+ */
 export async function handleQuickSummary(
   args: Record<string, unknown>,
   client: YnabClient

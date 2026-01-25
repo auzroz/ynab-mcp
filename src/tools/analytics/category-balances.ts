@@ -79,6 +79,9 @@ interface CategoryBalance {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_category_balances tool.
+ */
 export async function handleCategoryBalances(
   args: Record<string, unknown>,
   client: YnabClient

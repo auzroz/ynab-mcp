@@ -29,6 +29,9 @@ Returns the user's ID.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_get_user tool.
+ */
 export async function handleGetUser(
   args: Record<string, unknown>,
   client: YnabClient

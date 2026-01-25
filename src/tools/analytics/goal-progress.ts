@@ -80,6 +80,9 @@ const goalTypeLabels: Record<string, string> = {
 };
 
 // Handler function
+/**
+ * Handler for the ynab_goal_progress tool.
+ */
 export async function handleGoalProgress(
   args: Record<string, unknown>,
   client: YnabClient

@@ -42,6 +42,9 @@ Returns budget names, IDs, and last modified dates. Optionally includes account 
 };
 
 // Handler function
+/**
+ * Handler for the ynab_list_budgets tool.
+ */
 export async function handleListBudgets(
   args: Record<string, unknown>,
   client: YnabClient

@@ -56,6 +56,9 @@ interface CategoryChange {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_monthly_comparison tool.
+ */
 export async function handleMonthlyComparison(
   args: Record<string, unknown>,
   client: YnabClient

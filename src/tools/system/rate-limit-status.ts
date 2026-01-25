@@ -30,6 +30,9 @@ YNAB allows 200 requests per hour. This server uses 180 as a safety margin.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_rate_limit_status tool.
+ */
 export async function handleRateLimitStatus(
   args: Record<string, unknown>,
   client: YnabClient

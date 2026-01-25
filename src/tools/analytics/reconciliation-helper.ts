@@ -73,6 +73,9 @@ interface AccountReconciliation {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_reconciliation_helper tool.
+ */
 export async function handleReconciliationHelper(
   args: Record<string, unknown>,
   client: YnabClient

@@ -48,6 +48,9 @@ Requires an account_id. Use ynab_list_accounts first to find the account ID.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_get_account tool.
+ */
 export async function handleGetAccount(
   args: Record<string, unknown>,
   client: YnabClient

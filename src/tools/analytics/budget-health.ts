@@ -65,6 +65,9 @@ interface CategoryHealth {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_budget_health tool.
+ */
 export async function handleBudgetHealth(
   args: Record<string, unknown>,
   client: YnabClient

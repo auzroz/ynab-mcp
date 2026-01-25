@@ -57,6 +57,9 @@ interface CategoryPace {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_spending_pace tool.
+ */
 export async function handleSpendingPace(
   args: Record<string, unknown>,
   client: YnabClient

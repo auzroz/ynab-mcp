@@ -67,6 +67,9 @@ interface AccountTypeGroup {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_net_worth tool.
+ */
 export async function handleNetWorth(
   args: Record<string, unknown>,
   client: YnabClient

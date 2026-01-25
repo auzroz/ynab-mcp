@@ -42,6 +42,9 @@ Returns payee locations with latitude/longitude for mapping purposes.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_list_payee_locations tool.
+ */
 export async function handleListPayeeLocations(
   args: Record<string, unknown>,
   client: YnabClient

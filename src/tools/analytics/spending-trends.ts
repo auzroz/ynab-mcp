@@ -81,6 +81,9 @@ interface CategoryTrend {
 }
 
 // Handler function
+/**
+ * Handler for the ynab_spending_trends tool.
+ */
 export async function handleSpendingTrends(
   args: Record<string, unknown>,
   client: YnabClient

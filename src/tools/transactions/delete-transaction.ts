@@ -48,6 +48,9 @@ This action cannot be undone.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_delete_transaction tool.
+ */
 export async function handleDeleteTransaction(
   args: Record<string, unknown>,
   client: YnabClient

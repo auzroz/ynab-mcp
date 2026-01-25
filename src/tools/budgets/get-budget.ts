@@ -42,6 +42,9 @@ Returns comprehensive budget data including all accounts, category groups, categ
 };
 
 // Handler function
+/**
+ * Handler for the ynab_get_budget tool.
+ */
 export async function handleGetBudget(
   args: Record<string, unknown>,
   client: YnabClient

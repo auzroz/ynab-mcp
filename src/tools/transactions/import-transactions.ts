@@ -45,6 +45,9 @@ Note: This is a WRITE operation that requires write mode to be enabled.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_import_transactions tool.
+ */
 export async function handleImportTransactions(
   args: Record<string, unknown>,
   client: YnabClient

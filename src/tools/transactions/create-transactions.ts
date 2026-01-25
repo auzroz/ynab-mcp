@@ -94,6 +94,9 @@ Use import_id to prevent duplicate imports.`,
 };
 
 // Handler function
+/**
+ * Handler for the ynab_create_transactions tool.
+ */
 export async function handleCreateTransactions(
   args: Record<string, unknown>,
   client: YnabClient
