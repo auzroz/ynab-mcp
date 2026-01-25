@@ -19,9 +19,9 @@ const inputSchema = z.object({
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   month: z
     .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .regex(/^\d{4}-\d{2}-01$/, 'Month must be first-of-month format (YYYY-MM-01)')
     .optional()
-    .describe('Month to analyze in YYYY-MM-DD format (first of month). Defaults to current month'),
+    .describe('Month to analyze in YYYY-MM-01 format (first of month). Defaults to current month'),
   include_previous: z
     .boolean()
     .optional()
@@ -50,7 +50,7 @@ Returns detailed budget vs actuals for all categories with variance analysis.`,
       },
       month: {
         type: 'string',
-        description: 'Month to analyze in YYYY-MM-DD format (first of month). Defaults to current month',
+        description: 'Month to analyze in YYYY-MM-01 format (first of month). Defaults to current month',
       },
       include_previous: {
         type: 'boolean',

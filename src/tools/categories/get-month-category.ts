@@ -19,7 +19,7 @@ const inputSchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .describe('The budget month in YYYY-MM-DD format (use first of month, e.g., 2024-01-01)'),
-  category_id: z.string().describe('The category UUID to retrieve'),
+  category_id: z.string().uuid().describe('The category UUID to retrieve'),
 });
 
 // Tool definition

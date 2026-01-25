@@ -109,9 +109,28 @@ export async function handleListAccounts(
     .filter((a) => assetTypes.includes(String(a.type)))
     .reduce((sum, a) => sum + a.balance, 0);
 
-  const totalLiabilities = accounts
-    .filter((a) => liabilityTypes.includes(String(a.type)))
-    .reduce((sum, a) => sum + Math.abs(a.balance), 0);
+  // Calculate liability totals properly:
+  // - Negative balances on liability accounts = actual debt
+  // - Positive balances on liability accounts = credits (overpayments)
+  const liabilityAccounts = accounts.filter((a) =>
+    liabilityTypes.includes(String(a.type))
+  );
+
+  // Sum only negative balances as liabilities (Math.min ensures we only count debt)
+  const totalLiabilities = liabilityAccounts.reduce(
+    (sum, a) => sum + Math.min(0, a.balance),
+    0
+  );
+
+  // Sum positive balances on liability accounts as credits
+  const totalLiabilityCredits = liabilityAccounts.reduce(
+    (sum, a) => sum + Math.max(0, a.balance),
+    0
+  );
+
+  // Net worth = assets + liability credits - abs(liabilities)
+  // Since totalLiabilities is negative (or zero), we add it
+  const netWorth = totalAssets + totalLiabilityCredits + totalLiabilities;
 
   return JSON.stringify(
     {
@@ -119,8 +138,13 @@ export async function handleListAccounts(
       summary: {
         total_accounts: accounts.length,
         total_assets: formatCurrency(totalAssets),
-        total_liabilities: formatCurrency(totalLiabilities),
-        net_worth: formatCurrency(totalAssets - totalLiabilities),
+        // Display liabilities as a positive number for readability
+        total_liabilities: formatCurrency(Math.abs(totalLiabilities)),
+        // Show credits on liability accounts if any exist
+        ...(totalLiabilityCredits > 0 && {
+          liability_credits: formatCurrency(totalLiabilityCredits),
+        }),
+        net_worth: formatCurrency(netWorth),
       },
     },
     null,

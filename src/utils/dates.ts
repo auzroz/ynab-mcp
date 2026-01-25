@@ -130,7 +130,14 @@ export function parseNaturalDate(input: string): string {
   if (pastYearsMatch) {
     const years = parseInt(pastYearsMatch[1] ?? '0', 10);
     const pastDate = new Date(today);
+    const originalMonth = today.getMonth();
     pastDate.setFullYear(today.getFullYear() - years);
+
+    // Handle leap year edge case: if month rolled over, set to last day of previous month
+    if (pastDate.getMonth() !== originalMonth) {
+      pastDate.setDate(0); // Sets to last day of previous month
+    }
+
     return formatDate(pastDate);
   }
 

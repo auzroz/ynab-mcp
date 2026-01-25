@@ -11,6 +11,7 @@
  */
 
 import DecimalJS from 'decimal.js';
+import type { CurrencyFormat } from 'ynab';
 
 // Get the Decimal constructor
 const Decimal = DecimalJS.default ?? DecimalJS;
@@ -32,6 +33,53 @@ export function formatCurrency(milliunits: number, currencySymbol = '$'): string
   const formatted = absolute.toFixed(2);
 
   return isNegative ? `-${currencySymbol}${formatted}` : `${currencySymbol}${formatted}`;
+}
+
+/**
+ * Convert milliunits to a formatted currency string using YNAB's CurrencyFormat.
+ *
+ * This respects the budget's currency settings including:
+ * - Currency symbol and position (symbol_first)
+ * - Decimal separator (. vs ,)
+ * - Group separator (, vs . vs space)
+ * - Number of decimal digits
+ *
+ * @param milliunits - The amount in milliunits (1000 = 1 currency unit)
+ * @param format - YNAB CurrencyFormat object from budget settings
+ * @returns Formatted string like "$10.50", "10,50 €", etc.
+ */
+export function formatCurrencyWithFormat(
+  milliunits: number,
+  format: CurrencyFormat
+): string {
+  const amount = new Decimal(milliunits).dividedBy(1000);
+  const isNegative = amount.isNegative();
+  const absolute = amount.absoluteValue();
+
+  // Format with the correct number of decimal digits
+  const formatted = absolute.toFixed(format.decimal_digits);
+  const parts = formatted.split('.');
+  const intPart = parts[0] ?? '0';
+  const decPart = parts[1] ?? '';
+
+  // Add group separators to the integer part (e.g., 1000000 -> 1,000,000)
+  const intWithSeparators = intPart.replace(
+    /\B(?=(\d{3})+(?!\d))/g,
+    format.group_separator
+  );
+
+  // Combine integer and decimal parts with the correct decimal separator
+  const withSeparators = decPart
+    ? `${intWithSeparators}${format.decimal_separator}${decPart}`
+    : intWithSeparators;
+
+  // Add currency symbol in the correct position
+  const symbol = format.display_symbol ? format.currency_symbol : '';
+  const withSymbol = format.symbol_first
+    ? `${symbol}${withSeparators}`
+    : `${withSeparators}${symbol}`;
+
+  return isNegative ? `-${withSymbol}` : withSymbol;
 }
 
 /**

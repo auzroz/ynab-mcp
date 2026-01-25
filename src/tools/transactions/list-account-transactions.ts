@@ -16,7 +16,7 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  account_id: z.string().describe('The account UUID to get transactions for'),
+  account_id: z.string().uuid().describe('The account UUID to get transactions for'),
   since_date: z
     .string()
     .optional()

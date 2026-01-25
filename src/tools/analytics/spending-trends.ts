@@ -25,8 +25,9 @@ const inputSchema = z.object({
     .describe('Number of months to analyze (default 6)'),
   category_id: z
     .string()
+    .uuid()
     .optional()
-    .describe('Specific category ID to analyze (optional)'),
+    .describe('Specific category UUID to analyze (optional)'),
 });
 
 // Tool definition
@@ -55,7 +56,7 @@ Returns month-by-month spending data with trend analysis.`,
       },
       category_id: {
         type: 'string',
-        description: 'Specific category ID to analyze (optional)',
+        description: 'Specific category UUID to analyze (optional)',
       },
     },
     required: [],

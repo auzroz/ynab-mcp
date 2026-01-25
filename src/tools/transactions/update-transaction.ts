@@ -21,7 +21,7 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  transaction_id: z.string().describe('The transaction UUID to update'),
+  transaction_id: z.string().uuid().describe('The transaction UUID to update'),
   account_id: z.string().optional().describe('New account UUID'),
   date: z
     .string()

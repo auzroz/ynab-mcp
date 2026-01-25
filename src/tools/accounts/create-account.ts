@@ -6,29 +6,18 @@
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type * as ynab from 'ynab';
+import * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
-// YNAB account types (must match ynab.AccountType enum values)
-const accountTypes = [
-  'checking',
-  'savings',
-  'cash',
-  'creditCard',
-  'lineOfCredit',
-  'otherAsset',
-  'otherLiability',
-  'mortgage',
-  'autoLoan',
-  'studentLoan',
-  'personalLoan',
-  'medicalDebt',
-  'otherDebt',
-] as const;
+// Derive account types from YNAB SDK enum to prevent drift
+// AccountType enum has string values like 'checking', 'savings', etc.
+const accountTypeValues = Object.values(ynab.AccountType).filter(
+  (v): v is ynab.AccountType => typeof v === 'string'
+);
 
-// Input schema
+// Input schema using nativeEnum for proper enum validation
 const inputSchema = z.object({
   budget_id: z
     .string()
@@ -36,7 +25,7 @@ const inputSchema = z.object({
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   name: z.string().min(1).max(100).describe('The name of the account'),
   type: z
-    .enum(accountTypes)
+    .nativeEnum(ynab.AccountType)
     .describe('The type of account (checking, savings, creditCard, etc.)'),
   balance: z
     .number()
@@ -70,7 +59,7 @@ Balance should be provided in dollars (e.g., 1000.50). For credit cards and debt
       },
       type: {
         type: 'string',
-        enum: accountTypes,
+        enum: accountTypeValues,
         description: 'The type of account',
       },
       balance: {
@@ -93,7 +82,7 @@ export async function handleCreateAccount(
   const response = await client.createAccount(budgetId, {
     account: {
       name: validated.name,
-      type: validated.type as unknown as ynab.AccountType,
+      type: validated.type,
       balance: toMilliunits(validated.balance),
     },
   });

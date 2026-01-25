@@ -15,7 +15,7 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  transaction_id: z.string().describe('The transaction UUID to retrieve'),
+  transaction_id: z.string().uuid().describe('The transaction UUID to retrieve'),
 });
 
 // Tool definition

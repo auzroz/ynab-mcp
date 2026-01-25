@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   formatCurrency,
+  formatCurrencyWithFormat,
   toMilliunits,
   toCents,
   addMilliunits,
@@ -8,6 +9,7 @@ import {
   sumMilliunits,
   percentageOfMilliunits,
 } from '../../../src/utils/milliunits.js';
+import type { CurrencyFormat } from 'ynab';
 
 describe('milliunits utilities', () => {
   describe('formatCurrency', () => {
@@ -36,6 +38,86 @@ describe('milliunits utilities', () => {
     it('uses custom currency symbol', () => {
       expect(formatCurrency(10000, '€')).toBe('€10.00');
       expect(formatCurrency(-5000, '£')).toBe('-£5.00');
+    });
+  });
+
+  describe('formatCurrencyWithFormat', () => {
+    const usdFormat: CurrencyFormat = {
+      iso_code: 'USD',
+      example_format: '123,456.78',
+      decimal_digits: 2,
+      decimal_separator: '.',
+      symbol_first: true,
+      group_separator: ',',
+      currency_symbol: '$',
+      display_symbol: true,
+    };
+
+    const eurFormat: CurrencyFormat = {
+      iso_code: 'EUR',
+      example_format: '123.456,78',
+      decimal_digits: 2,
+      decimal_separator: ',',
+      symbol_first: false,
+      group_separator: '.',
+      currency_symbol: '€',
+      display_symbol: true,
+    };
+
+    const jpyFormat: CurrencyFormat = {
+      iso_code: 'JPY',
+      example_format: '123,456',
+      decimal_digits: 0,
+      decimal_separator: '.',
+      symbol_first: true,
+      group_separator: ',',
+      currency_symbol: '¥',
+      display_symbol: true,
+    };
+
+    const noSymbolFormat: CurrencyFormat = {
+      iso_code: 'USD',
+      example_format: '123,456.78',
+      decimal_digits: 2,
+      decimal_separator: '.',
+      symbol_first: true,
+      group_separator: ',',
+      currency_symbol: '$',
+      display_symbol: false,
+    };
+
+    it('formats USD correctly', () => {
+      expect(formatCurrencyWithFormat(10000, usdFormat)).toBe('$10.00');
+      expect(formatCurrencyWithFormat(1234567890, usdFormat)).toBe('$1,234,567.89');
+      expect(formatCurrencyWithFormat(-25500, usdFormat)).toBe('-$25.50');
+    });
+
+    it('formats EUR correctly with symbol after and comma decimal', () => {
+      expect(formatCurrencyWithFormat(10000, eurFormat)).toBe('10,00€');
+      expect(formatCurrencyWithFormat(1234567890, eurFormat)).toBe('1.234.567,89€');
+      expect(formatCurrencyWithFormat(-25500, eurFormat)).toBe('-25,50€');
+    });
+
+    it('formats JPY correctly with no decimal digits', () => {
+      expect(formatCurrencyWithFormat(10000, jpyFormat)).toBe('¥10');
+      expect(formatCurrencyWithFormat(1234567000, jpyFormat)).toBe('¥1,234,567');
+      expect(formatCurrencyWithFormat(-25000, jpyFormat)).toBe('-¥25');
+    });
+
+    it('hides symbol when display_symbol is false', () => {
+      expect(formatCurrencyWithFormat(10000, noSymbolFormat)).toBe('10.00');
+      expect(formatCurrencyWithFormat(-5000, noSymbolFormat)).toBe('-5.00');
+    });
+
+    it('formats zero correctly', () => {
+      expect(formatCurrencyWithFormat(0, usdFormat)).toBe('$0.00');
+      expect(formatCurrencyWithFormat(0, eurFormat)).toBe('0,00€');
+      expect(formatCurrencyWithFormat(0, jpyFormat)).toBe('¥0');
+    });
+
+    it('handles large numbers with group separators', () => {
+      expect(formatCurrencyWithFormat(1000000000000, usdFormat)).toBe('$1,000,000,000.00');
+      expect(formatCurrencyWithFormat(1000000000000, eurFormat)).toBe('1.000.000.000,00€');
     });
   });
 

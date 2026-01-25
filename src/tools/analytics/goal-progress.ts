@@ -146,6 +146,15 @@ export async function handleGoalProgress(
     if (percentComplete !== null && percentComplete >= 100) {
       status = 'complete';
       statusMessage = 'Goal fully funded';
+    } else if (targetDate && daysUntilTarget !== null && daysUntilTarget <= 0) {
+      // Handle past-due goals explicitly
+      status = 'behind';
+      if (daysUntilTarget === 0) {
+        statusMessage = `Due today, ${percentComplete ?? 0}% complete`;
+      } else {
+        const daysOverdue = Math.abs(daysUntilTarget);
+        statusMessage = `${daysOverdue} day${daysOverdue === 1 ? '' : 's'} overdue, ${percentComplete ?? 0}% complete`;
+      }
     } else if (underfunded > 0) {
       status = 'underfunded';
       statusMessage = `Needs ${formatCurrency(underfunded)} more this month`;
