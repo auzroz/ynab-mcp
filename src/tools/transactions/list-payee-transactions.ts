@@ -95,12 +95,13 @@ export async function handleListPayeeTransactions(
   // Apply limit
   transactions = transactions.slice(0, limit);
 
-  // Calculate summary
-  const totalSpent = sumMilliunits(transactions.map((t) => Math.abs(t.amount)));
+  // Calculate summary (outflows only to avoid inflating spend with refunds)
+  const outflows = transactions.filter((t) => t.amount < 0);
+  const totalSpent = sumMilliunits(outflows.map((t) => Math.abs(t.amount)));
 
-  // Group by category
+  // Group by category (outflows only)
   const byCategory: Record<string, number> = {};
-  for (const txn of transactions) {
+  for (const txn of outflows) {
     const category = txn.category_name ?? 'Uncategorized';
     byCategory[category] = (byCategory[category] ?? 0) + Math.abs(txn.amount);
   }
@@ -109,10 +110,10 @@ export async function handleListPayeeTransactions(
   const topCategories = Object.entries(byCategory)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
-    .map(([name, amount]) => ({ name, amount: formatCurrency(amount) }));
+    .map(([name, amount]) => ({ name: sanitizeName(name), amount: formatCurrency(amount) }));
 
-  // Calculate average and frequency
-  const avgAmount = transactions.length > 0 ? totalSpent / transactions.length : 0;
+  // Calculate average and frequency (outflows only)
+  const avgAmount = outflows.length > 0 ? totalSpent / outflows.length : 0;
 
   const formattedTransactions = transactions.map((txn) => ({
     id: txn.id,

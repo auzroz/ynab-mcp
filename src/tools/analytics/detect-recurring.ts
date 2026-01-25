@@ -102,7 +102,7 @@ export async function handleDetectRecurring(
   const transactionsResponse = await client.getTransactions(budgetId, options);
 
   const transactions = transactionsResponse.data.transactions.filter(
-    (t) => t.amount < 0 && !t.deleted // Only outflows
+    (t) => t.amount < 0 && !t.deleted && !t.transfer_account_id // Only outflows, exclude transfers
   );
 
   // Group by payee

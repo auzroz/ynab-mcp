@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
@@ -71,7 +71,7 @@ export async function handleOverspendingAlerts(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
-  const thresholdMilliunits = (validated.threshold ?? 0) * 1000;
+  const thresholdMilliunits = toMilliunits(validated.threshold ?? 0);
 
   const currentMonth = getCurrentMonth();
 

@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -57,17 +58,21 @@ export async function handleDeleteTransaction(
   const response = await client.deleteTransaction(budgetId, validated.transaction_id);
   const txn = response.data.transaction;
 
+  if (txn == null) {
+    throw new Error('Transaction deletion failed: no transaction returned');
+  }
+
   return JSON.stringify(
     {
       success: true,
-      message: `Transaction deleted: ${formatCurrency(txn.amount)} at ${txn.payee_name ?? 'Unknown'} on ${txn.date}`,
+      message: `Transaction deleted: ${formatCurrency(txn.amount)} at ${sanitizeName(txn.payee_name)} on ${txn.date}`,
       deleted_transaction: {
         id: txn.id,
         date: txn.date,
         amount: formatCurrency(txn.amount),
-        payee_name: txn.payee_name,
-        category_name: txn.category_name,
-        account_name: txn.account_name,
+        payee_name: sanitizeName(txn.payee_name),
+        category_name: sanitizeName(txn.category_name),
+        account_name: sanitizeName(txn.account_name),
       },
     },
     null,

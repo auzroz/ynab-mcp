@@ -100,11 +100,25 @@ export async function handleUnusedCategories(
   const lastActivityMap = new Map<string, string>();
 
   for (const txn of transactionsResponse.data.transactions) {
-    if (txn.category_id && !txn.deleted) {
+    if (txn.deleted) continue;
+    const txnDate = txn.date;
+
+    // Check main transaction category
+    if (txn.category_id) {
       activeCategoryIds.add(txn.category_id);
       const existing = lastActivityMap.get(txn.category_id);
-      if (!existing || txn.date > existing) {
-        lastActivityMap.set(txn.category_id, txn.date);
+      if (!existing || txnDate > existing) {
+        lastActivityMap.set(txn.category_id, txnDate);
+      }
+    }
+
+    // Check subtransactions (for split transactions)
+    for (const sub of txn.subtransactions ?? []) {
+      if (!sub.category_id) continue;
+      activeCategoryIds.add(sub.category_id);
+      const existing = lastActivityMap.get(sub.category_id);
+      if (!existing || txnDate > existing) {
+        lastActivityMap.set(sub.category_id, txnDate);
       }
     }
   }

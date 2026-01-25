@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -76,18 +77,20 @@ export async function handleListCategories(
 
     return {
       id: group.id,
-      name: group.name,
+      name: sanitizeName(group.name),
       hidden: group.hidden,
       categories: categories.map((cat) => ({
         id: cat.id,
-        name: cat.name,
+        name: sanitizeName(cat.name),
         budgeted: formatCurrency(cat.budgeted),
         activity: formatCurrency(cat.activity),
         balance: formatCurrency(cat.balance),
+        balance_raw: cat.balance,
         goal_type: cat.goal_type ?? null,
         goal_percentage_complete: cat.goal_percentage_complete ?? null,
         goal_under_funded:
           cat.goal_under_funded != null ? formatCurrency(cat.goal_under_funded) : null,
+        goal_under_funded_raw: cat.goal_under_funded ?? null,
         hidden: cat.hidden,
       })),
     };
@@ -108,15 +111,11 @@ export async function handleListCategories(
     .filter((c) => !c.hidden)
     .reduce((sum, c) => sum + c.balance, 0);
 
-  // Find categories with issues
-  const overspent = allCategories.filter((c) => {
-    const balance = parseFloat(c.balance.replace(/[^-\d.]/g, ''));
-    return balance < 0;
-  });
-  
-  const underfunded = allCategories.filter((c) => 
-    c.goal_under_funded !== null && 
-    parseFloat(c.goal_under_funded.replace(/[^-\d.]/g, '')) > 0
+  // Find categories with issues (using raw values for accurate filtering)
+  const overspent = allCategories.filter((c) => c.balance_raw < 0);
+
+  const underfunded = allCategories.filter((c) =>
+    c.goal_under_funded_raw !== null && c.goal_under_funded_raw > 0
   );
 
   return JSON.stringify(

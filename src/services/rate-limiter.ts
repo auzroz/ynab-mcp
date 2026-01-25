@@ -10,6 +10,7 @@ export class RateLimiter {
   private lastRefill: number;
   private readonly maxTokens: number;
   private readonly refillRate: number; // tokens per millisecond
+  private acquireLock: Promise<void> = Promise.resolve();
 
   constructor(requestsPerHour: number = 180) {
     this.maxTokens = requestsPerHour;
@@ -22,18 +23,33 @@ export class RateLimiter {
   /**
    * Acquire a token, waiting if necessary.
    * Call this before making any API request.
+   * Uses a mutex to prevent race conditions with concurrent callers.
    */
   async acquire(): Promise<void> {
-    this.refill();
+    // Chain onto the existing lock to ensure sequential execution
+    const previousLock = this.acquireLock;
+    let releaseLock: () => void;
+    this.acquireLock = new Promise((resolve) => {
+      releaseLock = resolve;
+    });
 
-    if (this.tokens < 1) {
-      // Calculate wait time to get at least 1 token
-      const waitTime = Math.ceil((1 - this.tokens) / this.refillRate);
-      await this.sleep(waitTime);
+    try {
+      // Wait for previous acquire to complete
+      await previousLock;
+
       this.refill();
-    }
 
-    this.tokens -= 1;
+      if (this.tokens < 1) {
+        // Calculate wait time to get at least 1 token
+        const waitTime = Math.ceil((1 - this.tokens) / this.refillRate);
+        await this.sleep(waitTime);
+        this.refill();
+      }
+
+      this.tokens -= 1;
+    } finally {
+      releaseLock!();
+    }
   }
 
   /**
