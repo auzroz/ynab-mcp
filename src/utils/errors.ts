@@ -76,7 +76,7 @@ export const YNAB_ERROR_CODES: Record<string, { message: string; suggestion: str
   },
   '401': {
     message: 'Unauthorized',
-    suggestion: 'Your YNAB access token may be invalid or expired. Generate a new token at https://app.ynab.com/settings/developer',
+    suggestion: 'Authentication failed. Verify your credentials are valid and try again.',
   },
   '403': {
     message: 'Forbidden',
@@ -186,7 +186,7 @@ export function formatErrorResponse(error: unknown): string {
   if (isZodError(error)) {
     const issues = error.issues.map((issue: { path: (string | number)[]; message: string }) => ({
       field: issue.path.join('.'),
-      message: issue.message,
+      message: sanitizeErrorMessage(issue.message),
     }));
     return JSON.stringify({
       error: true,

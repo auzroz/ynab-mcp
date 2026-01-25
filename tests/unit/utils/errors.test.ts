@@ -101,7 +101,7 @@ describe('formatErrorResponse', () => {
     expect(result.error).toBe(true);
     expect(result.type).toBe('ynab_api_error');
     expect(result.code).toBe('401');
-    expect(result.suggestion).toContain('token');
+    expect(result.suggestion).toContain('Authentication failed');
   });
 
   it('should format generic Error', () => {
