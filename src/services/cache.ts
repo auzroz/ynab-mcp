@@ -15,6 +15,9 @@ export class Cache {
   private readonly defaultTtlMs: number;
 
   constructor(defaultTtlMs: number = 300000) { // 5 minutes default
+    if (!Number.isFinite(defaultTtlMs) || defaultTtlMs <= 0) {
+      throw new Error(`Invalid default TTL: ${defaultTtlMs}. TTL must be a positive finite number.`);
+    }
     this.defaultTtlMs = defaultTtlMs;
   }
 

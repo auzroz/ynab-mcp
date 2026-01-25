@@ -77,9 +77,10 @@ export async function handleGetScheduledTransaction(
         category_name: sanitizeName(txn.category_name),
         transfer_account_id: txn.transfer_account_id,
         deleted: txn.deleted,
-        subtransactions:
-          txn.subtransactions.length > 0
-            ? txn.subtransactions.map((sub) => ({
+        subtransactions: (() => {
+          const subs = txn.subtransactions ?? [];
+          return subs.length > 0
+            ? subs.map((sub) => ({
                 id: sub.id,
                 amount: formatCurrency(sub.amount),
                 memo: sanitizeMemo(sub.memo),
@@ -87,7 +88,8 @@ export async function handleGetScheduledTransaction(
                 category_id: sub.category_id,
                 transfer_account_id: sub.transfer_account_id,
               }))
-            : [],
+            : [];
+        })(),
       },
     },
     null,

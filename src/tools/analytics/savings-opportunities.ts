@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 import DecimalJS from 'decimal.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
@@ -184,6 +185,7 @@ export async function handleSavingsOpportunities(
       group: 'Other',
       isDiscretionary: false,
     };
+    const safeCategory = sanitizeName(lookup.name);
 
     const total = sumMilliunits(data.amounts);
     const monthlyAvg = total / months;
@@ -194,11 +196,11 @@ export async function handleSavingsOpportunities(
       const potentialSavings = monthlyAvg * 0.2; // Suggest 20% reduction
       opportunities.push({
         type: 'discretionary',
-        category: lookup.name,
-        description: `Discretionary spending on ${lookup.name}`,
+        category: safeCategory,
+        description: `Discretionary spending on ${safeCategory}`,
         potential_monthly_savings: formatCurrency(potentialSavings),
         current_monthly_spend: formatCurrency(monthlyAvg),
-        suggestion: `Consider reducing ${lookup.name} spending by 20%`,
+        suggestion: `Consider reducing ${safeCategory} spending by 20%`,
         confidence: 'medium',
       });
     }
@@ -218,18 +220,18 @@ export async function handleSavingsOpportunities(
         const potentialSavings = variance * 0.3; // Could save 30% of variance
         opportunities.push({
           type: 'high_variance',
-          category: lookup.name,
-          description: `Inconsistent spending on ${lookup.name} - some months much higher`,
+          category: safeCategory,
+          description: `Inconsistent spending on ${safeCategory} - some months much higher`,
           potential_monthly_savings: formatCurrency(potentialSavings),
           current_monthly_spend: formatCurrency(avgMonthly),
-          suggestion: `Your ${lookup.name} spending varies significantly. Setting a fixed budget could help.`,
+          suggestion: `Your ${safeCategory} spending varies significantly. Setting a fixed budget could help.`,
           confidence: 'low',
         });
       }
     }
 
     // 3. Look for recurring small expenses (potential subscriptions)
-    for (const [, payeeAmounts] of data.byPayee) {
+    for (const [payeeId, payeeAmounts] of data.byPayee) {
       if (payeeAmounts.length >= 2) {
         // Check if amounts are consistent (subscription-like)
         const avg = new Decimal(sumMilliunits(payeeAmounts))
@@ -242,18 +244,17 @@ export async function handleSavingsOpportunities(
         const firstAmount = payeeAmounts[0];
         if (allSimilar && avg > 500 && avg < 50000 && firstAmount !== undefined) {
           // $5-$500 range (likely subscription)
-          // Find the payee name
+          // Find the payee name using the specific payeeId
           const txn = transactions.find(
             (t) =>
               t.category_id === categoryId &&
-              data.byPayee.has(t.payee_id ?? 'unknown') &&
-              data.byPayee.get(t.payee_id ?? 'unknown')!.includes(firstAmount)
+              (t.payee_id ?? 'unknown') === payeeId
           );
-          const payeeName = txn?.payee_name ?? 'Unknown';
+          const payeeName = sanitizeName(txn?.payee_name ?? 'Unknown');
 
           opportunities.push({
             type: 'recurring_expense',
-            category: lookup.name,
+            category: safeCategory,
             description: `Recurring charge: ${payeeName}`,
             potential_monthly_savings: formatCurrency(avg),
             current_monthly_spend: formatCurrency(avg),
@@ -272,11 +273,11 @@ export async function handleSavingsOpportunities(
       if (monthlyImpact > 20000 && lookup.isDiscretionary) {
         opportunities.push({
           type: 'large_single',
-          category: lookup.name,
-          description: `Large purchases in ${lookup.name}`,
+          category: safeCategory,
+          description: `Large purchases in ${safeCategory}`,
           potential_monthly_savings: formatCurrency(monthlyImpact * 0.3),
           current_monthly_spend: formatCurrency(monthlyImpact),
-          suggestion: `Review large ${lookup.name} purchases. Consider waiting periods before big buys.`,
+          suggestion: `Review large ${safeCategory} purchases. Consider waiting periods before big buys.`,
           confidence: 'low',
         });
       }

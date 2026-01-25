@@ -23,6 +23,7 @@ const inputSchema = z.object({
   category_id: z.string().describe('The category UUID to update'),
   budgeted: z
     .number()
+    .finite()
     .describe('The new budgeted amount in dollars (e.g., 500.00 for $500)'),
 });
 
@@ -39,7 +40,9 @@ Use when the user asks:
 
 Use first-of-month format for the month parameter (e.g., 2024-01-01 for January 2024).
 The budgeted amount is in dollars (e.g., 500.00 for $500).
-Requires a category_id. Use ynab_list_categories first to find the category ID.`,
+Requires a category_id. Use ynab_list_categories first to find the category ID.
+
+**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
   inputSchema: {
     type: 'object',
     properties: {

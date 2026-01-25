@@ -14,6 +14,30 @@ describe('Cache', () => {
     vi.useRealTimers();
   });
 
+  describe('constructor', () => {
+    it('should accept valid positive TTL', () => {
+      const cache = new Cache(5000);
+      cache.set('key', 'value');
+      expect(cache.get('key')).toBe('value');
+    });
+
+    it('should throw on NaN default TTL', () => {
+      expect(() => new Cache(NaN)).toThrow('Invalid default TTL');
+    });
+
+    it('should throw on Infinity default TTL', () => {
+      expect(() => new Cache(Infinity)).toThrow('Invalid default TTL');
+    });
+
+    it('should throw on negative default TTL', () => {
+      expect(() => new Cache(-1000)).toThrow('Invalid default TTL');
+    });
+
+    it('should throw on zero default TTL', () => {
+      expect(() => new Cache(0)).toThrow('Invalid default TTL');
+    });
+  });
+
   describe('get/set', () => {
     it('should store and retrieve values', () => {
       const cache = new Cache();

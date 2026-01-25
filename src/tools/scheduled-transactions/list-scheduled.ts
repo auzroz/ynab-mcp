@@ -57,27 +57,30 @@ export async function handleListScheduledTransactions(
     .filter((t) => !t.deleted)
     .sort((a, b) => a.date_next.localeCompare(b.date_next));
 
-  const formattedTransactions = activeTransactions.map((txn) => ({
-    id: txn.id,
-    date_first: txn.date_first,
-    date_next: txn.date_next,
-    frequency: txn.frequency,
-    amount: formatCurrency(txn.amount),
-    memo: sanitizeMemo(txn.memo),
-    payee_name: sanitizeName(txn.payee_name),
-    category_name: sanitizeName(txn.category_name),
-    account_name: sanitizeName(txn.account_name),
-    flag_color: txn.flag_color,
-    subtransactions:
-      txn.subtransactions.length > 0
-        ? txn.subtransactions.map((sub) => ({
-            amount: formatCurrency(sub.amount),
-            memo: sanitizeMemo(sub.memo),
-            payee_id: sub.payee_id,
-            category_id: sub.category_id,
-          }))
-        : undefined,
-  }));
+  const formattedTransactions = activeTransactions.map((txn) => {
+    const subs = txn.subtransactions ?? [];
+    return {
+      id: txn.id,
+      date_first: txn.date_first,
+      date_next: txn.date_next,
+      frequency: txn.frequency,
+      amount: formatCurrency(txn.amount),
+      memo: sanitizeMemo(txn.memo),
+      payee_name: sanitizeName(txn.payee_name),
+      category_name: sanitizeName(txn.category_name),
+      account_name: sanitizeName(txn.account_name),
+      flag_color: txn.flag_color,
+      subtransactions:
+        subs.length > 0
+          ? subs.map((sub) => ({
+              amount: formatCurrency(sub.amount),
+              memo: sanitizeMemo(sub.memo),
+              payee_id: sub.payee_id,
+              category_id: sub.category_id,
+            }))
+          : [],
+    };
+  });
 
   // Calculate monthly total (approximate)
   const monthlyAmounts = activeTransactions.map((t) => {

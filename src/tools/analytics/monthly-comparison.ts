@@ -50,8 +50,8 @@ interface CategoryChange {
   this_month: string;
   last_month: string;
   change: string;
-  change_percent: number;
-  direction: 'up' | 'down' | 'same';
+  change_percent: number | null;
+  direction: 'up' | 'down' | 'same' | 'new';
   rawChange: number;
 }
 
@@ -160,18 +160,29 @@ export async function handleMonthlyComparison(
     if (data.current === 0 && data.previous === 0) continue;
 
     const change = data.current - data.previous;
-    const changePercent =
-      data.previous !== 0 ? ((change / data.previous) * 100) : data.current > 0 ? 100 : 0;
 
     // Threshold of $10 (10000 milliunits) to avoid noise from minor fluctuations
     const CHANGE_THRESHOLD = 10000;
-    let direction: 'up' | 'down' | 'same';
-    if (change > CHANGE_THRESHOLD) {
-      direction = 'up';
-    } else if (change < -CHANGE_THRESHOLD) {
-      direction = 'down';
+    let direction: 'up' | 'down' | 'same' | 'new';
+    let changePercent: number | null;
+
+    // Handle "new" category (no spending last month, spending this month)
+    if (data.previous === 0 && data.current > 0) {
+      direction = 'new';
+      changePercent = null;
+    } else if (data.previous !== 0) {
+      changePercent = Math.round((change / data.previous) * 100);
+      if (change > CHANGE_THRESHOLD) {
+        direction = 'up';
+      } else if (change < -CHANGE_THRESHOLD) {
+        direction = 'down';
+      } else {
+        direction = 'same';
+      }
     } else {
-      direction = 'same';
+      // previous !== 0 but current === 0 means spending stopped
+      changePercent = -100;
+      direction = 'down';
     }
 
     categoryChanges.push({
@@ -179,8 +190,8 @@ export async function handleMonthlyComparison(
       group: data.group,
       this_month: formatCurrency(data.current),
       last_month: formatCurrency(data.previous),
-      change: formatCurrency(change),
-      change_percent: Math.round(changePercent),
+      change: direction === 'new' ? 'new' : formatCurrency(change),
+      change_percent: changePercent,
       direction,
       rawChange: change,
     });
@@ -204,7 +215,16 @@ export async function handleMonthlyComparison(
   let status: 'better' | 'worse' | 'similar';
   let message: string;
 
-  if (spendingChangePercent < -10) {
+  // Special handling when previous month has no spending
+  if (previousSpending === 0) {
+    if (currentSpending === 0) {
+      status = 'similar';
+      message = 'No spending in either month';
+    } else {
+      status = 'worse';
+      message = `Spending increased from $0 last month to ${formatCurrency(currentSpending)}`;
+    }
+  } else if (spendingChangePercent < -10) {
     status = 'better';
     message = `Spending is down ${Math.abs(Math.round(spendingChangePercent))}% from last month`;
   } else if (spendingChangePercent > 10) {
@@ -215,9 +235,9 @@ export async function handleMonthlyComparison(
     message = 'Spending is similar to last month';
   }
 
-  // Get biggest increases and decreases
+  // Get biggest increases and decreases (include 'new' in increases)
   const biggestIncreases = categoryChanges
-    .filter((c) => c.direction === 'up')
+    .filter((c) => c.direction === 'up' || c.direction === 'new')
     .slice(0, 5);
   const biggestDecreases = categoryChanges
     .filter((c) => c.direction === 'down')
@@ -257,7 +277,7 @@ export async function handleMonthlyComparison(
           this_month: c.this_month,
           last_month: c.last_month,
           change: c.change,
-          change_percent: `+${c.change_percent}%`,
+          change_percent: c.direction === 'new' ? 'new' : `+${c.change_percent}%`,
         })),
         biggest_decreases: biggestDecreases.map((c) => ({
           category: c.category,
@@ -274,6 +294,7 @@ export async function handleMonthlyComparison(
         categories_with_decreased_spending: categoryChanges.filter((c) => c.direction === 'down')
           .length,
         categories_unchanged: categoryChanges.filter((c) => c.direction === 'same').length,
+        new_categories: categoryChanges.filter((c) => c.direction === 'new').length,
       },
     },
     null,
