@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
+import { sanitizeString } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -52,7 +53,7 @@ export async function handleGetBudgetSettings(
 
   return JSON.stringify(
     {
-      budget_id: budgetId,
+      budget_id: sanitizeString(budgetId) ?? '',
       settings: {
         date_format: settings.date_format.format,
         currency_format: {

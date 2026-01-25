@@ -72,7 +72,7 @@ export async function handleQuickSummary(
   const cashTypes = new Set(['checking', 'savings', 'cash']);
 
   const budgetAccounts = accounts.filter(
-    (a) => a.on_budget && !debtTypes.has(String(a.type))
+    (a) => a.on_budget && !debtTypes.has(String(a.type)) && !creditTypes.has(String(a.type))
   );
   const trackingAccounts = accounts.filter((a) => !a.on_budget);
   const debtAccounts = accounts.filter(

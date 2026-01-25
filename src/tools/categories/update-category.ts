@@ -18,8 +18,8 @@ const inputSchema = z.object({
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   month: z
     .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .describe('The budget month in YYYY-MM-DD format (use first of month, e.g., 2024-01-01)'),
+    .regex(/^\d{4}-\d{2}-01$/, 'Month must be first-of-month format (YYYY-MM-01)')
+    .describe('The budget month in YYYY-MM-01 format (first of month, e.g., 2024-01-01)'),
   category_id: z.string().describe('The category UUID to update'),
   budgeted: z
     .number()

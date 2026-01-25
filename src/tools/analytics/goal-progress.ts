@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
-import { getCurrentMonth, daysBetween } from '../../utils/dates.js';
+import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
@@ -18,7 +18,7 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   filter: z
-    .enum(['all', 'on_track', 'behind', 'underfunded'])
+    .enum(['all', 'on_track', 'behind', 'underfunded', 'complete'])
     .optional()
     .describe('Filter goals by status (default: all)'),
 });
@@ -45,7 +45,7 @@ Returns goal progress, funding status, and projections for each category with a 
       },
       filter: {
         type: 'string',
-        enum: ['all', 'on_track', 'behind', 'underfunded'],
+        enum: ['all', 'on_track', 'behind', 'underfunded', 'complete'],
         description: 'Filter goals by status',
       },
     },
@@ -132,11 +132,14 @@ export async function handleGoalProgress(
       percentComplete = Math.round((balance / targetAmount) * 100);
     }
 
-    // Calculate days until target
+    // Calculate days until target (signed: positive = future, negative = past)
     let daysUntilTarget: number | null = null;
     if (targetDate) {
-      const today = new Date().toISOString().split('T')[0] ?? '';
-      daysUntilTarget = daysBetween(today, targetDate);
+      const todayDate = new Date();
+      todayDate.setUTCHours(0, 0, 0, 0);
+      const targetDateObj = new Date(targetDate + 'T00:00:00Z');
+      const diffMs = targetDateObj.getTime() - todayDate.getTime();
+      daysUntilTarget = Math.round(diffMs / (1000 * 60 * 60 * 24));
     }
 
     // Determine status

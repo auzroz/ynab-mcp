@@ -132,8 +132,8 @@ export async function handleListTransactions(
     flag_color: txn.flag_color,
     transfer_account_id: txn.transfer_account_id,
     subtransactions:
-      txn.subtransactions.length > 0
-        ? txn.subtransactions.map((sub) => ({
+      (txn.subtransactions ?? []).length > 0
+        ? (txn.subtransactions ?? []).map((sub) => ({
             amount: formatCurrency(sub.amount),
             memo: sanitizeMemo(sub.memo),
             payee_name: sanitizeName(sub.payee_name),

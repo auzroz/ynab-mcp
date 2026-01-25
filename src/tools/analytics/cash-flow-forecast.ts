@@ -93,7 +93,9 @@ export async function handleCashFlowForecast(
   const currentCash = sumMilliunits(budgetAccounts.map((a) => a.balance));
 
   // Set up date range using local dates to avoid UTC offset issues
+  // Normalize today to midnight to ensure same-day scheduled items are included
   const today = new Date();
+  today.setHours(0, 0, 0, 0);
   const endDate = new Date(today);
   endDate.setDate(endDate.getDate() + forecastDays);
 
@@ -174,8 +176,9 @@ export async function handleCashFlowForecast(
       const intervalDays = getIntervalDays(String(st.frequency));
 
       if (intervalDays > 0) {
-        // Add up to 10 future occurrences within the forecast period
-        for (let i = 0; i < 10; i++) {
+        // Calculate max possible occurrences based on forecast period and interval
+        const maxOccurrences = Math.ceil(forecastDays / intervalDays) + 1;
+        for (let i = 0; i < maxOccurrences; i++) {
           currentDate = new Date(currentDate);
           currentDate.setDate(currentDate.getDate() + intervalDays);
 

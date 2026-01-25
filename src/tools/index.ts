@@ -312,12 +312,13 @@ export async function handleToolCall(
   args: Record<string, unknown>,
   client: YnabClient
 ): Promise<string> {
-  const handler = handlers[toolName];
-
-  if (handler === undefined) {
+  // Guard against prototype pollution - only allow own properties
+  if (!Object.prototype.hasOwnProperty.call(handlers, toolName)) {
     const safeName = toolName.slice(0, 100).replace(/[\r\n]/g, '');
     throw new Error(`Unknown tool: ${safeName}`);
   }
 
+  // Safe to access after hasOwnProperty check
+  const handler = handlers[toolName] as ToolHandler;
   return handler(args, client);
 }

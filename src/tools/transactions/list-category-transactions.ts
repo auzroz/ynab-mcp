@@ -99,14 +99,14 @@ export async function handleListCategoryTransactions(
   const outflows = transactions.filter((t) => t.amount < 0);
   const totalSpent = sumMilliunits(outflows.map((t) => Math.abs(t.amount)));
 
-  // Group by payee - only count outflows
+  // Group by payee - only count outflows, sanitize during aggregation
   const byPayee: Record<string, number> = {};
   for (const txn of outflows) {
-    const payee = txn.payee_name ?? 'Unknown';
+    const payee = sanitizeName(txn.payee_name) ?? 'Unknown';
     byPayee[payee] = (byPayee[payee] ?? 0) + Math.abs(txn.amount);
   }
 
-  // Top payees
+  // Top payees (already sanitized during aggregation)
   const topPayees = Object.entries(byPayee)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)

@@ -81,8 +81,8 @@ export async function handleGetTransaction(
         transfer_transaction_id: txn.transfer_transaction_id,
         matched_transaction_id: txn.matched_transaction_id,
         subtransactions:
-          txn.subtransactions.length > 0
-            ? txn.subtransactions.map((sub) => ({
+          (txn.subtransactions ?? []).length > 0
+            ? (txn.subtransactions ?? []).map((sub) => ({
                 id: sub.id,
                 transaction_id: sub.transaction_id,
                 amount: formatCurrency(sub.amount),

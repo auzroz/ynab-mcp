@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
-import { getCurrentMonth, getPreviousMonth } from '../../utils/dates.js';
+import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
@@ -129,7 +129,8 @@ export async function handleBudgetVsActuals(
     }
 
     const budgeted = category.budgeted;
-    const activity = Math.abs(category.activity); // Activity is negative for spending
+    // Only count negative activity (actual spending), ignore refunds
+    const activity = category.activity < 0 ? Math.abs(category.activity) : 0;
     const available = category.balance;
 
     totalBudgeted += budgeted;
@@ -222,7 +223,13 @@ export async function handleBudgetVsActuals(
   } | null = null;
 
   if (validated.include_previous) {
-    const prevMonth = getPreviousMonth();
+    // Calculate previous month relative to the input month, not today
+    const [yearStr, monthStr] = month.split('-');
+    const inputYear = parseInt(yearStr ?? '2024', 10);
+    const inputMonth = parseInt(monthStr ?? '1', 10);
+    const prevYear = inputMonth === 1 ? inputYear - 1 : inputYear;
+    const prevMonthNum = inputMonth === 1 ? 12 : inputMonth - 1;
+    const prevMonth = `${prevYear}-${String(prevMonthNum).padStart(2, '0')}-01`;
     const prevResponse = await client.getBudgetMonth(budgetId, prevMonth);
     const prevData = prevResponse.data.month;
 
