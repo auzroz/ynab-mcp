@@ -64,7 +64,7 @@ describe('formatErrorResponse', () => {
 
     expect(result.error).toBe(true);
     expect(result.type).toBe('read_only_mode');
-    expect(result.message).toContain('deleteTransaction');
+    expect(result.message).toContain('read-only');
   });
 
   it('should format RateLimitError', () => {

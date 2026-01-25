@@ -112,7 +112,7 @@ export function formatErrorResponse(error: unknown): string {
     return JSON.stringify({
       error: true,
       type: 'read_only_mode',
-      message: error.message,
+      message: 'Write operation not allowed in read-only mode',
       suggestion: 'Set YNAB_READ_ONLY=false in your environment to enable write operations.',
     }, null, 2);
   }
@@ -121,7 +121,7 @@ export function formatErrorResponse(error: unknown): string {
     return JSON.stringify({
       error: true,
       type: 'rate_limit',
-      message: error.message,
+      message: 'Rate limit exceeded',
       retry_after_ms: error.retryAfterMs,
       suggestion: 'Wait before making more requests. The server has a budget of 180 requests per hour.',
     }, null, 2);
@@ -131,7 +131,7 @@ export function formatErrorResponse(error: unknown): string {
     return JSON.stringify({
       error: true,
       type: 'validation_error',
-      message: error.message,
+      message: sanitizeErrorMessage(error.message) || 'Validation failed',
       field: error.field,
       suggestion: 'Check that all input parameters are valid.',
     }, null, 2);
@@ -141,7 +141,7 @@ export function formatErrorResponse(error: unknown): string {
     return JSON.stringify({
       error: true,
       type: 'not_found',
-      message: error.message,
+      message: sanitizeErrorMessage(error.message) || 'Resource not found',
       suggestion: 'Verify the ID exists by listing available resources first.',
     }, null, 2);
   }
@@ -184,10 +184,14 @@ export function formatErrorResponse(error: unknown): string {
 
   // Handle Zod validation errors
   if (isZodError(error)) {
-    const issues = error.issues.map((issue: { path: (string | number)[]; message: string }) => ({
-      field: issue.path.join('.'),
-      message: sanitizeErrorMessage(issue.message),
-    }));
+    const issues = error.issues.map((issue: { path?: unknown; message?: unknown }) => {
+      // Defensive checks for malformed issue shapes
+      const path = Array.isArray(issue.path) ? issue.path.join('.') : '';
+      const message = typeof issue.message === 'string'
+        ? sanitizeErrorMessage(issue.message)
+        : 'Validation error';
+      return { field: path, message };
+    });
     return JSON.stringify({
       error: true,
       type: 'validation_error',
