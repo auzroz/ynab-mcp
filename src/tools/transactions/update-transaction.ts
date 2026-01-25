@@ -18,30 +18,48 @@ const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
 const flagColors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'] as const;
 
 // Input schema
-const inputSchema = z.object({
-  budget_id: z
-    .string()
-    .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  transaction_id: z.string().uuid().describe('The transaction UUID to update'),
-  account_id: z.string().uuid().optional().describe('New account UUID'),
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .optional()
-    .describe('New transaction date in YYYY-MM-DD format'),
-  amount: z
-    .number()
-    .optional()
-    .describe('New amount in dollars (negative for outflow, positive for inflow)'),
-  payee_id: z.string().uuid().optional().describe('New payee UUID'),
-  payee_name: z.string().optional().describe('New payee name'),
-  category_id: z.string().uuid().optional().describe('New category UUID'),
-  memo: z.string().max(200).optional().describe('New memo/note'),
-  cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),
-  approved: z.boolean().optional().describe('New approved status'),
-  flag_color: z.enum(flagColors).nullable().optional().describe('New flag color (null to remove)'),
-});
+const inputSchema = z
+  .object({
+    budget_id: z
+      .string()
+      .optional()
+      .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    transaction_id: z.string().uuid().describe('The transaction UUID to update'),
+    account_id: z.string().uuid().optional().describe('New account UUID'),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional()
+      .describe('New transaction date in YYYY-MM-DD format'),
+    amount: z
+      .number()
+      .optional()
+      .describe('New amount in dollars (negative for outflow, positive for inflow)'),
+    payee_id: z.string().uuid().optional().describe('New payee UUID'),
+    payee_name: z.string().optional().describe('New payee name'),
+    category_id: z.string().uuid().optional().describe('New category UUID'),
+    memo: z.string().max(200).optional().describe('New memo/note'),
+    cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),
+    approved: z.boolean().optional().describe('New approved status'),
+    flag_color: z.enum(flagColors).nullable().optional().describe('New flag color (null to remove)'),
+  })
+  .refine(
+    (d) =>
+      d.account_id !== undefined ||
+      d.date !== undefined ||
+      d.amount !== undefined ||
+      d.payee_id !== undefined ||
+      d.payee_name !== undefined ||
+      d.category_id !== undefined ||
+      d.memo !== undefined ||
+      d.cleared !== undefined ||
+      d.approved !== undefined ||
+      d.flag_color !== undefined,
+    { message: 'Provide at least one field to update' }
+  )
+  .refine((d) => !(d.payee_id && d.payee_name), {
+    message: 'Provide either payee_id or payee_name, not both',
+  });
 
 // Tool definition
 export const updateTransactionTool: Tool = {
