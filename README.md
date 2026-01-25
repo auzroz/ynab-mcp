@@ -26,8 +26,8 @@ A Model Context Protocol (MCP) server providing comprehensive YNAB (You Need A B
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ynab-mcp-server.git
-cd ynab-mcp-server
+git clone https://github.com/auzroz/ynab-mcp.git
+cd ynab-mcp
 
 # Install dependencies
 npm install
@@ -72,7 +72,7 @@ Add to your Claude Desktop configuration (`~/.config/claude/claude_desktop_confi
   "mcpServers": {
     "ynab": {
       "command": "node",
-      "args": ["/path/to/ynab-mcp-server/dist/index.js"],
+      "args": ["/path/to/ynab-mcp/dist/index.js"],
       "env": {
         "YNAB_ACCESS_TOKEN": "your_token_here"
       }
