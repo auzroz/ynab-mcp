@@ -10,8 +10,10 @@
  * - No authentication tokens or credentials
  * - No full payee names or memo contents (use has_payee, has_memo flags instead)
  *
- * Note: Error messages are defensively truncated to prevent large error payloads.
+ * Note: Error messages are defensively sanitized (sensitive patterns redacted, then truncated).
  */
+
+import { sanitizeErrorMessage } from '../utils/sanitize.js';
 
 /** Maximum length for error messages in audit entries */
 const MAX_ERROR_LENGTH = 500;
@@ -52,10 +54,10 @@ export class AuditLog {
    * This data is accessible via the ynab_audit_log tool.
    */
   log(entry: Omit<AuditLogEntry, 'timestamp'>): void {
-    // Defensively truncate error messages to prevent large payloads
-    let sanitizedError: string | undefined = entry.error;
-    if (sanitizedError !== undefined && sanitizedError.length > MAX_ERROR_LENGTH) {
-      sanitizedError = sanitizedError.substring(0, MAX_ERROR_LENGTH - 3) + '...';
+    // Defensively sanitize error messages: redact sensitive patterns and truncate
+    let sanitizedError: string | undefined;
+    if (entry.error !== undefined) {
+      sanitizedError = sanitizeErrorMessage(entry.error, MAX_ERROR_LENGTH);
     }
 
     const fullEntry: AuditLogEntry = {
