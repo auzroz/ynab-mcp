@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
@@ -71,9 +72,9 @@ export async function handleBudgetHealth(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
-  // Get current month
+  // Get current month (UTC-based for YNAB API consistency)
+  const currentMonth = getCurrentMonth();
   const now = new Date();
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
 
   // Get budget data
   const [monthResponse, categoriesResponse] = await Promise.all([
