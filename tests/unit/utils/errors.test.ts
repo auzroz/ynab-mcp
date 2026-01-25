@@ -147,6 +147,7 @@ describe('formatErrorResponse', () => {
     expect(result.error).toBe(true);
     expect(result.type).toBe('ynab_api_error');
     expect(result.code).toBe('404');
-    expect(result.message).toBe('Budget not found');
+    // Uses mapped message, not upstream detail (to prevent data leakage)
+    expect(result.message).toBe('Not found');
   });
 });

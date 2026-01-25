@@ -153,12 +153,12 @@ export function formatErrorResponse(error: unknown): string {
     };
     // Log sanitized error server-side for debugging (no raw details)
     console.error('[YnabApiError]', error.code, sanitizeErrorMessage(error.message));
-    // Return sanitized response without raw details
+    // Return mapped message only (no upstream error text to prevent data leakage)
     return JSON.stringify({
       error: true,
       type: 'ynab_api_error',
       code: error.code,
-      message: sanitizeErrorMessage(error.message) || errorInfo.message,
+      message: errorInfo.message,
       suggestion: errorInfo.suggestion,
     }, null, 2);
   }
@@ -172,12 +172,12 @@ export function formatErrorResponse(error: unknown): string {
     };
     // Log sanitized error server-side for debugging
     console.error('[YnabSdkError]', statusCode, sanitizeErrorMessage(error.error?.detail));
-    // Return sanitized response
+    // Return mapped message only (no upstream error text to prevent data leakage)
     return JSON.stringify({
       error: true,
       type: 'ynab_api_error',
       code: statusCode,
-      message: sanitizeErrorMessage(error.error?.detail) || errorInfo.message,
+      message: errorInfo.message,
       suggestion: errorInfo.suggestion,
     }, null, 2);
   }

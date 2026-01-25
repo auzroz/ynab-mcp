@@ -40,17 +40,34 @@ function parseBoolean(value: string | undefined, defaultValue: boolean, varName?
   );
 }
 
+/**
+ * Parse an integer environment variable with strict validation.
+ *
+ * Rejects partial parses like "10ms" that parseInt would accept as 10.
+ * Only accepts strings containing only digits.
+ */
+function parseInteger(value: string | undefined, defaultValue: number, varName?: string): number {
+  if (value === undefined || value === '') return defaultValue;
+
+  // Strict check: only digits allowed (no partial parses like "10ms" -> 10)
+  if (!/^\d+$/.test(value)) {
+    const nameHint = varName ? ` for ${varName}` : '';
+    throw new Error(
+      `Invalid integer value "${value}"${nameHint}. ` +
+      `Expected a positive integer (digits only).`
+    );
+  }
+
+  return Number(value);
+}
+
 export function loadConfig(): Config {
   const rawConfig = {
     accessToken: process.env['YNAB_ACCESS_TOKEN'] ?? '',
     defaultBudgetId: process.env['YNAB_BUDGET_ID'] || undefined,
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
-    cacheTtlMs: process.env['CACHE_TTL_MS']
-      ? parseInt(process.env['CACHE_TTL_MS'], 10)
-      : 300000,
-    rateLimitPerHour: process.env['RATE_LIMIT_PER_HOUR']
-      ? parseInt(process.env['RATE_LIMIT_PER_HOUR'], 10)
-      : 180,
+    cacheTtlMs: parseInteger(process.env['CACHE_TTL_MS'], 300000, 'CACHE_TTL_MS'),
+    rateLimitPerHour: parseInteger(process.env['RATE_LIMIT_PER_HOUR'], 180, 'RATE_LIMIT_PER_HOUR'),
     // READ_ONLY defaults to true for safety - must explicitly set to false to enable writes
     readOnly: parseBoolean(process.env['YNAB_READ_ONLY'], true, 'YNAB_READ_ONLY'),
   };
