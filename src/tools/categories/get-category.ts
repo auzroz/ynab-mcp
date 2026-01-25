@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -62,9 +63,9 @@ export async function handleGetCategory(
       category: {
         id: category.id,
         category_group_id: category.category_group_id,
-        name: category.name,
+        name: sanitizeName(category.name),
         hidden: category.hidden,
-        note: category.note,
+        note: sanitizeMemo(category.note),
         budgeted: formatCurrency(category.budgeted),
         activity: formatCurrency(category.activity),
         balance: formatCurrency(category.balance),

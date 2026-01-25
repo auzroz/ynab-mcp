@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -84,14 +85,15 @@ export async function handleUpdateCategory(
 
   const category = response.data.category;
 
+  const categoryName = sanitizeName(category.name);
   return JSON.stringify(
     {
       success: true,
-      message: `Budget for "${category.name}" updated to ${formatCurrency(category.budgeted)}`,
+      message: `Budget for "${categoryName}" updated to ${formatCurrency(category.budgeted)}`,
       month: validated.month,
       category: {
         id: category.id,
-        name: category.name,
+        name: categoryName,
         budgeted: formatCurrency(category.budgeted),
         activity: formatCurrency(category.activity),
         balance: formatCurrency(category.balance),

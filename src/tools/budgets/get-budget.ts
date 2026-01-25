@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -62,7 +63,7 @@ export async function handleGetBudget(
       accountsByType[type] = [];
     }
     accountsByType[type].push({
-      name: account.name,
+      name: sanitizeName(account.name),
       balance: formatCurrency(account.balance),
     });
   }
@@ -93,11 +94,11 @@ export async function handleGetBudget(
   const categoryGroups = (budget.category_groups ?? [])
     .filter((g) => !g.hidden && g.name !== 'Internal Master Category')
     .map((group) => ({
-      name: group.name,
+      name: sanitizeName(group.name),
       categories: (budget.categories ?? [])
         .filter((c) => c.category_group_id === group.id && !c.hidden)
         .map((c) => ({
-          name: c.name,
+          name: sanitizeName(c.name),
           budgeted: formatCurrency(c.budgeted),
           activity: formatCurrency(c.activity),
           balance: formatCurrency(c.balance),
@@ -107,7 +108,7 @@ export async function handleGetBudget(
   return JSON.stringify(
     {
       budget_id: budget.id,
-      name: budget.name,
+      name: sanitizeName(budget.name),
       last_modified: budget.last_modified_on,
       summary: {
         total_assets: formatCurrency(totalAssets),

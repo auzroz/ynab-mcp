@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -58,7 +59,7 @@ export async function handleGetPayee(
     {
       payee: {
         id: payee.id,
-        name: payee.name,
+        name: sanitizeName(payee.name),
         transfer_account_id: payee.transfer_account_id,
         deleted: payee.deleted,
       },

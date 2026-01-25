@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -53,14 +54,14 @@ export async function handleListBudgets(
   const result = budgets.map((budget) => {
     const budgetInfo: Record<string, unknown> = {
       id: budget.id,
-      name: budget.name,
+      name: sanitizeName(budget.name),
       last_modified: budget.last_modified_on,
       currency_format: budget.currency_format,
     };
 
     if (budget.accounts != null && budget.accounts.length > 0) {
       budgetInfo['accounts'] = budget.accounts.map((acc) => ({
-        name: acc.name,
+        name: sanitizeName(acc.name),
         type: acc.type,
         balance: formatCurrency(acc.balance),
         closed: acc.closed,

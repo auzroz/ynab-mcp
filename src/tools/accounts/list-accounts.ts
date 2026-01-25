@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -82,7 +83,7 @@ export async function handleListAccounts(
     }
     byType[type].push({
       id: account.id,
-      name: account.name,
+      name: sanitizeName(account.name),
       balance: formatCurrency(account.balance),
       cleared_balance: formatCurrency(account.cleared_balance),
       uncleared_balance: formatCurrency(account.uncleared_balance),

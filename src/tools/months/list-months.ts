@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { sanitizeMemo } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -53,7 +54,7 @@ export async function handleListMonths(
 
   const formattedMonths = months.map((month) => ({
     month: month.month,
-    note: month.note,
+    note: sanitizeMemo(month.note),
     income: formatCurrency(month.income),
     budgeted: formatCurrency(month.budgeted),
     activity: formatCurrency(month.activity),

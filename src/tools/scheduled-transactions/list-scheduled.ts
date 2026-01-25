@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -62,16 +63,16 @@ export async function handleListScheduledTransactions(
     date_next: txn.date_next,
     frequency: txn.frequency,
     amount: formatCurrency(txn.amount),
-    memo: txn.memo,
-    payee_name: txn.payee_name,
-    category_name: txn.category_name,
-    account_name: txn.account_name,
+    memo: sanitizeMemo(txn.memo),
+    payee_name: sanitizeName(txn.payee_name),
+    category_name: sanitizeName(txn.category_name),
+    account_name: sanitizeName(txn.account_name),
     flag_color: txn.flag_color,
     subtransactions:
       txn.subtransactions.length > 0
         ? txn.subtransactions.map((sub) => ({
             amount: formatCurrency(sub.amount),
-            memo: sub.memo,
+            memo: sanitizeMemo(sub.memo),
             payee_id: sub.payee_id,
             category_id: sub.category_id,
           }))

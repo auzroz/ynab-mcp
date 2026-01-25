@@ -9,6 +9,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 
 // YNAB account types (must match ynab.AccountType enum values)
 const accountTypes = [
@@ -99,13 +100,14 @@ export async function handleCreateAccount(
 
   const account = response.data.account;
 
+  const accountName = sanitizeName(account.name);
   return JSON.stringify(
     {
       success: true,
-      message: `Account "${account.name}" created successfully`,
+      message: `Account "${accountName}" created successfully`,
       account: {
         id: account.id,
-        name: account.name,
+        name: accountName,
         type: account.type,
         balance: formatCurrency(account.balance),
         on_budget: account.on_budget,
