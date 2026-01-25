@@ -9,7 +9,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits, sumMilliunits } from '../../utils/milliunits.js';
-import { sanitizeName } from '../../utils/sanitize.js';
+import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 
 // Transaction schema for bulk creation
 const transactionSchema = z.object({
@@ -129,9 +129,9 @@ export async function handleCreateTransactions(
   const created = response.data.transactions ?? [];
   const duplicates = response.data.duplicate_import_ids ?? [];
 
-  // Calculate totals
+  // Calculate totals (guard for empty array when all are duplicates)
   const amounts = created.map((t) => t.amount);
-  const totalAmount = sumMilliunits(amounts);
+  const totalAmount = created.length > 0 ? sumMilliunits(amounts) : 0;
 
   return JSON.stringify(
     {
@@ -149,7 +149,10 @@ export async function handleCreateTransactions(
         payee_name: sanitizeName(t.payee_name),
         category_name: sanitizeName(t.category_name),
       })),
-      duplicate_import_ids: duplicates.length > 0 ? duplicates : undefined,
+      duplicate_import_ids:
+        duplicates.length > 0
+          ? duplicates.map((id) => sanitizeString(id, 100) ?? '')
+          : undefined,
     },
     null,
     2

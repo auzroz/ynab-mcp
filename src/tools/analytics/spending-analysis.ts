@@ -88,8 +88,9 @@ export async function handleSpendingAnalysis(
   const months = validated.months ?? 3;
 
   // Calculate since_date using UTC to avoid timezone drift
+  // Use day 1 to avoid month rollover issues (e.g., March 31 - 1 month = Feb 31 -> March 3)
   const now = new Date();
-  const sinceDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, now.getUTCDate()));
+  const sinceDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, 1));
   const sinceDateStr = sinceDate.toISOString().split('T')[0] ?? '';
   const options: { sinceDate: string } = { sinceDate: sinceDateStr };
 

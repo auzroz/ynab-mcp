@@ -109,7 +109,7 @@ export async function handleQuickSummary(
 
   // Check for low balance accounts
   const lowBalanceAccounts = budgetAccounts
-    .filter((a) => a.balance < 10000 && a.balance >= 0 && !creditTypes.has(String(a.type)))
+    .filter((a) => a.balance < 10000 && a.balance >= 0)
     .map((a) => ({
       name: sanitizeName(a.name),
       balance: formatCurrency(a.balance),
@@ -155,7 +155,7 @@ export async function handleQuickSummary(
         checking_savings: budgetAccounts
           .filter((a) => cashTypes.has(String(a.type)))
           .map((a) => ({ name: sanitizeName(a.name), balance: formatCurrency(a.balance) })),
-        credit_cards: debtAccounts.map((a) => ({
+        debt_accounts: debtAccounts.map((a) => ({
           name: sanitizeName(a.name),
           balance: formatCurrency(a.balance),
         })),
