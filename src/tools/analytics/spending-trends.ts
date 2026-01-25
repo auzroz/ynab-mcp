@@ -90,11 +90,14 @@ export async function handleSpendingTrends(
   const monthCount = validated.months ?? 6;
 
   // Generate list of months to fetch
+  // Use UTC methods to avoid timezone drift when converting to ISO strings
   const months: string[] = [];
   const now = new Date();
   for (let i = 0; i < monthCount; i++) {
-    const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    months.push(date.toISOString().slice(0, 10));
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    months.push(`${year}-${month}-01`);
   }
   months.reverse(); // Oldest first
 

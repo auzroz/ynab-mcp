@@ -6,12 +6,13 @@
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits, sumMilliunits } from '../../utils/milliunits.js';
 
 // Transaction schema for bulk creation
 const transactionSchema = z.object({
-  account_id: z.string().describe('The account UUID for this transaction'),
+  account_id: z.string().uuid().describe('The account UUID for this transaction'),
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -19,9 +20,9 @@ const transactionSchema = z.object({
   amount: z
     .number()
     .describe('Amount in dollars (negative for outflow, positive for inflow)'),
-  payee_id: z.string().optional().describe('Payee UUID'),
+  payee_id: z.string().uuid().optional().describe('Payee UUID'),
   payee_name: z.string().optional().describe('Payee name'),
-  category_id: z.string().optional().describe('Category UUID'),
+  category_id: z.string().uuid().optional().describe('Category UUID'),
   memo: z.string().max(200).optional().describe('Transaction memo'),
   cleared: z.enum(['cleared', 'uncleared', 'reconciled']).optional(),
   approved: z.boolean().optional(),
@@ -100,21 +101,22 @@ export async function handleCreateTransactions(
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
   // Convert transactions to YNAB format
-  const ynabTransactions = validated.transactions.map((t) => {
-    const txn: Record<string, unknown> = {
+  const ynabTransactions: ynab.SaveTransaction[] = validated.transactions.map((t) => {
+    const txn: ynab.SaveTransaction = {
       account_id: t.account_id,
       date: t.date,
       amount: toMilliunits(t.amount),
     };
 
-    if (t.payee_id !== undefined) txn['payee_id'] = t.payee_id;
-    if (t.payee_name !== undefined) txn['payee_name'] = t.payee_name;
-    if (t.category_id !== undefined) txn['category_id'] = t.category_id;
-    if (t.memo !== undefined) txn['memo'] = t.memo;
-    if (t.cleared !== undefined) txn['cleared'] = t.cleared;
-    if (t.approved !== undefined) txn['approved'] = t.approved;
-    if (t.flag_color !== undefined) txn['flag_color'] = t.flag_color;
-    if (t.import_id !== undefined) txn['import_id'] = t.import_id;
+    if (t.payee_id !== undefined) txn.payee_id = t.payee_id;
+    if (t.payee_name !== undefined) txn.payee_name = t.payee_name;
+    if (t.category_id !== undefined) txn.category_id = t.category_id;
+    if (t.memo !== undefined) txn.memo = t.memo;
+    if (t.cleared !== undefined) txn.cleared = t.cleared as unknown as ynab.SaveTransaction.ClearedEnum;
+    if (t.approved !== undefined) txn.approved = t.approved;
+    if (t.flag_color !== undefined)
+      txn.flag_color = t.flag_color as unknown as ynab.SaveTransaction.FlagColorEnum;
+    if (t.import_id !== undefined) txn.import_id = t.import_id;
 
     return txn;
   });

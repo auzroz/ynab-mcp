@@ -70,7 +70,6 @@ Analyzes transaction history to find patterns and estimates monthly costs.`,
 
 interface RecurringTransaction {
   payee_name: string;
-  payee_id: string;
   category_name: string | null;
   frequency: 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'annual' | 'irregular';
   average_amount: string;
@@ -186,7 +185,6 @@ export async function handleDetectRecurring(
 
     recurring.push({
       payee_name: sanitizeName(data.payee_name),
-      payee_id: data.payee_id,
       category_name: data.category_name ? sanitizeName(data.category_name) : null,
       frequency,
       average_amount: formatCurrency(avgAmount),

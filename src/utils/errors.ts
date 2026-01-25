@@ -48,6 +48,10 @@ export class ValidationError extends Error {
 
 /**
  * Error thrown when rate limit is exceeded.
+ *
+ * Note: The server uses a budget of 180 requests/hour, which is 10% below
+ * YNAB's official limit of 200 requests/hour. This provides a safety margin
+ * for concurrent requests and avoids hitting the hard limit.
  */
 export class RateLimitError extends Error {
   constructor(public readonly retryAfterMs?: number) {
@@ -123,6 +127,7 @@ export function formatErrorResponse(error: unknown): string {
       type: 'rate_limit',
       message: 'Rate limit exceeded',
       retry_after_ms: error.retryAfterMs,
+      // Note: Server uses 180 req/hr budget (10% below YNAB's 200 limit) for safety margin
       suggestion: 'Wait before making more requests. Check ynab_rate_limit_status for current limits.',
     }, null, 2);
   }

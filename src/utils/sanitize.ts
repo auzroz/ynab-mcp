@@ -87,10 +87,17 @@ const SENSITIVE_PATTERNS: { pattern: RegExp; replacement: string }[] = [
   { pattern: /api[_-]?key[=:]\s*["']?[A-Za-z0-9\-._~+/]+["']?/gi, replacement: 'api_key=[REDACTED]' },
   { pattern: /access[_-]?token[=:]\s*["']?[A-Za-z0-9\-._~+/]+["']?/gi, replacement: 'access_token=[REDACTED]' },
   { pattern: /authorization[=:]\s*["']?[A-Za-z0-9\-._~+/]+["']?/gi, replacement: 'authorization=[REDACTED]' },
-  // Passwords and secrets
+  // Passwords and secrets (various naming conventions)
   { pattern: /password[=:]\s*["']?[^\s"']+["']?/gi, replacement: 'password=[REDACTED]' },
+  { pattern: /passwd[=:]\s*["']?[^\s"']+["']?/gi, replacement: 'passwd=[REDACTED]' },
   { pattern: /pwd[=:]\s*["']?[^\s"']+["']?/gi, replacement: 'pwd=[REDACTED]' },
   { pattern: /secret[=:]\s*["']?[^\s"']+["']?/gi, replacement: 'secret=[REDACTED]' },
+  { pattern: /secret[_-]?key[=:]\s*["']?[^\s"']+["']?/gi, replacement: 'secret_key=[REDACTED]' },
+  { pattern: /private[_-]?key[=:]\s*["']?[^\s"']+["']?/gi, replacement: 'private_key=[REDACTED]' },
+  { pattern: /credential[s]?[=:]\s*["']?[^\s"']+["']?/gi, replacement: 'credentials=[REDACTED]' },
+  { pattern: /auth[=:]\s*["']?[^\s"']+["']?/gi, replacement: 'auth=[REDACTED]' },
+  // Connection strings and database URLs (may contain credentials)
+  { pattern: /(?:mongodb|postgres|mysql|redis|amqp):\/\/[^\s"']+/gi, replacement: '[CONNECTION_STRING_REDACTED]' },
   // File paths (Unix and Windows)
   { pattern: /\/(?:Users|home|var|etc|tmp)\/[^\s"']+/gi, replacement: '[PATH_REDACTED]' },
   { pattern: /[A-Z]:\\(?:Users|Windows|Program Files)[^\s"']*/gi, replacement: '[PATH_REDACTED]' },

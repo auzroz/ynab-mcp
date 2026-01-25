@@ -76,17 +76,18 @@ export async function handleBudgetSuggestions(
   const monthCount = validated.months ?? 3;
 
   // Generate list of months to analyze (excluding current month)
+  // Use UTC methods to avoid timezone drift when converting to ISO strings
   const months: string[] = [];
   const now = new Date();
   for (let i = 1; i <= monthCount; i++) {
-    const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    months.push(date.toISOString().slice(0, 10));
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    months.push(`${year}-${month}-01`);
   }
 
-  // Get current month for current budget values
-  const currentMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-    .toISOString()
-    .slice(0, 10);
+  // Get current month for current budget values (use UTC for consistency)
+  const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01`;
 
   // Fetch all data in parallel
   const [categoriesResponse, currentMonthResponse, ...historicalMonthResponses] =

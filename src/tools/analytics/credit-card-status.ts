@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
@@ -72,7 +73,7 @@ export async function handleCreditCardStatus(
 
   // Find credit card accounts
   const creditCards = accountsResponse.data.accounts.filter(
-    (a) => String(a.type) === 'creditCard' && !a.deleted && !a.closed
+    (a) => a.type === ynab.AccountType.CreditCard && !a.deleted && !a.closed
   );
 
   if (creditCards.length === 0) {

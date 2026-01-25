@@ -54,8 +54,11 @@ interface HealthAlert {
 interface CategoryHealth {
   name: string;
   budgeted: string;
+  budgeted_milliunits: number;
   spent: string;
+  spent_milliunits: number;
   available: string;
+  available_milliunits: number;
   status: 'on_track' | 'overspent' | 'underfunded' | 'warning';
   percent_used: number;
 }
@@ -161,8 +164,11 @@ export async function handleBudgetHealth(
         categoryHealth.push({
           name: sanitizeName(cat.name),
           budgeted: formatCurrency(budgeted),
+          budgeted_milliunits: budgeted,
           spent: formatCurrency(Math.abs(activity)),
+          spent_milliunits: Math.abs(activity),
           available: formatCurrency(balance),
+          available_milliunits: balance,
           status,
           percent_used: percentUsed,
         });
@@ -170,14 +176,13 @@ export async function handleBudgetHealth(
     }
   }
 
-  // Sort categories by status (problems first), then by amount spent
+  // Sort categories by status (problems first), then by amount spent (using raw milliunits)
   const statusPriority = { overspent: 0, underfunded: 1, warning: 2, on_track: 3 };
   categoryHealth.sort((a, b) => {
     const priorityDiff = statusPriority[a.status] - statusPriority[b.status];
     if (priorityDiff !== 0) return priorityDiff;
-    const amountA = parseFloat(a.spent.replace(/[^0-9.-]/g, ''));
-    const amountB = parseFloat(b.spent.replace(/[^0-9.-]/g, ''));
-    return amountB - amountA;
+    // Use raw milliunits for accurate numeric sorting
+    return b.spent_milliunits - a.spent_milliunits;
   });
 
   // Calculate overall health score (0-100)
@@ -228,7 +233,11 @@ export async function handleBudgetHealth(
         daily_budget_remaining:
           daysRemaining > 0
             ? formatCurrency(Math.round((totalBudgeted + totalActivity) / daysRemaining))
-            : '$0.00',
+            : formatCurrency(totalBudgeted + totalActivity), // Last day: show remaining budget
+        daily_budget_remaining_milliunits:
+          daysRemaining > 0
+            ? Math.round((totalBudgeted + totalActivity) / daysRemaining)
+            : totalBudgeted + totalActivity,
       },
       category_health: categoryHealth.slice(0, 15), // Top 15 categories
       recommendations: generateRecommendations(alerts, healthScore, toBeBudgeted),

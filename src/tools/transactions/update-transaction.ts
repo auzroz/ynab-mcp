@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
@@ -23,7 +24,7 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   transaction_id: z.string().uuid().describe('The transaction UUID to update'),
-  account_id: z.string().optional().describe('New account UUID'),
+  account_id: z.string().uuid().optional().describe('New account UUID'),
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -33,9 +34,9 @@ const inputSchema = z.object({
     .number()
     .optional()
     .describe('New amount in dollars (negative for outflow, positive for inflow)'),
-  payee_id: z.string().optional().describe('New payee UUID'),
+  payee_id: z.string().uuid().optional().describe('New payee UUID'),
   payee_name: z.string().optional().describe('New payee name'),
-  category_id: z.string().optional().describe('New category UUID'),
+  category_id: z.string().uuid().optional().describe('New category UUID'),
   memo: z.string().max(200).optional().describe('New memo/note'),
   cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),
   approved: z.boolean().optional().describe('New approved status'),
@@ -122,19 +123,23 @@ export async function handleUpdateTransaction(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
-  // Build update object with only provided fields
-  const updateData: Record<string, unknown> = {};
+  // Build update object with only provided fields using YNAB SDK type
+  const updateData: ynab.SaveTransactionWithOptionalFields = {};
 
-  if (validated.account_id !== undefined) updateData['account_id'] = validated.account_id;
-  if (validated.date !== undefined) updateData['date'] = validated.date;
-  if (validated.amount !== undefined) updateData['amount'] = toMilliunits(validated.amount);
-  if (validated.payee_id !== undefined) updateData['payee_id'] = validated.payee_id;
-  if (validated.payee_name !== undefined) updateData['payee_name'] = validated.payee_name;
-  if (validated.category_id !== undefined) updateData['category_id'] = validated.category_id;
-  if (validated.memo !== undefined) updateData['memo'] = validated.memo;
-  if (validated.cleared !== undefined) updateData['cleared'] = validated.cleared;
-  if (validated.approved !== undefined) updateData['approved'] = validated.approved;
-  if (validated.flag_color !== undefined) updateData['flag_color'] = validated.flag_color;
+  if (validated.account_id !== undefined) updateData.account_id = validated.account_id;
+  if (validated.date !== undefined) updateData.date = validated.date;
+  if (validated.amount !== undefined) updateData.amount = toMilliunits(validated.amount);
+  if (validated.payee_id !== undefined) updateData.payee_id = validated.payee_id;
+  if (validated.payee_name !== undefined) updateData.payee_name = validated.payee_name;
+  if (validated.category_id !== undefined) updateData.category_id = validated.category_id;
+  if (validated.memo !== undefined) updateData.memo = validated.memo;
+  if (validated.cleared !== undefined)
+    updateData.cleared =
+      validated.cleared as unknown as ynab.SaveTransactionWithOptionalFields.ClearedEnum;
+  if (validated.approved !== undefined) updateData.approved = validated.approved;
+  if (validated.flag_color !== undefined)
+    updateData.flag_color =
+      validated.flag_color as unknown as ynab.SaveTransactionWithOptionalFields.FlagColorEnum | null;
 
   const response = await client.updateTransaction(budgetId, validated.transaction_id, {
     transaction: updateData,

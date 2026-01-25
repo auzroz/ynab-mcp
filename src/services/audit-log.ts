@@ -9,7 +9,12 @@
  * - No PII (names, addresses, account numbers)
  * - No authentication tokens or credentials
  * - No full payee names or memo contents (use has_payee, has_memo flags instead)
+ *
+ * Note: Error messages are defensively truncated to prevent large error payloads.
  */
+
+/** Maximum length for error messages in audit entries */
+const MAX_ERROR_LENGTH = 500;
 
 /**
  * Represents a single audit log entry.
@@ -47,10 +52,20 @@ export class AuditLog {
    * This data is accessible via the ynab_audit_log tool.
    */
   log(entry: Omit<AuditLogEntry, 'timestamp'>): void {
+    // Defensively truncate error messages to prevent large payloads
+    let sanitizedError: string | undefined = entry.error;
+    if (sanitizedError !== undefined && sanitizedError.length > MAX_ERROR_LENGTH) {
+      sanitizedError = sanitizedError.substring(0, MAX_ERROR_LENGTH - 3) + '...';
+    }
+
     const fullEntry: AuditLogEntry = {
       ...entry,
       timestamp: new Date().toISOString(),
     };
+    // Only set error if it exists (exactOptionalPropertyTypes compliance)
+    if (sanitizedError !== undefined) {
+      fullEntry.error = sanitizedError;
+    }
 
     this.entries.push(fullEntry);
 

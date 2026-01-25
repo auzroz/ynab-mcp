@@ -96,20 +96,14 @@ export async function handleListCategories(
     };
   });
 
-  // Calculate summary stats
+  // Calculate summary stats from the same filtered data used in detail
+  // Use the filtered groups and apply the same category filter for consistency
   const allCategories = categoryGroups.flatMap((g) => g.categories);
-  const totalBudgeted = groups
-    .flatMap((g) => g.categories)
-    .filter((c) => !c.hidden)
-    .reduce((sum, c) => sum + c.budgeted, 0);
-  const totalActivity = groups
-    .flatMap((g) => g.categories)
-    .filter((c) => !c.hidden)
-    .reduce((sum, c) => sum + c.activity, 0);
-  const totalBalance = groups
-    .flatMap((g) => g.categories)
-    .filter((c) => !c.hidden)
-    .reduce((sum, c) => sum + c.balance, 0);
+  const filteredCategoriesRaw = groups
+    .flatMap((g) => includeHidden ? g.categories : g.categories.filter((c) => !c.hidden));
+  const totalBudgeted = filteredCategoriesRaw.reduce((sum, c) => sum + c.budgeted, 0);
+  const totalActivity = filteredCategoriesRaw.reduce((sum, c) => sum + c.activity, 0);
+  const totalBalance = filteredCategoriesRaw.reduce((sum, c) => sum + c.balance, 0);
 
   // Find categories with issues (using raw values for accurate filtering)
   const overspent = allCategories.filter((c) => c.balance_raw < 0);

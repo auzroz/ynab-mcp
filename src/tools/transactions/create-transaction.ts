@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
@@ -22,7 +23,7 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  account_id: z.string().describe('The account UUID for this transaction'),
+  account_id: z.string().uuid().describe('The account UUID for this transaction'),
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -32,13 +33,14 @@ const inputSchema = z.object({
     .describe(
       'Amount in dollars (negative for outflow, positive for inflow). E.g., -50.00 for a $50 expense'
     ),
-  payee_id: z.string().optional().describe('Payee UUID (use ynab_list_payees to find)'),
+  payee_id: z.string().uuid().optional().describe('Payee UUID (use ynab_list_payees to find)'),
   payee_name: z
     .string()
     .optional()
     .describe('Payee name (creates new payee if payee_id not provided)'),
   category_id: z
     .string()
+    .uuid()
     .optional()
     .describe('Category UUID (use ynab_list_categories to find)'),
   memo: z.string().max(200).optional().describe('Transaction memo/note'),
@@ -126,19 +128,21 @@ export async function handleCreateTransaction(
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
   // Build transaction data, only including defined fields
-  const transactionData: Record<string, unknown> = {
+  const transactionData: ynab.SaveTransaction = {
     account_id: validated.account_id,
     date: validated.date,
     amount: toMilliunits(validated.amount),
   };
 
-  if (validated.payee_id !== undefined) transactionData['payee_id'] = validated.payee_id;
-  if (validated.payee_name !== undefined) transactionData['payee_name'] = validated.payee_name;
-  if (validated.category_id !== undefined) transactionData['category_id'] = validated.category_id;
-  if (validated.memo !== undefined) transactionData['memo'] = validated.memo;
-  if (validated.cleared !== undefined) transactionData['cleared'] = validated.cleared;
-  if (validated.approved !== undefined) transactionData['approved'] = validated.approved;
-  if (validated.flag_color !== undefined) transactionData['flag_color'] = validated.flag_color;
+  if (validated.payee_id !== undefined) transactionData.payee_id = validated.payee_id;
+  if (validated.payee_name !== undefined) transactionData.payee_name = validated.payee_name;
+  if (validated.category_id !== undefined) transactionData.category_id = validated.category_id;
+  if (validated.memo !== undefined) transactionData.memo = validated.memo;
+  if (validated.cleared !== undefined)
+    transactionData.cleared = validated.cleared as unknown as ynab.SaveTransaction.ClearedEnum;
+  if (validated.approved !== undefined) transactionData.approved = validated.approved;
+  if (validated.flag_color !== undefined)
+    transactionData.flag_color = validated.flag_color as unknown as ynab.SaveTransaction.FlagColorEnum;
 
   const response = await client.createTransaction(budgetId, {
     transaction: transactionData,

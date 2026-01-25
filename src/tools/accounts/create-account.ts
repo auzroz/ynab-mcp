@@ -2,6 +2,11 @@
  * Create Account Tool
  *
  * Creates a new account in a budget.
+ *
+ * Note: Currency formatting uses USD ($) symbols by default for display purposes.
+ * The underlying data is always stored in milliunits regardless of currency.
+ * To use the budget's actual currency format, use formatCurrencyWithFormat()
+ * with the budget's currency_format settings (requires additional API call).
  */
 
 import { z } from 'zod';

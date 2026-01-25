@@ -127,6 +127,22 @@ describe('Cache', () => {
       expect(cache.get('budget:456:accounts')).toBe('data3');
       expect(cache.get('other')).toBe('data4');
     });
+
+    it('should return 0 when no keys match the prefix', () => {
+      const cache = new Cache();
+      cache.set('budget:123:accounts', 'data1');
+      cache.set('budget:456:accounts', 'data2');
+      cache.set('other', 'data3');
+
+      const count = cache.deleteByPrefix('nonexistent:prefix');
+
+      expect(count).toBe(0);
+      // Verify no entries were deleted
+      expect(cache.get('budget:123:accounts')).toBe('data1');
+      expect(cache.get('budget:456:accounts')).toBe('data2');
+      expect(cache.get('other')).toBe('data3');
+      expect(cache.size()).toBe(3);
+    });
   });
 
   describe('clear', () => {

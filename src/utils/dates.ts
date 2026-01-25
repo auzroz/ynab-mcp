@@ -2,10 +2,28 @@
  * Date Utilities
  *
  * Provides natural language date parsing and date range helpers.
+ *
+ * IMPORTANT: Time zone behavior varies by function:
+ *
+ * - parseNaturalDate(), formatDate(), getDateRange(): Use LOCAL time.
+ *   These are designed for user-facing input/output where local dates make sense.
+ *
+ * - getCurrentMonth(), getPreviousMonth(): Use UTC time.
+ *   These are designed for YNAB API calls where UTC consistency is needed.
+ *
+ * - daysBetween(): Uses UTC to avoid DST edge cases.
+ *
+ * - isValidIsoDate(), getMonthStart(): Pure string operations, no timezone concerns.
+ *
+ * This split is intentional: user input (e.g., "yesterday") should respect local time,
+ * while API-facing functions use UTC for consistency across time zones.
  */
 
 /**
  * Parse natural language date expressions into YYYY-MM-DD format.
+ *
+ * Uses LOCAL time for all calculations. This is appropriate for user-facing
+ * input where "today" and "yesterday" should reflect the user's local date.
  *
  * Supported expressions:
  * - "today", "yesterday"
@@ -149,6 +167,7 @@ export function parseNaturalDate(input: string): string {
 
 /**
  * Get a date range object for common periods.
+ * Uses LOCAL time (via parseNaturalDate).
  */
 export function getDateRange(period: string): { start: string; end: string } {
   const today = new Date();
@@ -192,6 +211,7 @@ export function getPreviousMonth(): string {
 
 /**
  * Format a Date object as YYYY-MM-DD.
+ * Uses the Date object's LOCAL time components (getFullYear, getMonth, getDate).
  */
 export function formatDate(date: Date): string {
   const year = date.getFullYear();

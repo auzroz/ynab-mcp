@@ -6,7 +6,7 @@ A Model Context Protocol (MCP) server providing comprehensive YNAB (You Need A B
 
 - **55 MCP Tools**: Complete coverage of YNAB API endpoints plus advanced analytics
 - **Read-Only Mode**: Safe by default (YNAB_READ_ONLY=true), write operations require explicit opt-in
-- **Smart Rate Limiting**: Token bucket algorithm respecting YNAB's 200 req/hour limit
+- **Smart Rate Limiting**: Token bucket algorithm with 180 req/hour budget (10% safety margin from YNAB's 200 limit)
 - **Intelligent Caching**: Reduces API calls for infrequently changing data
 - **Advanced Analytics**:
   - Recurring transaction/subscription detection

@@ -78,6 +78,8 @@ export async function handleGetAccount(
           account.debt_original_balance != null
             ? formatCurrency(account.debt_original_balance)
             : null,
+        // Debt maps use month strings as keys (e.g., "2024-01-01"), not user-controlled data
+        // Values are numeric (milliunits), so no sanitization needed
         debt_interest_rates: account.debt_interest_rates,
         debt_minimum_payments: account.debt_minimum_payments,
         debt_escrow_amounts: account.debt_escrow_amounts,

@@ -60,7 +60,6 @@ Provides category breakdowns, trends, and insights.`,
 };
 
 interface CategorySpending {
-  category_id: string;
   category_name: string;
   group_name: string;
   total_spent: string;
@@ -165,7 +164,6 @@ export async function handleSpendingAnalysis(
     const { trend, trendPercent } = calculateTrend(monthlyTotals);
 
     categorySpending.push({
-      category_id: categoryId,
       category_name: lookup.name,
       group_name: lookup.group,
       total_spent: formatCurrency(total),

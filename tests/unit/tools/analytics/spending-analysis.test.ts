@@ -109,9 +109,9 @@ describe('handleSpendingAnalysis', () => {
     );
     const parsed = JSON.parse(result);
 
-    // Should only have one category in results
+    // Should only have one category in results (category_id is not exposed in output)
     expect(parsed.spending_by_category.length).toBe(1);
-    expect(parsed.spending_by_category[0].category_id).toBe('cat-groceries-555');
+    expect(parsed.spending_by_category[0].category_name).toBe('Groceries');
   });
 
   it('excludes transfer transactions', async () => {
