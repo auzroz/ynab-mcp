@@ -17,10 +17,27 @@ const configSchema = z.object({
 
 export type Config = z.infer<typeof configSchema>;
 
-function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
+/**
+ * Parse a boolean environment variable with strict validation.
+ *
+ * Accepts: 'true', '1', 'yes' => true
+ *          'false', '0', 'no' => false
+ *          undefined/empty => defaultValue
+ *
+ * Throws on unrecognized values to prevent security footguns
+ * (e.g., YNAB_READ_ONLY=ture typo accidentally enabling writes).
+ */
+function parseBoolean(value: string | undefined, defaultValue: boolean, varName?: string): boolean {
   if (value === undefined || value === '') return defaultValue;
   const lower = value.toLowerCase();
-  return lower === 'true' || lower === '1' || lower === 'yes';
+  if (lower === 'true' || lower === '1' || lower === 'yes') return true;
+  if (lower === 'false' || lower === '0' || lower === 'no') return false;
+
+  const nameHint = varName ? ` for ${varName}` : '';
+  throw new Error(
+    `Invalid boolean value "${value}"${nameHint}. ` +
+    `Expected: true, false, 1, 0, yes, or no.`
+  );
 }
 
 export function loadConfig(): Config {
@@ -35,7 +52,7 @@ export function loadConfig(): Config {
       ? parseInt(process.env['RATE_LIMIT_PER_HOUR'], 10)
       : 180,
     // READ_ONLY defaults to true for safety - must explicitly set to false to enable writes
-    readOnly: parseBoolean(process.env['YNAB_READ_ONLY'], true),
+    readOnly: parseBoolean(process.env['YNAB_READ_ONLY'], true, 'YNAB_READ_ONLY'),
   };
 
   const result = configSchema.safeParse(rawConfig);

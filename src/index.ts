@@ -54,6 +54,8 @@ process.stdin.on('close', () => void shutdown());
 
 // Run the server
 main().catch((error: unknown) => {
-  console.error('Failed to start YNAB MCP Server:', error);
+  // Only log error message to avoid leaking sensitive config details
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  console.error('Failed to start YNAB MCP Server:', message);
   process.exit(1);
 });
