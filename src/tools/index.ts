@@ -315,7 +315,8 @@ export async function handleToolCall(
   const handler = handlers[toolName];
 
   if (handler === undefined) {
-    throw new Error(`Unknown tool: ${toolName}`);
+    const safeName = toolName.slice(0, 100).replace(/[\r\n]/g, '');
+    throw new Error(`Unknown tool: ${safeName}`);
   }
 
   return handler(args, client);

@@ -55,6 +55,18 @@ describe('sanitize utilities', () => {
       expect(result.length).toBe(5);
     });
 
+    it('handles maxLength of exactly 3', () => {
+      expect(sanitizeString('hello', 3)).toBe('hel');
+    });
+
+    it('handles maxLength of 1', () => {
+      expect(sanitizeString('hello', 1)).toBe('h');
+    });
+
+    it('handles maxLength of 2', () => {
+      expect(sanitizeString('hello', 2)).toBe('he');
+    });
+
     it('handles normal strings', () => {
       expect(sanitizeString('Hello World')).toBe('Hello World');
       expect(sanitizeString('Test 123')).toBe('Test 123');
@@ -248,6 +260,21 @@ describe('sanitize utilities', () => {
     it('handles Error with empty message', () => {
       const error = new Error('');
       expect(sanitizeErrorMessage(error)).toBe('');
+    });
+
+    it('redacts password patterns', () => {
+      const error = 'Failed with password=secret123';
+      expect(sanitizeErrorMessage(error)).toBe('Failed with password=[REDACTED]');
+    });
+
+    it('redacts pwd patterns', () => {
+      const error = 'Failed with pwd: "mypassword"';
+      expect(sanitizeErrorMessage(error)).toBe('Failed with pwd=[REDACTED]');
+    });
+
+    it('redacts secret patterns', () => {
+      const error = 'secret=supersecret123 was exposed';
+      expect(sanitizeErrorMessage(error)).toBe('secret=[REDACTED] was exposed');
     });
   });
 });

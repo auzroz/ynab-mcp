@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -62,19 +63,19 @@ export async function handleGetTransaction(
         id: txn.id,
         date: txn.date,
         amount: formatCurrency(txn.amount),
-        memo: txn.memo,
+        memo: sanitizeMemo(txn.memo),
         payee_id: txn.payee_id,
-        payee_name: txn.payee_name,
+        payee_name: sanitizeName(txn.payee_name),
         category_id: txn.category_id,
-        category_name: txn.category_name,
+        category_name: sanitizeName(txn.category_name),
         account_id: txn.account_id,
-        account_name: txn.account_name,
+        account_name: sanitizeName(txn.account_name),
         cleared: txn.cleared,
         approved: txn.approved,
         flag_color: txn.flag_color,
         import_id: txn.import_id,
-        import_payee_name: txn.import_payee_name,
-        import_payee_name_original: txn.import_payee_name_original,
+        import_payee_name: sanitizeName(txn.import_payee_name),
+        import_payee_name_original: sanitizeName(txn.import_payee_name_original),
         debt_transaction_type: txn.debt_transaction_type,
         transfer_account_id: txn.transfer_account_id,
         transfer_transaction_id: txn.transfer_transaction_id,
@@ -85,11 +86,11 @@ export async function handleGetTransaction(
                 id: sub.id,
                 transaction_id: sub.transaction_id,
                 amount: formatCurrency(sub.amount),
-                memo: sub.memo,
+                memo: sanitizeMemo(sub.memo),
                 payee_id: sub.payee_id,
-                payee_name: sub.payee_name,
+                payee_name: sanitizeName(sub.payee_name),
                 category_id: sub.category_id,
-                category_name: sub.category_name,
+                category_name: sanitizeName(sub.category_name),
                 transfer_account_id: sub.transfer_account_id,
                 transfer_transaction_id: sub.transfer_transaction_id,
               }))

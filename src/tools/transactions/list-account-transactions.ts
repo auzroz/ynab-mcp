@@ -9,6 +9,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
+import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -104,9 +105,9 @@ export async function handleListAccountTransactions(
     id: txn.id,
     date: txn.date,
     amount: formatCurrency(txn.amount),
-    memo: txn.memo,
-    payee_name: txn.payee_name,
-    category_name: txn.category_name,
+    memo: sanitizeMemo(txn.memo),
+    payee_name: sanitizeName(txn.payee_name),
+    category_name: sanitizeName(txn.category_name),
     cleared: txn.cleared,
     approved: txn.approved,
   }));

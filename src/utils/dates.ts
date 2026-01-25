@@ -169,19 +169,25 @@ export function getMonthStart(year: number, month: number): string {
 
 /**
  * Get the current month in YYYY-MM-DD format (first day).
+ * Uses UTC to ensure consistency with daysBetween() and other date functions.
  */
 export function getCurrentMonth(): string {
   const today = new Date();
-  return getMonthStart(today.getFullYear(), today.getMonth() + 1);
+  return getMonthStart(today.getUTCFullYear(), today.getUTCMonth() + 1);
 }
 
 /**
  * Get the previous month in YYYY-MM-DD format (first day).
+ * Uses UTC to ensure consistency with daysBetween() and other date functions.
  */
 export function getPreviousMonth(): string {
   const today = new Date();
-  const prevMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  return getMonthStart(prevMonth.getFullYear(), prevMonth.getMonth() + 1);
+  const year = today.getUTCFullYear();
+  const month = today.getUTCMonth();
+  // Handle January -> December of previous year
+  const prevYear = month === 0 ? year - 1 : year;
+  const prevMonth = month === 0 ? 12 : month;
+  return getMonthStart(prevYear, prevMonth);
 }
 
 /**

@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -102,7 +103,7 @@ export async function handleSpendingAnalysis(
   const categoryLookup = new Map<string, { name: string; group: string }>();
   for (const group of categoriesResponse.data.category_groups) {
     for (const cat of group.categories) {
-      categoryLookup.set(cat.id, { name: cat.name, group: group.name });
+      categoryLookup.set(cat.id, { name: sanitizeName(cat.name), group: sanitizeName(group.name) });
     }
   }
 
@@ -149,7 +150,7 @@ export async function handleSpendingAnalysis(
   const categorySpending: CategorySpending[] = [];
 
   for (const [categoryId, data] of byCategoryRaw) {
-    const lookup = categoryLookup.get(categoryId) ?? { name: 'Uncategorized', group: 'Other' };
+    const lookup = categoryLookup.get(categoryId) ?? { name: sanitizeName('Uncategorized'), group: sanitizeName('Other') };
     const total = sumMilliunits(data.amounts);
     const percentOfTotal = totalSpending > 0 ? (total / totalSpending) * 100 : 0;
 
@@ -205,7 +206,7 @@ export async function handleSpendingAnalysis(
     const breakdown: { name: string; amount: string }[] = [];
 
     for (const [catId, amount] of categories) {
-      const lookup = categoryLookup.get(catId) ?? { name: 'Uncategorized', group: 'Other' };
+      const lookup = categoryLookup.get(catId) ?? { name: sanitizeName('Uncategorized'), group: sanitizeName('Other') };
       breakdown.push({ name: lookup.name, amount: formatCurrency(amount) });
     }
 

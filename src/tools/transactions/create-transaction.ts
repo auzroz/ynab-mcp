@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
+import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
 // Cleared status options
 const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
@@ -152,15 +153,15 @@ export async function handleCreateTransaction(
   return JSON.stringify(
     {
       success: true,
-      message: `Transaction created: ${formatCurrency(txn.amount)} at ${txn.payee_name ?? 'Unknown'}`,
+      message: `Transaction created: ${formatCurrency(txn.amount)} at ${sanitizeName(txn.payee_name)}`,
       transaction: {
         id: txn.id,
         date: txn.date,
         amount: formatCurrency(txn.amount),
-        payee_name: txn.payee_name,
-        category_name: txn.category_name,
-        account_name: txn.account_name,
-        memo: txn.memo,
+        payee_name: sanitizeName(txn.payee_name),
+        category_name: sanitizeName(txn.category_name),
+        account_name: sanitizeName(txn.account_name),
+        memo: sanitizeMemo(txn.memo),
         cleared: txn.cleared,
         approved: txn.approved,
       },

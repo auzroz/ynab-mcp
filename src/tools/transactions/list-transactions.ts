@@ -9,6 +9,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
+import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -122,10 +123,10 @@ export async function handleListTransactions(
     id: txn.id,
     date: txn.date,
     amount: formatCurrency(txn.amount),
-    memo: txn.memo,
-    payee_name: txn.payee_name,
-    category_name: txn.category_name,
-    account_name: txn.account_name,
+    memo: sanitizeMemo(txn.memo),
+    payee_name: sanitizeName(txn.payee_name),
+    category_name: sanitizeName(txn.category_name),
+    account_name: sanitizeName(txn.account_name),
     cleared: txn.cleared,
     approved: txn.approved,
     flag_color: txn.flag_color,
@@ -134,9 +135,9 @@ export async function handleListTransactions(
       txn.subtransactions.length > 0
         ? txn.subtransactions.map((sub) => ({
             amount: formatCurrency(sub.amount),
-            memo: sub.memo,
-            payee_name: sub.payee_name,
-            category_name: sub.category_name,
+            memo: sanitizeMemo(sub.memo),
+            payee_name: sanitizeName(sub.payee_name),
+            category_name: sanitizeName(sub.category_name),
           }))
         : undefined,
   }));

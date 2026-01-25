@@ -9,8 +9,6 @@ import {
   createTransactionsResponse,
   createCategoriesResponse,
   mockAllTransactions,
-  mockGroceryTransactions,
-  mockDiningTransactions,
   mockCategoryGroups,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
@@ -102,7 +100,6 @@ describe('handleSpendingAnalysis', () => {
   });
 
   it('filters by category_id when provided', async () => {
-    const groceryOnly = mockGroceryTransactions;
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
