@@ -122,7 +122,10 @@ export async function handleGetMonth(
         age_of_money: month.age_of_money,
       },
       category_count: month.categories.filter((c) => !c.hidden).length,
-      categories_by_group: categoriesByGroup,
+      categories_by_group: Object.entries(categoriesByGroup).map(([groupName, categories]) => ({
+        group_name: groupName,
+        categories: categories,
+      })),
     },
     null,
     2

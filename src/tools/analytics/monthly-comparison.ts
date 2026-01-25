@@ -183,9 +183,10 @@ export async function handleMonthlyComparison(
         direction = 'same';
       }
     } else {
-      // previous !== 0 but current === 0 means spending stopped
-      changePercent = -100;
-      direction = 'down';
+      // This branch handles: previous === 0 && current === 0
+      // Due to the continue on line 163, this is unreachable, but included for completeness
+      direction = 'same';
+      changePercent = null;
     }
 
     categoryChanges.push({
@@ -212,6 +213,11 @@ export async function handleMonthlyComparison(
       : currentSpending > 0 ? 100 : 0;
 
   const incomeChange = currentIncome - previousIncome;
+  // Guard against division by zero for income change percent
+  const incomeChangePercent =
+    previousIncome !== 0
+      ? ((incomeChange / previousIncome) * 100)
+      : currentIncome > 0 ? 100 : 0;
   const budgetedChange = currentBudgeted - previousBudgeted;
 
   // Determine overall status
@@ -266,6 +272,8 @@ export async function handleMonthlyComparison(
           this_month: formatCurrency(currentIncome),
           last_month: formatCurrency(previousIncome),
           change: formatCurrency(incomeChange),
+          change_percent: Math.round(incomeChangePercent),
+          direction: incomeChange > 0 ? 'up' : incomeChange < 0 ? 'down' : 'same',
         },
         budgeted: {
           this_month: formatCurrency(currentBudgeted),

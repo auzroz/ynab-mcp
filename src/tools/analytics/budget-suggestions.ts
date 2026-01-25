@@ -46,8 +46,10 @@ Returns suggested monthly budget amounts for each category based on actual spend
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       months: {
-        type: 'number',
-        description: 'Number of months of history to analyze (default 3)',
+        type: 'integer',
+        minimum: 1,
+        maximum: 12,
+        description: 'Number of months of history to analyze (1-12, default 3)',
       },
     },
     required: [],

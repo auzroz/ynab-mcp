@@ -58,9 +58,31 @@ export async function handleGetBudget(
   const budget = response.data.budget;
 
   // Helper to format currency using budget's format if available
+  // Sanitize currency_format fields with defensive defaults
+  const sanitizedCurrencyFormat = budget.currency_format
+    ? {
+        iso_code: typeof budget.currency_format.iso_code === 'string'
+          ? budget.currency_format.iso_code : 'USD',
+        example_format: typeof budget.currency_format.example_format === 'string'
+          ? budget.currency_format.example_format : '$1,234.56',
+        decimal_digits: typeof budget.currency_format.decimal_digits === 'number'
+          ? budget.currency_format.decimal_digits : 2,
+        decimal_separator: typeof budget.currency_format.decimal_separator === 'string'
+          ? budget.currency_format.decimal_separator : '.',
+        symbol_first: typeof budget.currency_format.symbol_first === 'boolean'
+          ? budget.currency_format.symbol_first : true,
+        group_separator: typeof budget.currency_format.group_separator === 'string'
+          ? budget.currency_format.group_separator : ',',
+        currency_symbol: typeof budget.currency_format.currency_symbol === 'string'
+          ? budget.currency_format.currency_symbol : '$',
+        display_symbol: typeof budget.currency_format.display_symbol === 'boolean'
+          ? budget.currency_format.display_symbol : true,
+      }
+    : null;
+
   const fmt = (milliunits: number): string =>
-    budget.currency_format
-      ? formatCurrencyWithFormat(milliunits, budget.currency_format)
+    sanitizedCurrencyFormat
+      ? formatCurrencyWithFormat(milliunits, sanitizedCurrencyFormat)
       : formatCurrency(milliunits);
 
   // Summarize accounts by type

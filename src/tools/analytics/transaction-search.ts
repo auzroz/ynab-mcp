@@ -26,10 +26,12 @@ const inputSchema = z.object({
   category: z.string().max(200).optional().describe('Filter by category name (partial match)'),
   min_amount: z
     .number()
+    .finite()
     .optional()
     .describe('Minimum transaction amount in dollars (absolute value)'),
   max_amount: z
     .number()
+    .finite()
     .optional()
     .describe('Maximum transaction amount in dollars (absolute value)'),
   since_date: z

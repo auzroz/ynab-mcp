@@ -50,6 +50,7 @@ Returns detailed budget vs actuals for all categories with variance analysis.`,
       },
       month: {
         type: 'string',
+        pattern: '^\\d{4}-\\d{2}-01$',
         description: 'Month to analyze in YYYY-MM-01 format (first of month). Defaults to current month',
       },
       include_previous: {

@@ -142,10 +142,11 @@ export async function handleReconciliationHelper(
     const accountInfo = accountData.get(txn.account_id);
     if (!accountInfo) continue;
 
-    // Calculate days pending
+    // Calculate days pending (clamp to 0 for future-dated transactions)
     const txnDate = new Date(txn.date);
-    const daysPending = Math.floor(
-      (today.getTime() - txnDate.getTime()) / (1000 * 60 * 60 * 24)
+    const daysPending = Math.max(
+      0,
+      Math.floor((today.getTime() - txnDate.getTime()) / (1000 * 60 * 60 * 24))
     );
 
     const unclearedTxn: UnclearedTransaction = {
@@ -217,7 +218,7 @@ export async function handleReconciliationHelper(
       status,
       message,
       summary: {
-        accounts_with_uncleared: accountResults.length,
+        accounts_with_uncleared: accountResults.filter((a) => a.uncleared_count > 0).length,
         total_uncleared_transactions: totalUnclearedCount,
         total_uncleared_amount: formatCurrency(totalUncleared),
         accounts_needing_attention: needsAttention.length,

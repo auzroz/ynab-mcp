@@ -45,10 +45,12 @@ Requires a category_id. Use ynab_list_categories first to find the category ID.`
       },
       month: {
         type: 'string',
+        pattern: '^\\d{4}-\\d{2}-01$',
         description: 'The budget month in YYYY-MM-01 format (first of month)',
       },
       category_id: {
         type: 'string',
+        format: 'uuid',
         description: 'The category UUID to retrieve',
       },
     },

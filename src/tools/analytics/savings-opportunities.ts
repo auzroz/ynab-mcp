@@ -262,6 +262,7 @@ export async function handleSavingsOpportunities(
               (t.payee_id ?? 'unknown') === payeeId
           );
           const payeeName = sanitizeName(txn?.payee_name ?? 'Unknown');
+          if (payeeName === 'Unknown') continue; // Skip unknown payees - not actionable
           const avgRounded = Math.round(avg);
 
           opportunities.push({
