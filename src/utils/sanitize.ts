@@ -99,7 +99,7 @@ const SENSITIVE_PATTERNS: { pattern: RegExp; replacement: string }[] = [
   // Connection strings and database URLs (may contain credentials)
   { pattern: /(?:mongodb|postgres|mysql|redis|amqp):\/\/[^\s"']+/gi, replacement: '[CONNECTION_STRING_REDACTED]' },
   // File paths (Unix and Windows)
-  { pattern: /\/(?:Users|home|var|etc|tmp)\/[^\s"']+/gi, replacement: '[PATH_REDACTED]' },
+  { pattern: /\/(?:Users|home|var|etc|tmp|app|opt|srv|root)\/[^\s"']+/gi, replacement: '[PATH_REDACTED]' },
   { pattern: /[A-Z]:\\(?:Users|Windows|Program Files)[^\s"']*/gi, replacement: '[PATH_REDACTED]' },
   // Stack trace file references
   { pattern: /at\s+[^\s]+\s+\([^)]+:\d+:\d+\)/g, replacement: 'at [STACK_REDACTED]' },

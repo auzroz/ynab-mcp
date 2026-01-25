@@ -63,6 +63,7 @@ export async function handleSpendingPace(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
+  // getCurrentMonth() uses UTC internally for consistency with date calculations below
   const currentMonth = getCurrentMonth();
 
   // Get month data and categories

@@ -142,12 +142,17 @@ export async function handleNetWorth(
   const budgetAccounts = accounts.filter((a) => a.on_budget);
   const trackingAccounts = accounts.filter((a) => !a.on_budget);
 
-  // Assets (positive balances in asset account types + tracking accounts with positive balance)
+  // Assets: Include all asset-type accounts (checking, savings, cash, otherAsset)
+  // plus tracking accounts with positive balances (investments, property, etc.)
+  // Note: Asset-type accounts with negative balances (overdrafts) are included
+  // in the filter but will have negative contribution to total assets.
+  // Tracking accounts with zero or negative balance are excluded from assets.
   const assetAccounts = accounts.filter(
     (a) => assetTypes.has(String(a.type)) || (!a.on_budget && a.balance > 0)
   );
+  // Sum all asset account balances (including negative overdrafts for accurate net worth)
   const totalAssets = sumMilliunits(
-    assetAccounts.filter((a) => a.balance > 0).map((a) => a.balance)
+    assetAccounts.map((a) => a.balance)
   );
 
   // Liabilities (debt accounts + negative balances)

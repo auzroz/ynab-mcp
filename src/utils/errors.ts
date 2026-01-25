@@ -49,9 +49,10 @@ export class ValidationError extends Error {
 /**
  * Error thrown when rate limit is exceeded.
  *
- * Note: The server uses a budget of 180 requests/hour, which is 10% below
- * YNAB's official limit of 200 requests/hour. This provides a safety margin
- * for concurrent requests and avoids hitting the hard limit.
+ * Note: The server uses a configurable rate limit budget (default 180 requests/hour),
+ * which is 10% below YNAB's official limit of 200 requests/hour. This provides a
+ * safety margin for concurrent requests and avoids hitting the hard limit.
+ * The actual limit is set via RATE_LIMIT_PER_HOUR environment variable.
  */
 export class RateLimitError extends Error {
   constructor(public readonly retryAfterMs?: number) {
