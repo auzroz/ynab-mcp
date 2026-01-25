@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, formatCurrencyWithFormat } from '../../utils/milliunits.js';
-import { sanitizeName } from '../../utils/sanitize.js';
+import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -55,11 +55,25 @@ export async function handleListBudgets(
   const budgets = response.data.budgets;
 
   const result = budgets.map((budget) => {
+    // Sanitize currency_format fields if present
+    const sanitizedCurrencyFormat = budget.currency_format
+      ? {
+          iso_code: sanitizeString(budget.currency_format.iso_code) ?? '',
+          example_format: sanitizeString(budget.currency_format.example_format) ?? '',
+          decimal_digits: budget.currency_format.decimal_digits,
+          decimal_separator: sanitizeString(budget.currency_format.decimal_separator) ?? '',
+          symbol_first: budget.currency_format.symbol_first,
+          group_separator: sanitizeString(budget.currency_format.group_separator) ?? '',
+          currency_symbol: sanitizeString(budget.currency_format.currency_symbol) ?? '',
+          display_symbol: budget.currency_format.display_symbol,
+        }
+      : undefined;
+
     const budgetInfo: Record<string, unknown> = {
       id: budget.id,
       name: sanitizeName(budget.name),
       last_modified: budget.last_modified_on,
-      currency_format: budget.currency_format,
+      currency_format: sanitizedCurrencyFormat,
     };
 
     if (budget.accounts != null && budget.accounts.length > 0) {

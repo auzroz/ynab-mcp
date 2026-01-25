@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { sanitizeName } from '../../utils/sanitize.js';
+import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -60,9 +60,9 @@ export async function handleListPayees(
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const formattedPayees = activePayees.map((payee) => ({
-    id: payee.id,
+    id: sanitizeString(payee.id) ?? '',
     name: sanitizeName(payee.name),
-    transfer_account_id: payee.transfer_account_id,
+    transfer_account_id: payee.transfer_account_id ? sanitizeString(payee.transfer_account_id) : null,
   }));
 
   // Separate transfer payees from regular payees

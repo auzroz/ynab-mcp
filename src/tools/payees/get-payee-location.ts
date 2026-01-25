@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
+import { sanitizeString } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -56,8 +57,8 @@ export async function handleGetPayeeLocation(
   return JSON.stringify(
     {
       payee_location: {
-        id: loc.id,
-        payee_id: loc.payee_id,
+        id: sanitizeString(loc.id) ?? '',
+        payee_id: sanitizeString(loc.payee_id) ?? '',
         latitude: loc.latitude,
         longitude: loc.longitude,
       },

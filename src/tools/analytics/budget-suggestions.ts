@@ -93,12 +93,48 @@ export async function handleBudgetSuggestions(
   const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01`;
 
   // Fetch all data in parallel
-  const [categoriesResponse, currentMonthResponse, ...historicalMonthResponses] =
+  // Note: For new budgets with insufficient history, some month fetches may fail.
+  // We use Promise.allSettled for historical months to gracefully handle this,
+  // allowing the tool to work with whatever history is available.
+  const [categoriesResponse, currentMonthResponse, ...historicalMonthResults] =
     await Promise.all([
       client.getCategories(budgetId),
       client.getBudgetMonth(budgetId, currentMonth),
-      ...months.map((m) => client.getBudgetMonth(budgetId, m)),
+      ...months.map((m) =>
+        client.getBudgetMonth(budgetId, m).then(
+          (response) => ({ status: 'fulfilled' as const, value: response }),
+          (error) => ({ status: 'rejected' as const, reason: error })
+        )
+      ),
     ]);
+
+  // Filter to only successful month fetches
+  const historicalMonthResponses = historicalMonthResults
+    .filter((result): result is { status: 'fulfilled'; value: Awaited<ReturnType<typeof client.getBudgetMonth>> } =>
+      result.status === 'fulfilled'
+    )
+    .map((result) => result.value);
+
+  // If no historical data available, return early with helpful message
+  if (historicalMonthResponses.length === 0) {
+    return JSON.stringify(
+      {
+        error: false,
+        message: 'Insufficient budget history for suggestions. This tool requires at least one month of historical data.',
+        analysis_period: {
+          months_requested: monthCount,
+          months_available: 0,
+        },
+        tips: [
+          'Budget suggestions require historical spending data',
+          'Try again after using YNAB for at least one full month',
+          'You can also manually review your spending patterns in YNAB',
+        ],
+      },
+      null,
+      2
+    );
+  }
 
   // Build group lookup
   const groupLookup = new Map<string, string>();
@@ -225,8 +261,9 @@ export async function handleBudgetSuggestions(
   return JSON.stringify(
     {
       analysis_period: {
-        months_analyzed: monthCount,
-        months: months,
+        months_requested: monthCount,
+        months_available: historicalMonthResponses.length,
+        months: months.slice(0, historicalMonthResponses.length),
       },
       summary: {
         categories_analyzed: suggestions.length,

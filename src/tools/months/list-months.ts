@@ -7,9 +7,8 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, formatCurrencyWithFormat } from '../../utils/milliunits.js';
+import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
-import type { CurrencyFormat } from 'ynab';
 
 // Input schema
 const inputSchema = z.object({
@@ -42,16 +41,6 @@ Returns each month's income, budgeted, activity, and to-be-budgeted amounts.`,
   },
 };
 
-/**
- * Format currency using the budget's currency format if available.
- */
-function formatAmount(milliunits: number, currencyFormat?: CurrencyFormat | null): string {
-  if (currencyFormat) {
-    return formatCurrencyWithFormat(milliunits, currencyFormat);
-  }
-  return formatCurrency(milliunits);
-}
-
 // Handler function
 /**
  * Handler for the ynab_list_months tool.
@@ -63,20 +52,18 @@ export async function handleListMonths(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
-  // Fetch budget settings to get currency format
-  const settingsResponse = await client.getBudgetSettingsById(budgetId);
-  const currencyFormat = settingsResponse.data.settings.currency_format;
-
   const response = await client.getBudgetMonths(budgetId);
   const months = response.data.months;
 
+  // Use default USD formatting to preserve rate-limit budget
+  // (avoids extra getBudgetSettingsById API call)
   const formattedMonths = months.map((month) => ({
     month: month.month,
     note: sanitizeMemo(month.note),
-    income: formatAmount(month.income, currencyFormat),
-    budgeted: formatAmount(month.budgeted, currencyFormat),
-    activity: formatAmount(month.activity, currencyFormat),
-    to_be_budgeted: formatAmount(month.to_be_budgeted, currencyFormat),
+    income: formatCurrency(month.income),
+    budgeted: formatCurrency(month.budgeted),
+    activity: formatCurrency(month.activity),
+    to_be_budgeted: formatCurrency(month.to_be_budgeted),
     age_of_money: month.age_of_money,
     deleted: month.deleted,
   }));
@@ -85,7 +72,6 @@ export async function handleListMonths(
     {
       months: formattedMonths,
       count: months.length,
-      currency_format: currencyFormat,
     },
     null,
     2

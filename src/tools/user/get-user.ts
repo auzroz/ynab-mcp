@@ -19,7 +19,7 @@ export const getUserTool: Tool = {
 Use when the user asks:
 - "Who am I logged in as?"
 - "What's my YNAB user ID?"
-- "Show my account info"
+- "Show my user ID"
 
 Returns the user's ID.`,
   inputSchema: {

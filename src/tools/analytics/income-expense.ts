@@ -141,7 +141,8 @@ export async function handleIncomeExpense(
   const totalIncome = sumMilliunits(monthlyData.map((m) => m.income_raw));
   const totalExpenses = sumMilliunits(monthlyData.map((m) => m.expenses_raw));
   const totalNet = totalIncome - totalExpenses;
-  const overallSavingsRate = totalIncome > 0 ? ((totalIncome - totalExpenses) / totalIncome) * 100 : 0;
+  // When totalIncome is 0, savings_rate should be null (not 0%)
+  const overallSavingsRate = totalIncome > 0 ? ((totalIncome - totalExpenses) / totalIncome) * 100 : null;
 
   // Calculate averages
   const avgIncome = monthlyData.length > 0 ? totalIncome / monthlyData.length : 0;
@@ -182,7 +183,17 @@ export async function handleIncomeExpense(
   let status: 'healthy' | 'warning' | 'concern';
   let statusMessage: string;
 
-  if (overallSavingsRate >= 20) {
+  // Handle zero-income case explicitly
+  if (overallSavingsRate === null) {
+    // No income in the period
+    if (totalExpenses > 0) {
+      status = 'concern';
+      statusMessage = 'No income recorded, but expenses occurred';
+    } else {
+      status = 'warning';
+      statusMessage = 'No income or expenses recorded in this period';
+    }
+  } else if (overallSavingsRate >= 20) {
     status = 'healthy';
     statusMessage = 'Excellent savings rate (20%+)';
   } else if (overallSavingsRate >= 10) {
@@ -210,7 +221,7 @@ export async function handleIncomeExpense(
         total_income: formatCurrency(totalIncome),
         total_expenses: formatCurrency(totalExpenses),
         net_savings: formatCurrency(totalNet),
-        savings_rate: `${Math.round(overallSavingsRate)}%`,
+        savings_rate: overallSavingsRate !== null ? `${Math.round(overallSavingsRate)}%` : 'N/A',
       },
       averages: {
         avg_monthly_income: formatCurrency(avgIncome),

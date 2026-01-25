@@ -109,6 +109,9 @@ export async function handleReconciliationHelper(
 
   if (validated.account_id) {
     accounts = accounts.filter((a) => a.id === validated.account_id);
+    if (accounts.length === 0) {
+      throw new Error('Account not found for provided account_id');
+    }
   }
 
   // Get today for calculating days pending
@@ -147,7 +150,7 @@ export async function handleReconciliationHelper(
 
     const unclearedTxn: UnclearedTransaction = {
       date: txn.date,
-      payee: sanitizeName(txn.payee_name),
+      payee: sanitizeName(txn.payee_name ?? ''),
       category: txn.category_id ? sanitizeName(categoryLookup.get(txn.category_id) ?? '') || null : null,
       amount: formatCurrency(txn.amount),
       amount_raw: txn.amount,
