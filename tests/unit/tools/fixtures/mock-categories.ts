@@ -334,8 +334,11 @@ export function createCategoryResponse(category: MockCategory = mockBillsCategor
 // Preset scenarios
 export const healthyBudgetCategories = mockCategoryGroups;
 
+// Creates a budget with overspent everyday expenses categories
+// Note: slice(0, 3) gets indices 0-2, slice(4) gets indices 4-6
+// This intentionally excludes index 3 (group-everyday) since we're replacing it
 export const overspentBudgetCategories: CategoryGroupWithCategories[] = [
-  ...mockCategoryGroups.slice(0, 3),
+  ...mockCategoryGroups.slice(0, 3), // indices 0-2: internal, credit-cards, bills
   {
     id: 'group-everyday',
     name: 'Everyday Expenses',
@@ -346,5 +349,5 @@ export const overspentBudgetCategories: CategoryGroupWithCategories[] = [
       balance: c.balance - 200000, // Make all overspent
     })) as unknown as Category[],
   },
-  ...mockCategoryGroups.slice(4),
+  ...mockCategoryGroups.slice(4), // indices 4-6: savings, discretionary, hidden
 ];

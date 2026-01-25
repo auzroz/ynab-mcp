@@ -91,9 +91,9 @@ export async function handleDetectRecurring(
   const months = validated.months ?? 6;
   const minOccurrences = validated.min_occurrences ?? 3;
 
-  // Calculate since_date
-  const sinceDate = new Date();
-  sinceDate.setMonth(sinceDate.getMonth() - months);
+  // Calculate since_date using UTC to avoid timezone drift
+  const now = new Date();
+  const sinceDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, now.getUTCDate()));
   const sinceDateStr = sinceDate.toISOString().split('T')[0] ?? '';
 
   // Get all transactions
@@ -116,7 +116,11 @@ export async function handleDetectRecurring(
   >();
 
   for (const txn of transactions) {
-    const payeeId = txn.payee_id ?? 'unknown';
+    // Skip transactions without a payee_id - they can't be reliably grouped
+    // and would create false recurring detections if merged under a single key
+    if (!txn.payee_id) continue;
+
+    const payeeId = txn.payee_id;
     const payeeName = txn.payee_name ?? 'Unknown';
 
     if (!byPayee.has(payeeId)) {
@@ -242,7 +246,8 @@ function classifyFrequency(
   stdDev: number
 ): { frequency: RecurringTransaction['frequency']; confidence: RecurringTransaction['confidence'] } {
   // Confidence based on consistency (lower stdDev = higher confidence)
-  const coefficientOfVariation = stdDev / avgInterval;
+  // Guard against division by zero when avgInterval is 0
+  const coefficientOfVariation = avgInterval > 0 ? stdDev / avgInterval : 0;
   let confidence: RecurringTransaction['confidence'];
 
   if (coefficientOfVariation < 0.15) {
@@ -293,19 +298,29 @@ function calculateMonthlyCost(avgAmount: number, frequency: RecurringTransaction
 }
 
 function predictNextDate(lastDate: string, avgInterval: number): string | null {
-  const last = new Date(lastDate);
-  const next = new Date(last.getTime() + avgInterval * 24 * 60 * 60 * 1000);
-  const today = new Date();
+  // Parse lastDate as UTC to avoid timezone inconsistencies
+  // YNAB dates are in YYYY-MM-DD format
+  const [year, month, day] = lastDate.split('-').map(Number);
+  if (year === undefined || month === undefined || day === undefined) {
+    return null;
+  }
+
+  const lastMs = Date.UTC(year, month - 1, day);
+  const intervalMs = avgInterval * 24 * 60 * 60 * 1000;
+  const nextMs = lastMs + intervalMs;
+
+  const now = new Date();
+  const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
 
   // Only predict if in the future
-  if (next > today) {
-    return next.toISOString().split('T')[0] ?? null;
+  if (nextMs > todayMs) {
+    return new Date(nextMs).toISOString().split('T')[0] ?? null;
   }
 
   // If predicted date is in the past, add another interval
-  const nextNext = new Date(next.getTime() + avgInterval * 24 * 60 * 60 * 1000);
-  if (nextNext > today) {
-    return nextNext.toISOString().split('T')[0] ?? null;
+  const nextNextMs = nextMs + intervalMs;
+  if (nextNextMs > todayMs) {
+    return new Date(nextNextMs).toISOString().split('T')[0] ?? null;
   }
 
   return null;

@@ -9,6 +9,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits, sumMilliunits } from '../../utils/milliunits.js';
+import { sanitizeName } from '../../utils/sanitize.js';
 
 // Transaction schema for bulk creation
 const transactionSchema = z.object({
@@ -145,8 +146,8 @@ export async function handleCreateTransactions(
         id: t.id,
         date: t.date,
         amount: formatCurrency(t.amount),
-        payee_name: t.payee_name,
-        category_name: t.category_name,
+        payee_name: sanitizeName(t.payee_name),
+        category_name: sanitizeName(t.category_name),
       })),
       duplicate_import_ids: duplicates.length > 0 ? duplicates : undefined,
     },

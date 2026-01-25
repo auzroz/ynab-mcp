@@ -76,7 +76,7 @@ export async function handleQuickSummary(
   );
   const trackingAccounts = accounts.filter((a) => !a.on_budget);
   const debtAccounts = accounts.filter(
-    (a) => a.on_budget && creditTypes.has(String(a.type))
+    (a) => a.on_budget && (creditTypes.has(String(a.type)) || debtTypes.has(String(a.type)))
   );
 
   const totalBudgetAccountBalance = sumMilliunits(budgetAccounts.map((a) => a.balance));

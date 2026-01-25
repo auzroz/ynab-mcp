@@ -63,6 +63,7 @@ interface CategorySpending {
   category_name: string;
   group_name: string;
   total_spent: string;
+  total_spent_milliunits: number; // Raw value for sorting
   transaction_count: number;
   average_per_transaction: string;
   percent_of_total: number;
@@ -86,9 +87,9 @@ export async function handleSpendingAnalysis(
   const budgetId = client.resolveBudgetId(validated.budget_id);
   const months = validated.months ?? 3;
 
-  // Calculate since_date
-  const sinceDate = new Date();
-  sinceDate.setMonth(sinceDate.getMonth() - months);
+  // Calculate since_date using UTC to avoid timezone drift
+  const now = new Date();
+  const sinceDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, now.getUTCDate()));
   const sinceDateStr = sinceDate.toISOString().split('T')[0] ?? '';
   const options: { sinceDate: string } = { sinceDate: sinceDateStr };
 
@@ -167,6 +168,7 @@ export async function handleSpendingAnalysis(
       category_name: lookup.name,
       group_name: lookup.group,
       total_spent: formatCurrency(total),
+      total_spent_milliunits: total, // Store raw value for sorting
       transaction_count: data.amounts.length,
       average_per_transaction: formatCurrency(data.amounts.length > 0 ? total / data.amounts.length : 0),
       percent_of_total: Math.round(percentOfTotal * 10) / 10,
@@ -176,12 +178,8 @@ export async function handleSpendingAnalysis(
     });
   }
 
-  // Sort by total spent (highest first)
-  categorySpending.sort((a, b) => {
-    const amountA = parseFloat(a.total_spent.replace(/[^0-9.-]/g, ''));
-    const amountB = parseFloat(b.total_spent.replace(/[^0-9.-]/g, ''));
-    return amountB - amountA;
-  });
+  // Sort by total spent (highest first) using raw milliunits
+  categorySpending.sort((a, b) => b.total_spent_milliunits - a.total_spent_milliunits);
 
   // Group by month
   const byMonth = new Map<string, Map<string, number>>();
@@ -201,23 +199,24 @@ export async function handleSpendingAnalysis(
   const monthlySpending: MonthlySpending[] = [];
   for (const [month, categories] of byMonth) {
     const total = sumMilliunits(Array.from(categories.values()));
-    const breakdown: { name: string; amount: string }[] = [];
+    // Use intermediate array with raw milliunits for sorting
+    const breakdownWithMilliunits: { name: string; amount: string; milliunits: number }[] = [];
 
     for (const [catId, amount] of categories) {
       const lookup = categoryLookup.get(catId) ?? { name: sanitizeName('Uncategorized'), group: sanitizeName('Other') };
-      breakdown.push({ name: lookup.name, amount: formatCurrency(amount) });
+      breakdownWithMilliunits.push({ name: lookup.name, amount: formatCurrency(amount), milliunits: amount });
     }
 
-    breakdown.sort((a, b) => {
-      const amountA = parseFloat(a.amount.replace(/[^0-9.-]/g, ''));
-      const amountB = parseFloat(b.amount.replace(/[^0-9.-]/g, ''));
-      return amountB - amountA;
-    });
+    // Sort using raw milliunits (highest first)
+    breakdownWithMilliunits.sort((a, b) => b.milliunits - a.milliunits);
+
+    // Convert to output format (drop milliunits)
+    const breakdown = breakdownWithMilliunits.slice(0, 5).map(({ name, amount }) => ({ name, amount }));
 
     monthlySpending.push({
       month,
       total_spent: formatCurrency(total),
-      category_breakdown: breakdown.slice(0, 5), // Top 5 categories
+      category_breakdown: breakdown,
     });
   }
 
@@ -229,9 +228,12 @@ export async function handleSpendingAnalysis(
   const increasingCategories = categorySpending.filter((c) => c.trend === 'increasing');
   const decreasingCategories = categorySpending.filter((c) => c.trend === 'decreasing');
 
+  // Exclude internal milliunits field from output
+  const spendingByCategory = categorySpending.map(({ total_spent_milliunits: _unused, ...rest }) => rest);
+
   return JSON.stringify(
     {
-      spending_by_category: categorySpending,
+      spending_by_category: spendingByCategory,
       monthly_spending: monthlySpending,
       summary: {
         total_spent: formatCurrency(totalSpending),

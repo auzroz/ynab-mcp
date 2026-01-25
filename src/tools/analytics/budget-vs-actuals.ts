@@ -134,7 +134,7 @@ export async function handleBudgetVsActuals(
     const available = category.balance;
 
     totalBudgeted += budgeted;
-    totalActivity += category.activity < 0 ? Math.abs(category.activity) : 0;
+    totalActivity += activity;
 
     // Calculate variance
     const variance = budgeted - activity;

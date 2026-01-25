@@ -126,8 +126,9 @@ export async function handleBudgetHealth(
 
       // Determine status
       let status: CategoryHealth['status'] = 'on_track';
+      // Use absolute value of budgeted to handle negative budgets correctly
       const percentUsed =
-        budgeted !== 0 ? Math.round((Math.abs(activity) / budgeted) * 100) : 0;
+        budgeted !== 0 ? Math.round((Math.abs(activity) / Math.abs(budgeted)) * 100) : 0;
 
       if (balance < 0) {
         status = 'overspent';

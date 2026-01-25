@@ -13,6 +13,10 @@ export class RateLimiter {
   private acquireLock: Promise<void> = Promise.resolve();
 
   constructor(requestsPerHour: number = 180) {
+    // Validate requestsPerHour to prevent rate-limit bypass
+    if (!Number.isFinite(requestsPerHour) || requestsPerHour <= 0) {
+      throw new Error(`Invalid requestsPerHour: must be a positive finite number, got ${requestsPerHour}`);
+    }
     this.maxTokens = requestsPerHour;
     this.tokens = requestsPerHour;
     this.lastRefill = Date.now();

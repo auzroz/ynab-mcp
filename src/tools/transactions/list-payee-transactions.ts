@@ -95,8 +95,9 @@ export async function handleListPayeeTransactions(
   // Apply limit
   transactions = transactions.slice(0, limit);
 
-  // Calculate summary (outflows only to avoid inflating spend with refunds)
+  // Calculate summary - separate inflows and outflows for clarity
   const outflows = transactions.filter((t) => t.amount < 0);
+  const inflowCount = transactions.filter((t) => t.amount >= 0).length;
   const totalSpent = sumMilliunits(outflows.map((t) => Math.abs(t.amount)));
 
   // Group by category (outflows only)
@@ -131,8 +132,10 @@ export async function handleListPayeeTransactions(
       transactions: formattedTransactions,
       summary: {
         count: formattedTransactions.length,
+        outflow_count: outflows.length,
+        inflow_count: inflowCount,
         total_spent: formatCurrency(totalSpent),
-        average_amount: formatCurrency(avgAmount),
+        average_outflow: formatCurrency(avgAmount), // Average per outflow transaction
         top_categories: topCategories,
       },
     },

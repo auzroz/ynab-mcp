@@ -146,16 +146,20 @@ export async function handleUnusedCategories(
       // Determine if category is "unused"
       const isUnused = !isActive;
       const hasFunds = balance > 0 || budgeted > 0;
+      const isOverspent = balance < 0;
 
       // Skip if has funds and we're not including funded categories
-      if (isUnused && hasFunds && !includeFunded) {
+      // But always include overspent categories as they need attention
+      if (isUnused && hasFunds && !includeFunded && !isOverspent) {
         continue;
       }
 
       if (isUnused) {
         // Determine suggestion
         let suggestion: string;
-        if (hasGoal) {
+        if (isOverspent) {
+          suggestion = 'Overspent with no recent activity - cover overspending or investigate';
+        } else if (hasGoal) {
           suggestion = 'Has a goal - verify if still needed';
         } else if (balance > 0) {
           suggestion = 'Has funds but no activity - consider moving funds elsewhere';

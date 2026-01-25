@@ -55,15 +55,15 @@ export async function handleGetBudgetSettings(
     {
       budget_id: sanitizeString(budgetId) ?? '',
       settings: {
-        date_format: settings.date_format.format,
+        date_format: sanitizeString(settings.date_format.format) ?? '',
         currency_format: {
-          iso_code: settings.currency_format.iso_code,
-          example_format: settings.currency_format.example_format,
+          iso_code: sanitizeString(settings.currency_format.iso_code) ?? '',
+          example_format: sanitizeString(settings.currency_format.example_format) ?? '',
           decimal_digits: settings.currency_format.decimal_digits,
-          decimal_separator: settings.currency_format.decimal_separator,
+          decimal_separator: sanitizeString(settings.currency_format.decimal_separator) ?? '',
           symbol_first: settings.currency_format.symbol_first,
-          group_separator: settings.currency_format.group_separator,
-          currency_symbol: settings.currency_format.currency_symbol,
+          group_separator: sanitizeString(settings.currency_format.group_separator) ?? '',
+          currency_symbol: sanitizeString(settings.currency_format.currency_symbol) ?? '',
           display_symbol: settings.currency_format.display_symbol,
         },
       },
