@@ -136,6 +136,15 @@ Only provide the fields you want to change.`,
 // Handler function
 /**
  * Handler for the ynab_update_transaction tool.
+ *
+ * @param args - Tool arguments including transaction_id and fields to update
+ * @param client - YNAB client instance for API calls
+ * @returns JSON string with updated transaction details
+ *
+ * @remarks
+ * Uses ynab.SaveTransactionWithOptionalFields type (SDK v2) for partial updates.
+ * Enum types are cast to ynab.TransactionClearedStatus and ynab.TransactionFlagColor.
+ * Security checks (rate limiting, write permission, audit logging) are handled by YnabClient.
  */
 export async function handleUpdateTransaction(
   args: Record<string, unknown>,
@@ -155,12 +164,10 @@ export async function handleUpdateTransaction(
   if (validated.category_id !== undefined) updateData.category_id = validated.category_id;
   if (validated.memo !== undefined) updateData.memo = validated.memo;
   if (validated.cleared !== undefined)
-    updateData.cleared =
-      validated.cleared as unknown as ynab.SaveTransactionWithOptionalFields.ClearedEnum;
+    updateData.cleared = validated.cleared as ynab.TransactionClearedStatus;
   if (validated.approved !== undefined) updateData.approved = validated.approved;
   if (validated.flag_color !== undefined)
-    updateData.flag_color =
-      validated.flag_color as unknown as ynab.SaveTransactionWithOptionalFields.FlagColorEnum | null;
+    updateData.flag_color = validated.flag_color as ynab.TransactionFlagColor | null;
 
   const response = await client.updateTransaction(budgetId, validated.transaction_id, {
     transaction: updateData,

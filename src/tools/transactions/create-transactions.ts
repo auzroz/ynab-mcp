@@ -96,6 +96,15 @@ Use import_id to prevent duplicate imports.`,
 // Handler function
 /**
  * Handler for the ynab_create_transactions tool.
+ *
+ * @param args - Tool arguments including transactions array (max 100)
+ * @param client - YNAB client instance for API calls
+ * @returns JSON string with created transactions and duplicate info
+ *
+ * @remarks
+ * Uses ynab.NewTransaction type (SDK v2) for bulk transaction creation.
+ * Enum types are cast to ynab.TransactionClearedStatus and ynab.TransactionFlagColor.
+ * Security checks (rate limiting, write permission, audit logging) are handled by YnabClient.
  */
 export async function handleCreateTransactions(
   args: Record<string, unknown>,
@@ -105,8 +114,8 @@ export async function handleCreateTransactions(
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
   // Convert transactions to YNAB format
-  const ynabTransactions: ynab.SaveTransaction[] = validated.transactions.map((t) => {
-    const txn: ynab.SaveTransaction = {
+  const ynabTransactions: ynab.NewTransaction[] = validated.transactions.map((t) => {
+    const txn: ynab.NewTransaction = {
       account_id: t.account_id,
       date: t.date,
       amount: toMilliunits(t.amount),
@@ -116,10 +125,10 @@ export async function handleCreateTransactions(
     if (t.payee_name !== undefined) txn.payee_name = t.payee_name;
     if (t.category_id !== undefined) txn.category_id = t.category_id;
     if (t.memo !== undefined) txn.memo = t.memo;
-    if (t.cleared !== undefined) txn.cleared = t.cleared as unknown as ynab.SaveTransaction.ClearedEnum;
+    if (t.cleared !== undefined) txn.cleared = t.cleared as ynab.TransactionClearedStatus;
     if (t.approved !== undefined) txn.approved = t.approved;
     if (t.flag_color !== undefined)
-      txn.flag_color = t.flag_color as unknown as ynab.SaveTransaction.FlagColorEnum;
+      txn.flag_color = t.flag_color as ynab.TransactionFlagColor;
     if (t.import_id !== undefined) txn.import_id = t.import_id;
 
     return txn;

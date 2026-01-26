@@ -43,6 +43,14 @@ Returns currency format, date format, and currency ISO code.`,
 // Handler function
 /**
  * Handler for the ynab_get_budget_settings tool.
+ *
+ * @param args - Tool arguments containing optional budget_id
+ * @param client - YNAB client instance for API calls
+ * @returns JSON string with budget settings including date_format and currency_format
+ *
+ * @remarks
+ * SDK v2 made date_format and currency_format nullable. This handler returns null
+ * for missing formats rather than empty strings to preserve semantic meaning.
  */
 export async function handleGetBudgetSettings(
   args: Record<string, unknown>,
@@ -54,21 +62,26 @@ export async function handleGetBudgetSettings(
   const response = await client.getBudgetSettingsById(budgetId);
   const settings = response.data.settings;
 
+  const dateFormat = settings.date_format;
+  const currencyFormat = settings.currency_format;
+
   return JSON.stringify(
     {
       budget_id: sanitizeString(budgetId) ?? '',
       settings: {
-        date_format: sanitizeString(settings.date_format.format) ?? '',
-        currency_format: {
-          iso_code: sanitizeString(settings.currency_format.iso_code) ?? '',
-          example_format: sanitizeString(settings.currency_format.example_format) ?? '',
-          decimal_digits: settings.currency_format.decimal_digits,
-          decimal_separator: sanitizeString(settings.currency_format.decimal_separator) ?? '',
-          symbol_first: settings.currency_format.symbol_first,
-          group_separator: sanitizeString(settings.currency_format.group_separator) ?? '',
-          currency_symbol: sanitizeString(settings.currency_format.currency_symbol) ?? '',
-          display_symbol: settings.currency_format.display_symbol,
-        },
+        date_format: dateFormat?.format ? sanitizeString(dateFormat.format) : null,
+        currency_format: currencyFormat
+          ? {
+              iso_code: sanitizeString(currencyFormat.iso_code) ?? '',
+              example_format: sanitizeString(currencyFormat.example_format) ?? '',
+              decimal_digits: currencyFormat.decimal_digits,
+              decimal_separator: sanitizeString(currencyFormat.decimal_separator) ?? '',
+              symbol_first: currencyFormat.symbol_first,
+              group_separator: sanitizeString(currencyFormat.group_separator) ?? '',
+              currency_symbol: sanitizeString(currencyFormat.currency_symbol) ?? '',
+              display_symbol: currencyFormat.display_symbol,
+            }
+          : null,
       },
     },
     null,
