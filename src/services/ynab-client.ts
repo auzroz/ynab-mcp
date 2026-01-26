@@ -166,8 +166,8 @@ export class YnabClient {
     // Invalidate accounts cache after creating
     // Also invalidate budgets cache since getBudgets(true) includes account data
     this.cache.delete(`accounts:${budgetId}`);
+    // Only invalidate budgets:true since getBudgets(false) doesn't include account data
     this.cache.delete('budgets:true');
-    this.cache.delete('budgets:false');
 
     const auditLog = getAuditLog();
     try {
