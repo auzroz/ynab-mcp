@@ -102,7 +102,8 @@ export async function handleSpendingPace(
     if (groupName === 'Internal Master Category' || cat.hidden) continue;
 
     const budgeted = cat.budgeted;
-    const spent = cat.activity < 0 ? Math.abs(cat.activity) : 0;
+    // Use net activity so refunds reduce spent (matches YNAB's category balance)
+    const spent = -cat.activity;
     const remaining = budgeted - spent;
 
     // Skip categories with no budget and no spending

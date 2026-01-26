@@ -68,6 +68,13 @@ export class YnabClient {
 
   /**
    * Resolve a budget ID, using default if not provided.
+   *
+   * Design Decision: budget_id is intentionally not validated as a UUID.
+   * The YNAB API accepts both UUIDs and the special sentinel value "last-used"
+   * to reference the most recently accessed budget. Rather than maintaining a
+   * union type that could break if YNAB adds more special values, we accept
+   * any string and let the YNAB API validate it. This provides better forward
+   * compatibility and clearer error messages from the source of truth.
    */
   resolveBudgetId(budgetId?: string): string {
     return budgetId ?? this.defaultBudgetId;

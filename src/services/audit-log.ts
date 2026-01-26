@@ -10,7 +10,14 @@
  * - No authentication tokens or credentials
  * - No full payee names or memo contents (use has_payee, has_memo flags instead)
  *
- * Note: Error messages are defensively sanitized (sensitive patterns redacted, then truncated).
+ * Design Decision: The `details` field is NOT sanitized at read time.
+ * We rely on callers following the documented contract above. Rationale:
+ * 1. All current callers in ynab-client.ts comply (using has_memo, has_name flags)
+ * 2. Sanitizing arbitrary nested objects is complex and error-prone
+ * 3. Generic sanitization risks false positives (redacting non-sensitive data)
+ * 4. The contract is well-documented at both the service and interface level
+ *
+ * Note: Error messages ARE defensively sanitized (sensitive patterns redacted, then truncated).
  */
 
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
