@@ -61,7 +61,7 @@ export async function handleGetBudgetSettings(
     {
       budget_id: sanitizeString(budgetId) ?? '',
       settings: {
-        date_format: dateFormat ? sanitizeString(dateFormat.format) ?? '' : '',
+        date_format: dateFormat?.format ? sanitizeString(dateFormat.format) : null,
         currency_format: currencyFormat
           ? {
               iso_code: sanitizeString(currencyFormat.iso_code) ?? '',
