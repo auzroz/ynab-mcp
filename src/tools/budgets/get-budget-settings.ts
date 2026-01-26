@@ -43,6 +43,14 @@ Returns currency format, date format, and currency ISO code.`,
 // Handler function
 /**
  * Handler for the ynab_get_budget_settings tool.
+ *
+ * @param args - Tool arguments containing optional budget_id
+ * @param client - YNAB client instance for API calls
+ * @returns JSON string with budget settings including date_format and currency_format
+ *
+ * @remarks
+ * SDK v2 made date_format and currency_format nullable. This handler returns null
+ * for missing formats rather than empty strings to preserve semantic meaning.
  */
 export async function handleGetBudgetSettings(
   args: Record<string, unknown>,

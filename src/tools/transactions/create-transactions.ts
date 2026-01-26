@@ -96,6 +96,15 @@ Use import_id to prevent duplicate imports.`,
 // Handler function
 /**
  * Handler for the ynab_create_transactions tool.
+ *
+ * @param args - Tool arguments including transactions array (max 100)
+ * @param client - YNAB client instance for API calls
+ * @returns JSON string with created transactions and duplicate info
+ *
+ * @remarks
+ * Uses ynab.NewTransaction type (SDK v2) for bulk transaction creation.
+ * Enum types are cast to ynab.TransactionClearedStatus and ynab.TransactionFlagColor.
+ * Security checks (rate limiting, write permission, audit logging) are handled by YnabClient.
  */
 export async function handleCreateTransactions(
   args: Record<string, unknown>,

@@ -136,6 +136,15 @@ Only provide the fields you want to change.`,
 // Handler function
 /**
  * Handler for the ynab_update_transaction tool.
+ *
+ * @param args - Tool arguments including transaction_id and fields to update
+ * @param client - YNAB client instance for API calls
+ * @returns JSON string with updated transaction details
+ *
+ * @remarks
+ * Uses ynab.SaveTransactionWithOptionalFields type (SDK v2) for partial updates.
+ * Enum types are cast to ynab.TransactionClearedStatus and ynab.TransactionFlagColor.
+ * Security checks (rate limiting, write permission, audit logging) are handled by YnabClient.
  */
 export async function handleUpdateTransaction(
   args: Record<string, unknown>,

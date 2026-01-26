@@ -122,6 +122,16 @@ Amount should be negative for expenses/outflows and positive for income/inflows.
 // Handler function
 /**
  * Handler for the ynab_create_transaction tool.
+ *
+ * @param args - Tool arguments including account_id, date, amount, and optional fields
+ * @param client - YNAB client instance for API calls
+ * @returns JSON string with created transaction details
+ * @throws Error if transaction creation fails
+ *
+ * @remarks
+ * Uses ynab.NewTransaction type (SDK v2) for creating transactions.
+ * Enum types are cast to ynab.TransactionClearedStatus and ynab.TransactionFlagColor.
+ * Security checks (rate limiting, write permission, audit logging) are handled by YnabClient.
  */
 export async function handleCreateTransaction(
   args: Record<string, unknown>,
