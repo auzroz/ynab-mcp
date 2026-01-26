@@ -105,8 +105,8 @@ export async function handleCreateTransactions(
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
   // Convert transactions to YNAB format
-  const ynabTransactions: ynab.SaveTransaction[] = validated.transactions.map((t) => {
-    const txn: ynab.SaveTransaction = {
+  const ynabTransactions: ynab.NewTransaction[] = validated.transactions.map((t) => {
+    const txn: ynab.NewTransaction = {
       account_id: t.account_id,
       date: t.date,
       amount: toMilliunits(t.amount),
@@ -116,10 +116,10 @@ export async function handleCreateTransactions(
     if (t.payee_name !== undefined) txn.payee_name = t.payee_name;
     if (t.category_id !== undefined) txn.category_id = t.category_id;
     if (t.memo !== undefined) txn.memo = t.memo;
-    if (t.cleared !== undefined) txn.cleared = t.cleared as unknown as ynab.SaveTransaction.ClearedEnum;
+    if (t.cleared !== undefined) txn.cleared = t.cleared as ynab.TransactionClearedStatus;
     if (t.approved !== undefined) txn.approved = t.approved;
     if (t.flag_color !== undefined)
-      txn.flag_color = t.flag_color as unknown as ynab.SaveTransaction.FlagColorEnum;
+      txn.flag_color = t.flag_color as ynab.TransactionFlagColor;
     if (t.import_id !== undefined) txn.import_id = t.import_id;
 
     return txn;

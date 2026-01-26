@@ -131,7 +131,7 @@ export async function handleCreateTransaction(
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
   // Build transaction data, only including defined fields
-  const transactionData: ynab.SaveTransaction = {
+  const transactionData: ynab.NewTransaction = {
     account_id: validated.account_id,
     date: validated.date,
     amount: toMilliunits(validated.amount),
@@ -142,10 +142,10 @@ export async function handleCreateTransaction(
   if (validated.category_id !== undefined) transactionData.category_id = validated.category_id;
   if (validated.memo !== undefined) transactionData.memo = validated.memo;
   if (validated.cleared !== undefined)
-    transactionData.cleared = validated.cleared as unknown as ynab.SaveTransaction.ClearedEnum;
+    transactionData.cleared = validated.cleared as ynab.TransactionClearedStatus;
   if (validated.approved !== undefined) transactionData.approved = validated.approved;
   if (validated.flag_color !== undefined)
-    transactionData.flag_color = validated.flag_color as unknown as ynab.SaveTransaction.FlagColorEnum;
+    transactionData.flag_color = validated.flag_color as ynab.TransactionFlagColor;
 
   const response = await client.createTransaction(budgetId, {
     transaction: transactionData,

@@ -155,12 +155,10 @@ export async function handleUpdateTransaction(
   if (validated.category_id !== undefined) updateData.category_id = validated.category_id;
   if (validated.memo !== undefined) updateData.memo = validated.memo;
   if (validated.cleared !== undefined)
-    updateData.cleared =
-      validated.cleared as unknown as ynab.SaveTransactionWithOptionalFields.ClearedEnum;
+    updateData.cleared = validated.cleared as ynab.TransactionClearedStatus;
   if (validated.approved !== undefined) updateData.approved = validated.approved;
   if (validated.flag_color !== undefined)
-    updateData.flag_color =
-      validated.flag_color as unknown as ynab.SaveTransactionWithOptionalFields.FlagColorEnum | null;
+    updateData.flag_color = validated.flag_color as ynab.TransactionFlagColor | null;
 
   const response = await client.updateTransaction(budgetId, validated.transaction_id, {
     transaction: updateData,
