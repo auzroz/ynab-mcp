@@ -164,7 +164,10 @@ export class YnabClient {
     this.assertWriteAllowed('createAccount');
     await this.rateLimiter.acquire();
     // Invalidate accounts cache after creating
+    // Also invalidate budgets cache since getBudgets(true) includes account data
     this.cache.delete(`accounts:${budgetId}`);
+    this.cache.delete('budgets:true');
+    this.cache.delete('budgets:false');
 
     const auditLog = getAuditLog();
     try {

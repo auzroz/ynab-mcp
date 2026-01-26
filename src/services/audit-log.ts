@@ -136,7 +136,7 @@ export class AuditLog {
     // Return most recent first
     filtered.reverse();
 
-    if (options.limit) {
+    if (options.limit !== undefined) {
       filtered = filtered.slice(0, options.limit);
     }
 

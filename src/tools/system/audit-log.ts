@@ -66,6 +66,7 @@ Shows all create, update, and delete operations with timestamps.`,
         description: 'Maximum entries to return (default 20)',
         minimum: 1,
         maximum: 100,
+        default: 20,
       },
       summary_only: {
         type: 'boolean',
@@ -88,52 +89,75 @@ export async function handleAuditLog(
   const validated = inputSchema.parse(args);
   const auditLog = getAuditLog();
 
+  // Build filter options (applies to both summary_only and full response)
+  const filterOptions: {
+    operation?: string;
+    resourceType?: string;
+    success?: boolean;
+    limit?: number;
+  } = {};
+
+  if (validated.operation !== undefined) filterOptions.operation = validated.operation;
+  if (validated.resource_type !== undefined) filterOptions.resourceType = validated.resource_type;
+  if (validated.success !== undefined) filterOptions.success = validated.success;
+
+  // Check if any filters are applied
+  const hasFilters = validated.operation !== undefined ||
+    validated.resource_type !== undefined ||
+    validated.success !== undefined;
+
   if (validated.summary_only) {
-    const summary = auditLog.getSummary();
-    // Normalize to snake_case to match full response schema
+    // Get filtered entries (without limit) to compute accurate summary
+    const filteredEntries = auditLog.getFiltered(filterOptions);
+
+    // Compute summary from filtered entries
+    let successCount = 0;
+    let failureCount = 0;
+    for (const entry of filteredEntries) {
+      if (entry.success) {
+        successCount++;
+      } else {
+        failureCount++;
+      }
+    }
+
     const summaryOut = {
-      total_operations: summary.totalOperations,
-      success_count: summary.successCount,
-      failure_count: summary.failureCount,
+      total_operations: filteredEntries.length,
+      success_count: successCount,
+      failure_count: failureCount,
     };
+
     return JSON.stringify(
       {
         summary: summaryOut,
+        ...(hasFilters ? { filters_applied: true } : {}),
         message:
           summaryOut.total_operations === 0
-            ? 'No write operations have been performed yet'
-            : `${summaryOut.total_operations} operations logged`,
+            ? hasFilters
+              ? 'No matching audit log entries found'
+              : 'No write operations have been performed yet'
+            : `${summaryOut.total_operations} operations logged${hasFilters ? ' (filtered)' : ''}`,
       },
       null,
       2
     );
   }
 
-  const filterOptions: {
-    operation?: string;
-    resourceType?: string;
-    success?: boolean;
-    limit: number;
-  } = {
-    limit: validated.limit ?? 20,
-  };
-
-  if (validated.operation !== undefined) filterOptions.operation = validated.operation;
-  if (validated.resource_type !== undefined) filterOptions.resourceType = validated.resource_type;
-  if (validated.success !== undefined) filterOptions.success = validated.success;
-
+  // Full response - apply limit
+  filterOptions.limit = validated.limit ?? 20;
   const entries = auditLog.getFiltered(filterOptions);
 
-  const summary = auditLog.getSummary();
+  // Get global summary for context (unfiltered)
+  const globalSummary = auditLog.getSummary();
 
   return JSON.stringify(
     {
       entries,
       count: entries.length,
       summary: {
-        total_operations: summary.totalOperations,
-        success_count: summary.successCount,
-        failure_count: summary.failureCount,
+        total_operations: globalSummary.totalOperations,
+        success_count: globalSummary.successCount,
+        failure_count: globalSummary.failureCount,
       },
       message:
         entries.length === 0

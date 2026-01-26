@@ -198,7 +198,9 @@ export async function handleSpendingPace(
         total_budgeted: formatCurrency(totalBudgeted),
         total_spent: formatCurrency(totalSpent),
         remaining: formatCurrency(totalRemaining),
-        percent_spent: totalBudgeted > 0 ? `${Math.round((totalSpent / totalBudgeted) * 100)}%` : '0%',
+        percent_spent: totalBudgeted > 0
+          ? `${Math.round((totalSpent / totalBudgeted) * 100)}%`
+          : (totalSpent > 0 ? 'N/A (no budget)' : '0%'),
         daily_target: formatCurrency(overallDailyTarget),
         daily_actual: formatCurrency(overallDailyActual),
         daily_allowance_remaining: formatCurrency(dailyAllowanceRemaining),
