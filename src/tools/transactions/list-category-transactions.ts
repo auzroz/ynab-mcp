@@ -62,8 +62,10 @@ Requires a category_id. Use ynab_list_categories first to find the category ID.`
           'Only return transactions on or after this date. Accepts YYYY-MM-DD or natural language like "past 30 days"',
       },
       limit: {
-        type: 'number',
+        type: 'integer',
         description: 'Maximum number of transactions to return (default 100, max 500)',
+        minimum: 1,
+        maximum: 500,
       },
     },
     required: ['category_id'],

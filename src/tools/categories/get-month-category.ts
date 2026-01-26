@@ -15,7 +15,7 @@ const inputSchema = z.object({
   budget_id: z
     .string()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   month: z
     .string()
     .regex(/^\d{4}-\d{2}-01$/, 'Month must be first-of-month format (YYYY-MM-01)')
@@ -41,7 +41,7 @@ Requires a category_id. Use ynab_list_categories first to find the category ID.`
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       month: {
         type: 'string',

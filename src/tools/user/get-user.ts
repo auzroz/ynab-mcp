@@ -9,7 +9,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 
 // Input schema (no parameters needed)
-const inputSchema = z.object({});
+const inputSchema = z.object({}).strict();
 
 // Tool definition
 export const getUserTool: Tool = {
@@ -25,6 +25,7 @@ Returns the user's ID.`,
   inputSchema: {
     type: 'object',
     properties: {},
+    additionalProperties: false,
   },
 };
 

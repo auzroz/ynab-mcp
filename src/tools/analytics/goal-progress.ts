@@ -16,7 +16,7 @@ const inputSchema = z.object({
   budget_id: z
     .string()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   filter: z
     .enum(['all', 'on_track', 'behind', 'underfunded', 'complete'])
     .optional()
@@ -41,7 +41,7 @@ Returns goal progress, funding status, and projections for each category with a 
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       filter: {
         type: 'string',

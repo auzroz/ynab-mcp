@@ -98,24 +98,26 @@ export async function handleBudgetSuggestions(
   // Note: For new budgets with insufficient history, some month fetches may fail.
   // We use Promise.allSettled for historical months to gracefully handle this,
   // allowing the tool to work with whatever history is available.
+  // Each promise result is paired with its month string to ensure correct alignment.
   const [categoriesResponse, currentMonthResponse, ...historicalMonthResults] =
     await Promise.all([
       client.getCategories(budgetId),
       client.getBudgetMonth(budgetId, currentMonth),
       ...months.map((m) =>
         client.getBudgetMonth(budgetId, m).then(
-          (response) => ({ status: 'fulfilled' as const, value: response }),
-          (error) => ({ status: 'rejected' as const, reason: error })
+          (response) => ({ status: 'fulfilled' as const, month: m, value: response }),
+          (error) => ({ status: 'rejected' as const, month: m, reason: error })
         )
       ),
     ]);
 
-  // Filter to only successful month fetches
-  const historicalMonthResponses = historicalMonthResults
-    .filter((result): result is { status: 'fulfilled'; value: Awaited<ReturnType<typeof client.getBudgetMonth>> } =>
+  // Filter to only successful month fetches, extracting both values and months in single pass
+  const fulfilledResults = historicalMonthResults.filter(
+    (result): result is { status: 'fulfilled'; month: string; value: Awaited<ReturnType<typeof client.getBudgetMonth>> } =>
       result.status === 'fulfilled'
-    )
-    .map((result) => result.value);
+  );
+  const historicalMonthResponses = fulfilledResults.map((result) => result.value);
+  const successfulMonths = fulfilledResults.map((result) => result.month);
 
   // If no historical data available, return early with helpful message
   if (historicalMonthResponses.length === 0) {
@@ -265,7 +267,7 @@ export async function handleBudgetSuggestions(
       analysis_period: {
         months_requested: monthCount,
         months_available: historicalMonthResponses.length,
-        months: months.slice(0, historicalMonthResponses.length),
+        months: successfulMonths,
       },
       summary: {
         categories_analyzed: suggestions.length,

@@ -36,7 +36,7 @@ Requires an account_id. Use ynab_list_accounts first to find the account ID.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       account_id: {
         type: 'string',
@@ -74,7 +74,6 @@ export async function handleGetAccount(
         balance: formatCurrency(account.balance),
         cleared_balance: formatCurrency(account.cleared_balance),
         uncleared_balance: formatCurrency(account.uncleared_balance),
-        transfer_payee_id: account.transfer_payee_id,
         direct_import_linked: account.direct_import_linked,
         direct_import_in_error: account.direct_import_in_error,
         last_reconciled_at: account.last_reconciled_at,

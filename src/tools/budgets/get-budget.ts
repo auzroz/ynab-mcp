@@ -57,6 +57,11 @@ export async function handleGetBudget(
   const response = await client.getBudgetById(budgetId, lastKnowledge);
   const budget = response.data.budget;
 
+  // Persist server_knowledge for subsequent delta sync calls
+  if (response.data.server_knowledge !== undefined) {
+    client.updateServerKnowledge(budgetId, response.data.server_knowledge);
+  }
+
   // Helper to format currency using budget's format if available
   // Sanitize currency_format fields with defensive defaults
   const sanitizedCurrencyFormat = budget.currency_format

@@ -176,13 +176,11 @@ export async function handleSpendingPace(
     overallMessage = 'Spending is on pace with budget';
   }
 
-  // Count statuses
-  const statusCounts = {
-    overspent: categoryPaces.filter((c) => c.status === 'overspent').length,
-    behind: categoryPaces.filter((c) => c.status === 'behind').length,
-    on_track: categoryPaces.filter((c) => c.status === 'on_track').length,
-    ahead: categoryPaces.filter((c) => c.status === 'ahead').length,
-  };
+  // Count statuses (single-pass for efficiency)
+  const statusCounts = { overspent: 0, behind: 0, on_track: 0, ahead: 0 };
+  for (const c of categoryPaces) {
+    statusCounts[c.status]++;
+  }
 
   return JSON.stringify(
     {

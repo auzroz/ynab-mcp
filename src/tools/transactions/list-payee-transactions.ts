@@ -53,6 +53,7 @@ Requires a payee_id. Use ynab_list_payees first to find the payee ID.`,
       },
       payee_id: {
         type: 'string',
+        format: 'uuid',
         description: 'The payee UUID to get transactions for',
       },
       since_date: {

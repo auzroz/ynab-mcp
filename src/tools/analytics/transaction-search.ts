@@ -78,14 +78,17 @@ Supports filtering by payee, category, amount range, date range, and text search
       },
       query: {
         type: 'string',
+        maxLength: 500,
         description: 'Search text to match in payee name, memo, or category',
       },
       payee: {
         type: 'string',
+        maxLength: 200,
         description: 'Filter by payee name (partial match)',
       },
       category: {
         type: 'string',
+        maxLength: 200,
         description: 'Filter by category name (partial match)',
       },
       min_amount: {
@@ -110,8 +113,10 @@ Supports filtering by payee, category, amount range, date range, and text search
         description: 'Filter by transaction type',
       },
       limit: {
-        type: 'number',
+        type: 'integer',
         description: 'Maximum results to return (default 25)',
+        minimum: 1,
+        maximum: 100,
       },
     },
     required: [],
@@ -238,16 +243,20 @@ export async function handleTransactionSearch(
   const limitedTransactions = transactions.slice(0, limit);
 
   // Format results
-  const results: SearchResult[] = limitedTransactions.map((t) => ({
-    date: t.date,
-    payee: sanitizeName(t.payee_name),
-    category: t.category_id ? sanitizeName(categoryLookup.get(t.category_id) ?? '') || null : null,
-    amount: formatCurrency(t.amount),
-    amount_raw: t.amount,
-    memo: sanitizeMemo(t.memo),
-    account: sanitizeName(accountLookup.get(t.account_id) ?? 'Unknown'),
-    cleared: String(t.cleared),
-  }));
+  const results: SearchResult[] = limitedTransactions.map((t) => {
+    // Return null for category if lookup fails (category not found) rather than 'Unknown'
+    const categoryName = t.category_id ? categoryLookup.get(t.category_id) : undefined;
+    return {
+      date: t.date,
+      payee: sanitizeName(t.payee_name),
+      category: categoryName !== undefined ? sanitizeName(categoryName) : null,
+      amount: formatCurrency(t.amount),
+      amount_raw: t.amount,
+      memo: sanitizeMemo(t.memo),
+      account: sanitizeName(accountLookup.get(t.account_id) ?? 'Unknown'),
+      cleared: String(t.cleared),
+    };
+  });
 
   // Calculate summary stats
   const totalAmount = sumMilliunits(transactions.map((t) => t.amount));

@@ -14,6 +14,11 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+  include_ids: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe('Include imported transaction IDs in the response'),
 });
 
 // Tool definition
@@ -29,7 +34,7 @@ Use when the user asks:
 - "Pull in new transactions"
 
 Initiates a file-based import for accounts that have direct import enabled.
-Returns the list of transaction IDs that were imported.
+Returns the count of transactions that were imported.
 
 Note: This is a WRITE operation that requires write mode to be enabled.`,
   inputSchema: {
@@ -38,6 +43,10 @@ Note: This is a WRITE operation that requires write mode to be enabled.`,
       budget_id: {
         type: 'string',
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+      },
+      include_ids: {
+        type: 'boolean',
+        description: 'Include imported transaction IDs in the response',
       },
     },
     required: [],
@@ -66,7 +75,7 @@ export async function handleImportTransactions(
           ? `Successfully imported ${importedIds.length} transaction(s)`
           : 'No new transactions to import',
       imported_count: importedIds.length,
-      transaction_ids: importedIds,
+      ...(validated.include_ids ? { transaction_ids: importedIds } : {}),
       note: 'Imported transactions may need to be categorized',
     },
     null,

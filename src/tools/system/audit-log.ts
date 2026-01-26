@@ -62,8 +62,10 @@ Shows all create, update, and delete operations with timestamps.`,
         description: 'Filter by success/failure',
       },
       limit: {
-        type: 'number',
+        type: 'integer',
         description: 'Maximum entries to return (default 20)',
+        minimum: 1,
+        maximum: 100,
       },
       summary_only: {
         type: 'boolean',

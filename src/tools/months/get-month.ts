@@ -78,37 +78,51 @@ export async function handleGetMonth(
 
   const month = monthResponse.data.month;
 
-  // Build category group ID to name lookup
-  const groupNameLookup = new Map<string, string>();
+  // Build category group lookup (id -> {id, name})
+  const groupLookup = new Map<string, { id: string; name: string }>();
   for (const group of categoriesResponse.data.category_groups) {
-    groupNameLookup.set(group.id, group.name);
+    groupLookup.set(group.id, { id: group.id, name: group.name });
   }
 
-  // Group categories by category group name (not ID)
-  const categoriesByGroup: Record<
-    string,
-    Array<{
-      name: string;
-      budgeted: string;
-      activity: string;
-      balance: string;
-    }>
-  > = {};
+  // Category type for group entries
+  type CategoryInfo = {
+    name: string;
+    budgeted: string;
+    activity: string;
+    balance: string;
+  };
+
+  // Group categories using Map keyed by group_id (safe internal key)
+  const groupMap = new Map<string, { group_id: string; group_name: string; categories: CategoryInfo[] }>();
 
   for (const category of month.categories) {
     if (category.hidden) continue;
 
-    const groupName = sanitizeName(groupNameLookup.get(category.category_group_id) ?? 'Other');
-    if (categoriesByGroup[groupName] === undefined) {
-      categoriesByGroup[groupName] = [];
+    const groupId = category.category_group_id;
+    const groupInfo = groupLookup.get(groupId);
+    const groupName = sanitizeName(groupInfo?.name ?? 'Other');
+
+    let groupEntry = groupMap.get(groupId);
+    if (groupEntry === undefined) {
+      groupEntry = {
+        group_id: groupId,
+        group_name: groupName,
+        categories: [],
+      };
+      groupMap.set(groupId, groupEntry);
     }
-    categoriesByGroup[groupName].push({
+    groupEntry.categories.push({
       name: sanitizeName(category.name),
       budgeted: formatCurrency(category.budgeted),
       activity: formatCurrency(category.activity),
       balance: formatCurrency(category.balance),
     });
   }
+
+  // Convert to array and sort alphabetically by group name
+  const categoriesByGroup = Array.from(groupMap.values()).sort((a, b) =>
+    a.group_name.localeCompare(b.group_name)
+  );
 
   return JSON.stringify(
     {
@@ -122,10 +136,7 @@ export async function handleGetMonth(
         age_of_money: month.age_of_money,
       },
       category_count: month.categories.filter((c) => !c.hidden).length,
-      categories_by_group: Object.entries(categoriesByGroup).map(([groupName, categories]) => ({
-        group_name: groupName,
-        categories: categories,
-      })),
+      categories_by_group: categoriesByGroup,
     },
     null,
     2

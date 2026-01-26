@@ -16,7 +16,7 @@ const inputSchema = z.object({
   budget_id: z
     .string()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
 
 // Tool definition
@@ -37,7 +37,7 @@ Returns side-by-side comparison of spending, income, and category performance.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
     },
     required: [],
@@ -88,7 +88,8 @@ export async function handleMonthlyComparison(
   }
 
   // Calculate overall metrics for current month
-  let currentIncome = 0;
+  // Use the month's income field directly rather than summing category activity
+  const currentIncome = currentData.income ?? 0;
   let currentSpending = 0;
   let currentBudgeted = 0;
 
@@ -99,13 +100,12 @@ export async function handleMonthlyComparison(
     currentBudgeted += cat.budgeted;
     if (cat.activity < 0) {
       currentSpending += Math.abs(cat.activity);
-    } else if (cat.activity > 0) {
-      currentIncome += cat.activity;
     }
   }
 
   // Calculate overall metrics for previous month
-  let previousIncome = 0;
+  // Use the month's income field directly rather than summing category activity
+  const previousIncome = previousData.income ?? 0;
   let previousSpending = 0;
   let previousBudgeted = 0;
 
@@ -116,8 +116,6 @@ export async function handleMonthlyComparison(
     previousBudgeted += cat.budgeted;
     if (cat.activity < 0) {
       previousSpending += Math.abs(cat.activity);
-    } else if (cat.activity > 0) {
-      previousIncome += cat.activity;
     }
   }
 

@@ -15,12 +15,13 @@ const inputSchema = z.object({
   budget_id: z
     .string()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   account_id: z
     .string()
+    .uuid()
     .optional()
-    .describe('Specific account ID to check (optional, shows all if not specified)'),
-});
+    .describe('Specific account UUID to check (optional, shows all if not specified)'),
+}).strict();
 
 // Tool definition
 export const reconciliationHelperTool: Tool = {
@@ -40,14 +41,16 @@ Returns uncleared transactions organized by account with totals.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       account_id: {
         type: 'string',
+        format: 'uuid',
         description: 'Specific account ID to check (optional)',
       },
     },
     required: [],
+    additionalProperties: false,
   },
 };
 

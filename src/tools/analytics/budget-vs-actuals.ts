@@ -19,7 +19,7 @@ const inputSchema = z.object({
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   month: z
     .string()
-    .regex(/^\d{4}-\d{2}-01$/, 'Month must be first-of-month format (YYYY-MM-01)')
+    .regex(/^\d{4}-(0[1-9]|1[0-2])-01$/, 'Month must be first-of-month format (YYYY-MM-01) with valid month (01-12)')
     .optional()
     .describe('Month to analyze in YYYY-MM-01 format (first of month). Defaults to current month'),
   include_previous: z

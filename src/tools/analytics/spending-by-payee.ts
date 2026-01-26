@@ -59,20 +59,21 @@ Returns top payees ranked by total spending with transaction counts and averages
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       months: {
-        type: 'number',
+        type: 'integer',
         description: 'Number of months to analyze (1-12, default 3)',
         minimum: 1,
         maximum: 12,
       },
       limit: {
-        type: 'number',
+        type: 'integer',
         description: 'Maximum number of payees to return (1-50, default 20)',
         minimum: 1,
         maximum: 50,
       },
       min_transactions: {
-        type: 'number',
+        type: 'integer',
         description: 'Minimum transactions to include payee (default 1)',
+        minimum: 1,
       },
     },
     required: [],
@@ -180,8 +181,8 @@ export async function handleSpendingByPayee(
       }
     }
 
-    // Sort dates
-    const sortedDates = data.dates.sort();
+    // Sort dates (copy to avoid mutating original array)
+    const sortedDates = [...data.dates].sort();
     const firstDate = sortedDates[0] ?? '';
     const lastDate = sortedDates[sortedDates.length - 1] ?? '';
 
