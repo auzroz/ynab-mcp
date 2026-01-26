@@ -128,6 +128,7 @@ export async function handleBudgetSuggestions(
         analysis_period: {
           months_requested: monthCount,
           months_available: 0,
+          months: [],
         },
         tips: [
           'Budget suggestions require historical spending data',

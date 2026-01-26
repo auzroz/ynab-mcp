@@ -65,7 +65,7 @@ export async function handleImportTransactions(
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
   const response = await client.importTransactions(budgetId);
-  const importedIds = response.data.transaction_ids;
+  const importedIds = response.data.transaction_ids ?? [];
 
   return JSON.stringify(
     {

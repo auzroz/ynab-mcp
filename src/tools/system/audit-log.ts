@@ -73,6 +73,7 @@ Shows all create, update, and delete operations with timestamps.`,
       },
     },
     required: [],
+    additionalProperties: false,
   },
 };
 

@@ -62,7 +62,9 @@ Requires a payee_id. Use ynab_list_payees first to find the payee ID.`,
           'Only return transactions on or after this date. Accepts YYYY-MM-DD or natural language like "past 30 days"',
       },
       limit: {
-        type: 'number',
+        type: 'integer',
+        minimum: 1,
+        maximum: 500,
         description: 'Maximum number of transactions to return (default 100, max 500)',
       },
     },
@@ -91,13 +93,10 @@ export async function handleListPayeeTransactions(
     sinceDate
   );
 
-  let transactions = response.data.transactions.slice();
-
-  // Sort by date descending
-  transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-  // Apply limit
-  transactions = transactions.slice(0, limit);
+  // Sort by date descending and apply limit (avoid mutating response)
+  const transactions = [...response.data.transactions]
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    .slice(0, limit);
 
   // Calculate summary - separate inflows and outflows for clarity
   const outflows = transactions.filter((t) => t.amount < 0);

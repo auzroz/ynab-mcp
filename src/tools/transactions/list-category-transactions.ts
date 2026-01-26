@@ -93,13 +93,10 @@ export async function handleListCategoryTransactions(
     sinceDate
   );
 
-  let transactions = response.data.transactions;
-
-  // Sort by date descending
-  transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-  // Apply limit
-  transactions = transactions.slice(0, limit);
+  // Sort by date descending and apply limit (avoid mutating response)
+  const transactions = [...response.data.transactions]
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    .slice(0, limit);
 
   // Calculate summary - only count outflows (negative amounts) as spending
   const outflows = transactions.filter((t) => t.amount < 0);

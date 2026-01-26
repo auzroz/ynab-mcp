@@ -155,7 +155,11 @@ export async function handleReconciliationHelper(
     const unclearedTxn: UnclearedTransaction = {
       date: txn.date,
       payee: sanitizeName(txn.payee_name ?? ''),
-      category: txn.category_id ? sanitizeName(categoryLookup.get(txn.category_id) ?? '') || null : null,
+      category: txn.category_id
+        ? (categoryLookup.get(txn.category_id)
+            ? sanitizeName(categoryLookup.get(txn.category_id)!)
+            : null)
+        : null,
       amount: formatCurrency(txn.amount),
       amount_raw: txn.amount,
       memo: sanitizeMemo(txn.memo),
