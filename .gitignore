@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.local
+.env*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-*
+
+# OS
+.DS_Store
+Thumbs.db
+*.orig
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Cache
+.cache/
+.eslintcache
+.npm/
+
+# Runtime
+*.pid
+*.seed
+
+# Lock files (optional, uncomment if not committing)
+# package-lock.json
+
+# Claude related files
+CLAUDE.md
+SCRATCHPAD.md
+CLAUDE_CODE_PROMPT.md
+REMEDIATION_PLAN.md
+PLAN.md
+.claude/
+.claude*
+
+# Misc
+*.bak
+*.tmp
+*.temp
