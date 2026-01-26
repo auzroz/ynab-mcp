@@ -90,13 +90,19 @@ export async function handleAuditLog(
 
   if (validated.summary_only) {
     const summary = auditLog.getSummary();
+    // Normalize to snake_case to match full response schema
+    const summaryOut = {
+      total_operations: summary.totalOperations,
+      success_count: summary.successCount,
+      failure_count: summary.failureCount,
+    };
     return JSON.stringify(
       {
-        summary,
+        summary: summaryOut,
         message:
-          summary.totalOperations === 0
+          summaryOut.total_operations === 0
             ? 'No write operations have been performed yet'
-            : `${summary.totalOperations} operations logged`,
+            : `${summaryOut.total_operations} operations logged`,
       },
       null,
       2

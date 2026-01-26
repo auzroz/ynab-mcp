@@ -87,8 +87,9 @@ export async function handleReconciliationHelper(
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
   // Get accounts and transactions (limit to last 90 days for reconciliation)
+  const lookbackDays = 90;
   const sinceDate = new Date();
-  sinceDate.setDate(sinceDate.getDate() - 90);
+  sinceDate.setDate(sinceDate.getDate() - lookbackDays);
   const sinceDateStr = sinceDate.toISOString().split('T')[0] ?? '';
 
   const [accountsResponse, transactionsResponse, categoriesResponse] = await Promise.all([
@@ -225,6 +226,8 @@ export async function handleReconciliationHelper(
       status,
       message,
       summary: {
+        lookback_days: lookbackDays,
+        since_date: sinceDateStr,
         accounts_with_uncleared: accountResults.filter((a) => a.uncleared_count > 0).length,
         total_uncleared_transactions: totalUnclearedCount,
         total_uncleared_amount: formatCurrency(totalUncleared),
