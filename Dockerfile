@@ -27,7 +27,7 @@ RUN npm prune --production
 FROM node:20-alpine3.21 AS production
 
 # Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init
+RUN apk add --no-cache dumb-init=1.2.5-r3
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S mcp && \
