@@ -105,6 +105,18 @@ import {
   getScheduledTransactionTool,
   handleGetScheduledTransaction,
 } from './scheduled-transactions/get-scheduled.js';
+import {
+  createScheduledTransactionTool,
+  handleCreateScheduledTransaction,
+} from './scheduled-transactions/create-scheduled.js';
+import {
+  updateScheduledTransactionTool,
+  handleUpdateScheduledTransaction,
+} from './scheduled-transactions/update-scheduled.js';
+import {
+  deleteScheduledTransactionTool,
+  handleDeleteScheduledTransaction,
+} from './scheduled-transactions/delete-scheduled.js';
 
 // Analytics tools
 import {
@@ -152,6 +164,8 @@ import {
   handleCreditCardStatus,
   ageOfMoneyTool,
   handleAgeOfMoney,
+  previewScheduledTransactionTool,
+  handlePreviewScheduledTransaction,
 } from './analytics/index.js';
 
 // System tools
@@ -204,6 +218,9 @@ export const tools: Tool[] = [
   // Scheduled Transactions
   listScheduledTransactionsTool,
   getScheduledTransactionTool,
+  createScheduledTransactionTool,
+  updateScheduledTransactionTool,
+  deleteScheduledTransactionTool,
   // Analytics
   detectRecurringTool,
   spendingAnalysisTool,
@@ -227,6 +244,7 @@ export const tools: Tool[] = [
   categoryBalancesTool,
   creditCardStatusTool,
   ageOfMoneyTool,
+  previewScheduledTransactionTool,
   // System
   rateLimitStatusTool,
   auditLogTool,
@@ -275,6 +293,9 @@ const handlers: Record<string, ToolHandler> = {
   // Scheduled Transactions
   ynab_list_scheduled_transactions: handleListScheduledTransactions,
   ynab_get_scheduled_transaction: handleGetScheduledTransaction,
+  ynab_create_scheduled_transaction: handleCreateScheduledTransaction,
+  ynab_update_scheduled_transaction: handleUpdateScheduledTransaction,
+  ynab_delete_scheduled_transaction: handleDeleteScheduledTransaction,
   // Analytics
   ynab_detect_recurring: handleDetectRecurring,
   ynab_spending_analysis: handleSpendingAnalysis,
@@ -298,6 +319,7 @@ const handlers: Record<string, ToolHandler> = {
   ynab_category_balances: handleCategoryBalances,
   ynab_credit_card_status: handleCreditCardStatus,
   ynab_age_of_money: handleAgeOfMoney,
+  ynab_preview_scheduled_transaction: handlePreviewScheduledTransaction,
   // System
   ynab_rate_limit_status: handleRateLimitStatus,
   ynab_audit_log: handleAuditLog,

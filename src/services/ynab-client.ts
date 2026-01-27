@@ -505,8 +505,152 @@ export class YnabClient {
     );
   }
 
-  // Note: createScheduledTransaction is not available in the official YNAB JS SDK
-  // The API supports it but the SDK doesn't expose it
+  async createScheduledTransaction(
+    budgetId: string,
+    data: ynab.PostScheduledTransactionWrapper
+  ): Promise<ynab.ScheduledTransactionResponse> {
+    this.assertWriteAllowed('createScheduledTransaction');
+    await this.rateLimiter.acquire();
+
+    const auditLog = getAuditLog();
+    const txn = data.scheduled_transaction;
+    try {
+      const response = await this.api.scheduledTransactions.createScheduledTransaction(
+        budgetId,
+        data
+      );
+      // Redact PII from audit logs - payee_name may contain personal information
+      auditLog.log({
+        operation: 'create',
+        tool: 'ynab_create_scheduled_transaction',
+        budgetId,
+        resourceType: 'scheduled_transaction',
+        resourceId: response.data.scheduled_transaction.id,
+        details: {
+          amount: txn?.amount,
+          date: txn?.date,
+          frequency: txn?.frequency,
+          has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
+          account_id: txn?.account_id,
+        },
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'create',
+        tool: 'ynab_create_scheduled_transaction',
+        budgetId,
+        resourceType: 'scheduled_transaction',
+        details: {
+          amount: txn?.amount,
+          date: txn?.date,
+          frequency: txn?.frequency,
+          has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
+          account_id: txn?.account_id,
+        },
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  async updateScheduledTransaction(
+    budgetId: string,
+    scheduledTransactionId: string,
+    data: ynab.PutScheduledTransactionWrapper
+  ): Promise<ynab.ScheduledTransactionResponse> {
+    this.assertWriteAllowed('updateScheduledTransaction');
+    await this.rateLimiter.acquire();
+
+    const auditLog = getAuditLog();
+    const txn = data.scheduled_transaction;
+    try {
+      const response = await this.api.scheduledTransactions.updateScheduledTransaction(
+        budgetId,
+        scheduledTransactionId,
+        data
+      );
+      // Redact memo from audit logs - may contain sensitive user data
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_scheduled_transaction',
+        budgetId,
+        resourceType: 'scheduled_transaction',
+        resourceId: scheduledTransactionId,
+        details: {
+          amount: txn?.amount,
+          date: txn?.date,
+          frequency: txn?.frequency,
+          has_memo: txn?.memo !== undefined && txn?.memo !== null && txn?.memo !== '',
+          category_id: txn?.category_id,
+        },
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_scheduled_transaction',
+        budgetId,
+        resourceType: 'scheduled_transaction',
+        resourceId: scheduledTransactionId,
+        details: {
+          amount: txn?.amount,
+          date: txn?.date,
+          frequency: txn?.frequency,
+          has_memo: txn?.memo !== undefined && txn?.memo !== null && txn?.memo !== '',
+          category_id: txn?.category_id,
+        },
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  async deleteScheduledTransaction(
+    budgetId: string,
+    scheduledTransactionId: string
+  ): Promise<ynab.ScheduledTransactionResponse> {
+    this.assertWriteAllowed('deleteScheduledTransaction');
+    await this.rateLimiter.acquire();
+
+    const auditLog = getAuditLog();
+    try {
+      const response = await this.api.scheduledTransactions.deleteScheduledTransaction(
+        budgetId,
+        scheduledTransactionId
+      );
+      // Redact PII from audit logs - payee_name may contain personal information
+      auditLog.log({
+        operation: 'delete',
+        tool: 'ynab_delete_scheduled_transaction',
+        budgetId,
+        resourceType: 'scheduled_transaction',
+        resourceId: scheduledTransactionId,
+        details: {
+          deleted_amount: response.data.scheduled_transaction.amount,
+          deleted_date: response.data.scheduled_transaction.date_next,
+        },
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'delete',
+        tool: 'ynab_delete_scheduled_transaction',
+        budgetId,
+        resourceType: 'scheduled_transaction',
+        resourceId: scheduledTransactionId,
+        details: {},
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
 
   // ==================== Payees ====================
 

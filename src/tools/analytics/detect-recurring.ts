@@ -10,6 +10,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import type { ScheduledFrequency } from '../../utils/scheduled-constants.js';
 import DecimalJS from 'decimal.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
@@ -68,6 +69,9 @@ Analyzes transaction history to find patterns and estimates monthly costs.`,
   },
 };
 
+// Use shared type from scheduled-constants
+type YnabFrequency = ScheduledFrequency;
+
 interface RecurringTransaction {
   payee_name: string;
   category_name: string | null;
@@ -79,6 +83,14 @@ interface RecurringTransaction {
   total_spent: string;
   monthly_cost: string;
   confidence: 'high' | 'medium' | 'low';
+  // Conversion fields for scheduled transaction creation
+  payee_id: string;
+  account_id: string;
+  category_id: string | null;
+  average_amount_milliunits: number;
+  suggested_frequency: YnabFrequency | null;
+  can_convert: boolean;
+  conversion_notes: string | null;
 }
 
 // Handler function
@@ -114,7 +126,12 @@ export async function handleDetectRecurring(
       payee_name: string;
       payee_id: string;
       category_name: string | null;
-      transactions: { date: string; amount: number }[];
+      transactions: {
+        date: string;
+        amount: number;
+        account_id: string;
+        category_id: string | null;
+      }[];
     }
   >();
 
@@ -138,6 +155,8 @@ export async function handleDetectRecurring(
     byPayee.get(payeeId)!.transactions.push({
       date: txn.date,
       amount: txn.amount,
+      account_id: txn.account_id,
+      category_id: txn.category_id ?? null,
     });
   }
 
@@ -190,6 +209,23 @@ export async function handleDetectRecurring(
     const lastDate = lastTxn.date;
     const nextExpected = predictNextDate(lastDate, avgInterval);
 
+    // Find most common account_id and category_id
+    const accountIds = data.transactions.map((t) => t.account_id);
+    const categoryIds = data.transactions
+      .map((t) => t.category_id)
+      .filter((id): id is string => id !== null);
+
+    const mostCommonAccountId = findMostCommon(accountIds);
+    const mostCommonCategoryId = findMostCommon(categoryIds);
+
+    // Map to YNAB frequency and determine conversion eligibility
+    const suggestedFrequency = mapToYnabFrequency(frequency);
+    const { can_convert, conversion_notes } = getConversionInfo(
+      frequency,
+      confidence,
+      suggestedFrequency
+    );
+
     recurring.push({
       payee_name: sanitizeName(data.payee_name),
       category_name: data.category_name ? sanitizeName(data.category_name) : null,
@@ -201,6 +237,14 @@ export async function handleDetectRecurring(
       total_spent: formatCurrency(totalSpent),
       monthly_cost: formatCurrency(monthlyCost),
       confidence,
+      // Conversion fields
+      payee_id: data.payee_id,
+      account_id: mostCommonAccountId ?? lastTxn.account_id,
+      category_id: mostCommonCategoryId,
+      average_amount_milliunits: Math.round(avgAmount),
+      suggested_frequency: suggestedFrequency,
+      can_convert,
+      conversion_notes,
     });
   }
 
@@ -327,4 +371,96 @@ function predictNextDate(lastDate: string, avgInterval: number): string | null {
   }
 
   return null;
+}
+
+/**
+ * Find the most common value in an array of strings.
+ * Returns the first value if there's a tie.
+ */
+function findMostCommon(values: string[]): string | null {
+  if (values.length === 0) return null;
+
+  const counts = new Map<string, number>();
+  for (const val of values) {
+    counts.set(val, (counts.get(val) ?? 0) + 1);
+  }
+
+  let maxCount = 0;
+  let mostCommon: string | null = null;
+  for (const [val, count] of counts) {
+    if (count > maxCount) {
+      maxCount = count;
+      mostCommon = val;
+    }
+  }
+
+  return mostCommon;
+}
+
+/**
+ * Map detected frequency to YNAB API frequency enum.
+ * Returns null if the frequency cannot be converted.
+ */
+function mapToYnabFrequency(
+  frequency: RecurringTransaction['frequency']
+): YnabFrequency | null {
+  switch (frequency) {
+    case 'weekly':
+      return 'weekly';
+    case 'biweekly':
+      return 'everyOtherWeek';
+    case 'monthly':
+      return 'monthly';
+    case 'quarterly':
+      return 'every3Months';
+    case 'annual':
+      return 'yearly';
+    case 'irregular':
+      return null; // Cannot convert irregular patterns
+    default:
+      return null;
+  }
+}
+
+/**
+ * Determine if a recurring pattern can be converted to a scheduled transaction.
+ * Returns conversion notes explaining why or why not.
+ */
+function getConversionInfo(
+  frequency: RecurringTransaction['frequency'],
+  confidence: RecurringTransaction['confidence'],
+  suggestedFrequency: YnabFrequency | null
+): { can_convert: boolean; conversion_notes: string | null } {
+  if (frequency === 'irregular') {
+    return {
+      can_convert: false,
+      conversion_notes: 'Pattern is too irregular to convert to a scheduled transaction',
+    };
+  }
+
+  if (suggestedFrequency === null) {
+    return {
+      can_convert: false,
+      conversion_notes: 'Frequency cannot be mapped to a YNAB scheduled frequency',
+    };
+  }
+
+  if (confidence === 'low') {
+    return {
+      can_convert: true,
+      conversion_notes: 'Low confidence pattern - verify amount and frequency before converting',
+    };
+  }
+
+  if (confidence === 'medium') {
+    return {
+      can_convert: true,
+      conversion_notes: 'Medium confidence - pattern is reasonably consistent',
+    };
+  }
+
+  return {
+    can_convert: true,
+    conversion_notes: null, // High confidence, no notes needed
+  };
 }
