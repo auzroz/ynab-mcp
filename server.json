@@ -1,0 +1,100 @@
+{
+  "$schema": "https://registry.modelcontextprotocol.io/schemas/server.json",
+  "namespace": "io.github.auzroz",
+  "name": "ynab-mcp",
+  "display_name": "YNAB Budget Assistant",
+  "description": "Complete YNAB (You Need A Budget) API coverage for Claude. Manage budgets, transactions, accounts, categories, goals, and get spending analytics.",
+  "repository": {
+    "url": "https://github.com/auzroz/ynab-mcp",
+    "source": "github"
+  },
+  "license": "MIT",
+  "packages": [
+    {
+      "registry_name": "npm",
+      "name": "ynab-mcp-server",
+      "runtime": "node",
+      "runtime_arguments": [],
+      "package_arguments": []
+    },
+    {
+      "registry_name": "docker",
+      "name": "ghcr.io/auzroz/ynab-mcp",
+      "runtime_arguments": [
+        "run",
+        "-i",
+        "--rm"
+      ],
+      "package_arguments": []
+    }
+  ],
+  "tools": [
+    "ynab_list_budgets",
+    "ynab_get_budget",
+    "ynab_get_budget_settings",
+    "ynab_list_accounts",
+    "ynab_get_account",
+    "ynab_create_account",
+    "ynab_list_categories",
+    "ynab_get_category",
+    "ynab_get_category_month",
+    "ynab_update_category",
+    "ynab_list_payees",
+    "ynab_get_payee",
+    "ynab_list_transactions",
+    "ynab_get_transaction",
+    "ynab_create_transaction",
+    "ynab_update_transaction",
+    "ynab_delete_transaction",
+    "ynab_import_transactions",
+    "ynab_list_scheduled_transactions",
+    "ynab_get_scheduled_transaction",
+    "ynab_create_scheduled_transaction",
+    "ynab_update_scheduled_transaction",
+    "ynab_delete_scheduled_transaction",
+    "ynab_list_months",
+    "ynab_get_month",
+    "ynab_get_user",
+    "ynab_analyze_spending",
+    "ynab_category_spending",
+    "ynab_payee_spending",
+    "ynab_spending_trends",
+    "ynab_budget_vs_actual",
+    "ynab_goal_progress",
+    "ynab_net_worth",
+    "ynab_cash_flow",
+    "ynab_account_balances",
+    "ynab_upcoming_transactions",
+    "ynab_recurring_transactions",
+    "ynab_overspent_categories",
+    "ynab_underfunded_goals",
+    "ynab_income_vs_expenses",
+    "ynab_category_rollover",
+    "ynab_debt_progress",
+    "ynab_savings_rate",
+    "ynab_daily_spending",
+    "ynab_weekly_summary",
+    "ynab_monthly_summary",
+    "ynab_search_transactions",
+    "ynab_rate_limit_status",
+    "ynab_audit_log",
+    "ynab_health_check"
+  ],
+  "environment_variables": [
+    {
+      "name": "YNAB_ACCESS_TOKEN",
+      "description": "Your YNAB Personal Access Token. Get one at https://app.ynab.com/settings/developer",
+      "required": true
+    },
+    {
+      "name": "YNAB_BUDGET_ID",
+      "description": "Default budget ID to use when not specified. Optional - will use 'last-used' if not set.",
+      "required": false
+    },
+    {
+      "name": "YNAB_READ_ONLY",
+      "description": "Set to 'true' to disable all write operations (create, update, delete). Defaults to true for safety.",
+      "required": false
+    }
+  ]
+}

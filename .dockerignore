@@ -1,0 +1,51 @@
+# Dependencies
+node_modules
+
+# Build output (will be rebuilt in container)
+dist
+
+# Git
+.git
+.gitignore
+
+# Tests
+tests
+coverage
+*.test.ts
+vitest.config.ts
+
+# IDE and Editor
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment and secrets
+.env
+.env.*
+*.env
+
+# Documentation and development files
+*.md
+!README.md
+docs
+
+# Docker files (not needed inside container)
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# GitHub workflows
+.github
+
+# npm
+.npmrc
+.npmignore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+*.tmp
