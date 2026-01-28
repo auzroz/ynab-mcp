@@ -1,6 +1,6 @@
 {
   "name": "ynab-mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "MCP server providing complete YNAB API coverage for Claude integration",
   "mcpName": "io.github.auzroz/ynab-mcp",
   "type": "module",
@@ -34,6 +34,10 @@
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/auzroz/ynab-mcp.git"
+  },
   "engines": {
     "node": ">=20.0.0"
   },
