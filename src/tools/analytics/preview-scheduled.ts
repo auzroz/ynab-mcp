@@ -165,6 +165,12 @@ function calculateDefaultStartDate(frequency: string): string {
  */
 function calculateNextOccurrences(startDate: string, frequency: string, count: number): string[] {
   const occurrences: string[] = [startDate];
+
+  // One-time transactions don't have additional occurrences
+  if (frequency === 'never') {
+    return occurrences;
+  }
+
   const [year, month, day] = startDate.split('-').map(Number);
 
   if (year === undefined || month === undefined || day === undefined) {
@@ -339,7 +345,7 @@ export async function handlePreviewScheduledTransaction(
     const accountResponse = await client.getAccountById(budgetId, validated.account_id);
     accountName = accountResponse.data.account.name;
   } catch {
-    validationErrors.push(`Account not found: ${validated.account_id}`);
+    validationErrors.push('Account not found');
   }
 
   // Fetch category name if provided
@@ -349,7 +355,7 @@ export async function handlePreviewScheduledTransaction(
       const categoryResponse = await client.getCategoryById(budgetId, validated.category_id);
       categoryName = categoryResponse.data.category.name;
     } catch {
-      validationErrors.push(`Category not found: ${validated.category_id}`);
+      validationErrors.push('Category not found');
     }
   }
 
@@ -360,7 +366,7 @@ export async function handlePreviewScheduledTransaction(
       const payeeResponse = await client.getPayeeById(budgetId, validated.payee_id);
       payeeName = payeeResponse.data.payee.name;
     } catch {
-      validationErrors.push(`Payee not found: ${validated.payee_id}`);
+      validationErrors.push('Payee not found');
     }
   }
 

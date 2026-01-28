@@ -12,6 +12,11 @@
  * @returns Object with valid boolean and optional error message
  */
 export function validateScheduledDate(dateStr: string): { valid: boolean; error?: string } {
+  // Strict format check to reject malformed dates like "2026-01-01-01"
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return { valid: false, error: 'Invalid date format' };
+  }
+
   const [year, month, day] = dateStr.split('-').map(Number);
   if (
     year === undefined || month === undefined || day === undefined ||
