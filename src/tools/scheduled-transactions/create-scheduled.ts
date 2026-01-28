@@ -26,6 +26,7 @@ const inputSchema = z.object({
     .describe('Start date in YYYY-MM-DD format (must be future, max 5 years ahead)'),
   amount: z
     .number()
+    .finite()
     .describe(
       'Amount in dollars (negative for outflow, positive for inflow). E.g., -50.00 for a $50 expense'
     ),

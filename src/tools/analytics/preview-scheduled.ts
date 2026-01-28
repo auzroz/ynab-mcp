@@ -23,6 +23,7 @@ const inputSchema = z.object({
   account_id: z.string().uuid().describe('The account UUID for this scheduled transaction'),
   amount: z
     .number()
+    .finite()
     .describe(
       'Amount in dollars (negative for outflow, positive for inflow). E.g., -50.00 for a $50 expense'
     ),
@@ -279,8 +280,8 @@ function calculateCosts(amountMilliunits: number, frequency: string): { monthly:
       monthlyMultiplier = 1 / 24;
       break;
     case 'never':
-      monthlyMultiplier = 0;
-      break;
+      // One-time transaction: no monthly cost, annual reflects the one-time amount
+      return { monthly: 0, annual: absAmount };
     default:
       monthlyMultiplier = 1;
   }
