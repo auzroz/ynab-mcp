@@ -1,5 +1,7 @@
 # YNAB MCP Server
 
+[![npm version](https://img.shields.io/npm/v/ynab-mcp)](https://www.npmjs.com/package/ynab-mcp)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fauzroz%2Fynab--mcp-blue)](https://github.com/auzroz/ynab-mcp/pkgs/container/ynab-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js 20+](https://img.shields.io/badge/node-20%2B-brightgreen)](https://nodejs.org)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-blue)](https://modelcontextprotocol.io)
@@ -31,57 +33,94 @@ Traditional YNAB integrations require manual API calls or custom scripting. This
 
 ### Prerequisites
 
-- Node.js 20 or later
 - A YNAB account with API access
 - A YNAB Personal Access Token ([get one here](https://app.ynab.com/settings/developer))
 
-### Installation
+### Installation Options
+
+#### Option 1: npx (Easiest)
+
+No installation required—run directly:
+
+```bash
+npx ynab-mcp
+```
+
+#### Option 2: Docker
+
+```bash
+docker run -e YNAB_ACCESS_TOKEN=your_token ghcr.io/auzroz/ynab-mcp:latest
+```
+
+#### Option 3: Install from Source
 
 ```bash
 # Clone the repository
 git clone https://github.com/auzroz/ynab-mcp.git
 cd ynab-mcp
 
-# Install dependencies
+# Install dependencies and build
 npm install
-
-# Copy environment template
-cp .env.example .env
-
-# Edit .env and add your YNAB_ACCESS_TOKEN
-```
-
-### Configuration
-
-Edit `.env` with your settings:
-
-```bash
-# Required: Your YNAB Personal Access Token
-YNAB_ACCESS_TOKEN=your_personal_access_token
-
-# Optional: Default budget UUID (uses "last-used" if not set)
-YNAB_BUDGET_ID=optional_default_budget_uuid
-
-# Optional: Set to false to enable write operations (default: true)
-YNAB_READ_ONLY=true
-```
-
-### Build & Run
-
-```bash
-# Build TypeScript
 npm run build
 
 # Run the server
 npm start
 ```
 
+### Configuration
+
+The server is configured via environment variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `YNAB_ACCESS_TOKEN` | Yes | Your YNAB Personal Access Token |
+| `YNAB_BUDGET_ID` | No | Default budget UUID (uses "last-used" if not set) |
+| `YNAB_READ_ONLY` | No | Set to `false` to enable write operations (default: `true`) |
+
 ### Claude Desktop Integration
 
 Add to your Claude Desktop configuration:
 
-**macOS/Linux:** `~/.config/claude/claude_desktop_config.json`  
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+#### Using npx (Recommended)
+
+```json
+{
+  "mcpServers": {
+    "ynab": {
+      "command": "npx",
+      "args": ["ynab-mcp"],
+      "env": {
+        "YNAB_ACCESS_TOKEN": "your_token_here"
+      }
+    }
+  }
+}
+```
+
+#### Using Docker
+
+```json
+{
+  "mcpServers": {
+    "ynab": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "YNAB_ACCESS_TOKEN",
+        "ghcr.io/auzroz/ynab-mcp:latest"
+      ],
+      "env": {
+        "YNAB_ACCESS_TOKEN": "your_token_here"
+      }
+    }
+  }
+}
+```
+
+#### Using Local Build
 
 ```json
 {
