@@ -47,6 +47,9 @@ const inputSchema = z.object({
     .describe('Category UUID (use ynab_list_categories to find). Credit Card Payment categories NOT allowed.'),
   memo: z.string().max(200).optional().describe('Transaction memo/note'),
   flag_color: z.enum(flagColors).optional().describe('Flag color for the scheduled transaction'),
+}).refine((data) => data.payee_id || data.payee_name, {
+  message: 'Either payee_id or payee_name must be provided',
+  path: ['payee_id'],
 });
 
 // Tool definition

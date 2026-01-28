@@ -47,6 +47,9 @@ const inputSchema = z.object({
     .describe('Start date in YYYY-MM-DD format (defaults to next expected date based on frequency)'),
   memo: z.string().max(200).optional().describe('Transaction memo/note'),
   flag_color: z.enum(flagColors).optional().describe('Flag color'),
+}).refine((data) => data.payee_id || data.payee_name, {
+  message: 'Either payee_id or payee_name must be provided',
+  path: ['payee_id'],
 });
 
 // Tool definition
@@ -333,11 +336,6 @@ export async function handlePreviewScheduledTransaction(
   const dateValidation = validateScheduledDate(startDate);
   if (!dateValidation.valid && dateValidation.error) {
     validationErrors.push(dateValidation.error);
-  }
-
-  // Validate payee
-  if (!validated.payee_id && !validated.payee_name) {
-    validationErrors.push('Either payee_id or payee_name must be provided');
   }
 
   // Fetch account details
