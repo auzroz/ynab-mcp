@@ -12,7 +12,7 @@
   "packages": [
     {
       "registry_name": "npm",
-      "name": "ynab-mcp-server",
+      "name": "ynab-mcp",
       "runtime": "node",
       "runtime_arguments": [],
       "package_arguments": []

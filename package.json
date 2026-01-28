@@ -1,6 +1,6 @@
 {
-  "name": "ynab-mcp-server",
-  "version": "0.1.1",
+  "name": "ynab-mcp",
+  "version": "0.1.2",
   "description": "MCP server providing complete YNAB API coverage for Claude integration",
   "mcpName": "io.github.auzroz/ynab-mcp",
   "type": "module",
