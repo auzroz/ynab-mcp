@@ -121,6 +121,7 @@ function calculateDefaultStartDate(frequency: string): string {
 
   // Default to one interval from today
   switch (frequency) {
+    case 'never':
     case 'daily':
       today.setUTCDate(today.getUTCDate() + 1);
       break;
