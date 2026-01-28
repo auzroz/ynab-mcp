@@ -26,3 +26,7 @@ export { spendingPaceTool, handleSpendingPace } from './spending-pace.js';
 export { categoryBalancesTool, handleCategoryBalances } from './category-balances.js';
 export { creditCardStatusTool, handleCreditCardStatus } from './credit-card-status.js';
 export { ageOfMoneyTool, handleAgeOfMoney } from './age-of-money.js';
+export {
+  previewScheduledTransactionTool,
+  handlePreviewScheduledTransaction,
+} from './preview-scheduled.js';
