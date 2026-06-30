@@ -3,7 +3,7 @@
 /**
  * YNAB MCP Server
  *
- * A Model Context Protocol server providing complete YNAB API coverage
+ * A Model Context Protocol server providing comprehensive YNAB API coverage
  * for integration with Claude and other MCP-compatible clients.
  */
 

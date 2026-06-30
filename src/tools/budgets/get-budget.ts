@@ -55,7 +55,8 @@ export async function handleGetBudget(
   // Use delta sync if we have prior knowledge
   const lastKnowledge = client.getServerKnowledge(budgetId);
   const response = await client.getBudgetById(budgetId, lastKnowledge);
-  const budget = response.data.budget;
+  // ynab v4 renamed the API response's "budget" object to "plan".
+  const budget = response.data.plan;
 
   // Persist server_knowledge for subsequent delta sync calls
   if (response.data.server_knowledge !== undefined) {

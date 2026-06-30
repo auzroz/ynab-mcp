@@ -52,7 +52,8 @@ export async function handleListBudgets(
   const validated = inputSchema.parse(args);
   
   const response = await client.getBudgets(validated.include_accounts ?? false);
-  const budgets = response.data.budgets;
+  // ynab v4 renamed the API response's "budgets" collection to "plans".
+  const budgets = response.data.plans;
 
   const result = budgets.map((budget) => {
     // Sanitize currency_format fields if present

@@ -103,13 +103,13 @@ export class YnabClient {
 
   // ==================== Budgets ====================
 
-  async getBudgets(includeAccounts = false): Promise<ynab.BudgetSummaryResponse> {
+  async getBudgets(includeAccounts = false): Promise<ynab.PlanSummaryResponse> {
     const cacheKey = `budgets:${includeAccounts}`;
-    const cached = this.cache.get<ynab.BudgetSummaryResponse>(cacheKey);
+    const cached = this.cache.get<ynab.PlanSummaryResponse>(cacheKey);
     if (cached !== undefined) return cached;
 
     await this.rateLimiter.acquire();
-    const response = await this.api.budgets.getBudgets(includeAccounts);
+    const response = await this.api.plans.getPlans(includeAccounts);
     this.cache.set(cacheKey, response);
     return response;
   }
@@ -117,24 +117,24 @@ export class YnabClient {
   async getBudgetById(
     budgetId: string,
     lastKnowledgeOfServer?: number
-  ): Promise<ynab.BudgetDetailResponse> {
+  ): Promise<ynab.PlanDetailResponse> {
     await this.rateLimiter.acquire();
-    const response = await this.api.budgets.getBudgetById(budgetId, lastKnowledgeOfServer);
-    
+    const response = await this.api.plans.getPlanById(budgetId, lastKnowledgeOfServer);
+
     if (response.data.server_knowledge !== undefined) {
       this.updateServerKnowledge(budgetId, response.data.server_knowledge);
     }
-    
+
     return response;
   }
 
-  async getBudgetSettingsById(budgetId: string): Promise<ynab.BudgetSettingsResponse> {
+  async getBudgetSettingsById(budgetId: string): Promise<ynab.PlanSettingsResponse> {
     const cacheKey = `budget-settings:${budgetId}`;
-    const cached = this.cache.get<ynab.BudgetSettingsResponse>(cacheKey);
+    const cached = this.cache.get<ynab.PlanSettingsResponse>(cacheKey);
     if (cached !== undefined) return cached;
 
     await this.rateLimiter.acquire();
-    const response = await this.api.budgets.getBudgetSettingsById(budgetId);
+    const response = await this.api.plans.getPlanSettingsById(budgetId);
     this.cache.set(cacheKey, response);
     return response;
   }
@@ -255,6 +255,121 @@ export class YnabClient {
         resourceType: 'category',
         resourceId: categoryId,
         details: { month, budgeted: data.category.budgeted },
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  async createCategory(
+    budgetId: string,
+    data: ynab.PostCategoryWrapper
+  ): Promise<ynab.SaveCategoryResponse> {
+    this.assertWriteAllowed('createCategory');
+    await this.rateLimiter.acquire();
+    // Invalidate categories cache after creating
+    this.cache.delete(`categories:${budgetId}`);
+
+    const auditLog = getAuditLog();
+    try {
+      const response = await this.api.categories.createCategory(budgetId, data);
+      auditLog.log({
+        operation: 'create',
+        tool: 'ynab_create_category',
+        budgetId,
+        resourceType: 'category',
+        resourceId: response.data.category.id,
+        // Category names may be sensitive; log only presence and grouping.
+        details: { has_name: !!data.category.name, category_group_id: data.category.category_group_id },
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'create',
+        tool: 'ynab_create_category',
+        budgetId,
+        resourceType: 'category',
+        details: { has_name: !!data.category.name, category_group_id: data.category.category_group_id },
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  async createCategoryGroup(
+    budgetId: string,
+    data: ynab.PostCategoryGroupWrapper
+  ): Promise<ynab.SaveCategoryGroupResponse> {
+    this.assertWriteAllowed('createCategoryGroup');
+    await this.rateLimiter.acquire();
+    // Invalidate categories cache after creating (groups are returned with categories)
+    this.cache.delete(`categories:${budgetId}`);
+
+    const auditLog = getAuditLog();
+    try {
+      const response = await this.api.categories.createCategoryGroup(budgetId, data);
+      auditLog.log({
+        operation: 'create',
+        tool: 'ynab_create_category_group',
+        budgetId,
+        resourceType: 'category_group',
+        resourceId: response.data.category_group.id,
+        details: { has_name: !!data.category_group.name },
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'create',
+        tool: 'ynab_create_category_group',
+        budgetId,
+        resourceType: 'category_group',
+        details: { has_name: !!data.category_group.name },
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  async updateCategoryGroup(
+    budgetId: string,
+    categoryGroupId: string,
+    data: ynab.PatchCategoryGroupWrapper
+  ): Promise<ynab.SaveCategoryGroupResponse> {
+    this.assertWriteAllowed('updateCategoryGroup');
+    await this.rateLimiter.acquire();
+    // Invalidate categories cache after updating
+    this.cache.delete(`categories:${budgetId}`);
+
+    const auditLog = getAuditLog();
+    try {
+      const response = await this.api.categories.updateCategoryGroup(
+        budgetId,
+        categoryGroupId,
+        data
+      );
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_category_group',
+        budgetId,
+        resourceType: 'category_group',
+        resourceId: categoryGroupId,
+        details: { has_name: !!data.category_group.name },
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_category_group',
+        budgetId,
+        resourceType: 'category_group',
+        resourceId: categoryGroupId,
+        details: { has_name: !!data.category_group.name },
         success: false,
         error: sanitizeErrorMessage(error),
       });
@@ -384,6 +499,43 @@ export class YnabClient {
           has_memo: txn.memo !== undefined && txn.memo !== null && txn.memo !== '',
           category_id: txn.category_id,
         },
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  async updateTransactions(
+    budgetId: string,
+    data: ynab.PatchTransactionsWrapper
+  ): Promise<ynab.SaveTransactionsResponse> {
+    this.assertWriteAllowed('updateTransactions');
+    await this.rateLimiter.acquire();
+
+    const auditLog = getAuditLog();
+    try {
+      const response = await this.api.transactions.updateTransactions(budgetId, data);
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_transactions',
+        budgetId,
+        resourceType: 'transaction',
+        // Bulk operation; log counts only (no PII).
+        details: {
+          requested_count: data.transactions.length,
+          updated_count: response.data.transaction_ids.length,
+        },
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_transactions',
+        budgetId,
+        resourceType: 'transaction',
+        details: { requested_count: data.transactions.length },
         success: false,
         error: sanitizeErrorMessage(error),
       });
@@ -670,6 +822,82 @@ export class YnabClient {
     return this.api.payees.getPayeeById(budgetId, payeeId);
   }
 
+  async createPayee(
+    budgetId: string,
+    data: ynab.PostPayeeWrapper
+  ): Promise<ynab.SavePayeeResponse> {
+    this.assertWriteAllowed('createPayee');
+    await this.rateLimiter.acquire();
+    // Invalidate payees cache after creating
+    this.cache.delete(`payees:${budgetId}`);
+
+    const auditLog = getAuditLog();
+    try {
+      const response = await this.api.payees.createPayee(budgetId, data);
+      auditLog.log({
+        operation: 'create',
+        tool: 'ynab_create_payee',
+        budgetId,
+        resourceType: 'payee',
+        resourceId: response.data.payee.id,
+        // Payee names are PII; log only presence.
+        details: { has_name: !!data.payee.name },
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'create',
+        tool: 'ynab_create_payee',
+        budgetId,
+        resourceType: 'payee',
+        details: { has_name: !!data.payee.name },
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  async updatePayee(
+    budgetId: string,
+    payeeId: string,
+    data: ynab.PatchPayeeWrapper
+  ): Promise<ynab.SavePayeeResponse> {
+    this.assertWriteAllowed('updatePayee');
+    await this.rateLimiter.acquire();
+    // Invalidate payees cache after updating
+    this.cache.delete(`payees:${budgetId}`);
+
+    const auditLog = getAuditLog();
+    try {
+      const response = await this.api.payees.updatePayee(budgetId, payeeId, data);
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_payee',
+        budgetId,
+        resourceType: 'payee',
+        resourceId: payeeId,
+        // Payee names are PII; log only presence.
+        details: { has_name: !!data.payee.name },
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_payee',
+        budgetId,
+        resourceType: 'payee',
+        resourceId: payeeId,
+        details: { has_name: !!data.payee.name },
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
+
   // ==================== Payee Locations ====================
 
   async getPayeeLocations(budgetId: string): Promise<ynab.PayeeLocationsResponse> {
@@ -697,11 +925,18 @@ export class YnabClient {
 
   async getBudgetMonths(budgetId: string): Promise<ynab.MonthSummariesResponse> {
     await this.rateLimiter.acquire();
-    return this.api.months.getBudgetMonths(budgetId);
+    return this.api.months.getPlanMonths(budgetId);
   }
 
   async getBudgetMonth(budgetId: string, month: string): Promise<ynab.MonthDetailResponse> {
     await this.rateLimiter.acquire();
-    return this.api.months.getBudgetMonth(budgetId, month);
+    return this.api.months.getPlanMonth(budgetId, month);
+  }
+
+  // ==================== Money Movements ====================
+
+  async getMoneyMovements(budgetId: string): Promise<ynab.MoneyMovementsResponse> {
+    await this.rateLimiter.acquire();
+    return this.api.money_movements.getMoneyMovements(budgetId);
   }
 }

@@ -49,8 +49,8 @@ Returns currency format, date format, and currency ISO code.`,
  * @returns JSON string with budget settings including date_format and currency_format
  *
  * @remarks
- * SDK v2 made date_format and currency_format nullable. This handler returns null
- * for missing formats rather than empty strings to preserve semantic meaning.
+ * The YNAB SDK types date_format and currency_format as nullable. This handler
+ * returns null for missing formats rather than empty strings to preserve semantic meaning.
  */
 export async function handleGetBudgetSettings(
   args: Record<string, unknown>,

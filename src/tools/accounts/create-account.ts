@@ -16,10 +16,11 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
-// Derive account types from YNAB SDK enum to prevent drift
-// AccountType enum has string values like 'checking', 'savings', etc.
-const accountTypeValues = Object.values(ynab.AccountType).filter(
-  (v): v is ynab.AccountType => typeof v === 'string'
+// Derive account types from the YNAB SDK enum to prevent drift. The YNAB API
+// only supports CREATING this restricted set (SaveAccountType) — loan/mortgage
+// types are tracked differently and cannot be created via the API.
+const accountTypeValues = Object.values(ynab.SaveAccountType).filter(
+  (v): v is ynab.SaveAccountType => typeof v === 'string'
 );
 
 // Input schema using nativeEnum for proper enum validation
@@ -30,8 +31,8 @@ const inputSchema = z.object({
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   name: z.string().min(1).max(100).describe('The name of the account'),
   type: z
-    .nativeEnum(ynab.AccountType)
-    .describe('The type of account (checking, savings, creditCard, etc.)'),
+    .nativeEnum(ynab.SaveAccountType)
+    .describe('The type of account (checking, savings, cash, creditCard, otherAsset, otherLiability)'),
   balance: z
     .number()
     .finite()
@@ -49,9 +50,9 @@ Use when the user asks:
 - "I want to add my credit card to YNAB"
 - "Set up a new account with balance X"
 
-Account types: checking, savings, cash, creditCard, lineOfCredit, otherAsset, otherLiability, mortgage, autoLoan, studentLoan, personalLoan, medicalDebt, otherDebt
+Account types (only these can be created via the YNAB API): checking, savings, cash, creditCard, otherAsset, otherLiability
 
-Balance should be provided in dollars (e.g., 1000.50). For credit cards and debt accounts, use a negative balance for amounts owed.`,
+Balance should be provided in dollars (e.g., 1000.50). For credit cards and liability accounts, use a negative balance for amounts owed.`,
   inputSchema: {
     type: 'object',
     properties: {
