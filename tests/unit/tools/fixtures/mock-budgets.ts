@@ -198,18 +198,20 @@ export const mockEurBudgetSettings = {
 
 // Response factories
 export function createBudgetsResponse(budgets: BudgetSummary[] = [mockBudgetSummary, mockEurBudgetSummary]) {
+  // ynab v4 renamed the API response collection from "budgets" to "plans".
   return {
     data: {
-      budgets,
-      default_budget: budgets[0] ?? null,
+      plans: budgets,
+      default_plan: budgets[0] ?? null,
     },
   };
 }
 
 export function createBudgetResponse(budget: BudgetDetail = mockBudgetDetail) {
+  // ynab v4 renamed the API response object from "budget" to "plan".
   return {
     data: {
-      budget,
+      plan: budget,
       server_knowledge: 12345,
     },
   };
