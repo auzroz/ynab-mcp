@@ -16,7 +16,7 @@ Traditional YNAB integrations require manual API calls or custom scripting. This
 - **Talk to your budget naturally** — Ask Claude "Am I overspending on dining out?" and get instant insights
 - **Get AI-powered financial analysis** — Subscription detection, spending trends, savings recommendations, and budget health scores
 - **Stay safe by default** — Read-only mode protects against accidental changes
-- **Access everything** — 66 tools spanning comprehensive YNAB API coverage plus 23 custom analytics tools
+- **Access everything** — 66 tools total: comprehensive YNAB API coverage (40 tools), 23 custom analytics tools, and 3 system tools
 
 ## Features
 
