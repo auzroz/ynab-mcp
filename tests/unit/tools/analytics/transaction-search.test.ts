@@ -66,12 +66,15 @@ describe('handleTransactionSearch', () => {
     );
 
     expect(result.summary.total_matches).toBeGreaterThan(0);
-    expect(
-      result.transactions.every((t: { amount_raw?: number }) => true)
-    ).toBe(true);
-    // All grocery txns between $80 and $100 should appear; the $105 one should not
+    // Every returned transaction's absolute amount must fall within [80, 100],
+    // and the out-of-range $105 transaction must be excluded.
     const matchesDollar = result.transactions.map((t: { amount: string }) => t.amount);
     expect(matchesDollar).not.toContain('-$105.00');
+    for (const amount of matchesDollar) {
+      const value = Math.abs(parseFloat(amount.replace(/[^0-9.-]/g, '')));
+      expect(value).toBeGreaterThanOrEqual(80);
+      expect(value).toBeLessThanOrEqual(100);
+    }
   });
 
   it('filters by transaction type (inflow only)', async () => {

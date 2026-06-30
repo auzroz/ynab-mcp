@@ -66,6 +66,38 @@ describe('handleRateLimitStatus', () => {
     expect(parsed.recommendations.length).toBeGreaterThan(0);
   });
 
+  it('flips to warning at exactly 50% usage (boundary)', async () => {
+    mockClient.getRateLimitStatus.mockReturnValue({
+      available: 90,
+      limit: 180,
+      used: 90,
+      percentUsed: 50,
+      canMakeRequest: true,
+      waitTimeMs: 0,
+      resetTimeMs: 120000,
+    });
+
+    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+
+    expect(parsed.status).toBe('warning');
+  });
+
+  it('flips to critical at exactly 80% usage (boundary)', async () => {
+    mockClient.getRateLimitStatus.mockReturnValue({
+      available: 36,
+      limit: 180,
+      used: 144,
+      percentUsed: 80,
+      canMakeRequest: true,
+      waitTimeMs: 0,
+      resetTimeMs: 120000,
+    });
+
+    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+
+    expect(parsed.status).toBe('critical');
+  });
+
   it('rejects unexpected properties (strict schema)', async () => {
     await expect(
       handleRateLimitStatus({ unexpected: true }, mockClient as never)

@@ -72,14 +72,19 @@ describe('handleListAccounts', () => {
   });
 
   it('omits liability_credits when none exist', async () => {
-    mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
+    // mockAllAccounts includes the overpayment card; drop it so the omission
+    // branch is actually exercised.
+    const accountsWithoutCredits = mockAllAccounts.filter(
+      (a) => a.id !== mockCreditCardWithOverpayment.id
+    );
+    mockClient.getAccounts.mockResolvedValue(
+      createAccountsResponse(accountsWithoutCredits)
+    );
 
     const result = await handleListAccounts({}, mockClient as never);
     const parsed = JSON.parse(result);
 
-    // mockAllAccounts includes the overpayment card, so credits should show.
-    // Use an asset-only list to verify the omission branch.
-    expect(parsed.summary).toBeDefined();
+    expect(parsed.summary.liability_credits).toBeUndefined();
   });
 
   it('resolves custom budget_id', async () => {

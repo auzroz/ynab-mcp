@@ -95,7 +95,7 @@ describe('handleUpdateTransaction', () => {
   it('rejects when no fields are provided to update', async () => {
     await expect(
       handleUpdateTransaction({ transaction_id: TXN_ID }, mockClient as never)
-    ).rejects.toThrow();
+    ).rejects.toThrow(/at least one field/i);
   });
 
   it('rejects when both payee_id and payee_name provided', async () => {
@@ -108,7 +108,7 @@ describe('handleUpdateTransaction', () => {
         },
         mockClient as never
       )
-    ).rejects.toThrow();
+    ).rejects.toThrow(/not both/i);
   });
 
   it('respects budget_id parameter', async () => {

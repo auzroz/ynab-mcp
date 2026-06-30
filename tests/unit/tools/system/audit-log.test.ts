@@ -105,6 +105,8 @@ describe('handleAuditLog', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed.count).toBe(1);
+    // getFiltered returns most-recent-first, so the single entry is the delete.
+    expect(parsed.entries[0].operation).toBe('delete');
   });
 
   it('returns a summary-only response without entries', async () => {
