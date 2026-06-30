@@ -33,10 +33,21 @@ import {
   handleGetMonthCategory,
 } from './categories/get-month-category.js';
 import { updateCategoryTool, handleUpdateCategory } from './categories/update-category.js';
+import { createCategoryTool, handleCreateCategory } from './categories/create-category.js';
+import {
+  createCategoryGroupTool,
+  handleCreateCategoryGroup,
+} from './categories/create-category-group.js';
+import {
+  updateCategoryGroupTool,
+  handleUpdateCategoryGroup,
+} from './categories/update-category-group.js';
 
 // Payee tools
 import { listPayeesTool, handleListPayees } from './payees/list-payees.js';
 import { getPayeeTool, handleGetPayee } from './payees/get-payee.js';
+import { createPayeeTool, handleCreatePayee } from './payees/create-payee.js';
+import { updatePayeeTool, handleUpdatePayee } from './payees/update-payee.js';
 import {
   listPayeeLocationsTool,
   handleListPayeeLocations,
@@ -95,6 +106,10 @@ import {
   importTransactionsTool,
   handleImportTransactions,
 } from './transactions/import-transactions.js';
+import {
+  updateTransactionsTool,
+  handleUpdateTransactions,
+} from './transactions/update-transactions.js';
 
 // Scheduled transaction tools
 import {
@@ -168,6 +183,12 @@ import {
   handlePreviewScheduledTransaction,
 } from './analytics/index.js';
 
+// Money movement tools
+import {
+  listMoneyMovementsTool,
+  handleListMoneyMovements,
+} from './money-movements/list-money-movements.js';
+
 // System tools
 import {
   rateLimitStatusTool,
@@ -195,9 +216,14 @@ export const tools: Tool[] = [
   getCategoryTool,
   getMonthCategoryTool,
   updateCategoryTool,
+  createCategoryTool,
+  createCategoryGroupTool,
+  updateCategoryGroupTool,
   // Payees
   listPayeesTool,
   getPayeeTool,
+  createPayeeTool,
+  updatePayeeTool,
   listPayeeLocationsTool,
   getPayeeLocationTool,
   listPayeeLocationsByPayeeTool,
@@ -211,6 +237,7 @@ export const tools: Tool[] = [
   updateTransactionTool,
   deleteTransactionTool,
   createTransactionsTool,
+  updateTransactionsTool,
   listAccountTransactionsTool,
   listCategoryTransactionsTool,
   listPayeeTransactionsTool,
@@ -245,6 +272,8 @@ export const tools: Tool[] = [
   creditCardStatusTool,
   ageOfMoneyTool,
   previewScheduledTransactionTool,
+  // Money Movements
+  listMoneyMovementsTool,
   // System
   rateLimitStatusTool,
   auditLogTool,
@@ -270,9 +299,14 @@ const handlers: Record<string, ToolHandler> = {
   ynab_get_category: handleGetCategory,
   ynab_get_month_category: handleGetMonthCategory,
   ynab_update_category: handleUpdateCategory,
+  ynab_create_category: handleCreateCategory,
+  ynab_create_category_group: handleCreateCategoryGroup,
+  ynab_update_category_group: handleUpdateCategoryGroup,
   // Payees
   ynab_list_payees: handleListPayees,
   ynab_get_payee: handleGetPayee,
+  ynab_create_payee: handleCreatePayee,
+  ynab_update_payee: handleUpdatePayee,
   ynab_list_payee_locations: handleListPayeeLocations,
   ynab_get_payee_location: handleGetPayeeLocation,
   ynab_list_payee_locations_by_payee: handleListPayeeLocationsByPayee,
@@ -286,6 +320,7 @@ const handlers: Record<string, ToolHandler> = {
   ynab_update_transaction: handleUpdateTransaction,
   ynab_delete_transaction: handleDeleteTransaction,
   ynab_create_transactions: handleCreateTransactions,
+  ynab_update_transactions: handleUpdateTransactions,
   ynab_list_account_transactions: handleListAccountTransactions,
   ynab_list_category_transactions: handleListCategoryTransactions,
   ynab_list_payee_transactions: handleListPayeeTransactions,
@@ -320,6 +355,8 @@ const handlers: Record<string, ToolHandler> = {
   ynab_credit_card_status: handleCreditCardStatus,
   ynab_age_of_money: handleAgeOfMoney,
   ynab_preview_scheduled_transaction: handlePreviewScheduledTransaction,
+  // Money Movements
+  ynab_list_money_movements: handleListMoneyMovements,
   // System
   ynab_rate_limit_status: handleRateLimitStatus,
   ynab_audit_log: handleAuditLog,

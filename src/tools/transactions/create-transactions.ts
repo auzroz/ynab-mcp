@@ -102,7 +102,7 @@ Use import_id to prevent duplicate imports.`,
  * @returns JSON string with created transactions and duplicate info
  *
  * @remarks
- * Uses ynab.NewTransaction type (SDK v2) for bulk transaction creation.
+ * Uses the ynab.NewTransaction type for bulk transaction creation.
  * Enum types are cast to ynab.TransactionClearedStatus and ynab.TransactionFlagColor.
  * Security checks (rate limiting, write permission, audit logging) are handled by YnabClient.
  */

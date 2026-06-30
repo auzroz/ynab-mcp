@@ -2,12 +2,19 @@
  * MCP Server Configuration and Tool Registration
  */
 
+import { createRequire } from 'node:module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Config } from './config/environment.js';
+
+// Read the version from package.json at runtime so the server always advertises
+// the published version. Resolved relative to this module, package.json sits at
+// the project root in both dev (src/) and the compiled build (dist/).
+const require = createRequire(import.meta.url);
+const pkg = require('../package.json') as { version: string };
 import { YnabClient } from './services/ynab-client.js';
 import { RateLimiter } from './services/rate-limiter.js';
 import { Cache } from './services/cache.js';
@@ -37,7 +44,7 @@ export function createServer(config: Config): Server {
   const server = new Server(
     {
       name: 'ynab-mcp-server',
-      version: '0.1.0',
+      version: pkg.version,
     },
     {
       capabilities: {

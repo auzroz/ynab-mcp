@@ -16,14 +16,14 @@ Traditional YNAB integrations require manual API calls or custom scripting. This
 - **Talk to your budget naturally** — Ask Claude "Am I overspending on dining out?" and get instant insights
 - **Get AI-powered financial analysis** — Subscription detection, spending trends, savings recommendations, and budget health scores
 - **Stay safe by default** — Read-only mode protects against accidental changes
-- **Access everything** — 55 tools covering 100% of the YNAB API plus 22 custom analytics tools
+- **Access everything** — 66 tools total: comprehensive YNAB API coverage (40 tools), 23 custom analytics tools, and 3 system tools
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Complete API Coverage** | 55 MCP tools spanning all YNAB API endpoints |
-| **Advanced Analytics** | 22 tools for spending analysis, trend detection, and financial insights |
+| **Broad API Coverage** | 66 MCP tools spanning the YNAB API endpoints |
+| **Advanced Analytics** | 23 tools for spending analysis, trend detection, and financial insights |
 | **Read-Only by Default** | Write operations require explicit opt-in (`YNAB_READ_ONLY=false`) |
 | **Smart Rate Limiting** | Token bucket algorithm with 180 req/hour budget (10% safety margin) |
 | **Intelligent Caching** | Reduces API calls for infrequently changing data |
@@ -150,9 +150,9 @@ Once connected, try asking Claude:
 | "Am I on track this month?" | `ynab_spending_pace` |
 | "Compare this month to last month" | `ynab_monthly_comparison` |
 
-## Available Tools (55 Total)
+## Available Tools (66 Total)
 
-### Analytics Tools (22)
+### Analytics Tools (23)
 
 These tools provide AI-powered financial insights beyond basic YNAB functionality:
 
@@ -180,10 +180,11 @@ These tools provide AI-powered financial insights beyond basic YNAB functionalit
 | `ynab_category_balances` | Quick category balance lookup |
 | `ynab_credit_card_status` | Credit card balances vs payment categories |
 | `ynab_age_of_money` | Age of money metric with explanation |
+| `ynab_preview_scheduled_transaction` | Preview the budget impact of a scheduled transaction |
 
-### Core YNAB API Tools (33)
+### Core YNAB API Tools (40)
 
-Complete coverage of all YNAB API endpoints:
+Coverage of the YNAB API endpoints:
 
 <details>
 <summary><strong>User Tools (1)</strong></summary>
@@ -208,19 +209,24 @@ Complete coverage of all YNAB API endpoints:
 </details>
 
 <details>
-<summary><strong>Category Tools (4)</strong></summary>
+<summary><strong>Category Tools (7)</strong></summary>
 
 - `ynab_list_categories` — List all category groups and categories
 - `ynab_get_category` — Get category details
 - `ynab_get_month_category` — Get category budget for specific month
 - `ynab_update_category` — Update category budgeted amount *(write mode)*
+- `ynab_create_category` — Create a new category in a group *(write mode)*
+- `ynab_create_category_group` — Create a new category group *(write mode)*
+- `ynab_update_category_group` — Rename a category group *(write mode)*
 </details>
 
 <details>
-<summary><strong>Payee Tools (5)</strong></summary>
+<summary><strong>Payee Tools (7)</strong></summary>
 
 - `ynab_list_payees` — List all payees (merchants/vendors)
 - `ynab_get_payee` — Get specific payee details
+- `ynab_create_payee` — Create a new payee *(write mode)*
+- `ynab_update_payee` — Rename a payee *(write mode)*
 - `ynab_list_payee_locations` — List all payee locations for mapping
 - `ynab_get_payee_location` — Get specific payee location
 - `ynab_list_payee_locations_by_payee` — List locations for a specific payee
@@ -234,13 +240,14 @@ Complete coverage of all YNAB API endpoints:
 </details>
 
 <details>
-<summary><strong>Transaction Tools (10)</strong></summary>
+<summary><strong>Transaction Tools (11)</strong></summary>
 
 - `ynab_list_transactions` — List transactions with filters
 - `ynab_get_transaction` — Get transaction details
 - `ynab_create_transaction` — Create a new transaction *(write mode)*
 - `ynab_create_transactions` — Bulk create transactions *(write mode)*
 - `ynab_update_transaction` — Update a transaction *(write mode)*
+- `ynab_update_transactions` — Bulk update transactions *(write mode)*
 - `ynab_delete_transaction` — Delete a transaction *(write mode)*
 - `ynab_list_account_transactions` — List transactions for a specific account
 - `ynab_list_category_transactions` — List transactions for a specific category
@@ -249,10 +256,19 @@ Complete coverage of all YNAB API endpoints:
 </details>
 
 <details>
-<summary><strong>Scheduled Transaction Tools (2)</strong></summary>
+<summary><strong>Scheduled Transaction Tools (5)</strong></summary>
 
 - `ynab_list_scheduled_transactions` — List scheduled/recurring transactions
 - `ynab_get_scheduled_transaction` — Get scheduled transaction details
+- `ynab_create_scheduled_transaction` — Create a scheduled transaction *(write mode)*
+- `ynab_update_scheduled_transaction` — Update a scheduled transaction *(write mode)*
+- `ynab_delete_scheduled_transaction` — Delete a scheduled transaction *(write mode)*
+</details>
+
+<details>
+<summary><strong>Money Movement Tools (1)</strong></summary>
+
+- `ynab_list_money_movements` — List moves of funds between categories
 </details>
 
 <details>

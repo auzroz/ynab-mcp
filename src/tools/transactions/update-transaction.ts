@@ -142,7 +142,7 @@ Only provide the fields you want to change.`,
  * @returns JSON string with updated transaction details
  *
  * @remarks
- * Uses ynab.SaveTransactionWithOptionalFields type (SDK v2) for partial updates.
+ * Uses ynab.ExistingTransaction (the PutTransactionWrapper transaction type) for partial updates.
  * Enum types are cast to ynab.TransactionClearedStatus and ynab.TransactionFlagColor.
  * Security checks (rate limiting, write permission, audit logging) are handled by YnabClient.
  */
@@ -154,7 +154,7 @@ export async function handleUpdateTransaction(
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
   // Build update object with only provided fields using YNAB SDK type
-  const updateData: ynab.SaveTransactionWithOptionalFields = {};
+  const updateData: ynab.ExistingTransaction = {};
 
   if (validated.account_id !== undefined) updateData.account_id = validated.account_id;
   if (validated.date !== undefined) updateData.date = validated.date;

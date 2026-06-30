@@ -61,7 +61,8 @@ export async function handleAgeOfMoney(
 
   // Sort months by date (descending) to get the most recent month first
   // YNAB API doesn't guarantee months array order
-  const months = budgetResponse.data.budget.months ?? [];
+  // ynab v4 renamed the API response's "budget" object to "plan".
+  const months = budgetResponse.data.plan.months ?? [];
   const sortedMonths = [...months].sort((a, b) => b.month.localeCompare(a.month));
   const ageOfMoney = sortedMonths[0]?.age_of_money ?? null;
 
