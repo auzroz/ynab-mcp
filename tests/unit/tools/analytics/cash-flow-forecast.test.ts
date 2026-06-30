@@ -2,7 +2,7 @@
  * Cash Flow Forecast Tool Tests
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { handleCashFlowForecast } from '../../../../src/tools/analytics/cash-flow-forecast.js';
 import {
   createMockClient,
@@ -59,7 +59,16 @@ describe('handleCashFlowForecast', () => {
   let mockClient: MockClient;
 
   beforeEach(() => {
+    // Pin the clock to a stable mid-month date so the handler's "today" and the
+    // test's daysFromNow() offsets never straddle a day/month boundary (avoids
+    // wall-clock flakiness, e.g. when run on a month-end).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-15T12:00:00Z'));
     mockClient = createMockClient();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('forecasts cash flow with scheduled income and expenses', async () => {

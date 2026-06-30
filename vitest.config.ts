@@ -19,14 +19,12 @@ export default defineConfig({
       ],
       // Vitest 1.x expects the thresholds flat (the old `thresholds.global.*`
       // nesting is silently ignored, which let coverage regress unchecked).
-      // These are an enforced FLOOR set just under current real coverage so the
-      // gate actually fails on regressions; ratchet them up as tool-handler
-      // tests are added (services/utils are already well covered).
+      // Enforced gate — current coverage is ~94% lines / ~84% branches.
       thresholds: {
-        branches: 70,
-        functions: 40,
-        lines: 15,
-        statements: 15
+        branches: 80,
+        functions: 80,
+        lines: 80,
+        statements: 80
       }
     },
     testTimeout: 10000,
