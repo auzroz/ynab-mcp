@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   const transportMode = (process.env['MCP_TRANSPORT'] ?? 'stdio').toLowerCase();
 
   if (transportMode === 'http') {
-    httpServer = startHttpServer(loadHttpConfig());
+    httpServer = await startHttpServer(loadHttpConfig());
     return;
   }
 

@@ -10,8 +10,13 @@ WORKDIR /app
 # Copy package files first for better layer caching
 COPY package.json package-lock.json ./
 
-# Install all dependencies (including dev for build)
-RUN npm ci
+# Install all dependencies (including dev for build). Build tools let the optional
+# native `better-sqlite3` addon compile on musl; they're removed afterward. The
+# SQLite driver stays optional — if the build fails the image still works with the
+# memory/postgres drivers.
+RUN apk add --no-cache --virtual .build-deps python3 make g++ \
+    && npm ci \
+    && apk del .build-deps
 
 # Copy source files
 COPY tsconfig.json ./

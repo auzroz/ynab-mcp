@@ -20,6 +20,16 @@ function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
     readOnly: true,
     cacheTtlMs: 300000,
     rateLimitPerHour: 180,
+    authMode: 'header',
+    oauthClientId: undefined,
+    oauthClientSecret: undefined,
+    encryptionKey: undefined,
+    allowWrite: true,
+    accessTokenTtlSec: 3600,
+    authCodeTtlSec: 600,
+    storageDriver: 'memory',
+    sqlitePath: undefined,
+    databaseUrl: undefined,
     ...overrides,
   };
 }
@@ -37,7 +47,7 @@ const initializeBody = {
 
 describe('HTTP transport', () => {
   it('GET /health returns ok', async () => {
-    const app = createHttpApp(makeConfig());
+    const app = await createHttpApp(makeConfig());
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
@@ -45,7 +55,7 @@ describe('HTTP transport', () => {
   });
 
   it('POST /mcp with a non-initialize request and no session → 400', async () => {
-    const app = createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
+    const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
     const res = await request(app)
       .post('/mcp')
       .send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
@@ -53,25 +63,25 @@ describe('HTTP transport', () => {
   });
 
   it('POST /mcp initialize with no YNAB token → 401', async () => {
-    const app = createHttpApp(makeConfig({ fallbackAccessToken: undefined }));
+    const app = await createHttpApp(makeConfig({ fallbackAccessToken: undefined }));
     const res = await request(app).post('/mcp').send(initializeBody);
     expect(res.status).toBe(401);
   });
 
   it('GET /mcp without a session id → 400', async () => {
-    const app = createHttpApp(makeConfig());
+    const app = await createHttpApp(makeConfig());
     const res = await request(app).get('/mcp');
     expect(res.status).toBe(400);
   });
 
   it('DELETE /mcp without a session id → 400', async () => {
-    const app = createHttpApp(makeConfig());
+    const app = await createHttpApp(makeConfig());
     const res = await request(app).delete('/mcp');
     expect(res.status).toBe(400);
   });
 
   it('POST /mcp initialize with a token opens a session (returns Mcp-Session-Id)', async () => {
-    const app = createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
+    const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
     const res = await request(app)
       .post('/mcp')
       .set('Accept', 'application/json, text/event-stream')
@@ -83,7 +93,7 @@ describe('HTTP transport', () => {
   });
 
   it('DELETE /mcp with a valid session id tears the session down', async () => {
-    const app = createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
+    const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
     const init = await request(app)
       .post('/mcp')
       .set('Accept', 'application/json, text/event-stream')

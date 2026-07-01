@@ -3,7 +3,7 @@
   "namespace": "io.github.auzroz",
   "name": "ynab-mcp",
   "display_name": "YNAB Budget Assistant",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Comprehensive YNAB (You Need A Budget) API coverage for Claude. Manage budgets, transactions, accounts, categories, payees, and get spending analytics.",
   "repository": {
     "url": "https://github.com/auzroz/ynab-mcp",
