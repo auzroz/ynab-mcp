@@ -77,6 +77,31 @@ The server is configured via environment variables:
 | `YNAB_BUDGET_ID` | No | Default budget UUID (uses "last-used" if not set) |
 | `YNAB_READ_ONLY` | No | Set to `false` to enable write operations (default: `true`) |
 
+### Remote / HTTP mode (experimental)
+
+By default the server speaks **stdio** (local). Set `MCP_TRANSPORT=http` to run it
+as a **remote** server over the MCP Streamable HTTP transport at `POST /mcp`, with a
+plain `GET /health` for load balancers. Each session gets an isolated
+client/cache/rate-limiter/audit-log.
+
+| Variable | Description |
+|----------|-------------|
+| `MCP_TRANSPORT` | `stdio` (default) or `http` |
+| `PORT` | HTTP port (default `3000`) |
+| `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | Comma-separated allowlists for DNS-rebinding protection |
+| `ENABLE_DNS_REBINDING_PROTECTION` | Enable Origin/Host checks (needs an allowlist) |
+
+> ⚠️ **Interim auth.** Until the YNAB-OAuth flow lands, HTTP mode takes the YNAB
+> token per request via the `X-YNAB-Token` header (falling back to
+> `YNAB_ACCESS_TOKEN` for single-user HTTP). **Serve behind TLS.** Full multi-user
+> YNAB OAuth is planned in a later phase.
+
+```bash
+MCP_TRANSPORT=http PORT=3000 YNAB_ACCESS_TOKEN=… npm start
+# connect an MCP client via the mcp-remote shim:
+npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: <your-token>"
+```
+
 ### Claude Desktop Integration
 
 Add to your Claude Desktop configuration:

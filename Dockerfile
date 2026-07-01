@@ -51,6 +51,8 @@ LABEL org.opencontainers.image.source="https://github.com/auzroz/ynab-mcp"
 LABEL org.opencontainers.image.vendor="auzroz"
 LABEL org.opencontainers.image.licenses="MIT"
 
-# MCP servers communicate via stdio
+# Default transport is stdio. For remote/HTTP mode, run with MCP_TRANSPORT=http
+# and publish the port (default 3000).
+EXPOSE 3000
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["node", "dist/index.js"]

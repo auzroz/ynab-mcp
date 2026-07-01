@@ -61,6 +61,56 @@ function parseInteger(value: string | undefined, defaultValue: number, varName?:
   return Number(value);
 }
 
+/** Split a comma/space-separated env list into a trimmed string array (or undefined). */
+function parseList(value: string | undefined): string[] | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const items = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return items.length > 0 ? items : undefined;
+}
+
+/**
+ * Configuration for HTTP (remote / multi-tenant) mode. The YNAB access token is
+ * optional here: in multi-user deployments each request supplies its own token
+ * (interim: via header; later: via OAuth), while single-user HTTP can still set
+ * a fallback `YNAB_ACCESS_TOKEN`.
+ */
+export interface HttpConfig {
+  port: number;
+  publicUrl: string | undefined;
+  allowedHosts: string[] | undefined;
+  allowedOrigins: string[] | undefined;
+  enableDnsRebindingProtection: boolean;
+  // Shared knobs, reused per user context.
+  fallbackAccessToken: string | undefined;
+  defaultBudgetId: string | undefined;
+  readOnly: boolean;
+  cacheTtlMs: number;
+  rateLimitPerHour: number;
+}
+
+export function loadHttpConfig(): HttpConfig {
+  const allowedHosts = parseList(process.env['ALLOWED_HOSTS']);
+  const allowedOrigins = parseList(process.env['ALLOWED_ORIGINS']);
+  return {
+    port: parseInteger(process.env['PORT'], 3000, 'PORT'),
+    publicUrl: process.env['PUBLIC_URL'] || undefined,
+    allowedHosts,
+    allowedOrigins,
+    // Only meaningful when a host/origin allowlist is configured.
+    enableDnsRebindingProtection:
+      parseBoolean(process.env['ENABLE_DNS_REBINDING_PROTECTION'], false, 'ENABLE_DNS_REBINDING_PROTECTION') &&
+      (allowedHosts !== undefined || allowedOrigins !== undefined),
+    fallbackAccessToken: process.env['YNAB_ACCESS_TOKEN'] || undefined,
+    defaultBudgetId: process.env['YNAB_BUDGET_ID'] || undefined,
+    readOnly: parseBoolean(process.env['YNAB_READ_ONLY'], true, 'YNAB_READ_ONLY'),
+    cacheTtlMs: parseInteger(process.env['CACHE_TTL_MS'], 300000, 'CACHE_TTL_MS'),
+    rateLimitPerHour: parseInteger(process.env['RATE_LIMIT_PER_HOUR'], 180, 'RATE_LIMIT_PER_HOUR'),
+  };
+}
+
 export function loadConfig(): Config {
   const rawConfig = {
     accessToken: process.env['YNAB_ACCESS_TOKEN'] ?? '',

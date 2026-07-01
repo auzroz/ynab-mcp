@@ -18,29 +18,45 @@ const pkg = require('../package.json') as { version: string };
 import { YnabClient } from './services/ynab-client.js';
 import { RateLimiter } from './services/rate-limiter.js';
 import { Cache } from './services/cache.js';
+import { AuditLog } from './services/audit-log.js';
 import { tools, handleToolCall } from './tools/index.js';
 import { formatErrorResponse } from './utils/errors.js';
 
-export function createServer(config: Config): Server {
-  // Initialize services
-  const rateLimiter = new RateLimiter(config.rateLimitPerHour);
-  const cache = new Cache(config.cacheTtlMs);
-  const ynabClient = new YnabClient(
-    config.accessToken,
-    config.defaultBudgetId,
+/**
+ * Per-user context for building an isolated server instance. In multi-tenant
+ * (HTTP) mode one of these is built per authenticated user so each gets its own
+ * YNAB client, cache, rate limiter, and audit log — no cross-user leakage.
+ */
+export interface UserContext {
+  accessToken: string;
+  defaultBudgetId?: string | undefined;
+  readOnly: boolean;
+  rateLimitPerHour: number;
+  cacheTtlMs: number;
+}
+
+/**
+ * Build a fully-isolated YnabClient (own rate limiter, cache, and audit log).
+ */
+export function buildYnabClient(ctx: UserContext): YnabClient {
+  const rateLimiter = new RateLimiter(ctx.rateLimitPerHour);
+  const cache = new Cache(ctx.cacheTtlMs);
+  const auditLog = new AuditLog();
+  return new YnabClient(
+    ctx.accessToken,
+    ctx.defaultBudgetId,
     rateLimiter,
     cache,
-    config.readOnly
+    ctx.readOnly,
+    auditLog
   );
+}
 
-  // Log read-only mode status
-  if (config.readOnly) {
-    console.error('YNAB MCP Server running in READ-ONLY mode (write operations disabled)');
-  } else {
-    console.error('YNAB MCP Server running with WRITE operations ENABLED');
-  }
-
-  // Create MCP server
+/**
+ * Create an MCP `Server` that dispatches tool calls to the given YnabClient.
+ * Shared by the stdio (single-user) and HTTP (per-user) entrypoints.
+ */
+export function createServerFromClient(ynabClient: YnabClient): Server {
   const server = new Server(
     {
       name: 'ynab-mcp-server',
@@ -53,37 +69,51 @@ export function createServer(config: Config): Server {
     }
   );
 
-  // Register tool listing handler
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return { tools };
   });
 
-  // Register tool call handler
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
     try {
       const result = await handleToolCall(name, args ?? {}, ynabClient);
       return {
-        content: [
-          {
-            type: 'text',
-            text: result,
-          },
-        ],
+        content: [{ type: 'text', text: result }],
       };
     } catch (error) {
       return {
-        content: [
-          {
-            type: 'text',
-            text: formatErrorResponse(error),
-          },
-        ],
+        content: [{ type: 'text', text: formatErrorResponse(error) }],
         isError: true,
       };
     }
   });
 
   return server;
+}
+
+/**
+ * Build a per-user MCP server (multi-tenant / HTTP mode).
+ */
+export function createServerForUser(ctx: UserContext): Server {
+  return createServerFromClient(buildYnabClient(ctx));
+}
+
+/**
+ * Create the single-user server from process config (stdio mode).
+ */
+export function createServer(config: Config): Server {
+  if (config.readOnly) {
+    console.error('YNAB MCP Server running in READ-ONLY mode (write operations disabled)');
+  } else {
+    console.error('YNAB MCP Server running with WRITE operations ENABLED');
+  }
+
+  return createServerForUser({
+    accessToken: config.accessToken,
+    defaultBudgetId: config.defaultBudgetId,
+    readOnly: config.readOnly,
+    rateLimitPerHour: config.rateLimitPerHour,
+    cacheTtlMs: config.cacheTtlMs,
+  });
 }

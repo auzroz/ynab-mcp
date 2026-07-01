@@ -8,7 +8,7 @@ import * as ynab from 'ynab';
 import type { RateLimiter } from './rate-limiter.js';
 import type { Cache } from './cache.js';
 import { ReadOnlyModeError } from '../utils/errors.js';
-import { getAuditLog } from './audit-log.js';
+import { getAuditLog, type AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 
 export class YnabClient {
@@ -17,6 +17,7 @@ export class YnabClient {
   private readonly cache: Cache;
   private readonly defaultBudgetId: string;
   private readonly readOnly: boolean;
+  private readonly auditLog: AuditLog;
 
   // Track server knowledge for delta sync
   private serverKnowledge: Map<string, number> = new Map();
@@ -26,13 +27,18 @@ export class YnabClient {
     defaultBudgetId: string | undefined,
     rateLimiter: RateLimiter,
     cache: Cache,
-    readOnly = true
+    readOnly = true,
+    // Injected per-instance audit log. Defaults to the process-wide singleton so
+    // single-user (stdio) usage is unchanged; multi-tenant callers pass a
+    // per-user instance so one user's write history never leaks to another.
+    auditLog: AuditLog = getAuditLog()
   ) {
     this.api = new ynab.API(accessToken);
     this.rateLimiter = rateLimiter;
     this.cache = cache;
     this.defaultBudgetId = defaultBudgetId ?? 'last-used';
     this.readOnly = readOnly;
+    this.auditLog = auditLog;
   }
 
   /**
@@ -40,6 +46,13 @@ export class YnabClient {
    */
   isReadOnly(): boolean {
     return this.readOnly;
+  }
+
+  /**
+   * Get this client's audit log instance (per-user in multi-tenant mode).
+   */
+  getAuditLog(): AuditLog {
+    return this.auditLog;
   }
 
   /**
@@ -169,7 +182,7 @@ export class YnabClient {
     // Only invalidate budgets:true since getBudgets(false) doesn't include account data
     this.cache.delete('budgets:true');
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.accounts.createAccount(budgetId, data);
       auditLog.log({
@@ -234,7 +247,7 @@ export class YnabClient {
     // Invalidate categories cache after updating
     this.cache.delete(`categories:${budgetId}`);
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.categories.updateMonthCategory(budgetId, month, categoryId, data);
       auditLog.log({
@@ -271,7 +284,7 @@ export class YnabClient {
     // Invalidate categories cache after creating
     this.cache.delete(`categories:${budgetId}`);
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.categories.createCategory(budgetId, data);
       auditLog.log({
@@ -308,7 +321,7 @@ export class YnabClient {
     // Invalidate categories cache after creating (groups are returned with categories)
     this.cache.delete(`categories:${budgetId}`);
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.categories.createCategoryGroup(budgetId, data);
       auditLog.log({
@@ -345,7 +358,7 @@ export class YnabClient {
     // Invalidate categories cache after updating
     this.cache.delete(`categories:${budgetId}`);
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.categories.updateCategoryGroup(
         budgetId,
@@ -417,7 +430,7 @@ export class YnabClient {
     this.assertWriteAllowed('createTransaction');
     await this.rateLimiter.acquire();
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     const txn = data.transaction;
     try {
       const response = await this.api.transactions.createTransaction(budgetId, data);
@@ -466,7 +479,7 @@ export class YnabClient {
     this.assertWriteAllowed('updateTransaction');
     await this.rateLimiter.acquire();
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     const txn = data.transaction;
     try {
       const response = await this.api.transactions.updateTransaction(budgetId, transactionId, data);
@@ -513,7 +526,7 @@ export class YnabClient {
     this.assertWriteAllowed('updateTransactions');
     await this.rateLimiter.acquire();
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.transactions.updateTransactions(budgetId, data);
       auditLog.log({
@@ -550,7 +563,7 @@ export class YnabClient {
     this.assertWriteAllowed('deleteTransaction');
     await this.rateLimiter.acquire();
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.transactions.deleteTransaction(budgetId, transactionId);
       // Redact PII from audit logs - payee_name may contain personal information
@@ -586,7 +599,7 @@ export class YnabClient {
     this.assertWriteAllowed('importTransactions');
     await this.rateLimiter.acquire();
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.transactions.importTransactions(budgetId);
       auditLog.log({
@@ -664,7 +677,7 @@ export class YnabClient {
     this.assertWriteAllowed('createScheduledTransaction');
     await this.rateLimiter.acquire();
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     const txn = data.scheduled_transaction;
     try {
       const response = await this.api.scheduledTransactions.createScheduledTransaction(
@@ -716,7 +729,7 @@ export class YnabClient {
     this.assertWriteAllowed('updateScheduledTransaction');
     await this.rateLimiter.acquire();
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     const txn = data.scheduled_transaction;
     try {
       const response = await this.api.scheduledTransactions.updateScheduledTransaction(
@@ -769,7 +782,7 @@ export class YnabClient {
     this.assertWriteAllowed('deleteScheduledTransaction');
     await this.rateLimiter.acquire();
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.scheduledTransactions.deleteScheduledTransaction(
         budgetId,
@@ -831,7 +844,7 @@ export class YnabClient {
     // Invalidate payees cache after creating
     this.cache.delete(`payees:${budgetId}`);
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.payees.createPayee(budgetId, data);
       auditLog.log({
@@ -869,7 +882,7 @@ export class YnabClient {
     // Invalidate payees cache after updating
     this.cache.delete(`payees:${budgetId}`);
 
-    const auditLog = getAuditLog();
+    const auditLog = this.auditLog;
     try {
       const response = await this.api.payees.updatePayee(budgetId, payeeId, data);
       auditLog.log({
