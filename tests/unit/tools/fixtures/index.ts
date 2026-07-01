@@ -102,3 +102,12 @@ export {
   mockDiningPayees,
   mockGroceryPayees,
 } from './mock-payees.js';
+
+// Misc fixtures (user, money movements)
+export {
+  mockUser,
+  createUserResponse,
+  mockMoneyMovements,
+  createMoneyMovementsResponse,
+  type MockMoneyMovement,
+} from './mock-misc.js';
