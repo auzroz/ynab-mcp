@@ -77,7 +77,7 @@ The server is configured via environment variables:
 | `YNAB_BUDGET_ID` | No | Default budget UUID (uses "last-used" if not set) |
 | `YNAB_READ_ONLY` | No | Set to `false` to enable write operations (default: `true`) |
 
-### Remote / HTTP mode (experimental)
+### Remote / HTTP mode
 
 By default the server speaks **stdio** (local). Set `MCP_TRANSPORT=http` to run it
 as a **remote** server over the MCP Streamable HTTP transport at `POST /mcp`, with a
@@ -91,10 +91,16 @@ client/cache/rate-limiter/audit-log.
 | `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | Comma-separated allowlists for DNS-rebinding protection |
 | `ENABLE_DNS_REBINDING_PROTECTION` | Enable Origin/Host checks (needs an allowlist) |
 
-> ⚠️ **Interim auth.** Until the YNAB-OAuth flow lands, HTTP mode takes the YNAB
-> token per request via the `X-YNAB-Token` header (falling back to
-> `YNAB_ACCESS_TOKEN` for single-user HTTP). **Serve behind TLS.** Full multi-user
-> YNAB OAuth is planned in a later phase.
+**Multi-user (YNAB OAuth).** Configure a YNAB OAuth app + `ENCRYPTION_KEY` +
+`PUBLIC_URL` and the server becomes an OAuth 2.1 Authorization Server federated to
+YNAB: many users connect their own YNAB accounts to one instance, each isolated,
+choosing read-only or read-write at consent. See
+**[docs/REMOTE_HOSTING.md](docs/REMOTE_HOSTING.md)** for the full deployer guide
+(registering the YNAB app, storage, TLS).
+
+> **Single-user (header auth).** If the OAuth variables aren't all set, HTTP mode
+> takes the YNAB token per request via the `X-YNAB-Token` header (falling back to
+> `YNAB_ACCESS_TOKEN` for one user). **Serve behind TLS.**
 
 ```bash
 MCP_TRANSPORT=http PORT=3000 YNAB_ACCESS_TOKEN=… npm start
@@ -336,12 +342,17 @@ npx @modelcontextprotocol/inspector node dist/index.js
 
 ```
 src/
-├── index.ts              # Entry point (stdio server)
-├── server.ts             # Tool registration
+├── index.ts              # Entry point (selects stdio or http transport)
+├── server.ts             # Per-user server + tool registration
+├── http.ts               # Express app for remote (Streamable HTTP) mode
+├── crypto.ts             # AES-256-GCM at-rest token encryption
 ├── config/               # Environment configuration
+├── auth/                 # Remote OAuth: MCP AS provider, YNAB client, sessions
+├── storage/              # Pluggable storage (memory / sqlite / postgres)
 ├── services/             # Core services
 │   ├── ynab-client.ts    # YNAB API wrapper with rate limiting
 │   ├── rate-limiter.ts   # Token bucket rate limiter
+│   ├── audit-log.ts      # Per-user write audit log
 │   └── cache.ts          # In-memory TTL cache
 ├── tools/                # MCP tool implementations
 │   ├── user/
