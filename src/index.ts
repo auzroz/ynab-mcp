@@ -7,13 +7,16 @@
  * for integration with Claude and other MCP-compatible clients.
  */
 
+import type { Server as HttpServer } from 'node:http';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createServer } from './server.js';
-import { loadConfig } from './config/environment.js';
+import { startHttpServer } from './http.js';
+import { loadConfig, loadHttpConfig } from './config/environment.js';
 
 // Store server reference for graceful shutdown
 let server: Server | null = null;
+let httpServer: HttpServer | null = null;
 
 async function shutdown(): Promise<void> {
   console.error('Shutting down YNAB MCP Server...');
@@ -27,23 +30,31 @@ async function shutdown(): Promise<void> {
       console.error('[DEBUG] Error during server close:', message);
     }
   }
+  if (httpServer) {
+    try {
+      await new Promise<void>((resolve) => httpServer?.close(() => resolve()));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      console.error('[DEBUG] Error during HTTP server close:', message);
+    }
+  }
   process.exit(0);
 }
 
 async function main(): Promise<void> {
-  // Load and validate configuration
+  // Transport selection: `http` for the remote/multi-user server, otherwise stdio.
+  const transportMode = (process.env['MCP_TRANSPORT'] ?? 'stdio').toLowerCase();
+
+  if (transportMode === 'http') {
+    httpServer = await startHttpServer(loadHttpConfig());
+    return;
+  }
+
+  // stdio (single-user) mode.
   const config = loadConfig();
-
-  // Create the MCP server with all tools registered
   server = createServer(config);
-
-  // Create stdio transport for communication
   const transport = new StdioServerTransport();
-
-  // Connect server to transport
   await server.connect(transport);
-
-  // Log startup (to stderr to avoid interfering with stdio protocol)
   console.error(`YNAB MCP Server started (budget: ${config.defaultBudgetId ?? 'last-used'})`);
 }
 

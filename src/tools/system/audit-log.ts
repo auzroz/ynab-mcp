@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { YnabClient } from '../../services/ynab-client.js';
 import { getAuditLog } from '../../services/audit-log.js';
 
 // Input schema
@@ -81,13 +82,17 @@ Shows all create, update, and delete operations with timestamps.`,
 // Handler function
 /**
  * Handler for the ynab_audit_log tool.
- * Note: client param intentionally omitted; this tool only uses the local AuditLog service.
+ *
+ * Reads the audit log from the per-request client when available (so multi-tenant
+ * deployments surface only the current user's write history), falling back to the
+ * process-wide singleton for the single-user/stdio path.
  */
 export async function handleAuditLog(
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  client?: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const auditLog = getAuditLog();
+  const auditLog = client ? client.getAuditLog() : getAuditLog();
 
   // Build filter options (applies to both summary_only and full response)
   const filterOptions: {

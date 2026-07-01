@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0]
+
+### Added
+
+- **Remote HTTP transport.** `MCP_TRANSPORT=http` runs the server over the MCP
+  Streamable HTTP transport (`POST /mcp`) with a plain `GET /health`. Each session
+  gets an isolated client / cache / rate limiter / audit log. stdio remains the
+  default and is unchanged.
+- **Multi-user YNAB OAuth.** When the YNAB OAuth app credentials + `ENCRYPTION_KEY`
+  + `PUBLIC_URL` are configured, the server acts as an OAuth 2.1 Authorization
+  Server (Dynamic Client Registration + PKCE) federated to YNAB. Each user connects
+  their own YNAB account; identity is their YNAB user id. Users choose read-only vs
+  read-write at a consent screen. YNAB refresh tokens are encrypted at rest
+  (AES-256-GCM) and rotated on refresh.
+- **Pluggable storage** for users + tokens: `memory` (default), `sqlite`
+  (`better-sqlite3`), or `postgres` (`pg`); the durable drivers are optional
+  dependencies loaded on demand.
+- Interim header auth for HTTP mode (`X-YNAB-Token`) to run single-user remote
+  before configuring OAuth.
+- `docs/REMOTE_HOSTING.md` with deployer setup (registering a YNAB OAuth app, env,
+  TLS), and DNS-rebinding/Origin protections for the HTTP transport.
+
+### Changed
+
+- Internal: `createServer` generalized into `buildYnabClient` / `createServerForUser`
+  (per-user context); the audit log is now an injected instance (per user) rather
+  than a process-global singleton.
+
 ## [0.2.0]
 
 ### Added

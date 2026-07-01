@@ -10,8 +10,13 @@ WORKDIR /app
 # Copy package files first for better layer caching
 COPY package.json package-lock.json ./
 
-# Install all dependencies (including dev for build)
-RUN npm ci
+# Install all dependencies (including dev for build). Build tools let the optional
+# native `better-sqlite3` addon compile on musl; they're removed afterward. The
+# SQLite driver stays optional — if the build fails the image still works with the
+# memory/postgres drivers.
+RUN apk add --no-cache --virtual .build-deps python3 make g++ \
+    && npm ci \
+    && apk del .build-deps
 
 # Copy source files
 COPY tsconfig.json ./
@@ -51,6 +56,8 @@ LABEL org.opencontainers.image.source="https://github.com/auzroz/ynab-mcp"
 LABEL org.opencontainers.image.vendor="auzroz"
 LABEL org.opencontainers.image.licenses="MIT"
 
-# MCP servers communicate via stdio
+# Default transport is stdio. For remote/HTTP mode, run with MCP_TRANSPORT=http
+# and publish the port (default 3000).
+EXPOSE 3000
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["node", "dist/index.js"]

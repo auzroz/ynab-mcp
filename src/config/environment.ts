@@ -61,6 +61,102 @@ function parseInteger(value: string | undefined, defaultValue: number, varName?:
   return Number(value);
 }
 
+/** Split a comma/space-separated env list into a trimmed string array (or undefined). */
+function parseList(value: string | undefined): string[] | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const items = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return items.length > 0 ? items : undefined;
+}
+
+/**
+ * Configuration for HTTP (remote / multi-tenant) mode. The YNAB access token is
+ * optional here: in multi-user deployments each request supplies its own token
+ * (interim: via header; later: via OAuth), while single-user HTTP can still set
+ * a fallback `YNAB_ACCESS_TOKEN`.
+ */
+/** Auth strategy for HTTP mode. */
+export type HttpAuthMode = 'header' | 'oauth';
+
+/** Persistence driver for the OAuth server. */
+export type StorageDriver = 'memory' | 'sqlite' | 'postgres';
+
+export interface HttpConfig {
+  port: number;
+  publicUrl: string | undefined;
+  allowedHosts: string[] | undefined;
+  allowedOrigins: string[] | undefined;
+  enableDnsRebindingProtection: boolean;
+  // Shared knobs, reused per user context.
+  fallbackAccessToken: string | undefined;
+  defaultBudgetId: string | undefined;
+  readOnly: boolean;
+  cacheTtlMs: number;
+  rateLimitPerHour: number;
+
+  // Auth mode: `oauth` when the YNAB OAuth app + encryption key + public URL are
+  // all configured, otherwise the interim `header` mode.
+  authMode: HttpAuthMode;
+  oauthClientId: string | undefined;
+  oauthClientSecret: string | undefined;
+  encryptionKey: string | undefined;
+  allowWrite: boolean;
+  accessTokenTtlSec: number;
+  authCodeTtlSec: number;
+
+  // Storage (oauth mode)
+  storageDriver: StorageDriver;
+  sqlitePath: string | undefined;
+  databaseUrl: string | undefined;
+}
+
+function parseStorageDriver(value: string | undefined): StorageDriver {
+  const v = (value ?? 'memory').toLowerCase();
+  if (v === 'memory' || v === 'sqlite' || v === 'postgres') return v;
+  throw new Error(`Invalid STORAGE_DRIVER "${value}". Expected: memory, sqlite, or postgres.`);
+}
+
+export function loadHttpConfig(): HttpConfig {
+  const allowedHosts = parseList(process.env['ALLOWED_HOSTS']);
+  const allowedOrigins = parseList(process.env['ALLOWED_ORIGINS']);
+  const publicUrl = process.env['PUBLIC_URL'] || undefined;
+  const oauthClientId = process.env['YNAB_OAUTH_CLIENT_ID'] || undefined;
+  const oauthClientSecret = process.env['YNAB_OAUTH_CLIENT_SECRET'] || undefined;
+  const encryptionKey = process.env['ENCRYPTION_KEY'] || undefined;
+
+  const oauthConfigured = Boolean(oauthClientId && oauthClientSecret && encryptionKey && publicUrl);
+
+  return {
+    port: parseInteger(process.env['PORT'], 3000, 'PORT'),
+    publicUrl: publicUrl ? publicUrl.replace(/\/+$/, '') : undefined,
+    allowedHosts,
+    allowedOrigins,
+    // Only meaningful when a host/origin allowlist is configured.
+    enableDnsRebindingProtection:
+      parseBoolean(process.env['ENABLE_DNS_REBINDING_PROTECTION'], false, 'ENABLE_DNS_REBINDING_PROTECTION') &&
+      (allowedHosts !== undefined || allowedOrigins !== undefined),
+    fallbackAccessToken: process.env['YNAB_ACCESS_TOKEN'] || undefined,
+    defaultBudgetId: process.env['YNAB_BUDGET_ID'] || undefined,
+    readOnly: parseBoolean(process.env['YNAB_READ_ONLY'], true, 'YNAB_READ_ONLY'),
+    cacheTtlMs: parseInteger(process.env['CACHE_TTL_MS'], 300000, 'CACHE_TTL_MS'),
+    rateLimitPerHour: parseInteger(process.env['RATE_LIMIT_PER_HOUR'], 180, 'RATE_LIMIT_PER_HOUR'),
+
+    authMode: oauthConfigured ? 'oauth' : 'header',
+    oauthClientId,
+    oauthClientSecret,
+    encryptionKey,
+    allowWrite: parseBoolean(process.env['YNAB_OAUTH_ALLOW_WRITE'], true, 'YNAB_OAUTH_ALLOW_WRITE'),
+    accessTokenTtlSec: parseInteger(process.env['MCP_ACCESS_TOKEN_TTL_SEC'], 3600, 'MCP_ACCESS_TOKEN_TTL_SEC'),
+    authCodeTtlSec: parseInteger(process.env['MCP_AUTH_CODE_TTL_SEC'], 600, 'MCP_AUTH_CODE_TTL_SEC'),
+
+    storageDriver: parseStorageDriver(process.env['STORAGE_DRIVER']),
+    sqlitePath: process.env['SQLITE_PATH'] || undefined,
+    databaseUrl: process.env['DATABASE_URL'] || undefined,
+  };
+}
+
 export function loadConfig(): Config {
   const rawConfig = {
     accessToken: process.env['YNAB_ACCESS_TOKEN'] ?? '',
