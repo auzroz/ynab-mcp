@@ -42,9 +42,9 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "decimal.js": "^10.4.3",
-    "express": "^5.2.1",
+    "express": "^5.3.0",
     "ynab": "^4.4.0",
     "zod": "^3.23.8"
   },
