@@ -11,6 +11,9 @@ import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
+const DEFAULT_RANGE_NOTE =
+  'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.';
+
 // Input schema
 const inputSchema = z.object({
   budget_id: z
@@ -22,7 +25,13 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe(
-      'Only return transactions on or after this date. Accepts ISO dates (YYYY-MM-DD) or natural language like "past 30 days", "this month"'
+      'Only return transactions on or after this date. Accepts ISO dates (YYYY-MM-DD) or natural language like "past 30 days", "this month". If omitted, YNAB returns only the last 12 months; pass an earlier date for older history'
+    ),
+  until_date: z
+    .string()
+    .optional()
+    .describe(
+      'Only return transactions on or before this date (inclusive). Accepts ISO dates (YYYY-MM-DD) or natural language like "last month"'
     ),
   limit: z
     .number()
@@ -43,7 +52,9 @@ Use when the user asks:
 - "What have I spent at Costco?"
 - "List transactions for [payee name]"
 
-Requires a payee_id. Use ynab_list_payees first to find the payee ID.`,
+Requires a payee_id. Use ynab_list_payees first to find the payee ID.
+
+NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). Pass an earlier since_date to see older history. until_date sets an inclusive upper bound.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -59,7 +70,12 @@ Requires a payee_id. Use ynab_list_payees first to find the payee ID.`,
       since_date: {
         type: 'string',
         description:
-          'Only return transactions on or after this date. Accepts YYYY-MM-DD or natural language like "past 30 days"',
+          'Only return transactions on or after this date. Accepts YYYY-MM-DD or natural language like "past 30 days". If omitted, YNAB returns only the last 12 months; pass an earlier date for older history',
+      },
+      until_date: {
+        type: 'string',
+        description:
+          'Only return transactions on or before this date (inclusive). Accepts YYYY-MM-DD or natural language like "last month"',
       },
       limit: {
         type: 'integer',
@@ -86,11 +102,13 @@ export async function handleListPayeeTransactions(
 
   // Parse natural language dates
   const sinceDate = validated.since_date ? parseNaturalDate(validated.since_date) : undefined;
+  const untilDate = validated.until_date ? parseNaturalDate(validated.until_date) : undefined;
 
   const response = await client.getPayeeTransactions(
     budgetId,
     validated.payee_id,
-    sinceDate
+    sinceDate,
+    untilDate
   );
 
   // Sort by date descending and apply limit (avoid mutating response)
@@ -135,6 +153,7 @@ export async function handleListPayeeTransactions(
       transactions: formattedTransactions,
       summary: {
         count: formattedTransactions.length,
+        ...(validated.since_date === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {}),
         outflow_count: outflows.length,
         inflow_count: inflowCount,
         total_spent: formatCurrency(totalSpent),

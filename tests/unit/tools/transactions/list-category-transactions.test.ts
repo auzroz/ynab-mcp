@@ -40,6 +40,7 @@ describe('handleListCategoryTransactions', () => {
     expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith(
       'test-budget-id',
       CATEGORY_ID,
+      undefined,
       undefined
     );
   });
@@ -69,7 +70,8 @@ describe('handleListCategoryTransactions', () => {
     expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith(
       'test-budget-id',
       CATEGORY_ID,
-      '2024-01-01'
+      '2024-01-01',
+      undefined
     );
   });
 
@@ -95,5 +97,34 @@ describe('handleListCategoryTransactions', () => {
     );
 
     expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
+  });
+
+  it('passes parsed until_date through and omits the default-range note', async () => {
+    mockClient.getCategoryTransactions.mockResolvedValue(createTransactionsResponse([]));
+
+    const parsed = JSON.parse(
+      await handleListCategoryTransactions(
+        { category_id: CATEGORY_ID, since_date: '2023-01-01', until_date: '2023-12-31' },
+        mockClient as never
+      )
+    );
+
+    expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith(
+      'test-budget-id',
+      CATEGORY_ID,
+      '2023-01-01',
+      '2023-12-31'
+    );
+    expect(parsed.summary.date_range_note).toBeUndefined();
+  });
+
+  it('notes the 12-month YNAB default when since_date is omitted', async () => {
+    mockClient.getCategoryTransactions.mockResolvedValue(createTransactionsResponse([]));
+
+    const parsed = JSON.parse(
+      await handleListCategoryTransactions({ category_id: CATEGORY_ID }, mockClient as never)
+    );
+
+    expect(parsed.summary.date_range_note).toContain('last 12 months');
   });
 });
