@@ -44,7 +44,7 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe(
-      'End date, inclusive (YYYY-MM-DD or natural language). Without since_date, searches from the budget first month'
+      'End date, inclusive (YYYY-MM-DD or natural language). Prefer ISO dates: period names such as "last month" resolve to the START of that period, so they would exclude most of it. Without since_date, searches from the budget first month'
     ),
   type: z
     .enum(['all', 'inflow', 'outflow'])
@@ -113,7 +113,7 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
       until_date: {
         type: 'string',
         description:
-          'End date, inclusive (YYYY-MM-DD or natural language). Applied server-side. Without since_date this searches from the budget\'s first month, which can fetch a lot of data.',
+          'End date, inclusive (YYYY-MM-DD or natural language). Prefer ISO dates: period names such as "last month" resolve to the START of that period, so they would exclude most of it. Applied server-side. Without since_date this searches from the budget\'s first month, which can fetch a lot of data.',
       },
       type: {
         type: 'string',

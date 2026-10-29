@@ -16,6 +16,7 @@
       "identifier": "ynab-mcp",
       "version": "0.3.4",
       "runtimeHint": "npx",
+      "runtimeArguments": [{ "type": "positional", "value": "-y" }],
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
@@ -31,7 +32,7 @@
         },
         {
           "name": "YNAB_READ_ONLY",
-          "description": "Set to 'true' to disable all write operations (create, update, delete). Defaults to true for safety.",
+          "description": "Read-only by default. Set to 'false' to allow create, update and delete operations.",
           "isRequired": false
         }
       ]
@@ -54,7 +55,7 @@
         },
         {
           "name": "YNAB_READ_ONLY",
-          "description": "Set to 'true' to disable all write operations (create, update, delete). Defaults to true for safety.",
+          "description": "Read-only by default. Set to 'false' to allow create, update and delete operations.",
           "isRequired": false
         }
       ]

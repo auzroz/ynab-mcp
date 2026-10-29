@@ -159,14 +159,22 @@ export class YnabClient {
    * otherwise falls back to the earliest budget month (cached after first use).
    */
   async getBudgetFirstMonth(budgetId: string): Promise<string | undefined> {
+    // "last-used" and "default" can point at a different budget over time, so
+    // results for them are never cached under the alias.
+    const isAlias = budgetId === 'last-used' || budgetId === 'default';
     const cacheKey = `first-month:${budgetId}`;
-    const cached = this.cache.get<string>(cacheKey);
-    if (cached !== undefined) return cached;
+    if (!isAlias) {
+      const cached = this.cache.get<string>(cacheKey);
+      if (cached !== undefined) return cached;
+    }
 
     let firstMonth: string | undefined;
     const budgets = (await this.getBudgets()).data.plans;
+    // The sole-budget fallback applies only to aliases; an explicit ID that is not
+    // in the list must not borrow another budget's first month.
     const match =
-      budgets.find((b) => b.id === budgetId) ?? (budgets.length === 1 ? budgets[0] : undefined);
+      budgets.find((b) => b.id === budgetId) ??
+      (isAlias && budgets.length === 1 ? budgets[0] : undefined);
     firstMonth = match?.first_month;
 
     if (firstMonth === undefined) {
@@ -177,7 +185,7 @@ export class YnabClient {
       }
     }
 
-    if (firstMonth !== undefined) this.cache.set(cacheKey, firstMonth);
+    if (firstMonth !== undefined && !isAlias) this.cache.set(cacheKey, firstMonth);
     return firstMonth;
   }
 

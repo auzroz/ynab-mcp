@@ -202,6 +202,32 @@ describe('read methods', () => {
     expect(await makeClient(true).getBudgetFirstMonth('last-used')).toBe('2022-07-01');
   });
 
+  it('getBudgetFirstMonth does not cache results under the last-used alias', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: 'a', first_month: '2019-03-01' }, { id: 'b', first_month: '2021-01-01' }] },
+    });
+    setResolve(mockApi.months.getPlanMonths, { data: { months: [{ month: '2022-07-01' }] } });
+    const client = makeClient(true);
+
+    expect(await client.getBudgetFirstMonth('last-used')).toBe('2022-07-01');
+    // The user switches budgets: last-used now resolves to a different month list
+    setResolve(mockApi.months.getPlanMonths, { data: { months: [{ month: '2018-01-01' }] } });
+    expect(await client.getBudgetFirstMonth('last-used')).toBe('2018-01-01');
+    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledTimes(2);
+  });
+
+  it('getBudgetFirstMonth does not borrow the sole budget for an unmatched explicit id', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: 'other', first_month: '2019-03-01' }] },
+    });
+    setResolve(mockApi.months.getPlanMonths, {
+      data: { months: [{ month: '2024-02-01' }, { month: '2022-07-01' }] },
+    });
+
+    expect(await makeClient(true).getBudgetFirstMonth(BUDGET)).toBe('2022-07-01');
+    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledWith(BUDGET);
+  });
+
   it('getBudgets caches separately by includeAccounts flag', async () => {
     setResolve(mockApi.plans.getPlans, { data: { budgets: [] } });
     const client = makeClient(true);

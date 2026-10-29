@@ -32,48 +32,37 @@ describe('handleImportTransactions', () => {
     mockClient = createMockClient();
   });
 
-  it('marks the response as deprecated with a clear message', async () => {
-    mockClient.importTransactions.mockResolvedValue({ data: { transaction_ids: [] } });
-
+  it('returns the deprecation response without calling the API', async () => {
     const result = await handleImportTransactions({}, mockClient as never);
     const parsed = JSON.parse(result);
 
-    expect(mockClient.importTransactions).toHaveBeenCalledWith('test-budget-id');
+    expect(mockClient.importTransactions).not.toHaveBeenCalled();
     expect(parsed.success).toBe(true);
     expect(parsed.deprecated).toBe(true);
     expect(parsed.message).toBe(IMPORT_DEPRECATION_MESSAGE);
-    expect(parsed.message).toContain('deprecated');
+    expect(parsed.message).toContain('linked-account');
     expect(parsed.imported_count).toBe(0);
     expect(parsed.transaction_ids).toBeUndefined();
   });
 
-  it('reports the returned count and still flags deprecated', async () => {
-    mockClient.importTransactions.mockResolvedValue({
-      data: { transaction_ids: ['imp-1', 'imp-2'] },
-    });
+  it('works in read-only mode, where write calls would throw', async () => {
+    mockClient.importTransactions.mockRejectedValue(new Error('Write operations are disabled'));
 
-    const result = await handleImportTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = JSON.parse(await handleImportTransactions({}, mockClient as never));
 
     expect(parsed.deprecated).toBe(true);
-    expect(parsed.imported_count).toBe(2);
+    expect(parsed.imported_count).toBe(0);
   });
 
-  it('includes ids when include_ids is true', async () => {
-    mockClient.importTransactions.mockResolvedValue({
-      data: { transaction_ids: ['imp-1', 'imp-2'] },
-    });
+  it('returns an empty id list when include_ids is true', async () => {
+    const parsed = JSON.parse(
+      await handleImportTransactions({ include_ids: true }, mockClient as never)
+    );
 
-    const result = await handleImportTransactions({ include_ids: true }, mockClient as never);
-    const parsed = JSON.parse(result);
-
-    expect(parsed.transaction_ids).toEqual(['imp-1', 'imp-2']);
-    expect(parsed.deprecated).toBe(true);
+    expect(parsed.transaction_ids).toEqual([]);
   });
 
-  it('respects budget_id parameter', async () => {
-    mockClient.importTransactions.mockResolvedValue({ data: { transaction_ids: [] } });
-
+  it('still validates and resolves budget_id', async () => {
     await handleImportTransactions({ budget_id: 'custom-budget' }, mockClient as never);
 
     expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');

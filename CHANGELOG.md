@@ -72,7 +72,8 @@ installs of those versions resolve `ynab` 4.5.0, which breaks the type filter in
 
 - `ynab_import_transactions`. Since API 1.88, YNAB imports linked-account
   transactions automatically and this endpoint imports nothing. The tool stays
-  registered and returns `deprecated: true`.
+  registered and returns `deprecated: true` without calling the API, so it also
+  works in read-only mode.
 - `goal.target_month` in the output of `ynab_get_category` and
   `ynab_get_month_category`. Use `goal.target_date`; `target_month` remains as
   an alias with the same value.
