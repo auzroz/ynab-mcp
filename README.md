@@ -283,7 +283,7 @@ Coverage of the YNAB API endpoints:
 - `ynab_list_account_transactions` — List transactions for a specific account
 - `ynab_list_category_transactions` — List transactions for a specific category
 - `ynab_list_payee_transactions` — List transactions for a specific payee
-- `ynab_import_transactions` — Trigger import from linked banks *(write mode)*
+- `ynab_import_transactions` — **Deprecated** (YNAB API 1.88): no longer imports anything; linked accounts sync automatically *(write mode)*
 </details>
 
 <details>
