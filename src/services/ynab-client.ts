@@ -396,6 +396,8 @@ export class YnabClient {
     budgetId: string,
     options?: {
       sinceDate?: string;
+      /** Inclusive upper bound (ynab SDK 4.5+); undefined means no upper bound. */
+      untilDate?: string;
       type?: 'uncategorized' | 'unapproved';
       lastKnowledgeOfServer?: number;
     }
@@ -404,6 +406,7 @@ export class YnabClient {
     const response = await this.api.transactions.getTransactions(
       budgetId,
       options?.sinceDate,
+      options?.untilDate,
       options?.type,
       options?.lastKnowledgeOfServer
     );

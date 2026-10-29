@@ -78,7 +78,10 @@ const mockApi = vi.hoisted(() => {
 });
 
 vi.mock('ynab', () => ({
-  API: vi.fn(() => mockApi),
+  // Vitest 4: a mock invoked with `new` needs a function/class implementation, not an arrow.
+  API: vi.fn(function () {
+    return mockApi;
+  }),
 }));
 
 const BUDGET = 'budget-123';
@@ -269,13 +272,16 @@ describe('read methods', () => {
 
     await client.getTransactions(BUDGET, {
       sinceDate: '2026-01-01',
+      untilDate: '2026-01-31',
       type: 'unapproved',
       lastKnowledgeOfServer: 3,
     });
 
+    // Positional: (budget, since, until, type, knowledge)
     expect(asMock(mockApi.transactions.getTransactions)).toHaveBeenCalledWith(
       BUDGET,
       '2026-01-01',
+      '2026-01-31',
       'unapproved',
       3
     );
@@ -288,6 +294,7 @@ describe('read methods', () => {
     await client.getTransactions(BUDGET);
     expect(asMock(mockApi.transactions.getTransactions)).toHaveBeenCalledWith(
       BUDGET,
+      undefined,
       undefined,
       undefined,
       undefined

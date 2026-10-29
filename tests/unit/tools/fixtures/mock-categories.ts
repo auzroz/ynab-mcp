@@ -256,6 +256,7 @@ export const mockCategoryGroups: CategoryGroupWithCategories[] = [
     name: 'Internal Master Category',
     hidden: true,
     deleted: false,
+    internal: true,
     categories: [mockReadyToAssignCategory as unknown as Category],
   },
   {
@@ -263,6 +264,7 @@ export const mockCategoryGroups: CategoryGroupWithCategories[] = [
     name: 'Credit Card Payments',
     hidden: false,
     deleted: false,
+    internal: false,
     categories: [mockCreditCardPaymentCategory as unknown as Category],
   },
   {
@@ -270,6 +272,7 @@ export const mockCategoryGroups: CategoryGroupWithCategories[] = [
     name: 'Bills',
     hidden: false,
     deleted: false,
+    internal: false,
     categories: mockBillsCategories as unknown as Category[],
   },
   {
@@ -277,6 +280,7 @@ export const mockCategoryGroups: CategoryGroupWithCategories[] = [
     name: 'Everyday Expenses',
     hidden: false,
     deleted: false,
+    internal: false,
     categories: mockEverydayCategories as unknown as Category[],
   },
   {
@@ -284,6 +288,7 @@ export const mockCategoryGroups: CategoryGroupWithCategories[] = [
     name: 'Savings Goals',
     hidden: false,
     deleted: false,
+    internal: false,
     categories: mockSavingsCategories as unknown as Category[],
   },
   {
@@ -291,6 +296,7 @@ export const mockCategoryGroups: CategoryGroupWithCategories[] = [
     name: 'Discretionary',
     hidden: false,
     deleted: false,
+    internal: false,
     categories: mockDiscretionaryCategories as unknown as Category[],
   },
   {
@@ -298,6 +304,7 @@ export const mockCategoryGroups: CategoryGroupWithCategories[] = [
     name: 'Hidden',
     hidden: true,
     deleted: false,
+    internal: false,
     categories: [mockHiddenCategory as unknown as Category],
   },
 ];
@@ -344,6 +351,7 @@ export const overspentBudgetCategories: CategoryGroupWithCategories[] = [
     name: 'Everyday Expenses',
     hidden: false,
     deleted: false,
+    internal: false,
     categories: mockEverydayCategories.map((c) => ({
       ...c,
       balance: c.balance - 200000, // Make all overspent
