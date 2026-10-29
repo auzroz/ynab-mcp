@@ -1,117 +1,63 @@
 {
-  "$schema": "https://registry.modelcontextprotocol.io/schemas/server.json",
-  "namespace": "io.github.auzroz",
-  "name": "ynab-mcp",
-  "display_name": "YNAB Budget Assistant",
-  "version": "0.3.0",
-  "description": "Comprehensive YNAB (You Need A Budget) API coverage for Claude. Manage budgets, transactions, accounts, categories, payees, and get spending analytics.",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.auzroz/ynab-mcp",
+  "title": "YNAB Budget Assistant",
+  "description": "Full YNAB API coverage plus spending analytics, for self-hosted use with Claude.",
+  "version": "0.3.3",
+  "websiteUrl": "https://github.com/auzroz/ynab-mcp",
   "repository": {
     "url": "https://github.com/auzroz/ynab-mcp",
     "source": "github"
   },
-  "license": "MIT",
   "packages": [
     {
-      "registry_name": "npm",
-      "name": "ynab-mcp",
-      "runtime": "node",
-      "runtime_arguments": [],
-      "package_arguments": []
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "ynab-mcp",
+      "version": "0.3.3",
+      "runtimeHint": "npx",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "YNAB_ACCESS_TOKEN",
+          "description": "Your YNAB Personal Access Token. Get one at https://app.ynab.com/settings/developer",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "YNAB_BUDGET_ID",
+          "description": "Default budget ID to use when not specified. Optional; uses 'last-used' if not set.",
+          "isRequired": false
+        },
+        {
+          "name": "YNAB_READ_ONLY",
+          "description": "Set to 'true' to disable all write operations (create, update, delete). Defaults to true for safety.",
+          "isRequired": false
+        }
+      ]
     },
     {
-      "registry_name": "docker",
-      "name": "ghcr.io/auzroz/ynab-mcp",
-      "runtime_arguments": [
-        "run",
-        "-i",
-        "--rm"
-      ],
-      "package_arguments": []
-    }
-  ],
-  "tools": [
-    "ynab_get_user",
-    "ynab_list_budgets",
-    "ynab_get_budget",
-    "ynab_get_budget_settings",
-    "ynab_list_accounts",
-    "ynab_get_account",
-    "ynab_create_account",
-    "ynab_list_categories",
-    "ynab_get_category",
-    "ynab_get_month_category",
-    "ynab_update_category",
-    "ynab_create_category",
-    "ynab_create_category_group",
-    "ynab_update_category_group",
-    "ynab_list_payees",
-    "ynab_get_payee",
-    "ynab_create_payee",
-    "ynab_update_payee",
-    "ynab_list_payee_locations",
-    "ynab_get_payee_location",
-    "ynab_list_payee_locations_by_payee",
-    "ynab_list_months",
-    "ynab_get_month",
-    "ynab_list_transactions",
-    "ynab_get_transaction",
-    "ynab_create_transaction",
-    "ynab_update_transaction",
-    "ynab_delete_transaction",
-    "ynab_create_transactions",
-    "ynab_update_transactions",
-    "ynab_list_account_transactions",
-    "ynab_list_category_transactions",
-    "ynab_list_payee_transactions",
-    "ynab_import_transactions",
-    "ynab_list_scheduled_transactions",
-    "ynab_get_scheduled_transaction",
-    "ynab_create_scheduled_transaction",
-    "ynab_update_scheduled_transaction",
-    "ynab_delete_scheduled_transaction",
-    "ynab_detect_recurring",
-    "ynab_spending_analysis",
-    "ynab_budget_health",
-    "ynab_savings_opportunities",
-    "ynab_budget_vs_actuals",
-    "ynab_quick_summary",
-    "ynab_income_expense",
-    "ynab_net_worth",
-    "ynab_goal_progress",
-    "ynab_spending_by_payee",
-    "ynab_unused_categories",
-    "ynab_monthly_comparison",
-    "ynab_spending_trends",
-    "ynab_cash_flow_forecast",
-    "ynab_reconciliation_helper",
-    "ynab_budget_suggestions",
-    "ynab_overspending_alerts",
-    "ynab_transaction_search",
-    "ynab_spending_pace",
-    "ynab_category_balances",
-    "ynab_credit_card_status",
-    "ynab_age_of_money",
-    "ynab_preview_scheduled_transaction",
-    "ynab_list_money_movements",
-    "ynab_rate_limit_status",
-    "ynab_audit_log",
-    "ynab_health_check"
-  ],
-  "environment_variables": [
-    {
-      "name": "YNAB_ACCESS_TOKEN",
-      "description": "Your YNAB Personal Access Token. Get one at https://app.ynab.com/settings/developer",
-      "required": true
-    },
-    {
-      "name": "YNAB_BUDGET_ID",
-      "description": "Default budget ID to use when not specified. Optional - will use 'last-used' if not set.",
-      "required": false
-    },
-    {
-      "name": "YNAB_READ_ONLY",
-      "description": "Set to 'true' to disable all write operations (create, update, delete). Defaults to true for safety.",
-      "required": false
+      "registryType": "oci",
+      "identifier": "ghcr.io/auzroz/ynab-mcp:0.3.3",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "YNAB_ACCESS_TOKEN",
+          "description": "Your YNAB Personal Access Token. Get one at https://app.ynab.com/settings/developer",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "YNAB_BUDGET_ID",
+          "description": "Default budget ID to use when not specified. Optional; uses 'last-used' if not set.",
+          "isRequired": false
+        },
+        {
+          "name": "YNAB_READ_ONLY",
+          "description": "Set to 'true' to disable all write operations (create, update, delete). Defaults to true for safety.",
+          "isRequired": false
+        }
+      ]
     }
   ]
 }
