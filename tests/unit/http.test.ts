@@ -115,4 +115,85 @@ describe('HTTP transport', () => {
     const del = await request(app).delete('/mcp').set('mcp-session-id', sessionId);
     expect(del.status).toBeLessThan(400);
   });
+
+  describe('hardening', () => {
+    const batch = [
+      { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+    ];
+
+    it('rejects JSON-RPC batch arrays without a session with -32600', async () => {
+      const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
+      const res = await request(app).post('/mcp').send(batch);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe(-32600);
+      expect(res.body.jsonrpc).toBe('2.0');
+    });
+
+    it('rejects JSON-RPC batch arrays with a session id with -32600', async () => {
+      const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
+      const res = await request(app).post('/mcp').set('Mcp-Session-Id', 'some-session').send(batch);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe(-32600);
+    });
+
+    it('rejects a batch containing initialize', async () => {
+      const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
+      const res = await request(app).post('/mcp').send([initializeBody]);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe(-32600);
+    });
+
+    it('returns a JSON-RPC 413 error for oversized bodies', async () => {
+      const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
+      const res = await request(app)
+        .post('/mcp')
+        .send({ jsonrpc: '2.0', id: 1, method: 'x', params: { pad: 'a'.repeat(600 * 1024) } });
+      expect(res.status).toBe(413);
+      expect(res.body.jsonrpc).toBe('2.0');
+      expect(res.body.error.code).toBe(-32600);
+      expect(JSON.stringify(res.body)).not.toMatch(/at .*\.(js|ts)|node_modules/);
+    });
+
+    it('returns a JSON-RPC -32700 error for malformed JSON', async () => {
+      const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
+      const res = await request(app)
+        .post('/mcp')
+        .set('Content-Type', 'application/json')
+        .send('{"jsonrpc": "2.0", bad');
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        jsonrpc: '2.0',
+        error: { code: -32700, message: 'Parse error: invalid JSON' },
+        id: null,
+      });
+    });
+
+    it('accepts a realistic 100-transaction create_transactions payload', async () => {
+      const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
+      const transactions = Array.from({ length: 100 }, (_, i) => ({
+        account_id: '123e4567-e89b-12d3-a456-426614174000',
+        date: '2025-01-15',
+        amount: -12345 - i,
+        payee_name: `Payee number ${i} with a fairly long descriptive name`,
+        category_id: '123e4567-e89b-12d3-a456-426614174001',
+        memo: 'm'.repeat(500),
+        cleared: 'uncleared',
+        import_id: `YNAB:${-12345 - i}:2025-01-15:${i}`,
+      }));
+      const body = {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'ynab_create_transactions', arguments: { transactions } },
+      };
+      const size = Buffer.byteLength(JSON.stringify(body));
+      expect(size).toBeLessThan(512 * 1024);
+      // Not an initialize request and no session: passes the body parser and is
+      // rejected by session validation (400 -32000), not by the size limit.
+      const res = await request(app).post('/mcp').send(body);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe(-32000);
+    });
+  });
 });
