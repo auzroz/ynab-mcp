@@ -3,7 +3,7 @@
 # ============================================
 
 # Stage 1: Builder
-FROM node:20-alpine3.21 AS builder
+FROM node:20-alpine3.23@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS builder
 
 WORKDIR /app
 
@@ -26,10 +26,10 @@ COPY src ./src
 RUN npm run build
 
 # Prune dev dependencies
-RUN npm prune --production
+RUN npm prune --omit=dev
 
 # Stage 2: Production
-FROM node:20-alpine3.21 AS production
+FROM node:20-alpine3.23@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS production
 
 # Install dumb-init for proper signal handling
 RUN apk add --no-cache dumb-init=1.2.5-r3
