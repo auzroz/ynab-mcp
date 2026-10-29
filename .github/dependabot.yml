@@ -1,0 +1,59 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Major bumps are planned manually (0.4.0 and later).
+      - dependency-name: zod
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@modelcontextprotocol/sdk'
+        update-types: ['version-update:semver-major']
+      - dependency-name: typescript
+        versions: ['>=6.1.0']
+      - dependency-name: vitest
+        versions: ['>=5.0.0']
+      - dependency-name: eslint
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@eslint/js'
+        update-types: ['version-update:semver-major']
+      - dependency-name: better-sqlite3
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+      # ynab is pinned to ~4.5.0 on purpose; update manually.
+      - dependency-name: ynab
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # Node base image major moves with the engines floor (0.4.0).
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
+    groups:
+      docker-minor-patch:
+        update-types:
+          - minor
+          - patch
