@@ -44,6 +44,11 @@ jobs:
             exit 1
           fi
 
+      - name: Verify server.json versions match tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          node -e "const s=require('./server.json');const t=process.argv[1];const bad=[];if(s.version!==t)bad.push('version '+s.version);for(const p of s.packages||[]){const v=p.registryType==='oci'?String(p.identifier).split(':').pop():p.version;if(v!==t)bad.push(p.registryType+' '+v);}if(bad.length){console.error('::error::server.json differs from tag '+t+': '+bad.join(', '));process.exit(1);}" "$TAG"
+
       - name: Run lint
         run: npm run lint
 

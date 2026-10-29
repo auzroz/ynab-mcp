@@ -55,6 +55,7 @@ LABEL org.opencontainers.image.url="https://github.com/auzroz/ynab-mcp"
 LABEL org.opencontainers.image.source="https://github.com/auzroz/ynab-mcp"
 LABEL org.opencontainers.image.vendor="auzroz"
 LABEL org.opencontainers.image.licenses="MIT"
+LABEL io.modelcontextprotocol.server.name="io.github.auzroz/ynab-mcp"
 
 # Default transport is stdio. For remote/HTTP mode, run with MCP_TRANSPORT=http
 # and publish the port (default 3000).

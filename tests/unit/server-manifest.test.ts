@@ -49,6 +49,12 @@ describe('server.json manifest', () => {
     expect(oci?.identifier.endsWith(`:${pkg.version}`)).toBe(true);
   });
 
+  it('Dockerfile MCP server-name label equals package.json mcpName', () => {
+    const dockerfile = readFileSync(resolve(root, 'Dockerfile'), 'utf8');
+    const match = /^LABEL io\.modelcontextprotocol\.server\.name="([^"]+)"/m.exec(dockerfile);
+    expect(match?.[1]).toBe(pkg.mcpName);
+  });
+
   it('every package uses stdio and declares the token as required secret', () => {
     for (const p of server.packages) {
       expect(p.transport.type).toBe('stdio');
