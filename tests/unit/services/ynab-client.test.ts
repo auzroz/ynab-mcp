@@ -216,6 +216,49 @@ describe('read methods', () => {
     expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledTimes(2);
   });
 
+  it('getBudgetFirstMonth resolves the last-used alias from the month list, not the budget list', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: 'a', first_month: '2019-03-01' }] },
+    });
+    setResolve(mockApi.months.getPlanMonths, { data: { months: [{ month: '2020-04-01' }] } });
+
+    expect(await makeClient(true).getBudgetFirstMonth('last-used')).toBe('2020-04-01');
+    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledWith('last-used');
+  });
+
+  it('getBudgetFirstMonth is recomputed after a transaction write', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2019-03-01' }] },
+    });
+    setResolve(mockApi.transactions.createTransaction, { data: { transaction: { id: 't1' } } });
+    const client = makeClient(false);
+
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2019-03-01');
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2018-11-01' }] },
+    });
+    await client.createTransaction(BUDGET, { transaction: { date: '2018-11-15' } } as never);
+
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2018-11-01');
+    expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledTimes(2);
+  });
+
+  it('a transaction write through the last-used alias invalidates explicit first-month entries', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2019-03-01' }] },
+    });
+    setResolve(mockApi.transactions.createTransaction, { data: { transaction: { id: 't1' } } });
+    const client = makeClient(false);
+
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2019-03-01');
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2018-11-01' }] },
+    });
+    await client.createTransaction('last-used', { transaction: { date: '2018-11-15' } } as never);
+
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2018-11-01');
+  });
+
   it('getBudgetFirstMonth does not borrow the sole budget for an unmatched explicit id', async () => {
     setResolve(mockApi.plans.getPlans, {
       data: { plans: [{ id: 'other', first_month: '2019-03-01' }] },

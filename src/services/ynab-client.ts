@@ -156,7 +156,8 @@ export class YnabClient {
    * Returns the budget's first month (YYYY-MM-01), used to derive an explicit
    * since_date because YNAB API 1.85+ defaults since_date to one year ago.
    * Resolved from the cached budget list when possible (no extra request);
-   * otherwise falls back to the earliest budget month (cached after first use).
+   * otherwise falls back to the earliest budget month. Cached per explicit budget
+   * ID and invalidated by transaction writes, which can extend a budget's history.
    */
   async getBudgetFirstMonth(budgetId: string): Promise<string | undefined> {
     // "last-used" and "default" can point at a different budget over time, so
@@ -169,16 +170,13 @@ export class YnabClient {
     }
 
     let firstMonth: string | undefined;
+    // Match the cached budget list by exact ID only. Aliases (and IDs missing from
+    // the list) never borrow another budget's first month; they use the month list.
     const budgets = (await this.getBudgets()).data.plans;
-    // The sole-budget fallback applies only to aliases; an explicit ID that is not
-    // in the list must not borrow another budget's first month.
-    const match =
-      budgets.find((b) => b.id === budgetId) ??
-      (isAlias && budgets.length === 1 ? budgets[0] : undefined);
-    firstMonth = match?.first_month;
+    firstMonth = budgets.find((b) => b.id === budgetId)?.first_month;
 
     if (firstMonth === undefined) {
-      // e.g. "last-used" with several budgets: derive from the month list
+      // Aliases and unlisted IDs: derive from the (uncached) month list
       const months = (await this.getBudgetMonths(budgetId)).data.months;
       for (const m of months) {
         if (firstMonth === undefined || m.month < firstMonth) firstMonth = m.month;
@@ -187,6 +185,21 @@ export class YnabClient {
 
     if (firstMonth !== undefined && !isAlias) this.cache.set(cacheKey, firstMonth);
     return firstMonth;
+  }
+
+  /**
+   * Drop cached data derived from transaction history (the budget's first month
+   * and the budget list that carries it) after a successful transaction write.
+   */
+  private invalidateTransactionHistory(budgetId: string): void {
+    if (budgetId === 'last-used' || budgetId === 'default') {
+      // An alias write could have touched any budget, so drop every cached first month.
+      this.cache.deleteByPrefix('first-month:');
+    } else {
+      this.cache.delete(`first-month:${budgetId}`);
+    }
+    this.cache.delete('budgets:false');
+    this.cache.delete('budgets:true');
   }
 
   // ==================== Accounts ====================
@@ -474,6 +487,7 @@ export class YnabClient {
     const txn = data.transaction;
     try {
       const response = await this.api.transactions.createTransaction(budgetId, data);
+      this.invalidateTransactionHistory(budgetId);
       // Redact PII from audit logs - payee_name may contain personal information
       const logEntry: Parameters<typeof auditLog.log>[0] = {
         operation: 'create',
@@ -523,6 +537,7 @@ export class YnabClient {
     const txn = data.transaction;
     try {
       const response = await this.api.transactions.updateTransaction(budgetId, transactionId, data);
+      this.invalidateTransactionHistory(budgetId);
       // Redact memo from audit logs - may contain sensitive user data
       auditLog.log({
         operation: 'update',
@@ -569,6 +584,7 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.transactions.updateTransactions(budgetId, data);
+      this.invalidateTransactionHistory(budgetId);
       auditLog.log({
         operation: 'update',
         tool: 'ynab_update_transactions',
@@ -606,6 +622,7 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.transactions.deleteTransaction(budgetId, transactionId);
+      this.invalidateTransactionHistory(budgetId);
       // Redact PII from audit logs - payee_name may contain personal information
       auditLog.log({
         operation: 'delete',
