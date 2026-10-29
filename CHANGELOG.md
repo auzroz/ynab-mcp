@@ -7,84 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.4] - 2026-10-29
 
-Hotfix release. It keeps Node 20 support (`engines` remains `>=20.0.0`) and the
-zod 3.x and MCP SDK 1.x lines. Upgrading from 0.3.3 is recommended, mainly
-because 0.3.x installs resolved `ynab` 4.5.0, which broke the transaction type
-filter in `ynab_list_transactions`.
+Hotfix release. It keeps Node 20 support (`engines` stays `>=20.0.0`) and stays
+on zod 3.x and MCP SDK 1.x. Upgrading from 0.2.0-0.3.3 is recommended: fresh
+installs of those versions resolve `ynab` 4.5.0, which breaks the type filter in
+`ynab_list_transactions`.
 
 ### Security
 
-- Dev-dependency vulnerabilities in the old vitest chain (3 critical, 2 high,
-  2 moderate) are resolved by moving to vitest 4. Only the zod advisory
-  GHSA-mrhx-c7xc-m3w5 remains, and zod stays on 3.x because it has no 3.x fix.
-  Mitigation: a pre-parse guard on `tools/call` rejects oversized (about 1 MB),
-  over-deep (depth 8), or over-long (1000 items) arguments before zod runs.
-- Added length caps to free-text inputs: `payee_name` 200, `import_id` 36,
-  `memo` 500 (200 in create tools), `budget_id` 64.
-- Added a non-blocking `npm audit --omit=dev --audit-level=high` CI job. It is
-  planned to become blocking in 0.4.0.
-- CI and release workflows are pinned by full commit SHA to the latest major
-  versions, moving off the removed `node20` action runtime. Checkout steps now
-  set `persist-credentials: false`.
-- Dependabot (`.github/dependabot.yml`) checks npm, GitHub Actions, and Docker
-  weekly. Minor and patch updates are grouped. Major updates are ignored for
-  zod, the MCP SDK, TypeScript, vitest, ESLint, `@eslint/js`, better-sqlite3,
-  and `@types/node`, and all `ynab` updates are ignored.
+- Upgraded `@modelcontextprotocol/sdk` to `^1.32.2`, which fixes six advisories
+  in the SDK. They include bearer auth accepting tokens issued for another
+  service, missing body-size and batch limits on the HTTP transport, and memory
+  exhaustion from a single request.
+- Upgraded `express` to `^5.3.0` and refreshed transitive dependencies with a
+  non-force `npm audit fix`. This fixes `proxy-addr` (critical, IP spoofing on
+  the `trust proxy` path), `ip-address`, `hono`, `qs`, `body-parser` and
+  `fast-uri`.
+- Moving to vitest 4 clears every advisory in the dev-dependency chain.
+- One advisory remains: zod GHSA-mrhx-c7xc-m3w5, which has no 3.x fix. zod 4
+  arrives in 0.4.0. Until then, a guard on `tools/call` rejects arguments over
+  1 MiB, nested deeper than 8 levels, or holding an array of more than 1000
+  items, before zod parses them.
+- HTTP transport: the JSON body limit drops from 4 MB to 512 KB. JSON-RPC batch
+  arrays are rejected with 400 and code -32600, since MCP 2025-06-18 removed
+  batching. Oversized bodies return 413, and malformed JSON returns 400 with
+  code -32700. Error responses carry no internal details.
+- Added length caps to free-text inputs that had none: `payee_name` 200,
+  `import_id` 36, `budget_id` 64, and `memo` 500 on `ynab_update_transactions`.
+  Existing memo caps of 200 are unchanged.
+- GitHub Actions are pinned by commit SHA to their latest major versions, moving
+  off the removed `node20` action runtime. Checkout steps set
+  `persist-credentials: false`.
+- Added Dependabot for npm, GitHub Actions and Docker, and a non-blocking
+  `npm audit --omit=dev --audit-level=high` CI step. The audit step becomes
+  blocking in 0.4.0.
 
 ### Fixed
 
-- `ynab_transaction_search` with only `until_date` now derives `since_date` from
-  the budget's first month instead of searching only the last year.
-- `goal_target_date` is read first, with a fallback to the deprecated
-  `goal_target_month`, in `ynab_goal_progress`, `ynab_get_category`, and
-  `ynab_get_month_category`.
-- The HTTP transport error handler logs a sanitized `[HttpError]` line to stderr
-  for 500 and generic 4xx errors. Responses remain generic.
-- Install docs and the GitHub release body use the published package name
-  `ynab-mcp` (`npx -y ynab-mcp`, `npm install -g ynab-mcp@<version>`, Claude
-  Desktop args `["-y", "ynab-mcp"]`). They previously referenced the unrelated
-  `ynab-mcp-server` package.
-- `server.json` is rewritten to the MCP Registry 2025-12-11 schema. The name is
-  `io.github.auzroz/ynab-mcp`, packages use `registryType`/`identifier`/`transport`
-  fields, env vars use `isRequired`/`isSecret`, and the npm and OCI packages are
-  pinned to the release version.
-- The Docker image moves off the frozen `node:20-alpine3.21` base (Alpine EOL
-  2026-11-01) to `node:20-alpine3.23`, pinned by multi-arch digest. The Dockerfile
-  uses `npm prune --omit=dev`.
+- `ynab_list_transactions` with a `type` filter (`unapproved` or
+  `uncategorized`) works again with `ynab` 4.5.0, which inserted a new
+  `untilDate` argument. `ynab` is now pinned to `~4.5.0`.
+- `ynab_transaction_search` with only `until_date` takes `since_date` from the
+  budget's first month, instead of searching only the last 12 months (the
+  default since YNAB API 1.85).
+- Category goal output reads `goal_target_date` first and falls back to the
+  deprecated `goal_target_month`. This affects `ynab_goal_progress`,
+  `ynab_get_category` and `ynab_get_month_category`.
+- Install docs and the GitHub release notes template now use the published
+  package name, `ynab-mcp` (`npx -y ynab-mcp`). They used to point at
+  `ynab-mcp-server`, an unrelated npm package.
+- The Docker image moves off the frozen `node:20-alpine3.21` base (Alpine 3.21
+  reaches end of life on 2026-11-01) to `node:20-alpine3.23`, pinned by digest,
+  and prunes with `npm prune --omit=dev`.
 
 ### Changed
 
-- Upgraded `@modelcontextprotocol/sdk` to `^1.32.2` and `express` to `^5.3.0`
-  through a non-force `npm audit fix`.
-- Upgraded the `ynab` SDK to `~4.5.0`. `YnabClient.getTransactions` accepts an
-  optional `untilDate`. Its positional argument order is now
-  `since, until, type, knowledge`.
-- Upgraded the dev tooling `vitest` and `@vitest/coverage-v8` to `^4.1.12`.
-  Coverage now counts all of `src/**/*.ts`. The branch threshold is 75 (was 80)
-  because v4 counts branches more strictly.
-- Transaction listing tools document that YNAB returns only the last 12 months
+- The transaction listing tools say that YNAB returns only the last 12 months
   when `since_date` is omitted.
+- `server.json` follows the MCP Registry 2025-12-11 schema.
+- Dev tooling: `vitest` and `@vitest/coverage-v8` are on `^4.1.12`. The branch
+  coverage threshold drops to 75% (from 80%), because vitest 4's AST-aware
+  remapping counts branches differently on the same tests.
+
 ### Deprecated
 
-- `ynab_import_transactions` is deprecated. YNAB API 1.88 no longer performs
-  file-based imports. The tool returns `deprecated: true` and stays registered.
-- `goal.target_month` in category outputs (`ynab_get_category` and
-  `ynab_get_month_category`). Use `goal.target_date`. `target_month` remains
-  as a backward-compatible alias with the same value.
+- `ynab_import_transactions`. Since API 1.88, YNAB imports linked-account
+  transactions automatically and this endpoint imports nothing. The tool stays
+  registered and returns `deprecated: true`.
+- `goal.target_month` in the output of `ynab_get_category` and
+  `ynab_get_month_category`. Use `goal.target_date`; `target_month` remains as
+  an alias with the same value.
 
 ### Added
 
-- `until_date` input on `ynab_list_transactions`, `ynab_list_account_transactions`,
-  `ynab_list_category_transactions`, and `ynab_list_payee_transactions`. The
-  upper bound is inclusive. Use ISO dates, with today or yesterday recommended.
-- `target_date` field in the goal output of `ynab_get_category` and
+- `until_date` input (inclusive) on `ynab_list_transactions`,
+  `ynab_list_account_transactions`, `ynab_list_category_transactions` and
+  `ynab_list_payee_transactions`.
+- `goal.target_date` in the output of `ynab_get_category` and
   `ynab_get_month_category`.
-- A unit test that keeps `server.json` in sync with `package.json` (version,
-  `mcpName`, npm identifier, and OCI tag).
-- A release workflow step that fails when the `server.json` version or the
-  package versions differ from the pushed tag.
-- A Dockerfile label `io.modelcontextprotocol.server.name` that matches
-  `package.json` `mcpName`.
+- A release workflow check that fails when `server.json` doesn't match the
+  pushed tag, a unit test that keeps `server.json` in sync with `package.json`,
+  and the Docker label `io.modelcontextprotocol.server.name`.
 
 ## [0.3.3] - 2026-07-03
 
@@ -112,14 +114,8 @@ filter in `ynab_list_transactions`.
 ## [0.3.2] - 2026-07-02
 
 > Note: `0.3.1` was tagged and published to npm from a commit that skipped code
-> review and was later reverted from `main`. `0.3.2` has identical code and
-> supersedes it; use `0.3.2` or later.
-
-## [0.3.1] - 2026-07-02
-
-Superseded by 0.3.2. This version was tagged and published from a commit that
-skipped review and was later reverted. Its code is identical to 0.3.2. Use 0.3.2
-or later.
+> review and was later reverted from `main`. `0.3.2` ships the same fix through
+> normal review and supersedes it.
 
 ### Fixed
 
@@ -129,6 +125,11 @@ or later.
   set `X-Forwarded-For`. Added a `TRUST_PROXY` env var (default `0`, i.e. trust
   none) to set Express's `trust proxy` explicitly, so rate limiting keys correctly
   off the real client IP when deployed behind a known number of proxy hops.
+
+## [0.3.1] - 2026-07-02
+
+Superseded by 0.3.2; use 0.3.2 or later. Tagged and published from a commit that
+skipped review and was later reverted. The code is identical to 0.3.2.
 
 ## [0.3.0] - 2026-07-01
 
