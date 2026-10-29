@@ -337,4 +337,60 @@ describe('handleGoalProgress', () => {
     expect(result.summary.complete).toBe(1);
     expect(result.summary.on_track).toBe(1);
   });
+
+  describe('target date resolution', () => {
+    async function run(extra: Record<string, unknown>) {
+      mockClient.getBudgetMonth.mockResolvedValue({
+        data: {
+          month: {
+            month: '2026-01-01',
+            categories: [{
+              id: 'cat-1',
+              name: 'Trip',
+              goal_type: 'TBD',
+              goal_target: 500000,
+              balance: 100000,
+              budgeted: 0,
+              activity: 0,
+              goal_under_funded: 0,
+              hidden: false,
+              category_group_id: 'group-1',
+              ...extra,
+            }],
+          },
+        },
+      });
+      mockClient.getCategories.mockResolvedValue({
+        data: {
+          category_groups: [{
+            id: 'group-1',
+            name: 'Savings',
+            hidden: false,
+            deleted: false,
+            categories: [{ id: 'cat-1', name: 'Trip', hidden: false, deleted: false }],
+          }],
+        },
+      });
+      return JSON.parse(await handleGoalProgress({}, mockClient as any));
+    }
+
+    it('uses goal_target_date when only it is set', async () => {
+      const result = await run({ goal_target_date: '2020-03-15' });
+      expect(result.goals[0].target_date).toBe('2020-03-15');
+      expect(result.goals[0].status).toBe('behind');
+      expect(result.goals[0].status_message).toContain('overdue');
+    });
+
+    it('falls back to goal_target_month when goal_target_date is missing', async () => {
+      const result = await run({ goal_target_month: '2020-03-01' });
+      expect(result.goals[0].target_date).toBe('2020-03-01');
+      expect(result.goals[0].status_message).toContain('overdue');
+    });
+
+    it('prefers goal_target_date when both are set', async () => {
+      const result = await run({ goal_target_date: '2020-03-15', goal_target_month: '2099-01-01' });
+      expect(result.goals[0].target_date).toBe('2020-03-15');
+      expect(result.goals[0].status_message).toContain('overdue');
+    });
+  });
 });

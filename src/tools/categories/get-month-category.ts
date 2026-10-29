@@ -91,7 +91,10 @@ export async function handleGetMonthCategory(
         goal: category.goal_type
           ? {
               type: category.goal_type,
-              target_month: category.goal_target_month,
+              // goal_target_month is deprecated (YNAB API 1.78); prefer goal_target_date
+              target_date: category.goal_target_date ?? category.goal_target_month ?? null,
+              // Backward-compatible alias of target_date
+              target_month: category.goal_target_date ?? category.goal_target_month ?? null,
               target: category.goal_target != null ? formatCurrency(category.goal_target) : null,
               percentage_complete: category.goal_percentage_complete,
               months_to_budget: category.goal_months_to_budget,
