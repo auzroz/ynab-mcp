@@ -124,7 +124,7 @@ export async function handleGoalProgress(
 
     const goalType = category.goal_type;
     const targetAmount = category.goal_target ?? null;
-    const targetDate = category.goal_target_month ?? null;
+    const targetDate = category.goal_target_date ?? category.goal_target_month ?? null;
     const monthlyFunding = category.goal_cadence_frequency === 1 ? category.goal_target : null;
     const underfunded = category.goal_under_funded ?? 0;
     const balance = category.balance;
