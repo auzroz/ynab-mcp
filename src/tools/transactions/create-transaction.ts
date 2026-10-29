@@ -36,6 +36,7 @@ const inputSchema = z.object({
   payee_id: z.string().uuid().optional().describe('Payee UUID (use ynab_list_payees to find)'),
   payee_name: z
     .string()
+    .max(200)
     .optional()
     .describe('Payee name (creates new payee if payee_id not provided)'),
   category_id: z

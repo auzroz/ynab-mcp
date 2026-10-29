@@ -77,7 +77,19 @@ describe('tools/call dispatch integration', () => {
     const text = (res.content as Array<{ text: string }>)[0]!.text;
     const body = JSON.parse(text);
     expect(body.type).toBe('validation_error');
+    expect(body.field).toBe('arguments');
+    expect(text).toMatch(/max 1000 items/);
+    expect(body.issues).toBeUndefined();
     expect(text).not.toMatch(/\n\s+at /);
+
+    // Input zod itself would accept (unknown keys are stripped): only the guard rejects it.
+    const res2 = await client.callTool({
+      name: 'ynab_list_accounts',
+      arguments: { budget_id: 'last-used', extra: nested(MAX_DEPTH + 12) },
+    });
+    expect(res2.isError).toBe(true);
+    const body2 = JSON.parse((res2.content as Array<{ text: string }>)[0]!.text);
+    expect(body2.field).toBe('arguments');
 
     await client.close();
     await server.close();
