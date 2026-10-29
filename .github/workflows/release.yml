@@ -183,9 +183,9 @@ jobs:
 
             ### npm
             ```bash
-            npx ynab-mcp-server
+            npx -y ynab-mcp
             # or install globally
-            npm install -g ynab-mcp-server@${{ steps.version.outputs.version }}
+            npm install -g ynab-mcp@${{ steps.version.outputs.version }}
             ```
 
             ### Docker
@@ -201,7 +201,7 @@ jobs:
               "mcpServers": {
                 "ynab": {
                   "command": "npx",
-                  "args": ["ynab-mcp-server"],
+                  "args": ["-y", "ynab-mcp"],
                   "env": { "YNAB_ACCESS_TOKEN": "your_token" }
                 }
               }
