@@ -15,7 +15,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import express, { type Request, type Response } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
@@ -31,6 +31,12 @@ import { YnabTokenResolver } from './auth/user-session.js';
 function jsonRpcError(code: number, message: string): unknown {
   return { jsonrpc: '2.0', error: { code, message }, id: null };
 }
+
+/**
+ * Max JSON request body. A maximal 100-transaction ynab_create_transactions payload
+ * is on the order of 100KB, so 512kb leaves headroom without accepting multi-MB bodies.
+ */
+export const MAX_JSON_BODY = '512kb';
 
 /** Select and initialize the configured storage driver. */
 async function buildStorage(config: HttpConfig): ReturnType<typeof createStorage> {
@@ -62,7 +68,7 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
   // can't have its rate limit bypassed by a spoofed header; set TRUST_PROXY to the
   // hop count when running behind a known ingress (e.g. 1 behind a single Traefik).
   app.set('trust proxy', config.trustProxy);
-  app.use(express.json({ limit: '4mb' }));
+  app.use(express.json({ limit: MAX_JSON_BODY }));
 
   const transports = new Map<string, StreamableHTTPServerTransport>();
 
@@ -169,7 +175,18 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
   }
 
   // Client -> server messages (and streamed responses).
-  app.post('/mcp', async (req: Request, res: Response) => {
+  // MCP 2025-06-18+ removed JSON-RPC batching; reject arrays outright (with or without a session).
+  const rejectBatch = (req: Request, res: Response, next: NextFunction): void => {
+    if (Array.isArray(req.body)) {
+      res
+        .status(400)
+        .json(jsonRpcError(-32600, 'Invalid Request: JSON-RPC batching is not supported'));
+      return;
+    }
+    next();
+  };
+
+  app.post('/mcp', rejectBatch, async (req: Request, res: Response) => {
     const sessionId = req.header('mcp-session-id');
     let transport = sessionId ? transports.get(sessionId) : undefined;
 
@@ -223,6 +240,24 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
   };
   app.get('/mcp', sessionRequest);
   app.delete('/mcp', sessionRequest);
+
+  // Body-parser failures -> JSON-RPC-shaped errors, with no stack traces or internal text.
+  app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) {
+      next(err);
+      return;
+    }
+    const type = (err as { type?: string } | null)?.type;
+    if (type === 'entity.too.large') {
+      res.status(413).json(jsonRpcError(-32600, 'Invalid Request: payload too large'));
+    } else if (type === 'entity.parse.failed') {
+      res.status(400).json(jsonRpcError(-32700, 'Parse error: invalid JSON'));
+    } else if (typeof (err as { status?: unknown } | null)?.status === 'number' && (err as { status: number }).status < 500) {
+      res.status(400).json(jsonRpcError(-32600, 'Invalid Request'));
+    } else {
+      res.status(500).json(jsonRpcError(-32603, 'Internal error'));
+    }
+  });
 
   return app;
 }
