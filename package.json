@@ -45,7 +45,7 @@
     "@modelcontextprotocol/sdk": "^1.32.2",
     "decimal.js": "^10.4.3",
     "express": "^5.3.0",
-    "ynab": "^4.4.0",
+    "ynab": "~4.5.0",
     "zod": "^3.23.8"
   },
   "optionalDependencies": {

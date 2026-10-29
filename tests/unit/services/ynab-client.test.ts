@@ -272,13 +272,16 @@ describe('read methods', () => {
 
     await client.getTransactions(BUDGET, {
       sinceDate: '2026-01-01',
+      untilDate: '2026-01-31',
       type: 'unapproved',
       lastKnowledgeOfServer: 3,
     });
 
+    // Positional: (budget, since, until, type, knowledge)
     expect(asMock(mockApi.transactions.getTransactions)).toHaveBeenCalledWith(
       BUDGET,
       '2026-01-01',
+      '2026-01-31',
       'unapproved',
       3
     );
@@ -291,6 +294,7 @@ describe('read methods', () => {
     await client.getTransactions(BUDGET);
     expect(asMock(mockApi.transactions.getTransactions)).toHaveBeenCalledWith(
       BUDGET,
+      undefined,
       undefined,
       undefined,
       undefined
