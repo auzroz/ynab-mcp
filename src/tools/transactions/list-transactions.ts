@@ -34,7 +34,7 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe(
-      'Only return transactions on or before this date (inclusive). Accepts ISO dates (YYYY-MM-DD) or natural language like "last month"'
+      'Only return transactions on or before this date (inclusive). Accepts ISO dates (YYYY-MM-DD) or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it'
     ),
   limit: z
     .number()
@@ -83,7 +83,7 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
       until_date: {
         type: 'string',
         description:
-          'Only return transactions on or before this date (inclusive). Accepts YYYY-MM-DD or natural language like "last month"',
+          'Only return transactions on or before this date (inclusive). Accepts YYYY-MM-DD or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it',
       },
       limit: {
         type: 'number',
