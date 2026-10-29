@@ -21,6 +21,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import { sanitizeErrorMessage } from './utils/sanitize.js';
 import { createServerForUser, type UserContext } from './server.js';
 import type { HttpConfig } from './config/environment.js';
 import { Encryptor } from './crypto.js';
@@ -253,8 +254,11 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     } else if (type === 'entity.parse.failed') {
       res.status(400).json(jsonRpcError(-32700, 'Parse error: invalid JSON'));
     } else if (typeof (err as { status?: unknown } | null)?.status === 'number' && (err as { status: number }).status < 500) {
+      console.error('[HttpError]', sanitizeErrorMessage(err));
       res.status(400).json(jsonRpcError(-32600, 'Invalid Request'));
     } else {
+      // Detailed error is logged internally only; the response stays generic.
+      console.error('[HttpError]', sanitizeErrorMessage(err));
       res.status(500).json(jsonRpcError(-32603, 'Internal error'));
     }
   });
