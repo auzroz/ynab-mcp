@@ -78,7 +78,10 @@ const mockApi = vi.hoisted(() => {
 });
 
 vi.mock('ynab', () => ({
-  API: vi.fn(() => mockApi),
+  // Vitest 4: a mock invoked with `new` needs a function/class implementation, not an arrow.
+  API: vi.fn(function () {
+    return mockApi;
+  }),
 }));
 
 const BUDGET = 'budget-123';
