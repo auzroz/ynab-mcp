@@ -21,7 +21,7 @@ const flagColors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'] as con
 const inputSchema = z
   .object({
     budget_id: z
-      .string()
+      .string().max(64)
       .optional()
       .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
     transaction_id: z.string().uuid().describe('The transaction UUID to update'),
@@ -36,7 +36,7 @@ const inputSchema = z
       .optional()
       .describe('New amount in dollars (negative for outflow, positive for inflow)'),
     payee_id: z.string().uuid().optional().describe('New payee UUID'),
-    payee_name: z.string().optional().describe('New payee name'),
+    payee_name: z.string().max(200).optional().describe('New payee name'),
     category_id: z.string().uuid().optional().describe('New category UUID'),
     memo: z.string().max(200).optional().describe('New memo/note'),
     cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),

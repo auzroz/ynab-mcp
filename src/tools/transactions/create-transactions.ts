@@ -22,19 +22,19 @@ const transactionSchema = z.object({
     .number()
     .describe('Amount in dollars (negative for outflow, positive for inflow)'),
   payee_id: z.string().uuid().optional().describe('Payee UUID'),
-  payee_name: z.string().optional().describe('Payee name'),
+  payee_name: z.string().max(200).optional().describe('Payee name'),
   category_id: z.string().uuid().optional().describe('Category UUID'),
   memo: z.string().max(200).optional().describe('Transaction memo'),
   cleared: z.enum(['cleared', 'uncleared', 'reconciled']).optional(),
   approved: z.boolean().optional(),
   flag_color: z.enum(['red', 'orange', 'yellow', 'green', 'blue', 'purple']).optional(),
-  import_id: z.string().optional().describe('Unique ID for import deduplication'),
+  import_id: z.string().max(36).optional().describe('Unique ID for import deduplication'),
 });
 
 // Input schema
 const inputSchema = z.object({
   budget_id: z
-    .string()
+    .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   transactions: z

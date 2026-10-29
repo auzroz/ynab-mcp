@@ -26,7 +26,7 @@ const accountTypeValues = Object.values(ynab.SaveAccountType).filter(
 // Input schema using nativeEnum for proper enum validation
 const inputSchema = z.object({
   budget_id: z
-    .string()
+    .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   name: z.string().min(1).max(100).describe('The name of the account'),

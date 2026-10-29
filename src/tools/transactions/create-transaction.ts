@@ -20,7 +20,7 @@ const flagColors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'] as con
 // Input schema
 const inputSchema = z.object({
   budget_id: z
-    .string()
+    .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   account_id: z.string().uuid().describe('The account UUID for this transaction'),
@@ -36,6 +36,7 @@ const inputSchema = z.object({
   payee_id: z.string().uuid().optional().describe('Payee UUID (use ynab_list_payees to find)'),
   payee_name: z
     .string()
+    .max(200)
     .optional()
     .describe('Payee name (creates new payee if payee_id not provided)'),
   category_id: z
