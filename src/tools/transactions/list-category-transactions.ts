@@ -14,7 +14,7 @@ import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 // Input schema
 const inputSchema = z.object({
   budget_id: z
-    .string()
+    .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   category_id: z.string().uuid().describe('The category UUID to get transactions for'),
