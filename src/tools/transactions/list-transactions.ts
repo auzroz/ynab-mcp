@@ -11,6 +11,9 @@ import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
+const DEFAULT_RANGE_NOTE =
+  'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.';
+
 // Input schema
 const inputSchema = z.object({
   budget_id: z
@@ -21,12 +24,18 @@ const inputSchema = z.object({
     .string()
     .optional()
     .describe(
-      'Only return transactions on or after this date. Accepts ISO dates (YYYY-MM-DD) or natural language: "today", "yesterday", "this week", "last week", "this month", "last month", "past 7 days", "past 30 days"'
+      'Only return transactions on or after this date. Accepts ISO dates (YYYY-MM-DD) or natural language: "today", "yesterday", "this week", "last week", "this month", "last month", "past 7 days", "past 30 days". If omitted, YNAB returns only the last 12 months; pass an earlier date for older history'
     ),
   type: z
     .enum(['uncategorized', 'unapproved'])
     .optional()
     .describe('Filter by transaction type: "uncategorized" or "unapproved"'),
+  until_date: z
+    .string()
+    .optional()
+    .describe(
+      'Only return transactions on or before this date (inclusive). Accepts ISO dates (YYYY-MM-DD) or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it'
+    ),
   limit: z
     .number()
     .int()
@@ -51,7 +60,9 @@ Use when the user asks:
 - "What did I spend last week?"
 
 Supports filtering by date (ISO or natural language like "past 30 days", "this month") and type (uncategorized/unapproved).
-Returns transaction details including date, payee, amount, category, and status.`,
+Returns transaction details including date, payee, amount, category, and status.
+
+NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). Pass an earlier since_date to see older history. until_date sets an inclusive upper bound.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -62,12 +73,17 @@ Returns transaction details including date, payee, amount, category, and status.
       since_date: {
         type: 'string',
         description:
-          'Only return transactions on or after this date. Accepts YYYY-MM-DD or natural language: "today", "this week", "past 30 days", etc.',
+          'Only return transactions on or after this date. Accepts YYYY-MM-DD or natural language: "today", "this week", "past 30 days", etc.. If omitted, YNAB returns only the last 12 months; pass an earlier date for older history',
       },
       type: {
         type: 'string',
         enum: ['uncategorized', 'unapproved'],
         description: 'Filter by transaction type',
+      },
+      until_date: {
+        type: 'string',
+        description:
+          'Only return transactions on or before this date (inclusive). Accepts YYYY-MM-DD or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it',
       },
       limit: {
         type: 'number',
@@ -91,11 +107,15 @@ export async function handleListTransactions(
 
   const options: {
     sinceDate?: string;
+    untilDate?: string;
     type?: 'uncategorized' | 'unapproved';
   } = {};
   if (validated.since_date !== undefined) {
     // Parse natural language dates like "past 7 days", "this month", etc.
     options.sinceDate = parseNaturalDate(validated.since_date);
+  }
+  if (validated.until_date !== undefined) {
+    options.untilDate = parseNaturalDate(validated.until_date);
   }
   if (validated.type !== undefined) {
     options.type = validated.type;
@@ -159,10 +179,14 @@ export async function handleListTransactions(
         total_outflow: formatCurrency(totalOutflow),
         net: formatCurrency(totalInflow - totalOutflow),
         date_range: minDate && maxDate ? { from: minDate, to: maxDate } : null,
+        ...(validated.since_date === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {}),
       },
       filters_applied: {
         since_date: validated.since_date
           ? { input: validated.since_date, parsed: options.sinceDate }
+          : null,
+        until_date: validated.until_date
+          ? { input: validated.until_date, parsed: options.untilDate }
           : null,
         type: validated.type ?? null,
         limit,

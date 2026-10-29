@@ -30,6 +30,7 @@ export function createMockClient() {
     getBudgets: vi.fn(),
     getBudgetById: vi.fn(),
     getBudgetSettingsById: vi.fn(),
+    getBudgetFirstMonth: vi.fn(),
 
     // Account endpoints
     getAccounts: vi.fn(),

@@ -152,6 +152,35 @@ export class YnabClient {
     return response;
   }
 
+  /**
+   * Returns the budget's first month (YYYY-MM-01), used to derive an explicit
+   * since_date because YNAB API 1.85+ defaults since_date to one year ago.
+   * Resolved from the cached budget list when possible (no extra request);
+   * otherwise falls back to the earliest budget month (cached after first use).
+   */
+  async getBudgetFirstMonth(budgetId: string): Promise<string | undefined> {
+    const cacheKey = `first-month:${budgetId}`;
+    const cached = this.cache.get<string>(cacheKey);
+    if (cached !== undefined) return cached;
+
+    let firstMonth: string | undefined;
+    const budgets = (await this.getBudgets()).data.plans;
+    const match =
+      budgets.find((b) => b.id === budgetId) ?? (budgets.length === 1 ? budgets[0] : undefined);
+    firstMonth = match?.first_month;
+
+    if (firstMonth === undefined) {
+      // e.g. "last-used" with several budgets: derive from the month list
+      const months = (await this.getBudgetMonths(budgetId)).data.months;
+      for (const m of months) {
+        if (firstMonth === undefined || m.month < firstMonth) firstMonth = m.month;
+      }
+    }
+
+    if (firstMonth !== undefined) this.cache.set(cacheKey, firstMonth);
+    return firstMonth;
+  }
+
   // ==================== Accounts ====================
 
   async getAccounts(budgetId: string): Promise<ynab.AccountsResponse> {
@@ -631,28 +660,46 @@ export class YnabClient {
   async getAccountTransactions(
     budgetId: string,
     accountId: string,
-    sinceDate?: string
+    sinceDate?: string,
+    untilDate?: string
   ): Promise<ynab.TransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByAccount(budgetId, accountId, sinceDate);
+    return this.api.transactions.getTransactionsByAccount(
+      budgetId,
+      accountId,
+      sinceDate,
+      untilDate
+    );
   }
 
   async getCategoryTransactions(
     budgetId: string,
     categoryId: string,
-    sinceDate?: string
+    sinceDate?: string,
+    untilDate?: string
   ): Promise<ynab.HybridTransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByCategory(budgetId, categoryId, sinceDate);
+    return this.api.transactions.getTransactionsByCategory(
+      budgetId,
+      categoryId,
+      sinceDate,
+      untilDate
+    );
   }
 
   async getPayeeTransactions(
     budgetId: string,
     payeeId: string,
-    sinceDate?: string
+    sinceDate?: string,
+    untilDate?: string
   ): Promise<ynab.HybridTransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByPayee(budgetId, payeeId, sinceDate);
+    return this.api.transactions.getTransactionsByPayee(
+      budgetId,
+      payeeId,
+      sinceDate,
+      untilDate
+    );
   }
 
   // ==================== Scheduled Transactions ====================

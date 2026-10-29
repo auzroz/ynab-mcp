@@ -107,4 +107,31 @@ describe('handleListTransactions', () => {
 
     expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
   });
+
+  it('passes until_date through and notes the 12-month default when since_date is omitted', async () => {
+    mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([]));
+
+    const parsed = JSON.parse(
+      await handleListTransactions({ until_date: '2023-12-31' }, mockClient as never)
+    );
+
+    expect(mockClient.getTransactions).toHaveBeenCalledWith('test-budget-id', {
+      untilDate: '2023-12-31',
+    });
+    expect(parsed.summary.date_range_note).toContain('last 12 months');
+    expect(parsed.filters_applied.until_date).toEqual({
+      input: '2023-12-31',
+      parsed: '2023-12-31',
+    });
+  });
+
+  it('omits the default-range note when since_date is given', async () => {
+    mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([]));
+
+    const parsed = JSON.parse(
+      await handleListTransactions({ since_date: '2023-01-01' }, mockClient as never)
+    );
+
+    expect(parsed.summary.date_range_note).toBeUndefined();
+  });
 });

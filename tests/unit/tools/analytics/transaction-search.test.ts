@@ -142,4 +142,56 @@ describe('handleTransactionSearch', () => {
     expect(result.transactions).toEqual([]);
     expect(result.has_more).toBe(false);
   });
+
+  it('derives since_date from the budget first month when only until_date is given', async () => {
+    mockClient.getBudgetFirstMonth.mockResolvedValue('2019-03-01');
+    mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
+
+    const result = JSON.parse(
+      await handleTransactionSearch({ until_date: '2020-01-31' }, mockClient as never)
+    );
+
+    expect(mockClient.getBudgetFirstMonth).toHaveBeenCalledWith('test-budget-id');
+    expect(mockClient.getTransactions).toHaveBeenCalledWith('test-budget-id', {
+      sinceDate: '2019-03-01',
+      untilDate: '2020-01-31',
+    });
+    expect(result.search.date_range.from).toBe('2019-03-01');
+    expect(result.search.note).toContain('first month');
+  });
+
+  it('does not look up the first month when since_date is given', async () => {
+    mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
+
+    await handleTransactionSearch(
+      { since_date: '2024-01-01', until_date: '2024-02-01' },
+      mockClient as never
+    );
+
+    expect(mockClient.getBudgetFirstMonth).not.toHaveBeenCalled();
+    expect(mockClient.getTransactions).toHaveBeenCalledWith('test-budget-id', {
+      sinceDate: '2024-01-01',
+      untilDate: '2024-02-01',
+    });
+  });
+
+  it('notes the 12-month YNAB default when no dates are given', async () => {
+    mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
+
+    const result = JSON.parse(await handleTransactionSearch({}, mockClient as never));
+
+    expect(mockClient.getBudgetFirstMonth).not.toHaveBeenCalled();
+    expect(result.search.note).toContain('last 12 months');
+  });
+
+  it('falls back to the YNAB default when the first month cannot be determined', async () => {
+    mockClient.getBudgetFirstMonth.mockResolvedValue(undefined);
+    mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
+
+    await handleTransactionSearch({ until_date: '2030-01-01' }, mockClient as never);
+
+    expect(mockClient.getTransactions).toHaveBeenCalledWith('test-budget-id', {
+      untilDate: '2030-01-01',
+    });
+  });
 });

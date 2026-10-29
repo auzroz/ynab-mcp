@@ -179,6 +179,29 @@ describe('read methods', () => {
     expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledWith(true);
   });
 
+  it('getBudgetFirstMonth reads first_month from the budget list and caches it', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2019-03-01' }, { id: 'other', first_month: '2021-01-01' }] },
+    });
+    const client = makeClient(true);
+
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2019-03-01');
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2019-03-01');
+    expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledTimes(1);
+    expect(asMock(mockApi.months.getPlanMonths)).not.toHaveBeenCalled();
+  });
+
+  it('getBudgetFirstMonth falls back to the earliest budget month for unmatched ids', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: 'a', first_month: '2019-03-01' }, { id: 'b', first_month: '2021-01-01' }] },
+    });
+    setResolve(mockApi.months.getPlanMonths, {
+      data: { months: [{ month: '2024-02-01' }, { month: '2022-07-01' }, { month: '2023-01-01' }] },
+    });
+
+    expect(await makeClient(true).getBudgetFirstMonth('last-used')).toBe('2022-07-01');
+  });
+
   it('getBudgets caches separately by includeAccounts flag', async () => {
     setResolve(mockApi.plans.getPlans, { data: { budgets: [] } });
     const client = makeClient(true);
@@ -314,7 +337,8 @@ describe('read methods', () => {
     expect(asMock(mockApi.transactions.getTransactionsByAccount)).toHaveBeenCalledWith(
       BUDGET,
       'acc-1',
-      '2026-01-01'
+      '2026-01-01',
+      undefined
     );
   });
 
@@ -324,17 +348,19 @@ describe('read methods', () => {
     expect(asMock(mockApi.transactions.getTransactionsByCategory)).toHaveBeenCalledWith(
       BUDGET,
       'cat-1',
+      undefined,
       undefined
     );
   });
 
   it('getPayeeTransactions maps to getTransactionsByPayee', async () => {
     setResolve(mockApi.transactions.getTransactionsByPayee, { data: { transactions: [] } });
-    await makeClient(true).getPayeeTransactions(BUDGET, 'payee-1', '2026-02-02');
+    await makeClient(true).getPayeeTransactions(BUDGET, 'payee-1', '2026-02-02', '2026-03-01');
     expect(asMock(mockApi.transactions.getTransactionsByPayee)).toHaveBeenCalledWith(
       BUDGET,
       'payee-1',
-      '2026-02-02'
+      '2026-02-02',
+      '2026-03-01'
     );
   });
 
