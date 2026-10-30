@@ -10,7 +10,12 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
-import { transactionTypeJsonSchema, transactionTypeSchema } from './format.js';
+import {
+  formatSubtransaction,
+  transactionChainFields,
+  transactionTypeJsonSchema,
+  transactionTypeSchema,
+} from './format.js';
 import { DATE_TEXT_MAX_LENGTH, budgetId, monthParam } from '../../utils/schemas.js';
 
 const DEFAULT_RANGE_NOTE =
@@ -168,15 +173,10 @@ export async function handleListTransactions(
     cleared: txn.cleared,
     approved: txn.approved,
     flag_color: txn.flag_color,
-    transfer_account_id: txn.transfer_account_id,
+    ...transactionChainFields(txn),
     subtransactions:
       (txn.subtransactions ?? []).length > 0
-        ? (txn.subtransactions ?? []).map((sub) => ({
-            amount: formatCurrency(sub.amount),
-            memo: sanitizeMemo(sub.memo),
-            payee_name: sanitizeName(sub.payee_name),
-            category_name: sanitizeName(sub.category_name),
-          }))
+        ? (txn.subtransactions ?? []).map(formatSubtransaction)
         : undefined,
   }));
 

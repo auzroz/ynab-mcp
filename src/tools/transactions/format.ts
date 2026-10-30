@@ -1,11 +1,11 @@
 /**
  * Shared helpers for the transaction read tools: the type filter schema and the
- * output fields that let a caller chain into other tools (ids, flag label).
+ * output fields that let a caller chain into other tools (ids).
  */
 
 import { z } from 'zod';
 import { formatCurrency } from '../../utils/milliunits.js';
-import { sanitizeMemo, sanitizeName, sanitizeString } from '../../utils/sanitize.js';
+import { sanitizeMemo, sanitizeName } from '../../utils/sanitize.js';
 
 /** YNAB's transaction type filter, shared by every transaction list tool. */
 export const transactionTypeSchema = z
@@ -19,15 +19,6 @@ export const transactionTypeJsonSchema = {
   description: 'Filter by transaction type: "uncategorized" or "unapproved"',
 } as const;
 
-/** Max length of a returned flag label (YNAB flag names are short). */
-const FLAG_NAME_MAX_LENGTH = 100;
-
-/** The user's custom label for a flag colour, sanitized; null when unset. */
-export function sanitizeFlagName(flagName: string | null | undefined): string | null {
-  const cleaned = sanitizeString(flagName, FLAG_NAME_MAX_LENGTH);
-  return cleaned ? cleaned : null;
-}
-
 /** Fields shared by TransactionDetail and HybridTransaction that this module reads. */
 interface TransactionLike {
   account_id: string;
@@ -38,12 +29,10 @@ interface TransactionLike {
   matched_transaction_id?: string | null;
   import_id?: string | null;
   debt_transaction_type?: string | null;
-  flag_name?: string | null;
 }
 
 /**
- * Ids and import/debt metadata needed to chain into other tools, plus the flag
- * label. Missing values come back as null so the keys are always present.
+ * Ids and import/debt metadata needed to chain into other tools. Missing values come back as null so the keys are always present.
  */
 export function transactionChainFields(txn: TransactionLike) {
   return {
@@ -55,7 +44,6 @@ export function transactionChainFields(txn: TransactionLike) {
     matched_transaction_id: txn.matched_transaction_id ?? null,
     import_id: txn.import_id ?? null,
     debt_transaction_type: txn.debt_transaction_type ?? null,
-    flag_name: sanitizeFlagName(txn.flag_name),
   };
 }
 
@@ -86,9 +74,4 @@ export function formatSubtransaction(sub: SubtransactionLike) {
     transfer_account_id: sub.transfer_account_id ?? null,
     transfer_transaction_id: sub.transfer_transaction_id ?? null,
   };
-}
-
-/** Truncation info for a list that is sliced to a limit. */
-export function truncationSummary(totalCount: number, returnedCount: number) {
-  return { total_count: totalCount, truncated: totalCount > returnedCount };
 }

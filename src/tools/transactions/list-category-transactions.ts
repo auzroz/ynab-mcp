@@ -11,7 +11,11 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
-import { transactionTypeJsonSchema, transactionTypeSchema } from './format.js';
+import {
+  transactionChainFields,
+  transactionTypeJsonSchema,
+  transactionTypeSchema,
+} from './format.js';
 
 const DEFAULT_RANGE_NOTE =
   'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.';
@@ -150,6 +154,12 @@ export async function handleListCategoryTransactions(
     payee_name: sanitizeName(txn.payee_name),
     account_name: sanitizeName(txn.account_name),
     cleared: txn.cleared,
+    approved: txn.approved,
+    flag_color: txn.flag_color,
+    ...transactionChainFields(txn),
+    // 'subtransaction' rows are splits of parent_transaction_id
+    type: txn.type,
+    parent_transaction_id: txn.parent_transaction_id ?? null,
   }));
 
   return JSON.stringify(

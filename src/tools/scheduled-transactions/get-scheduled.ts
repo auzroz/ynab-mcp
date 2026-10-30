@@ -87,6 +87,7 @@ export async function handleGetScheduledTransaction(
           return subs.length > 0
             ? subs.map((sub) => ({
                 id: sub.id,
+                scheduled_transaction_id: sub.scheduled_transaction_id,
                 amount: formatCurrency(sub.amount),
                 memo: sanitizeMemo(sub.memo),
                 payee_id: sub.payee_id,

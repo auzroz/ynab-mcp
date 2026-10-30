@@ -74,13 +74,20 @@ export async function handleListScheduledTransactions(
       category_name: sanitizeName(txn.category_name),
       account_name: sanitizeName(txn.account_name),
       flag_color: txn.flag_color,
+      account_id: txn.account_id,
+      payee_id: txn.payee_id ?? null,
+      category_id: txn.category_id ?? null,
+      transfer_account_id: txn.transfer_account_id ?? null,
       subtransactions:
         subs.length > 0
           ? subs.map((sub) => ({
+              id: sub.id,
+              scheduled_transaction_id: sub.scheduled_transaction_id,
               amount: formatCurrency(sub.amount),
               memo: sanitizeMemo(sub.memo),
               payee_id: sub.payee_id,
               category_id: sub.category_id,
+              transfer_account_id: sub.transfer_account_id ?? null,
             }))
           : [],
     };
