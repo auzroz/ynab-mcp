@@ -509,13 +509,14 @@ category groups, `deleted_months` for months), and counts instead of totals.
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Run tests and linting: `npm test && npm run lint`
-5. Commit your changes (`git commit -m 'Add amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
+Contributions are welcome: bug reports, fixes, new tools, docs and skills. [CONTRIBUTING.md](CONTRIBUTING.md) covers:
+- development setup;
+- the standards every change must meet (money math, validation, sanitizing, secrets, tests);
+- how to add a tool;
+- running the Postgres storage tests;
+- commit and PR conventions, and how review and releases work.
+
+Please report security issues privately, as described there, rather than in a public issue.
 
 ## License
 
