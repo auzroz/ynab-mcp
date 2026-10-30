@@ -9,6 +9,10 @@
  * transaction that changed out of a filter is not reported by that filter's
  * delta; only the unfiltered feed sees it.
  *
+ * Transaction rows carry payee_name, category_name and account_name looked up
+ * when the response is built, as YNAB denormalizes them: a rename changes the
+ * names a full fetch returns without stamping (or reporting) the transactions.
+ *
  * `api` mirrors the ynab SDK accessors the YnabClient uses; `calls` logs every
  * request with its arguments.
  */
@@ -94,6 +98,8 @@ export class FakeYnab {
   firstMonth = '2024-01-01';
   /** The server's "today" (for the default 12-month window). */
   today = '2026-06-15';
+  /** Reject (400) a transaction request whose since_date is before 2000. */
+  rejectFarPastSinceDate = false;
   /** Replace a delta response before it is returned (inconsistency tests). */
   tamper: ((method: string, response: { data: Record<string, unknown> }) => unknown) | undefined;
   readonly calls: Array<{ method: string; args: unknown[] }> = [];
@@ -162,9 +168,24 @@ export class FakeYnab {
     return true;
   }
 
+  /** The names YNAB would show on a row with these ids. */
+  names(ids: { account_id?: string; category_id: string | null; payee_id: string | null }): Record<string, string | null> {
+    const name = (row: Row | undefined): string | null => (row === undefined ? null : (row.name as string));
+    return {
+      payee_name: ids.payee_id === null ? null : name(this.payees.get(ids.payee_id)),
+      category_name: ids.category_id === null ? null : name(this.categories.get(ids.category_id)),
+      ...(ids.account_id !== undefined ? { account_name: name(this.accounts.get(ids.account_id)) } : {}),
+    };
+  }
+
   private txnOut(t: FakeTxn & Row, deleted: boolean): FakeTxn {
     const subs = deleted ? t.subtransactions : [...t.subtransactions, ...(this.removedSubs.get(t.id) ?? [])];
-    return { ...structuredClone(t), deleted, subtransactions: structuredClone(subs) };
+    return {
+      ...structuredClone(t),
+      ...this.names(t),
+      deleted,
+      subtransactions: structuredClone(subs).map((s) => ({ ...s, ...this.names(s) })),
+    };
   }
 
   /** Full transaction result (live, filtered, date ascending) or delta since `k`. */
@@ -186,14 +207,15 @@ export class FakeYnab {
       const base = { date: t.date, approved: t.approved, account_id: t.account_id, deleted: false };
       if (t.subtransactions.length === 0) {
         if (t[field] === id) {
-          rows.push({ ...base, id: t.id, amount: t.amount, category_id: t.category_id, payee_id: t.payee_id, type: 'transaction', parent_transaction_id: null });
+          rows.push({ ...base, ...this.names(t), id: t.id, amount: t.amount, category_id: t.category_id, payee_id: t.payee_id, type: 'transaction', parent_transaction_id: null });
         }
         continue;
       }
       for (const s of t.subtransactions) {
         const value = field === 'payee_id' ? (s.payee_id ?? t.payee_id) : s.category_id;
         if (value === id) {
-          rows.push({ ...base, id: s.id, amount: s.amount, category_id: s.category_id, payee_id: s.payee_id ?? t.payee_id, type: 'subtransaction', parent_transaction_id: t.id });
+          const ids = { account_id: t.account_id, category_id: s.category_id, payee_id: s.payee_id ?? t.payee_id };
+          rows.push({ ...base, ...this.names(ids), id: s.id, amount: s.amount, category_id: s.category_id, payee_id: ids.payee_id, type: 'subtransaction', parent_transaction_id: t.id });
         }
       }
     }
@@ -250,6 +272,12 @@ export class FakeYnab {
         this.payees.put(payee);
         return this.respond('createPayee', [b, body], { payee });
       },
+      updatePayee: (b: string, id: string, body: { payee: { name: string } }) => {
+        const payee = this.payees.get(id);
+        if (!payee) return Promise.reject(new Error('not found'));
+        this.payees.put({ ...payee, name: body.payee.name });
+        return this.respond('updatePayee', [b, id, body], { payee: this.payees.get(id) });
+      },
     },
     months: {
       // Newest month first.
@@ -276,6 +304,12 @@ export class FakeYnab {
         this.putCategory({ ...cat, budgeted: body.category.budgeted });
         return this.respond('updateMonthCategory', [b, month, id, body], { category: this.categories.get(id) });
       },
+      updateCategory: (b: string, id: string, body: { category: { name?: string } }) => {
+        const cat = this.categories.get(id);
+        if (!cat) return Promise.reject(new Error('not found'));
+        this.putCategory({ ...cat, ...(body.category.name !== undefined ? { name: body.category.name } : {}) });
+        return this.respond('updateCategory', [b, id, body], { category: this.categories.get(id) });
+      },
     },
     transactions: {
       createTransaction: (b: string, body: { transaction: FakeTxn }) => {
@@ -283,7 +317,10 @@ export class FakeYnab {
         return this.respond('createTransaction', [b, body], { transaction: body.transaction, transaction_ids: [body.transaction.id] });
       },
       getTransactions: (b: string, sinceDate?: string, untilDate?: string, type?: string, k?: number) =>
-        this.respond('getTransactions', [b, sinceDate, untilDate, type, k], {
+        this.rejectFarPastSinceDate && sinceDate !== undefined && sinceDate < '2000-01-01'
+          ? (this.calls.push({ method: 'getTransactions', args: [b, sinceDate, untilDate, type, k] }),
+            Promise.reject({ error: { id: '400', name: 'bad_request', detail: 'invalid since_date' } }))
+          : this.respond('getTransactions', [b, sinceDate, untilDate, type, k], {
           transactions: this.transactionList({ sinceDate, untilDate, type }, k),
         }),
       getTransactionsByMonth: (b: string, month: string, sinceDate?: string, untilDate?: string, type?: string, k?: number) =>

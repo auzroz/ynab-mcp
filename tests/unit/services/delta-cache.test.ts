@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DeltaCache,
+  DELTA_DENORMALIZED_MAX_AGE_MS,
   DELTA_IDLE_MS,
   DELTA_MAX_AGE_MS,
   DELTA_MAX_ENTITIES,
@@ -143,5 +144,57 @@ describe('DeltaCache memory bounds', () => {
   it('rejects invalid bounds', () => {
     expect(() => new DeltaCache({ maxSnapshots: 0 })).toThrow('Invalid delta cache');
     expect(() => new DeltaCache({ idleMs: Number.NaN })).toThrow('Invalid delta cache');
+  });
+});
+
+describe('DeltaCache groups and names', () => {
+  it('dropGroup drops only that group and refuses offers that began before the drop', () => {
+    const { cache, snap } = setup();
+    const g = (k: number, group: string): Snapshot => ({ ...snap(k), group });
+    cache.offer('a', g(10, 'g1'));
+    cache.offer('b', g(10, 'g2'));
+    cache.offer('c', snap(10));
+    const before = cache.generation('g1');
+    cache.dropGroup('g1');
+    expect([cache.get('a'), cache.get('b') !== undefined, cache.get('c') !== undefined]).toEqual([undefined, true, true]);
+    expect(cache.generation('g1')).not.toBe(before);
+    expect(cache.offer('a', g(11, 'g1'), undefined, before)).toBe(false);
+    expect(cache.offer('a', g(11, 'g1'), undefined, cache.generation('g1'))).toBe(true);
+    // Other groups' and ungrouped generations are untouched.
+    expect(cache.offer('b', g(11, 'g2'), cache.get('b'), cache.generation('g2'))).toBe(true);
+    expect(cache.generation(undefined)).toBe(0);
+  });
+
+  it('dropAllGroups drops every grouped snapshot and bumps every group', () => {
+    const { cache, snap } = setup();
+    cache.offer('a', { ...snap(10), group: 'g1' });
+    cache.offer('c', snap(10));
+    const before = cache.generation('g2');
+    cache.dropAllGroups();
+    expect(cache.get('a')).toBeUndefined();
+    expect(cache.get('c')).toBeDefined();
+    expect(cache.generation('g2')).not.toBe(before);
+  });
+
+  it('denormalized snapshots are dropped after DELTA_DENORMALIZED_MAX_AGE_MS, others after DELTA_MAX_AGE_MS', () => {
+    const { cache, clock, snap } = setup({ idleMs: DELTA_MAX_AGE_MS * 2 });
+    cache.offer('names', { ...snap(10), denormalized: true });
+    cache.offer('plain', snap(10));
+    clock.t += DELTA_DENORMALIZED_MAX_AGE_MS;
+    expect(cache.get('names')).toBeUndefined();
+    expect(cache.get('plain')).toBeDefined();
+    clock.t += DELTA_MAX_AGE_MS - DELTA_DENORMALIZED_MAX_AGE_MS;
+    expect(cache.get('plain')).toBeUndefined();
+    expect(DELTA_DENORMALIZED_MAX_AGE_MS).toBeLessThan(DELTA_MAX_AGE_MS);
+  });
+
+  it('noteNames reports renames and removals, not additions or the first sighting', () => {
+    const { cache } = setup();
+    const m = (entries: Array<[string, number]>) => new Map(entries);
+    expect(cache.noteNames('k', m([['a', 1], ['b', 2]]))).toBe(false);
+    expect(cache.noteNames('k', m([['a', 1], ['b', 2], ['c', 3]]))).toBe(false); // added
+    expect(cache.noteNames('k', m([['a', 1], ['b', 9], ['c', 3]]))).toBe(true); // renamed
+    expect(cache.noteNames('k', m([['a', 1], ['c', 3]]))).toBe(true); // removed
+    expect(cache.noteNames('other', m([['a', 5]]))).toBe(false); // keys are independent
   });
 });

@@ -145,6 +145,19 @@ interface SnapshotRead<R extends KnowledgeResponse> {
   window?: string;
   /** false when the query must always be fetched in full (see snapshotKey). */
   snapshot?: boolean;
+  /**
+   * Rows carry payee, category or account names (transaction and scheduled
+   * transaction lists). A rename changes those names without changing the
+   * rows, so no delta reports it: such snapshots are dropped when a rename is
+   * seen (see observeNames) and re-read in full more often (see DeltaCache).
+   */
+  denormalized?: boolean;
+  /**
+   * For the lists whose names other snapshots carry (accounts, categories,
+   * payees): the entities of a full result. A name that changed (or an entity
+   * that went) between reads is a rename denormalized snapshots can't see.
+   */
+  names?: (response: R) => ReadonlyArray<{ id: string; name: string; deleted?: boolean }>;
   /** The caller's delta cursor (since_server_knowledge), if any. */
   cursor?: number | undefined;
   /**
@@ -169,6 +182,39 @@ interface SnapshotRead<R extends KnowledgeResponse> {
   copy: (response: R) => R;
   /** Entity count, for the snapshot store's memory bound. */
   size: (response: R) => number;
+}
+
+/** A 53-bit hash of a text (cyrb53), for DeltaCache.noteNames. */
+function hashText(text: string): number {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+}
+
+/**
+ * since_date of the transaction change feed: early enough to cover any
+ * transaction, so the feed doesn't depend on a (cached) first month.
+ */
+const FEED_SINCE_DATE = '1900-01-01';
+
+/** A YNAB 400 response (as the SDK throws it). */
+function isBadRequest(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'error' in error &&
+    typeof error.error === 'object' &&
+    error.error !== null &&
+    'id' in error.error &&
+    error.error.id === '400'
+  );
 }
 
 function isKnowledge(value: unknown): value is number {
@@ -206,11 +252,15 @@ function addDays(isoDate: string, days: number): string {
  *   type, or a date too close to the default window's start, whose exact day
  *   depends on YNAB's clock). A refresh that meets an ambiguous change that
  *   could concern the snapshot falls back to a full fetch.
+ * - `lowerBound`: the earliest date the result can hold, so a change feed
+ *   starting later can't be complete for it.
  */
 interface TransactionQueryModel {
   core: (t: FilterableTransaction) => boolean;
   keep: (t: FilterableTransaction) => boolean;
   ambiguous: (t: FilterableTransaction) => boolean;
+  /** No transaction dated before this can be in the result. */
+  lowerBound: string;
 }
 
 function transactionQueryModel(
@@ -239,6 +289,7 @@ function transactionQueryModel(
   const ambiguities: Array<(t: FilterableTransaction) => boolean> = [];
   if (q.type === 'uncategorized') ambiguities.push(() => true);
   let keep = core;
+  const bounds = [since, month].filter((b): b is string => b !== undefined);
   if (since === undefined) {
     // YNAB defaults since_date to about a year ago (API 1.85+).
     const d = new Date(`${today}T00:00:00Z`);
@@ -249,13 +300,16 @@ function transactionQueryModel(
     if (month === undefined) {
       keep = (t) => core(t) && t.date >= windowStart;
       ambiguities.push((t) => t.date >= low && t.date <= high);
+      bounds.push(low);
     } else if (month < high) {
       // Whether the default window applies to the month endpoint isn't
       // documented; it can only matter for a month that reaches back to it.
       ambiguities.push(() => true);
     }
   }
-  return { core, keep, ambiguous: (t) => ambiguities.some((a) => a(t)) };
+  // The latest bound that applies (none: the whole history).
+  const lowerBound = bounds.reduce((a, b) => (b > a ? b : a), FEED_SINCE_DATE);
+  return { core, keep, ambiguous: (t) => ambiguities.some((a) => a(t)), lowerBound };
 }
 
 export class YnabClient {
@@ -268,6 +322,9 @@ export class YnabClient {
   private readonly readOnly: boolean;
   private readonly auditLog: AuditLog;
   private readonly deltaCache: DeltaCache;
+  // Set once YNAB has rejected FEED_SINCE_DATE: the change feed then starts at
+  // the budget's first month (see transactionChangeFeed).
+  private feedSinceDateRejected = false;
 
   // Track server knowledge for delta sync. Keyed by budget, resource and any
   // request parameters that change the result set (see knowledgeKey), because a
@@ -425,6 +482,11 @@ export class YnabClient {
     return new Date(this.deltaCache.now()).toISOString().slice(0, 10);
   }
 
+  /** UTC month (YYYY-MM), for SnapshotRead.window. */
+  private snapshotMonth(): string {
+    return this.snapshotDay().slice(0, 7);
+  }
+
   /**
    * Read a list endpoint through the TTL cache and the delta snapshot store.
    *
@@ -438,10 +500,12 @@ export class YnabClient {
    *
    * Callers always get the complete set a full fetch would return. Writes drop
    * the TTL entry (and bump the cache generation) but leave the snapshot, so the
-   * next read is a small delta. The generation guards only the TTL store: a read
-   * that started before a write must not cache its result. Snapshots don't need
-   * that guard, since they are ordered by server_knowledge (DeltaCache.offer)
-   * and every read refreshes one from YNAB before using it.
+   * next read is a small delta. The cache generation guards the TTL store: a
+   * read that started before a write must not cache its result. Snapshots are
+   * ordered by server_knowledge instead (DeltaCache.offer), since every read
+   * refreshes one from YNAB before using it; only denormalized snapshots, which
+   * a rename makes stale without a delta showing it, are also guarded by their
+   * group's generation (see dropNameSnapshots).
    */
   private async snapshotRead<R extends KnowledgeResponse>(spec: SnapshotRead<R>): Promise<R> {
     if (spec.cursor !== undefined) return this.cursorRead(spec, spec.cursor);
@@ -452,21 +516,23 @@ export class YnabClient {
     }
 
     const generation = this.cache.generation();
+    const snapshotGeneration = this.deltaCache.generation(this.snapshotGroup(spec));
     const key = this.snapshotKey(spec);
     const base = key === undefined ? undefined : this.deltaCache.get<R>(key);
     let response: R | undefined;
     if (key !== undefined && base !== undefined) {
-      response = await this.refreshSnapshot(spec, key, base);
+      response = await this.refreshSnapshot(spec, key, base, snapshotGeneration);
     }
     if (response === undefined) {
       await this.rateLimiter.acquire();
       response = await spec.fetch(undefined);
       const knowledge = response.data.server_knowledge;
       if (key !== undefined && isKnowledge(knowledge)) {
-        this.storeSnapshot(spec, key, response, knowledge, this.deltaCache.now());
+        this.storeSnapshot(spec, key, response, knowledge, this.deltaCache.now(), snapshotGeneration);
       }
     }
 
+    this.observeNames(spec, response);
     this.recordKnowledge(spec, response);
     if (spec.ttlKey !== undefined && generation === this.cache.generation()) {
       this.cache.set(spec.ttlKey, response);
@@ -478,7 +544,8 @@ export class YnabClient {
   private async refreshSnapshot<R extends KnowledgeResponse>(
     spec: SnapshotRead<R>,
     key: string,
-    base: Snapshot<R>
+    base: Snapshot<R>,
+    snapshotGeneration: number
   ): Promise<R | undefined> {
     let merged: R | undefined;
     try {
@@ -494,7 +561,7 @@ export class YnabClient {
       this.deltaCache.delete(key, base);
       return undefined;
     }
-    this.storeSnapshot(spec, key, merged, knowledge, base.baseFetchedAt, base);
+    this.storeSnapshot(spec, key, merged, knowledge, base.baseFetchedAt, snapshotGeneration, base);
     return merged;
   }
 
@@ -505,6 +572,7 @@ export class YnabClient {
    * merged in to keep the snapshot current at no extra request.
    */
   private async cursorRead<R extends KnowledgeResponse>(spec: SnapshotRead<R>, cursor: number): Promise<R> {
+    const snapshotGeneration = this.deltaCache.generation(this.snapshotGroup(spec));
     await this.rateLimiter.acquire();
     const response = await spec.fetch(cursor);
     const knowledge = response.data.server_knowledge;
@@ -514,7 +582,15 @@ export class YnabClient {
       const base = this.deltaCache.get<R>(key);
       if (base !== undefined && cursor <= base.knowledge && knowledge >= base.knowledge) {
         try {
-          this.storeSnapshot(spec, key, merge(base.data, response), knowledge, base.baseFetchedAt, base);
+          this.storeSnapshot(
+            spec,
+            key,
+            merge(base.data, response),
+            knowledge,
+            base.baseFetchedAt,
+            snapshotGeneration,
+            base
+          );
         } catch (error) {
           if (!(error instanceof DeltaMergeError)) throw error;
           this.deltaCache.delete(key, base);
@@ -531,10 +607,59 @@ export class YnabClient {
     response: R,
     knowledge: number,
     baseFetchedAt: number,
+    snapshotGeneration: number,
     base?: Snapshot<R>
   ): void {
     const data = spec.copy(response);
-    this.deltaCache.offer(key, { data, knowledge, entities: spec.size(data), baseFetchedAt }, base);
+    const snapshot: Snapshot = {
+      data,
+      knowledge,
+      entities: spec.size(data),
+      baseFetchedAt,
+      group: this.snapshotGroup(spec),
+      denormalized: spec.denormalized === true,
+    };
+    this.deltaCache.offer(key, snapshot, base, snapshotGeneration);
+  }
+
+  /** The snapshot group of a budget's denormalized snapshots (see dropNameSnapshots). */
+  private namesGroup(budgetId: string): string {
+    return JSON.stringify(['names', budgetId]);
+  }
+
+  private snapshotGroup<R extends KnowledgeResponse>(spec: SnapshotRead<R>): string | undefined {
+    return spec.denormalized === true ? this.namesGroup(spec.budgetId) : undefined;
+  }
+
+  /**
+   * Drop a budget's denormalized snapshots (transaction and scheduled
+   * transaction lists), so their next read is a full fetch with current
+   * payee, category and account names, and bump their group's generation so a
+   * read in flight can't put old names back. For an alias, whose budget isn't
+   * known, every budget's are dropped.
+   */
+  private dropNameSnapshots(budgetId: string): void {
+    if (isBudgetIdSentinel(budgetId)) this.deltaCache.dropAllGroups();
+    else this.deltaCache.dropGroup(this.namesGroup(budgetId));
+  }
+
+  /**
+   * For accounts, categories and payees: compare the names of this full result
+   * with the last one seen for the budget, and drop the budget's denormalized
+   * snapshots when one was renamed or removed (new entities don't matter). A rename made elsewhere doesn't change the
+   * transaction rows that show the old name, so the transaction change feed
+   * never reports it; this catches it whenever one of these lists is read
+   * (most analytics tools read them), at no extra request. Otherwise
+   * DELTA_DENORMALIZED_MAX_AGE_MS bounds it.
+   */
+  private observeNames<R extends KnowledgeResponse>(spec: SnapshotRead<R>, response: R): void {
+    if (spec.names === undefined || isBudgetIdSentinel(spec.budgetId)) return;
+    const index = new Map<string, number>();
+    for (const entity of spec.names(response)) {
+      if (entity.deleted !== true) index.set(entity.id, hashText(entity.name));
+    }
+    const key = JSON.stringify(['names', spec.budgetId, spec.resource]);
+    if (this.deltaCache.noteNames(key, index)) this.dropNameSnapshots(spec.budgetId);
   }
 
   private recordKnowledge<R extends KnowledgeResponse>(spec: SnapshotRead<R>, response: R): void {
@@ -578,25 +703,47 @@ export class YnabClient {
 
   /**
    * Every transaction in the budget changed since `knowledge` (deleted ones
-   * with deleted: true): the budget-wide endpoint from the budget's first
-   * month, with no other filter. Transaction snapshots are refreshed from this
-   * rather than from their own endpoint's delta, because a filtered delta
-   * (account, category, payee, type, dates) need not report a transaction that
-   * changed so that it no longer matches (approved, re-categorized, re-dated),
-   * which would leave it behind in the snapshot. Undefined when the first month
-   * is unknown.
+   * with deleted: true): the budget-wide endpoint with no filter but a
+   * since_date of FEED_SINCE_DATE (YNAB otherwise defaults it to a year ago).
+   * Transaction snapshots are refreshed from this rather than from their own
+   * endpoint's delta, because a filtered delta (account, category, payee,
+   * type, dates) need not report a transaction that changed so that it no
+   * longer matches (approved, re-categorized, re-dated), which would leave it
+   * behind in the snapshot.
+   *
+   * `since` is the feed's since_date: changes to transactions dated before it
+   * are not in the feed. Should YNAB reject FEED_SINCE_DATE (400), the feed
+   * starts at the budget's first month from then on, and is not used for a
+   * query whose `lowerBound` is earlier (a cached first month can be later
+   * than the true one, and the feed would then miss changes the query
+   * covers). Undefined, meaning "fetch in full", in that case, when the first
+   * month is unknown, or when the response is unusable.
    */
   private async transactionChangeFeed(
     budgetId: string,
-    knowledge: number
-  ): Promise<{ firstMonth: string; transactions: ynab.TransactionDetail[]; knowledge: number } | undefined> {
-    const firstMonth = await this.getBudgetFirstMonth(budgetId);
-    if (firstMonth === undefined) return undefined;
-    await this.rateLimiter.acquire();
-    const delta = await this.api.transactions.getTransactions(budgetId, firstMonth, undefined, undefined, knowledge);
+    knowledge: number,
+    lowerBound: string
+  ): Promise<{ since: string; transactions: ynab.TransactionDetail[]; knowledge: number } | undefined> {
+    let since: string | undefined = FEED_SINCE_DATE;
+    let delta: ynab.TransactionsResponse | undefined;
+    if (!this.feedSinceDateRejected) {
+      await this.rateLimiter.acquire();
+      try {
+        delta = await this.api.transactions.getTransactions(budgetId, since, undefined, undefined, knowledge);
+      } catch (error) {
+        if (!isBadRequest(error)) throw error;
+        this.feedSinceDateRejected = true;
+      }
+    }
+    if (delta === undefined) {
+      since = await this.getBudgetFirstMonth(budgetId);
+      if (since === undefined || since > lowerBound) return undefined;
+      await this.rateLimiter.acquire();
+      delta = await this.api.transactions.getTransactions(budgetId, since, undefined, undefined, knowledge);
+    }
     const next = delta.data.server_knowledge;
     if (!isKnowledge(next) || !Array.isArray(delta.data.transactions)) return undefined;
-    return { firstMonth, transactions: delta.data.transactions, knowledge: next };
+    return { since, transactions: delta.data.transactions, knowledge: next };
   }
 
   // ==================== User ====================
@@ -716,6 +863,7 @@ export class YnabClient {
       ),
       copy: (r) => withData(r, { accounts: r.data.accounts.slice() }),
       size: (r) => r.data.accounts.length,
+      names: (r) => r.data.accounts,
     });
   }
 
@@ -766,12 +914,18 @@ export class YnabClient {
 
   // ==================== Categories ====================
 
-  /** All category groups with their categories (TTL cached, delta refreshed). */
+  /**
+   * All category groups with their categories (TTL cached, delta refreshed).
+   * Assigned, activity, balance and goal amounts are for the current plan
+   * month (UTC), and a new month changes them without a change on the server
+   * (so no delta shows it): snapshots are per UTC month.
+   */
   async getCategories(budgetId: string, options?: DeltaReadOptions): Promise<ynab.CategoriesResponse> {
     return this.snapshotRead<ynab.CategoriesResponse>({
       budgetId,
       resource: 'categories',
       ttlKey: `categories:${budgetId}`,
+      window: this.snapshotMonth(),
       cursor: options?.lastKnowledgeOfServer,
       ...this.endpointDelta(
         (knowledge) => this.api.categories.getCategories(budgetId, knowledge),
@@ -785,6 +939,7 @@ export class YnabClient {
           category_groups: r.data.category_groups.map((g) => ({ ...g, categories: g.categories.slice() })),
         }),
       size: (r) => countCategoryEntities(r.data.category_groups),
+      names: (r) => r.data.category_groups.flatMap((g) => g.categories),
     });
   }
 
@@ -855,8 +1010,11 @@ export class YnabClient {
   ): Promise<ynab.SaveCategoryResponse> {
     this.assertWriteAllowed('updateCategory');
     await this.rateLimiter.acquire();
-    // Invalidate categories cache after updating (names, groups and targets all change)
+    // Invalidate categories cache after updating (names, groups and targets all
+    // change). A rename also changes the category_name of transaction rows
+    // without changing the rows, so their snapshots go too.
     this.invalidateCached(`categories:${budgetId}`);
+    this.dropNameSnapshots(budgetId);
 
     const auditLog = this.auditLog;
     try {
@@ -896,6 +1054,7 @@ export class YnabClient {
       throw error;
     } finally {
       this.invalidateCached(`categories:${budgetId}`);
+      this.dropNameSnapshots(budgetId);
     }
   }
 
@@ -1126,15 +1285,15 @@ export class YnabClient {
       params: { ...scope, sinceDate: options?.sinceDate, untilDate: options?.untilDate, type: options?.type },
       ...(options?.sinceDate === undefined ? { window: today } : {}),
       snapshot: scope.month === undefined || /^\d{4}-\d{2}-01$/.test(scope.month),
+      denormalized: true,
       cursor: options?.lastKnowledgeOfServer,
       fetch,
       refresh: async (base, knowledge) => {
-        const feed = await this.transactionChangeFeed(budgetId, knowledge);
+        const feed = await this.transactionChangeFeed(budgetId, knowledge, model.lowerBound);
         if (feed === undefined) return undefined;
         const held = new Set<string>();
         for (const t of base.data.transactions) {
-          // The feed starts at the first month; anything older means it isn't complete.
-          if (t.date < feed.firstMonth) return undefined;
+          if (t.date < feed.since) return undefined;
           held.add(t.id);
         }
         for (const t of feed.transactions) {
@@ -1430,15 +1589,18 @@ export class YnabClient {
     fetch: (knowledge: number | undefined) => Promise<ynab.HybridTransactionsResponse>
   ): Promise<ynab.HybridTransactionsResponse> {
     const field = resource === 'category-transactions' ? 'category_id' : 'payee_id';
+    const today = this.snapshotDay();
+    const { lowerBound } = transactionQueryModel({ sinceDate: options?.sinceDate }, today);
     return this.snapshotRead<ynab.HybridTransactionsResponse>({
       budgetId,
       resource,
       params: { id: scopeId, sinceDate: options?.sinceDate, untilDate: options?.untilDate, type: options?.type },
-      ...(options?.sinceDate === undefined ? { window: this.snapshotDay() } : {}),
+      ...(options?.sinceDate === undefined ? { window: today } : {}),
+      denormalized: true,
       cursor: options?.lastKnowledgeOfServer,
       fetch,
       refresh: async (base, knowledge) => {
-        const feed = await this.transactionChangeFeed(budgetId, knowledge);
+        const feed = await this.transactionChangeFeed(budgetId, knowledge, lowerBound);
         if (feed === undefined) return undefined;
         const held = new Set<string>();
         for (const row of base.data.transactions) {
@@ -1473,6 +1635,7 @@ export class YnabClient {
     return this.snapshotRead<ynab.ScheduledTransactionsResponse>({
       budgetId,
       resource: 'scheduled-transactions',
+      denormalized: true,
       cursor: options?.lastKnowledgeOfServer,
       ...this.endpointDelta(
         (knowledge) => this.api.scheduledTransactions.getScheduledTransactions(budgetId, knowledge),
@@ -1663,6 +1826,7 @@ export class YnabClient {
       ),
       copy: (r) => withData(r, { payees: r.data.payees.slice() }),
       size: (r) => r.data.payees.length,
+      names: (r) => r.data.payees,
     });
   }
 
@@ -1717,8 +1881,11 @@ export class YnabClient {
   ): Promise<ynab.SavePayeeResponse> {
     this.assertWriteAllowed('updatePayee');
     await this.rateLimiter.acquire();
-    // Invalidate payees cache after updating
+    // Invalidate payees cache after updating. A rename also changes the
+    // payee_name of transaction rows without changing the rows (no delta
+    // reports it), so their snapshots go too.
     this.invalidateCached(`payees:${budgetId}`);
+    this.dropNameSnapshots(budgetId);
 
     const auditLog = this.auditLog;
     try {
@@ -1748,6 +1915,7 @@ export class YnabClient {
       throw error;
     } finally {
       this.invalidateCached(`payees:${budgetId}`);
+      this.dropNameSnapshots(budgetId);
     }
   }
 
@@ -1776,11 +1944,17 @@ export class YnabClient {
 
   // ==================== Months ====================
 
-  /** All plan months. Not TTL cached; delta refreshed on every read. Months are keyed by `month`. */
+  /**
+   * All plan months. Not TTL cached; delta refreshed on every read. Months are
+   * keyed by `month`. Snapshots are per UTC month, like categories, in case
+   * the list (or which month is current) changes when a month begins without
+   * a change on the server.
+   */
   async getBudgetMonths(budgetId: string, options?: DeltaReadOptions): Promise<ynab.MonthSummariesResponse> {
     return this.snapshotRead<ynab.MonthSummariesResponse>({
       budgetId,
       resource: 'months',
+      window: this.snapshotMonth(),
       cursor: options?.lastKnowledgeOfServer,
       ...this.endpointDelta(
         (knowledge) => this.api.months.getPlanMonths(budgetId, knowledge),

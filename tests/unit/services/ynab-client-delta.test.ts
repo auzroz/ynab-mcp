@@ -15,7 +15,7 @@ import { YnabClient } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
 import { Cache } from '../../../src/services/cache.js';
 import { AuditLog } from '../../../src/services/audit-log.js';
-import { DeltaCache } from '../../../src/services/delta-cache.js';
+import { DeltaCache, DELTA_DENORMALIZED_MAX_AGE_MS, DELTA_MAX_AGE_MS } from '../../../src/services/delta-cache.js';
 import { UserRegistry } from '../../../src/services/user-registry.js';
 import { buildYnabClient } from '../../../src/server.js';
 import { handleGetBudget } from '../../../src/tools/budgets/get-budget.js';
@@ -129,7 +129,9 @@ describe('request counting', () => {
     expect(second.data.transactions.map((t) => t.id)).toEqual(['t3']);
     expect(fake.knowledgeSent('getTransactionsByAccount')).toEqual([undefined]);
     const feed = fake.calls.filter((c) => c.method === 'getTransactions');
-    expect(feed).toEqual([{ method: 'getTransactions', args: [B, fake.firstMonth, undefined, undefined, first.data.server_knowledge] }]);
+    expect(feed).toEqual([{ method: 'getTransactions', args: [B, '1900-01-01', undefined, undefined, first.data.server_knowledge] }]);
+    // The feed doesn't depend on the budget's first month: no budget list request.
+    expect(fake.calls.some((c) => c.method === 'getPlans')).toBe(false);
   });
 
   it('a hybrid (category) snapshot untouched by the feed costs one small request', async () => {
@@ -283,16 +285,42 @@ describe('full-fetch fallback on inconsistency', () => {
     expect(fake.knowledgeSent('getCategories')).toEqual([undefined, undefined]);
   });
 
-  it('a transaction snapshot holding something older than the first month is re-read in full', async () => {
+  it('the change feed covers transactions dated before the cached first month', async () => {
     const fake = new FakeYnab();
-    fake.putTransaction(txn('t1', '2023-12-31'));
+    fake.putTransaction(txn('t1', '2024-02-01'));
     const client = makeClient(fake);
+    await client.getBudgetFirstMonth(B); // cached: 2024-01-01
     await client.getTransactions(B, { sinceDate: '2023-01-01' });
-    await client.getTransactions(B, { sinceDate: '2023-01-01' });
-    expect(fake.calls.filter((c) => c.method === 'getTransactions').map((c) => c.args[4])).toEqual([
-      undefined,
-      expect.any(Number), // the feed
-      undefined,
+    // Another client adds a transaction before the (cached) first month.
+    fake.firstMonth = '2023-06-01';
+    fake.putTransaction(txn('t0', '2023-06-15'));
+    const next = await client.getTransactions(B, { sinceDate: '2023-01-01' });
+    expect(next.data.transactions.map((t) => t.id)).toEqual(['t0', 't1']);
+    expect(fake.calls.filter((c) => c.method === 'getTransactions').map((c) => c.args[1])).toEqual([
+      '2023-01-01',
+      '1900-01-01', // the feed, not a full re-read
+    ]);
+  });
+
+  it('if YNAB rejects the far-past since_date, the feed starts at the first month; queries reaching before it are re-read in full', async () => {
+    const fake = new FakeYnab();
+    fake.rejectFarPastSinceDate = true;
+    fake.putTransaction(txn('t1', '2024-02-01'));
+    const client = makeClient(fake);
+    await client.getTransactions(B, { sinceDate: '2024-01-01' });
+    await client.getTransactions(B, { sinceDate: '2023-06-01' });
+    fake.putTransaction(txn('t2', '2024-03-01'));
+
+    const a = await client.getTransactions(B, { sinceDate: '2024-01-01' });
+    const b = await client.getTransactions(B, { sinceDate: '2023-06-01' });
+    expect(a.data.transactions.map((t) => t.id)).toEqual(['t1', 't2']);
+    expect(b.data.transactions.map((t) => t.id)).toEqual(['t1', 't2']);
+    expect(fake.calls.filter((c) => c.method === 'getTransactions').map((c) => [c.args[1], c.args[4] !== undefined])).toEqual([
+      ['2024-01-01', false],
+      ['2023-06-01', false],
+      ['1900-01-01', true], // rejected (400), never tried again
+      [fake.firstMonth, true], // the feed from the first month
+      ['2023-06-01', false], // reaches before the first month: full fetch, no feed
     ]);
   });
 
@@ -309,8 +337,8 @@ describe('full-fetch fallback on inconsistency', () => {
     const sent = fake.calls.filter((c) => c.method === 'getTransactions').map((c) => [c.args[1], c.args[3], c.args[4]]);
     expect(sent).toEqual([
       ['2025-01-01', 'uncategorized', undefined],
-      [fake.firstMonth, undefined, expect.any(Number)],
-      [fake.firstMonth, undefined, expect.any(Number)],
+      ['1900-01-01', undefined, expect.any(Number)],
+      ['1900-01-01', undefined, expect.any(Number)],
       ['2025-01-01', 'uncategorized', undefined],
     ]);
   });
@@ -405,6 +433,140 @@ describe('writes and the generation guarantee', () => {
   });
 });
 
+describe('values that change without a change on the server', () => {
+  it('a new UTC month starts the category and month snapshots over with a full fetch', async () => {
+    vi.setSystemTime(Date.parse('2026-06-30T23:50:00Z'));
+    const fake = new FakeYnab();
+    fake.groups.put({ id: 'g1', name: 'G1', hidden: false, deleted: false });
+    fake.putCategory({ id: 'c1', category_group_id: 'g1', name: 'C1', budgeted: 1, deleted: false });
+    fake.months.put({ month: '2026-06-01', income: 1, deleted: false });
+    const client = makeClient(fake);
+    await client.getCategories(B);
+    await client.getBudgetMonths(B);
+    advance(TTL + 1); // same month: deltas
+    await client.getCategories(B);
+    await client.getBudgetMonths(B);
+    advance(TTL + 60_000); // 2026-07-01: full fetches, though nothing changed on the server
+    await client.getCategories(B);
+    await client.getBudgetMonths(B);
+    expect(fake.knowledgeSent('getCategories')).toEqual([undefined, fake.knowledge, undefined]);
+    expect(fake.knowledgeSent('getPlanMonths')).toEqual([undefined, fake.knowledge, undefined]);
+  });
+
+  describe('renamed payees, categories and accounts', () => {
+    async function primed() {
+      const fake = new FakeYnab();
+      fake.accounts.put(account('A1'));
+      fake.payees.put({ id: 'P1', name: 'Old payee', deleted: false });
+      fake.groups.put({ id: 'g1', name: 'G1', hidden: false, deleted: false });
+      fake.putCategory({ id: 'c1', category_group_id: 'g1', name: 'Old category', budgeted: 0, deleted: false });
+      fake.putTransaction(txn('t1', '2026-01-10'));
+      const client = makeClient(fake);
+      const q = { sinceDate: '2025-01-01' };
+      const first = await client.getTransactions(B, q);
+      expect(first.data.transactions[0]).toMatchObject({ payee_name: 'Old payee', category_name: 'Old category' });
+      await client.getPayees(B);
+      await client.getCategories(B);
+      await client.getAccounts(B);
+      await client.getPayeeTransactions(B, 'P1', q);
+      return { fake, client, q };
+    }
+    const fullTransactions = (fake: FakeYnab) => fake.transactionList({ sinceDate: '2025-01-01' }, undefined);
+
+    it('ynab_update_payee drops transaction snapshots: the next read is a full fetch with the new name', async () => {
+      const { fake, client, q } = await primed();
+      await client.updatePayee(B, 'P1', { payee: { name: 'New payee' } });
+      const next = await client.getTransactions(B, q);
+      expect(next.data.transactions).toEqual(fullTransactions(fake));
+      expect(next.data.transactions[0]?.payee_name).toBe('New payee');
+      expect(fake.knowledgeSent('getTransactions')).toEqual([undefined, undefined]);
+      const hybrid = await client.getPayeeTransactions(B, 'P1', q);
+      expect(hybrid.data.transactions[0]?.payee_name).toBe('New payee');
+      expect(fake.knowledgeSent('getTransactionsByPayee')).toEqual([undefined, undefined]);
+    });
+
+    it('ynab_update_category_details does the same for category names', async () => {
+      const { fake, client, q } = await primed();
+      await client.updateCategory(B, 'c1', { category: { name: 'New category' } });
+      const next = await client.getTransactions(B, q);
+      expect(next.data.transactions[0]?.category_name).toBe('New category');
+      expect(fake.knowledgeSent('getTransactions')).toEqual([undefined, undefined]);
+    });
+
+    it.each([
+      ['payee', (f: FakeYnab) => f.payees.put({ id: 'P1', name: 'Renamed', deleted: false }), (c: YnabClient) => c.getPayees(B)],
+      [
+        'category',
+        (f: FakeYnab) => f.putCategory({ id: 'c1', category_group_id: 'g1', name: 'Renamed', budgeted: 0, deleted: false }),
+        (c: YnabClient) => c.getCategories(B),
+      ],
+      ['account', (f: FakeYnab) => f.accounts.put({ ...account('A1'), name: 'Renamed' }), (c: YnabClient) => c.getAccounts(B)],
+    ] as const)('a %s renamed in another client is caught by the next list read', async (_label, rename, readList) => {
+      const { fake, client, q } = await primed();
+      rename(fake);
+      advance(TTL + 1);
+      await readList(client); // a delta refresh that shows the new name
+      const next = await client.getTransactions(B, q);
+      expect(next.data.transactions).toEqual(fullTransactions(fake));
+      expect(JSON.stringify(next.data.transactions)).toContain('Renamed');
+    });
+
+    it('a rename is caught even when the list snapshot was re-based in between', async () => {
+      const { fake, client, q } = await primed();
+      fake.payees.put({ id: 'P1', name: 'Renamed', deleted: false });
+      advance(DELTA_MAX_AGE_MS); // every snapshot re-based: no delta to compare
+      await client.getTransactions(B, q);
+      fake.payees.put({ id: 'P1', name: 'Renamed again', deleted: false });
+      advance(TTL + 1);
+      await client.getPayees(B);
+      advance(1);
+      expect((await client.getTransactions(B, q)).data.transactions).toEqual(fullTransactions(fake));
+    });
+
+    it('a new payee is not a rename: transaction snapshots stay and refresh from the feed', async () => {
+      const { fake, client, q } = await primed();
+      fake.payees.put({ id: 'P2', name: 'Another', deleted: false });
+      advance(TTL + 1);
+      await client.getPayees(B);
+      await client.getTransactions(B, q);
+      expect(fake.knowledgeSent('getTransactions')).toEqual([undefined, expect.any(Number)]);
+    });
+
+    it('without a list read, a rename made elsewhere shows within DELTA_DENORMALIZED_MAX_AGE_MS', async () => {
+      const { fake, client, q } = await primed();
+      fake.payees.put({ id: 'P1', name: 'Renamed', deleted: false });
+      const stale = await client.getTransactions(B, q);
+      expect(stale.data.transactions[0]?.payee_name).toBe('Old payee'); // the documented bound
+      advance(DELTA_DENORMALIZED_MAX_AGE_MS);
+      const fresh = await client.getTransactions(B, q);
+      expect(fresh.data.transactions).toEqual(fullTransactions(fake));
+    });
+
+    it('a transaction read in flight across a payee rename does not store the old names', async () => {
+      const { fake, client, q } = await primed();
+      const original = fake.api.transactions.getTransactions;
+      let release: (() => void) | undefined;
+      fake.api.transactions.getTransactions = (...args: Parameters<typeof original>) => {
+        const response = original(...args); // pre-rename state
+        return new Promise((resolve) => {
+          release = () => resolve(response);
+        }) as ReturnType<typeof original>;
+      };
+      const inflight = client.getTransactions(B, q);
+      await vi.waitFor(() => expect(release).toBeDefined());
+      fake.api.transactions.getTransactions = original;
+      await client.updatePayee(B, 'P1', { payee: { name: 'New payee' } });
+      release?.();
+      expect((await inflight).data.transactions[0]?.payee_name).toBe('Old payee');
+
+      const next = await client.getTransactions(B, q);
+      expect(next.data.transactions[0]?.payee_name).toBe('New payee');
+      // The in-flight feed refresh wasn't stored, so this was a full fetch.
+      expect(fake.knowledgeSent('getTransactions').at(-1)).toBeUndefined();
+    });
+  });
+});
+
 describe('per-user sharing (HTTP components)', () => {
   const ctx = { accessToken: 'tok', defaultBudgetId: B, readOnly: true, rateLimitPerHour: 1_000_000, cacheTtlMs: TTL };
 
@@ -488,7 +650,10 @@ function randomChanges(fake: FakeYnab, rand: () => number, n: number, ids: { nex
       fake.accounts.put(account(id('acct'), Math.floor(rand() * 1e6)));
     } else if (r < 0.13) {
       const a = pick(fake.accounts.live());
-      if (a) fake.accounts.put({ ...a, balance: Math.floor(rand() * 1e6), closed: rand() < 0.2 });
+      if (a) {
+        const rename = rand() < 0.3 ? { name: id('acctname') } : {};
+        fake.accounts.put({ ...a, balance: Math.floor(rand() * 1e6), closed: rand() < 0.2, ...rename });
+      }
     } else if (r < 0.15) {
       const a = pick(fake.accounts.live());
       if (a) fake.accounts.remove(a.id);
@@ -514,7 +679,8 @@ function randomChanges(fake: FakeYnab, rand: () => number, n: number, ids: { nex
       if (g && (roll < 0.3 || !c)) {
         fake.putCategory({ id: id('cat'), category_group_id: g.id, name: 'C', budgeted: 0, deleted: false });
       } else if (c && roll < 0.6) {
-        fake.putCategory({ ...c, budgeted: Math.floor(rand() * 1e5) });
+        const rename = rand() < 0.3 ? { name: id('catname') } : {};
+        fake.putCategory({ ...c, budgeted: Math.floor(rand() * 1e5), ...rename });
       } else if (c && g && roll < 0.85) {
         fake.putCategory({ ...c, category_group_id: g.id }); // move
       } else if (c) {
@@ -572,8 +738,13 @@ describe('property: merged snapshots equal a fresh full fetch', () => {
       fake.putCategory({ id: c, category_group_id: 'g0', name: c, budgeted: 0, deleted: false });
     }
     for (let m = 6; m >= 1; m--) fake.months.put({ month: `2026-0${m}-01`, income: m, deleted: false });
+    // The accounts transactions use, so account renames show in their rows.
+    fake.accounts.put(account('A1'));
+    fake.accounts.put(account('A2'));
     randomChanges(fake, rand, 40, ids);
-    const client = makeClient(fake);
+    // Denormalized snapshots get the same hourly re-base as the rest, so names
+    // stay right only because list reads reveal renames (observeNames).
+    const client = makeClient(fake, { deltaCache: new DeltaCache({ denormalizedMaxAgeMs: DELTA_MAX_AGE_MS }) });
 
     const txQueries = [
       { sinceDate: '2024-01-01' },
@@ -582,8 +753,16 @@ describe('property: merged snapshots equal a fresh full fetch', () => {
       { sinceDate: '2024-01-01', type: 'uncategorized' as const },
     ];
 
+    // Names of the lists whose names transaction rows carry; a round renames
+    // when one of them changed or went (new entities don't count).
+    const names = (): Map<string, unknown> =>
+      new Map([fake.accounts.live(), fake.payees.live(), fake.categories.live()].flat().map((x) => [x.id, x.name]));
+    let renameRounds = 0;
     for (let round = 0; round < 25; round++) {
+      const before = names();
       randomChanges(fake, rand, 1 + Math.floor(rand() * 6), ids);
+      const after = names();
+      if ([...before].some(([id, name]) => after.get(id) !== name)) renameRounds++;
       advance(6 * 60_000); // past the TTL; 25 rounds stay within one UTC day
 
       const accounts = await client.getAccounts(B);
@@ -621,17 +800,23 @@ describe('property: merged snapshots equal a fresh full fetch', () => {
 
     // Deltas did the work: after the first round, list endpoints were refreshed
     // with last_knowledge_of_server rather than re-read in full.
-    for (const method of ['getAccounts', 'getPayees', 'getScheduledTransactions', 'getPlanMonths', 'getCategories']) {
+    for (const method of ['getAccounts', 'getPayees', 'getPlanMonths', 'getCategories']) {
       const sent = fake.knowledgeSent(method);
       expect(sent.filter((k) => k === undefined).length, method).toBeLessThanOrEqual(4); // first read + hourly re-bases
       expect(sent.filter((k) => k !== undefined).length, method).toBeGreaterThan(15);
     }
+    // Denormalized lists are also re-read in full after a round that renamed
+    // something, and only then.
+    const sentScheduled = fake.knowledgeSent('getScheduledTransactions');
+    expect(sentScheduled.filter((k) => k === undefined).length).toBeLessThanOrEqual(4 + renameRounds);
+    expect(sentScheduled.filter((k) => k !== undefined).length).toBeGreaterThanOrEqual(25 - 4 - renameRounds);
     const feedCalls = fake.calls.filter((c) => c.method === 'getTransactions' && c.args[4] !== undefined);
-    expect(feedCalls.length).toBeGreaterThan(25);
+    expect(feedCalls.length).toBeGreaterThan(4 * (25 - 4 - renameRounds));
     // The exact budget-wide queries were refreshed from the feed, not re-read every round.
     const fullBudgetWide = fake.calls.filter(
       (c) => c.method === 'getTransactions' && c.args[4] === undefined && c.args[1] === '2024-01-01' && c.args[3] === undefined
     );
-    expect(fullBudgetWide.length).toBeLessThanOrEqual(4);
+    expect(fullBudgetWide.length).toBeLessThanOrEqual(4 + renameRounds);
+    expect(renameRounds).toBeLessThan(25); // the counts above still say something
   });
 });
