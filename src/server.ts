@@ -24,8 +24,15 @@ import { RateLimiter } from './services/rate-limiter.js';
 import { Cache } from './services/cache.js';
 import { AuditLog } from './services/audit-log.js';
 import { tools, handleToolCall } from './tools/index.js';
-import { prompts, getPromptMessages, sanitizePromptName } from './prompts/index.js';
-import { formatErrorResponse } from './utils/errors.js';
+import {
+  prompts,
+  getPromptMessages,
+  sanitizePromptName,
+  UnknownPromptError,
+  InvalidPromptArgumentsError,
+} from './prompts/index.js';
+import { sanitizeErrorMessage } from './utils/sanitize.js';
+import { formatErrorResponse, ReadOnlyModeError } from './utils/errors.js';
 import { assertSafeToolInput } from './utils/input-guard.js';
 
 /**
@@ -76,7 +83,15 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
     }
   );
 
+  const writeToolNames = new Set(tools.filter((t) => t.annotations?.readOnlyHint !== true).map((t) => t.name));
+
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    // Hide write tools from read-only sessions. This is a UX nicety only: the
+    // YnabClient write guard still rejects writes server-side. Uses the
+    // per-client value so each HTTP session gets its own list.
+    if (ynabClient.isReadOnly()) {
+      return { tools: tools.filter((t) => t.annotations?.readOnlyHint === true) };
+    }
     return { tools };
   });
 
@@ -87,6 +102,12 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
       // Reject oversized/deeply nested arguments before any zod parsing
       // (defense in depth against resource exhaustion).
       assertSafeToolInput(args ?? {});
+      // A tool hidden from a read-only session's list is rejected here too, so
+      // calling it by name gets the same read-only error even when its handler
+      // would not reach the client's write guard (the deprecated no-op import).
+      if (ynabClient.isReadOnly() && writeToolNames.has(name)) {
+        throw new ReadOnlyModeError(name);
+      }
       const result = await handleToolCall(name, args ?? {}, ynabClient);
       return {
         content: [{ type: 'text', text: result }],
@@ -108,8 +129,21 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
 
     try {
       return getPromptMessages(name, args ?? {});
-    } catch {
-      throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${sanitizePromptName(name)}`);
+    } catch (error) {
+      // Client errors map to InvalidParams with a sanitized name only.
+      if (error instanceof UnknownPromptError) {
+        throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${sanitizePromptName(name)}`);
+      }
+      if (error instanceof InvalidPromptArgumentsError) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Invalid arguments for prompt ${sanitizePromptName(name)}: ${error.message}`
+        );
+      }
+      // Anything else is ours. Log the detail server-side and return a generic
+      // message, because the SDK forwards plain Error text to the client.
+      console.error('[PromptError]', sanitizeErrorMessage(error));
+      throw new McpError(ErrorCode.InternalError, 'Failed to build prompt');
     }
   });
 

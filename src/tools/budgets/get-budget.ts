@@ -9,13 +9,14 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, formatCurrencyWithFormat } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { budgetId } from '../../utils/schemas.js';
+import { isInternalGroup } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
 
 // Tool definition
@@ -35,7 +36,8 @@ Returns comprehensive budget data including all accounts, category groups, categ
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
     },
   },
@@ -129,7 +131,7 @@ export async function handleGetBudget(
 
   // Summarize categories
   const categoryGroups = (budget.category_groups ?? [])
-    .filter((g) => !g.hidden && g.name !== 'Internal Master Category')
+    .filter((g) => !g.hidden && !isInternalGroup(g))
     .map((group) => ({
       name: sanitizeName(group.name),
       categories: (budget.categories ?? [])

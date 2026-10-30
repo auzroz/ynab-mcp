@@ -6,11 +6,11 @@
  * with real RateLimiter and Cache instances.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { YnabClient } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
 import { Cache } from '../../../src/services/cache.js';
-import { ReadOnlyModeError } from '../../../src/utils/errors.js';
+import { ReadOnlyModeError, formatErrorResponse } from '../../../src/utils/errors.js';
 import { getAuditLog, _resetAuditLogForTesting } from '../../../src/services/audit-log.js';
 
 // Shared mock API instance, built lazily by the mocked constructor.
@@ -33,6 +33,7 @@ const mockApi = vi.hoisted(() => {
       getCategoryById: fn(),
       getMonthCategoryById: fn(),
       updateMonthCategory: fn(),
+      updateCategory: fn(),
       createCategory: fn(),
       createCategoryGroup: fn(),
       updateCategoryGroup: fn(),
@@ -548,6 +549,9 @@ describe('write methods - read-only mode rejection', () => {
       client.createCategory(BUDGET, { category: { name: 'C' } } as never)
     ).rejects.toThrow(ReadOnlyModeError);
     await expect(
+      client.updateCategory(BUDGET, 'cat-1', { category: { name: 'C' } } as never)
+    ).rejects.toThrow(ReadOnlyModeError);
+    await expect(
       client.createCategoryGroup(BUDGET, { category_group: { name: 'G' } } as never)
     ).rejects.toThrow(ReadOnlyModeError);
     await expect(
@@ -682,6 +686,48 @@ describe('updateMonthCategory (write)', () => {
   });
 });
 
+describe('updateCategory (write)', () => {
+  it('invalidates the categories cache and audits presence flags only', async () => {
+    const client = makeClient(false);
+    setResolve(mockApi.categories.getCategories, { data: { category_groups: [] } });
+    await client.getCategories(BUDGET);
+    await client.getCategories(BUDGET);
+    expect(asMock(mockApi.categories.getCategories)).toHaveBeenCalledTimes(1);
+
+    setResolve(mockApi.categories.updateCategory, { data: { category: { id: 'cat-1' } } });
+    await client.updateCategory(BUDGET, 'cat-1', {
+      category: { name: 'Secret Name', note: null, goal_target: 5000, category_group_id: 'g-2' },
+    } as never);
+    expect(asMock(mockApi.categories.updateCategory)).toHaveBeenCalledWith(BUDGET, 'cat-1', {
+      category: { name: 'Secret Name', note: null, goal_target: 5000, category_group_id: 'g-2' },
+    });
+
+    await client.getCategories(BUDGET);
+    expect(asMock(mockApi.categories.getCategories)).toHaveBeenCalledTimes(2);
+
+    const entry = getAuditLog().getAll()[0];
+    expect(entry).toMatchObject({
+      tool: 'ynab_update_category_details',
+      resourceId: 'cat-1',
+      success: true,
+      details: { has_name: true, has_note: true, has_goal_target: true, category_group_id: 'g-2' },
+    });
+    expect(JSON.stringify(entry)).not.toContain('Secret Name');
+  });
+
+  it('logs failure and rethrows', async () => {
+    const client = makeClient(false);
+    asMock(mockApi.categories.updateCategory).mockRejectedValue(new Error('boom'));
+    await expect(
+      client.updateCategory(BUDGET, 'cat-1', { category: { name: 'X' } } as never)
+    ).rejects.toThrow();
+    expect(getAuditLog().getAll()[0]).toMatchObject({
+      tool: 'ynab_update_category_details',
+      success: false,
+    });
+  });
+});
+
 describe('createCategory (write)', () => {
   it('succeeds, invalidates cache, logs success', async () => {
     const client = makeClient(false);
@@ -694,6 +740,31 @@ describe('createCategory (write)', () => {
       resourceId: 'cat-new',
       success: true,
     });
+  });
+
+  it('passes target fields through and audits presence only', async () => {
+    const client = makeClient(false);
+    setResolve(mockApi.categories.createCategory, { data: { category: { id: 'cat-new' } } });
+    const body = {
+      category: {
+        name: 'Vacation',
+        category_group_id: 'g-1',
+        goal_target: 123450,
+        goal_target_date: '2027-06-01',
+        goal_needs_whole_amount: true,
+      },
+    };
+    await client.createCategory(BUDGET, body as never);
+    expect(mockApi.categories.createCategory).toHaveBeenCalledWith(BUDGET, body);
+    const entry = getAuditLog().getAll()[0];
+    expect(entry?.details).toEqual({
+      has_name: true,
+      category_group_id: 'g-1',
+      has_goal_target: true,
+      has_goal_target_date: true,
+      has_goal_needs_whole_amount: true,
+    });
+    expect(JSON.stringify(entry)).not.toContain('123450');
   });
 
   it('logs failure and rethrows', async () => {
@@ -1014,5 +1085,94 @@ describe('deleteScheduledTransaction (write)', () => {
     setReject(mockApi.scheduledTransactions.deleteScheduledTransaction, new Error('fail'));
     await expect(client.deleteScheduledTransaction(BUDGET, 'sch-1')).rejects.toThrow('fail');
     expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+  });
+});
+
+describe('YnabClient goal_frequency direct API path', () => {
+  const okBody = { data: { category: { id: 'cat-1' }, server_knowledge: 5 } };
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(okBody), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('createCategory POSTs goal_frequency with milliunit target and bearer token, skipping the SDK', async () => {
+    const client = makeClient(false);
+    const result = await client.createCategory(BUDGET, {
+      category: { name: 'Dining Out', category_group_id: 'g-1', goal_target: 50000, goal_frequency: 'weekly' },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`https://api.ynab.com/v1/plans/${BUDGET}/categories`);
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer fake-token');
+    expect(JSON.parse(init.body as string).category).toMatchObject({
+      goal_target: 50000,
+      goal_frequency: 'weekly',
+    });
+    expect(asMock(mockApi.categories.createCategory)).not.toHaveBeenCalled();
+    expect(result).toEqual(okBody);
+    const entry = getAuditLog().getAll().at(-1);
+    expect(JSON.stringify(entry)).toContain('has_goal_frequency');
+    expect(JSON.stringify(entry)).not.toContain('fake-token');
+  });
+
+  it('updateCategory PATCHes the category URL', async () => {
+    await makeClient(false).updateCategory(BUDGET, 'cat-1', {
+      category: { goal_target: 20000, goal_frequency: 'yearly' },
+    });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`https://api.ynab.com/v1/plans/${BUDGET}/categories/cat-1`);
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string).category.goal_frequency).toBe('yearly');
+    expect(asMock(mockApi.categories.updateCategory)).not.toHaveBeenCalled();
+  });
+
+  it('acquires the rate limiter', async () => {
+    const limiter = new RateLimiter(180);
+    const spy = vi.spyOn(limiter, 'acquire');
+    const client = new YnabClient('fake-token', 'last-used', limiter, new Cache(300000), false);
+    await client.updateCategory(BUDGET, 'cat-1', { category: { goal_target: 1000, goal_frequency: 'monthly' } });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects in read-only mode before any network call', async () => {
+    const client = makeClient(true);
+    await expect(
+      client.createCategory(BUDGET, {
+        category: { name: 'X', category_group_id: 'g', goal_target: 1000, goal_frequency: 'monthly' },
+      })
+    ).rejects.toBeInstanceOf(ReadOnlyModeError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('maps non-2xx to a generic mapped error without upstream text', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ error: { id: '400', detail: 'SECRET upstream detail' } }), { status: 400 })
+    );
+    const err = await makeClient(false)
+      .updateCategory(BUDGET, 'cat-1', { category: { goal_target: 1000, goal_frequency: 'monthly' } })
+      .catch((e: unknown) => e);
+    const formatted = formatErrorResponse(err);
+    const parsed = JSON.parse(formatted);
+    expect(parsed).toMatchObject({ error: true, type: 'ynab_api_error', code: '400', message: 'Bad request' });
+    expect(formatted).not.toContain('SECRET');
+    expect(formatted).not.toContain('fake-token');
+  });
+
+  it('uses the SDK (no fetch) when goal_frequency is absent', async () => {
+    setResolve(mockApi.categories.createCategory, okBody);
+    setResolve(mockApi.categories.updateCategory, okBody);
+    const client = makeClient(false);
+    await client.createCategory(BUDGET, { category: { name: 'X', category_group_id: 'g', goal_target: 1000 } });
+    await client.updateCategory(BUDGET, 'cat-1', { category: { goal_target: 1000 } });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(asMock(mockApi.categories.createCategory)).toHaveBeenCalledTimes(1);
+    expect(asMock(mockApi.categories.updateCategory)).toHaveBeenCalledTimes(1);
   });
 });

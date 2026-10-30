@@ -182,10 +182,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Non-blocking in 0.3.x; becomes blocking (remove continue-on-error) in 0.4.0 after the zod 4 upgrade.
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
-        continue-on-error: true
 
   build:
     name: Build

@@ -10,18 +10,24 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { DATE_TEXT_MAX_LENGTH, budgetId, monthParam } from '../../utils/schemas.js';
 
 const DEFAULT_RANGE_NOTE =
   'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+  month: monthParam()
+    .optional()
+    .describe(
+      'Only return transactions in this budget month: YYYY-MM-01 (first of month) or "current". Uses YNAB\'s month endpoint (pending transactions excluded). May be combined with since_date/until_date to narrow within the month'
+    ),
   since_date: z
     .string()
+    .max(DATE_TEXT_MAX_LENGTH)
     .optional()
     .describe(
       'Only return transactions on or after this date. Accepts ISO dates (YYYY-MM-DD) or natural language: "today", "yesterday", "this week", "last week", "this month", "last month", "past 7 days", "past 30 days". If omitted, YNAB returns only the last 12 months; pass an earlier date for older history'
@@ -32,6 +38,7 @@ const inputSchema = z.object({
     .describe('Filter by transaction type: "uncategorized" or "unapproved"'),
   until_date: z
     .string()
+    .max(DATE_TEXT_MAX_LENGTH)
     .optional()
     .describe(
       'Only return transactions on or before this date (inclusive). Accepts ISO dates (YYYY-MM-DD) or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it'
@@ -56,22 +63,32 @@ Use when the user asks:
 - "List my uncategorized transactions"
 - "Show transactions since [date]"
 - "What purchases have I made recently?"
+- "Show all transactions for March" (month: "2024-03-01")
 - "Show me the past 7 days of transactions"
 - "What did I spend last week?"
 
 Supports filtering by date (ISO or natural language like "past 30 days", "this month") and type (uncategorized/unapproved).
 Returns transaction details including date, payee, amount, category, and status.
 
-NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). Pass an earlier since_date to see older history. until_date sets an inclusive upper bound.`,
+NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). Pass an earlier since_date to see older history. until_date sets an inclusive upper bound.
+Pass month (YYYY-MM-01 or "current") to list a single budget month instead of the default 12-month window; it can be narrowed further with since_date/until_date.`,
   inputSchema: {
     type: 'object',
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
+      },
+      month: {
+        type: 'string',
+        maxLength: 10,
+        description:
+          'Only return transactions in this budget month: YYYY-MM-01 (first of month) or "current". Pending transactions are excluded. May be combined with since_date/until_date to narrow within the month',
       },
       since_date: {
         type: 'string',
+        maxLength: 100,
         description:
           'Only return transactions on or after this date. Accepts YYYY-MM-DD or natural language: "today", "this week", "past 30 days", etc.. If omitted, YNAB returns only the last 12 months; pass an earlier date for older history',
       },
@@ -82,6 +99,7 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
       },
       until_date: {
         type: 'string',
+        maxLength: 100,
         description:
           'Only return transactions on or before this date (inclusive). Accepts YYYY-MM-DD or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it',
       },
@@ -121,7 +139,10 @@ export async function handleListTransactions(
     options.type = validated.type;
   }
 
-  const response = await client.getTransactions(budgetId, options);
+  const response =
+    validated.month === undefined
+      ? await client.getTransactions(budgetId, options)
+      : await client.getTransactionsByMonth(budgetId, validated.month, options);
 
   let transactions = response.data.transactions;
 
@@ -179,9 +200,10 @@ export async function handleListTransactions(
         total_outflow: formatCurrency(totalOutflow),
         net: formatCurrency(totalInflow - totalOutflow),
         date_range: minDate && maxDate ? { from: minDate, to: maxDate } : null,
-        ...(validated.since_date === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {}),
+        ...(validated.since_date === undefined && validated.month === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {}),
       },
       filters_applied: {
+        month: validated.month ?? null,
         since_date: validated.since_date
           ? { input: validated.since_date, parsed: options.sinceDate }
           : null,

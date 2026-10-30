@@ -5,18 +5,18 @@
  */
 
 import { z } from 'zod';
-import { ynabId } from '../../utils/schemas.js';
+import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { indexCategoryGroups } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   months: z
     .number()
     .int()
@@ -47,7 +47,8 @@ Returns month-by-month spending data with trend analysis.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       months: {
         type: 'number',
@@ -55,6 +56,7 @@ Returns month-by-month spending data with trend analysis.`,
       },
       category_id: {
         type: 'string',
+        maxLength: 36,
         description: 'Specific category UUID to analyze (optional)',
       },
     },
@@ -110,12 +112,7 @@ export async function handleSpendingTrends(
   ]);
 
   // Build group lookup
-  const groupLookup = new Map<string, string>();
-  for (const group of categoriesResponse.data.category_groups) {
-    for (const cat of group.categories) {
-      groupLookup.set(cat.id, group.name);
-    }
-  }
+  const { names: groupLookup, internalIds } = indexCategoryGroups(categoriesResponse.data.category_groups);
 
   // Build category spending by month
   const categoryData = new Map<
@@ -129,7 +126,7 @@ export async function handleSpendingTrends(
 
     for (const cat of monthData.categories) {
       const groupName = groupLookup.get(cat.id) ?? 'Other';
-      if (groupName === 'Internal Master Category' || cat.hidden) continue;
+      if (internalIds.has(cat.id) || cat.hidden) continue;
 
       // Filter by category if specified
       if (validated.category_id && cat.id !== validated.category_id) continue;

@@ -15,6 +15,9 @@ import { trueExpensesPrompt, buildTrueExpensesMessages } from './true-expenses.j
 import { overspendingTriagePrompt, buildOverspendingTriageMessages } from './overspending-triage.js';
 import { ageOfMoneyPrompt, buildAgeOfMoneyMessages } from './age-of-money.js';
 import { reconcileCleanupPrompt, buildReconcileCleanupMessages } from './reconcile-cleanup.js';
+import { UnknownPromptError } from './errors.js';
+
+export { UnknownPromptError, InvalidPromptArgumentsError } from './errors.js';
 
 export const prompts: Prompt[] = [
   pulseCheckPrompt,
@@ -49,7 +52,7 @@ export function sanitizePromptName(name: string): string {
 export function getPromptMessages(name: string, args: Record<string, string>): GetPromptResult {
   // Guard against prototype pollution - only allow own properties
   if (!Object.prototype.hasOwnProperty.call(builders, name)) {
-    throw new Error(`Unknown prompt: ${sanitizePromptName(name)}`);
+    throw new UnknownPromptError();
   }
 
   const builder = builders[name] as PromptMessageBuilder;

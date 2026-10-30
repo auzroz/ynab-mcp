@@ -16,13 +16,13 @@ Traditional YNAB integrations require manual API calls or custom scripting. This
 - **Talk to your budget naturally** — Ask Claude "Am I overspending on dining out?" and get instant insights
 - **Get AI-powered financial analysis** — Subscription detection, spending trends, savings recommendations, and budget health scores
 - **Stay safe by default** — Read-only mode protects against accidental changes
-- **Access everything** — 66 tools total: comprehensive YNAB API coverage (40 tools), 23 custom analytics tools, and 3 system tools
+- **Access everything** — 68 tools total: comprehensive YNAB API coverage (42 tools), 23 custom analytics tools, and 3 system tools
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Broad API Coverage** | 66 MCP tools spanning the YNAB API endpoints |
+| **Broad API Coverage** | 68 MCP tools spanning the YNAB API endpoints |
 | **Advanced Analytics** | 23 tools for spending analysis, trend detection, and financial insights |
 | **Read-Only by Default** | Write operations require explicit opt-in (`YNAB_READ_ONLY=false`) |
 | **Smart Rate Limiting** | Token bucket algorithm with 180 req/hour budget (10% safety margin) |
@@ -183,7 +183,7 @@ Once connected, try asking Claude:
 | "Am I on track this month?" | `ynab_spending_pace` |
 | "Compare this month to last month" | `ynab_monthly_comparison` |
 
-## Available Tools (66 Total)
+## Available Tools (68 Total)
 
 ### Analytics Tools (23)
 
@@ -215,7 +215,7 @@ These tools provide AI-powered financial insights beyond basic YNAB functionalit
 | `ynab_age_of_money` | Age of money metric with explanation |
 | `ynab_preview_scheduled_transaction` | Preview the budget impact of a scheduled transaction |
 
-### Core YNAB API Tools (40)
+### Core YNAB API Tools (42)
 
 Coverage of the YNAB API endpoints:
 
@@ -242,13 +242,14 @@ Coverage of the YNAB API endpoints:
 </details>
 
 <details>
-<summary><strong>Category Tools (7)</strong></summary>
+<summary><strong>Category Tools (8)</strong></summary>
 
 - `ynab_list_categories` — List all category groups and categories
 - `ynab_get_category` — Get category details
 - `ynab_get_month_category` — Get category budget for specific month
 - `ynab_update_category` — Update category budgeted amount *(write mode)*
-- `ynab_create_category` — Create a new category in a group *(write mode)*
+- `ynab_update_category_details` — Rename a category, change its note, move it to another group, or set/clear its target (including recurring targets via goal_frequency) *(write mode)*
+- `ynab_create_category` — Create a new category in a group, optionally with a target (goal_target in dollars, goal_target_date, goal_needs_whole_amount, goal_frequency for recurring targets like $50 weekly) *(write mode)*
 - `ynab_create_category_group` — Create a new category group *(write mode)*
 - `ynab_update_category_group` — Rename a category group *(write mode)*
 </details>
@@ -299,9 +300,10 @@ Coverage of the YNAB API endpoints:
 </details>
 
 <details>
-<summary><strong>Money Movement Tools (1)</strong></summary>
+<summary><strong>Money Movement Tools (2)</strong></summary>
 
-- `ynab_list_money_movements` — List moves of funds between categories
+- `ynab_list_money_movements` — List moves of funds between categories (optional `month`)
+- `ynab_list_money_movement_groups` — List groups of money moves (optional `month`)
 </details>
 
 <details>
@@ -406,7 +408,7 @@ src/
 
 | Feature | Description |
 |---------|-------------|
-| **Read-Only Default** | Write operations disabled unless `YNAB_READ_ONLY=false` |
+| **Read-Only Default** | Write operations disabled unless `YNAB_READ_ONLY=false`; in read-only mode (including read-only OAuth sessions) write tools are hidden from the tool list and still rejected if called |
 | **Token Security** | Never commit your `YNAB_ACCESS_TOKEN`; use environment variables |
 | **Input Validation** | All tool parameters validated with Zod schemas |
 | **Rate Limiting** | Built-in protection against API quota exhaustion |

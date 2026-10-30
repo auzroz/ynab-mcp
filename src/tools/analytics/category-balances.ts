@@ -10,23 +10,26 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
+import { NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
+import { indexCategoryGroups } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   filter: z
     .enum(['all', 'funded', 'unfunded', 'negative', 'positive'])
     .optional()
     .describe('Filter categories by balance status (default: all)'),
   group: z
     .string()
+    .max(NAME_MAX_LENGTH)
     .optional()
     .describe('Filter by category group name (partial match)'),
   search: z
     .string()
+    .max(NAME_MAX_LENGTH)
     .optional()
     .describe('Search category names (partial match)'),
 });
@@ -49,7 +52,8 @@ Returns current category balances with filtering options.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       filter: {
         type: 'string',
@@ -58,10 +62,12 @@ Returns current category balances with filtering options.`,
       },
       group: {
         type: 'string',
+        maxLength: 200,
         description: 'Filter by category group name (partial match)',
       },
       search: {
         type: 'string',
+        maxLength: 200,
         description: 'Search category names (partial match)',
       },
     },
@@ -98,19 +104,14 @@ export async function handleCategoryBalances(
   ]);
 
   // Build group lookup
-  const groupLookup = new Map<string, string>();
-  for (const group of categoriesResponse.data.category_groups) {
-    for (const cat of group.categories) {
-      groupLookup.set(cat.id, group.name);
-    }
-  }
+  const { names: groupLookup, internalIds } = indexCategoryGroups(categoriesResponse.data.category_groups);
 
   // Process categories
   let categories: CategoryBalance[] = [];
 
   for (const cat of monthResponse.data.month.categories) {
     const groupName = groupLookup.get(cat.id) ?? 'Other';
-    if (groupName === 'Internal Master Category' || cat.hidden) continue;
+    if (internalIds.has(cat.id) || cat.hidden) continue;
 
     categories.push({
       category_name: sanitizeName(cat.name),

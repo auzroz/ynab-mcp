@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import { ynabId } from '../../utils/schemas.js';
+import { MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -28,9 +28,9 @@ const transactionUpdateSchema = z.object({
     .optional()
     .describe('New amount in dollars (negative for outflow, positive for inflow)'),
   payee_id: ynabId().optional().describe('New payee UUID'),
-  payee_name: z.string().max(200).optional().describe('New payee name'),
+  payee_name: z.string().max(TXN_PAYEE_NAME_MAX_LENGTH).optional().describe('New payee name'),
   category_id: ynabId().optional().describe('New category UUID'),
-  memo: z.string().max(500).optional().describe('New memo/note'),
+  memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('New memo/note'),
   cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),
   approved: z.boolean().optional().describe('New approved status'),
   flag_color: z.enum(flagColors).nullable().optional().describe('New flag color (null to remove)'),
@@ -38,10 +38,9 @@ const transactionUpdateSchema = z.object({
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   transactions: z
     .array(transactionUpdateSchema)
     .min(1)
@@ -68,7 +67,8 @@ Amounts are in dollars (e.g., -42.50 for a $42.50 outflow).
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       transactions: {
         type: 'array',
@@ -76,14 +76,14 @@ Amounts are in dollars (e.g., -42.50 for a $42.50 outflow).
         items: {
           type: 'object',
           properties: {
-            id: { type: 'string', description: 'The UUID of the transaction to update' },
-            account_id: { type: 'string', description: 'New account UUID' },
-            date: { type: 'string', description: 'New date in YYYY-MM-DD format' },
+            id: { type: 'string', maxLength: 36, description: 'The UUID of the transaction to update' },
+            account_id: { type: 'string', maxLength: 36, description: 'New account UUID' },
+            date: { type: 'string', maxLength: 10, description: 'New date in YYYY-MM-DD format' },
             amount: { type: 'number', description: 'New amount in dollars' },
-            payee_id: { type: 'string', description: 'New payee UUID' },
-            payee_name: { type: 'string', description: 'New payee name' },
-            category_id: { type: 'string', description: 'New category UUID' },
-            memo: { type: 'string', description: 'New memo/note' },
+            payee_id: { type: 'string', maxLength: 36, description: 'New payee UUID' },
+            payee_name: { type: 'string', maxLength: 200, description: 'New payee name' },
+            category_id: { type: 'string', maxLength: 36, description: 'New category UUID' },
+            memo: { type: 'string', maxLength: 500, description: 'New memo/note' },
             cleared: { type: 'string', enum: [...clearedStatuses], description: 'New cleared status' },
             approved: { type: 'boolean', description: 'New approved status' },
             flag_color: {

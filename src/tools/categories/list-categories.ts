@@ -9,13 +9,14 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { budgetId } from '../../utils/schemas.js';
+import { isInternalGroup } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   include_hidden: z
     .boolean()
     .optional()
@@ -40,7 +41,8 @@ Returns category groups with their categories, including budgeted amounts, activ
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       include_hidden: {
         type: 'boolean',
@@ -67,7 +69,7 @@ export async function handleListCategories(
 
   // Filter out internal category group unless explicitly including hidden
   if (!includeHidden) {
-    groups = groups.filter((g) => !g.hidden && g.name !== 'Internal Master Category');
+    groups = groups.filter((g) => !g.hidden && !isInternalGroup(g));
   }
 
   // Build response with categories grouped

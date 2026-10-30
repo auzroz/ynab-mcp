@@ -9,6 +9,7 @@ import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
 
 export const reconcileCleanupPrompt: Prompt = {
   name: 'ynab-reconcile-cleanup',
+  title: 'Reconcile Cleanup',
   description:
     'Runs the weekly housekeeping pass: flags uncleared transactions per account for reconciliation, and audits the budget for unused or overly-granular ("sprawl") categories worth merging or archiving. Use for "let\'s reconcile my accounts", "clean up my budget", "find categories I don\'t use", "check for uncleared transactions", or "audit my budget for clutter". Not for spending analysis or overspending remediation — purely data-integrity and structure hygiene.',
 };

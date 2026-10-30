@@ -50,3 +50,27 @@ export function createMoneyMovementsResponse(
 ) {
   return { data: { money_movements, server_knowledge: 12345 } };
 }
+
+export interface MockMoneyMovementGroup {
+  id: string;
+  group_created_at: string;
+  month: string;
+  note?: string | null;
+  performed_by_user_id?: string | null;
+}
+
+export const mockMoneyMovementGroups: MockMoneyMovementGroup[] = [
+  {
+    id: 'mmg-1',
+    group_created_at: '2024-01-15T10:00:00Z',
+    month: '2024-01-01',
+    note: 'January rebalancing',
+    performed_by_user_id: 'user-1',
+  },
+];
+
+export function createMoneyMovementGroupsResponse(
+  money_movement_groups: MockMoneyMovementGroup[] = mockMoneyMovementGroups
+) {
+  return { data: { money_movement_groups, server_knowledge: 12345 } };
+}
