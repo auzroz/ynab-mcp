@@ -161,4 +161,30 @@ describe('YnabClient money movement groups cache', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
+
+  it('drops cached groups when an assignment is made through updateMonthCategory', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/months/') && url.includes('/categories/')) {
+        return ok({ data: { category: { id: 'c1', name: 'Gym' }, server_knowledge: 1 } });
+      }
+      return ok(groupsBody);
+    });
+    const limiter = new RateLimiter(180, () => clock.t);
+    const client = new YnabClient('tok', 'b1', limiter, new Cache(300000), false, new AuditLog());
+    const id = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+    const cat = '4f2504e0-4f89-41d3-9a0c-0305e82c3302';
+
+    await client.getMoneyMovementGroups(id);
+    await client.getMoneyMovementGroupsByMonth(id, '2024-01-01');
+    await client.getMoneyMovementGroups(id);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await client.updateMonthCategory(id, '2024-01-01', cat, { category: { budgeted: 5000 } });
+    fetchMock.mockClear();
+
+    await client.getMoneyMovementGroups(id);
+    await client.getMoneyMovementGroupsByMonth(id, '2024-01-01');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

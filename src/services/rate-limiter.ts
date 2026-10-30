@@ -185,7 +185,7 @@ export class RateLimiter {
     const retryAfterMs =
       typeof retryAfter === 'string' ? parseRetryAfterMs(retryAfter, now) : retryAfter ?? undefined;
     let windowMs: number;
-    if (retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    if (retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs >= 0) {
       windowMs = retryAfterMs;
     } else if (this.sentAt.length > 0) {
       windowMs = this.sentAt[0]! + HOUR_MS - now;
@@ -245,7 +245,8 @@ export class RateLimiter {
 
 /**
  * Parse a Retry-After header (delta-seconds or an HTTP date) into milliseconds
- * from `nowMs`. Returns undefined when absent or unusable.
+ * from `nowMs`. Returns undefined when absent or unusable; 0 when the header
+ * says to retry immediately ("0" or a date in the past).
  */
 export function parseRetryAfterMs(header: string | null | undefined, nowMs: number): number | undefined {
   if (header === null || header === undefined) return undefined;
@@ -255,5 +256,6 @@ export function parseRetryAfterMs(header: string | null | undefined, nowMs: numb
   const date = Date.parse(value);
   if (Number.isNaN(date)) return undefined;
   const ms = date - nowMs;
-  return ms > 0 ? ms : undefined;
+  // A date already in the past means "retry now": 0, not "no header".
+  return Math.max(0, ms);
 }

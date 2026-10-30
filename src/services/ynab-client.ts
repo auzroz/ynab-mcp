@@ -435,6 +435,9 @@ export class YnabClient {
     await this.rateLimiter.acquire();
     // Invalidate categories cache after updating
     this.cache.delete(`categories:${budgetId}`);
+    // An assignment creates a money movement and group; drop the cached group
+    // reads (both the whole-budget and per-month keys share this prefix).
+    this.cache.deleteByPrefix(`money-movement-groups:${budgetId}`);
 
     const auditLog = this.auditLog;
     try {

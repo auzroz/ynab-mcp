@@ -154,6 +154,17 @@ describe('RateLimiter exhaustion by YNAB (injected clock)', () => {
     expect(limiter.markExhaustedByYnab('soon')).toBe(60_000);
   });
 
+  it('treats Retry-After: 0 and a past HTTP date as retry now (1s floor), not as absent', async () => {
+    const limiter = new RateLimiter(100, now);
+    await limiter.acquire(); // a request in the rolling hour; the fallback would be ~1h
+    expect(limiter.markExhaustedByYnab('0')).toBe(1_000);
+    clock += 1_000;
+    const past = new Date(clock - 60_000).toUTCString();
+    expect(limiter.markExhaustedByYnab(past)).toBe(1_000);
+    clock += 1_000;
+    await expect(limiter.acquire()).resolves.toBeUndefined();
+  });
+
   it('clamps the window to between 1 second and 1 hour', () => {
     const limiter = new RateLimiter(100, now);
     expect(limiter.markExhaustedByYnab(10)).toBe(1_000);
@@ -212,11 +223,12 @@ describe('parseRetryAfterMs', () => {
     expect(parseRetryAfterMs('Wed, 21 Oct 2026 07:29:00 GMT', base)).toBe(60_000);
   });
 
-  it('returns undefined for absent, past or junk values', () => {
+  it('returns undefined for absent or junk values, and 0 for retry-now values', () => {
     expect(parseRetryAfterMs(null, 0)).toBeUndefined();
     expect(parseRetryAfterMs(undefined, 0)).toBeUndefined();
     expect(parseRetryAfterMs('  ', 0)).toBeUndefined();
     expect(parseRetryAfterMs('later', 0)).toBeUndefined();
-    expect(parseRetryAfterMs('Wed, 21 Oct 2015 07:28:00 GMT', Date.parse('2026-01-01'))).toBeUndefined();
+    expect(parseRetryAfterMs('0', 0)).toBe(0);
+    expect(parseRetryAfterMs('Wed, 21 Oct 2015 07:28:00 GMT', Date.parse('2026-01-01'))).toBe(0);
   });
 });
