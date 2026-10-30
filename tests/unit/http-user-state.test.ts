@@ -137,22 +137,22 @@ describe('header-mode sessions are bound to their YNAB token', () => {
     const { sid } = await initSession(app, 'token-a');
 
     const post = await mcp(app, 'post', 'token-b', sid).send(toolsList);
-    expect(post.status).toBe(400);
-    expect(post.body.error.message).toBe('Bad Request: no valid session for this request');
+    expect(post.status).toBe(404);
+    expect(post.body.error.message).toBe('Session not found');
     expect(JSON.stringify(post.body)).not.toContain('ynab_');
     const unknown = await mcp(app, 'post', 'token-b', 'no-such-session').send(toolsList);
     expect(unknown.status).toBe(post.status);
     expect(unknown.body).toEqual(post.body);
 
     const get = await mcp(app, 'get', 'token-b', sid);
-    expect(get.status).toBe(400);
-    expect(get.body.error.message).toBe('Bad Request: unknown or missing session id');
+    expect(get.status).toBe(404);
+    expect(get.body.error.message).toBe('Session not found');
     const del = await mcp(app, 'delete', 'token-b', sid);
-    expect(del.status).toBe(400);
+    expect(del.status).toBe(404);
 
     // No token at all is refused the same way.
     const anonymous = await mcp(app, 'post', undefined, sid).send(toolsList);
-    expect(anonymous.status).toBe(400);
+    expect(anonymous.status).toBe(404);
     expect(anonymous.body).toEqual(post.body);
 
     // The owner's session survived the attempts.
@@ -174,7 +174,7 @@ describe('header-mode sessions are bound to their YNAB token', () => {
     const { sid } = await initSession(app);
 
     const other = await mcp(app, 'post', 'token-b', sid).send(toolsList);
-    expect(other.status).toBe(400);
+    expect(other.status).toBe(404);
     // Presenting the fallback token explicitly is the same effective token.
     const explicit = await mcp(app, 'post', 'env-token', sid).send(toolsList);
     expect(explicit.status).toBe(200);

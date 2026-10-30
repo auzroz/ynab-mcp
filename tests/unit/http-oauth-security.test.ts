@@ -321,16 +321,16 @@ describe('MCP sessions are bound to their creator', () => {
     const sid = await initSession(app, alice.access);
 
     const post = await mcp(app, 'post', bob.access, sid).send(toolsList);
-    expect(post.status).toBe(400);
-    expect(post.body.error.message).toBe('Bad Request: no valid session for this request');
+    expect(post.status).toBe(404);
+    expect(post.body.error.message).toBe('Session not found');
     expect(JSON.stringify(post.body)).not.toContain('ynab_');
 
     const get = await mcp(app, 'get', bob.access, sid);
-    expect(get.status).toBe(400);
-    expect(get.body.error.message).toBe('Bad Request: unknown or missing session id');
+    expect(get.status).toBe(404);
+    expect(get.body.error.message).toBe('Session not found');
 
     const del = await mcp(app, 'delete', bob.access, sid);
-    expect(del.status).toBe(400);
+    expect(del.status).toBe(404);
 
     // Indistinguishable from an unknown session id.
     const unknown = await mcp(app, 'post', bob.access, 'no-such-session').send(toolsList);
@@ -358,7 +358,7 @@ describe('MCP sessions are bound to their creator', () => {
     expect(second.clientId).not.toBe(first.clientId);
     const sid = await initSession(app, first.access);
     const res = await mcp(app, 'post', second.access, sid).send(toolsList);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
     vi.mocked(console.error).mockRestore();
   });
 });
@@ -376,15 +376,15 @@ describe('MCP sessions are bound to their access level', () => {
     expect(ro.scope).toBe('read-only');
 
     const post = await mcp(app, 'post', ro.access, sid).send(toolsList);
-    expect(post.status).toBe(400);
-    expect(post.body.error.message).toBe('Bad Request: no valid session for this request');
+    expect(post.status).toBe(404);
+    expect(post.body.error.message).toBe('Session not found');
     const unknown = await mcp(app, 'post', ro.access, 'no-such-session').send(toolsList);
     expect(post.body).toEqual(unknown.body);
     const get = await mcp(app, 'get', ro.access, sid);
-    expect(get.status).toBe(400);
-    expect(get.body.error.message).toBe('Bad Request: unknown or missing session id');
+    expect(get.status).toBe(404);
+    expect(get.body.error.message).toBe('Session not found');
     const del = await mcp(app, 'delete', ro.access, sid);
-    expect(del.status).toBe(400);
+    expect(del.status).toBe(404);
 
     // A read-write token from a later, same-level refresh keeps using the session.
     const rw2 = await refresh(app, rw.clientId, ro.refresh);

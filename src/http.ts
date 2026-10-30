@@ -15,7 +15,6 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { IncomingMessage, ServerResponse } from 'node:http';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -30,6 +29,7 @@ import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
 import { createServerForUser, type UserContext } from './server.js';
 import { UserRegistry, headerUserKey } from './services/user-registry.js';
+import { SessionManager } from './services/session-manager.js';
 import type { HttpConfig } from './config/environment.js';
 import { Encryptor } from './crypto.js';
 import { createStorage } from './storage/index.js';
@@ -84,16 +84,10 @@ function tokenAccessLevel(auth: AuthInfo): GrantedScope {
  * a request never gets more access through a session than its token grants.
  */
 function oauthSessionOwner(req: Request): string | undefined {
-  const auth = (req as unknown as { auth?: AuthInfo }).auth;
+  const auth = req.auth;
   const userId = auth?.extra?.['userId'];
   if (auth === undefined || typeof userId !== 'string') return undefined;
   return JSON.stringify([auth.clientId, userId, tokenAccessLevel(auth)]);
-}
-
-/** A live MCP session and the identity it was created for. */
-interface SessionEntry {
-  transport: StreamableHTTPServerTransport;
-  owner: string | undefined;
 }
 
 /**
@@ -104,11 +98,31 @@ type ContextResult =
   | { ok: true; ctx: UserContext; userKey: string }
   | { ok: false; status: number; message: string };
 
+/** Seconds a client is told to wait before retrying an initialize refused at the session cap. */
+const SESSION_CAP_RETRY_AFTER_SEC = 30;
+
+/** An unknown, expired, closed or foreign session id: the client should re-initialize (MCP spec). */
+function sessionNotFound(res: Response): void {
+  res.status(404).json(jsonRpcError(-32001, 'Session not found'));
+}
+
+/** The app and the session manager behind it. */
+export interface HttpApp {
+  app: express.Express;
+  /** Live sessions; close() it when the server stops. */
+  sessions: SessionManager;
+}
+
 /**
  * Build the Express app (async because oauth mode initializes storage).
  * Exported for testing without binding a port.
  */
 export async function createHttpApp(config: HttpConfig): Promise<express.Express> {
+  return (await buildHttpApp(config)).app;
+}
+
+/** Like createHttpApp, also returning the session manager so its owner can shut it down. */
+export async function buildHttpApp(config: HttpConfig): Promise<HttpApp> {
   const app = express();
   // Number of reverse-proxy hops to trust for X-Forwarded-* (rate limiting, audit
   // logging). Defaults to 0 (trust none) so a self-hosted, direct-exposed instance
@@ -134,7 +148,11 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
   }
   app.use(express.json({ limit: MAX_JSON_BODY }));
 
-  const transports = new Map<string, SessionEntry>();
+  const sessions = new SessionManager({
+    maxSessions: config.maxSessions,
+    maxSessionsPerUser: config.maxSessionsPerUser,
+    idleTimeoutMs: config.sessionIdleTimeoutMs,
+  });
   const registry = new UserRegistry({
     rateLimitPerHour: config.rateLimitPerHour,
     cacheTtlMs: config.cacheTtlMs,
@@ -142,26 +160,8 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
   // Who a request is from, compared against the session's creator (set per mode).
   let sessionOwner: (req: Request) => string | undefined;
 
-  /**
-   * The session named by `mcp-session-id`, only if the request is from the
-   * identity that created it. A session id presented with another user's (or
-   * client's, or a token of another access level, or in header mode another
-   * YNAB token) is treated exactly like an unknown id, so ids leaked from logs
-   * can't be used to drive someone else's session, nor probed.
-   */
-  const findSession = (req: Request): StreamableHTTPServerTransport | undefined => {
-    const sessionId = req.header('mcp-session-id');
-    const entry = sessionId ? transports.get(sessionId) : undefined;
-    if (!entry) return undefined;
-    if (entry.owner !== sessionOwner(req)) {
-      console.error('[Session] rejected a request for a session owned by a different identity');
-      return undefined;
-    }
-    return entry.transport;
-  };
-
   app.get('/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', transport: 'http', authMode: config.authMode, sessions: transports.size });
+    res.json({ status: 'ok', transport: 'http', authMode: config.authMode, sessions: sessions.size });
   });
 
   // Resolves the per-session UserContext at `initialize` time.
@@ -301,7 +301,7 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
 
     sessionOwner = oauthSessionOwner;
     resolveInitContext = async (req: Request): Promise<ContextResult> => {
-      const auth = (req as unknown as { auth?: AuthInfo }).auth;
+      const auth = req.auth;
       const userId = auth?.extra?.['userId'];
       if (typeof userId !== 'string') {
         return { ok: false, status: 401, message: 'Unauthorized: token missing user identity' };
@@ -374,17 +374,19 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
 
   app.post('/mcp', rejectBatch, async (req: Request, res: Response) => {
     const sessionId = req.header('mcp-session-id');
-    const transport = findSession(req);
+    const transport = sessions.find(sessionId, sessionOwner(req), res);
     if (transport) {
-      await transport.handleRequest(
-        req as unknown as IncomingMessage,
-        res as unknown as ServerResponse,
-        req.body
-      );
+      await transport.handleRequest(req, res, req.body);
       return;
     }
 
-    if (sessionId !== undefined || !isInitializeRequest(req.body)) {
+    // A session id the server doesn't know (expired, closed, foreign): 404, so
+    // the client initializes a new session. No id and not an initialize: 400.
+    if (sessionId) {
+      sessionNotFound(res);
+      return;
+    }
+    if (!isInitializeRequest(req.body)) {
       res.status(400).json(jsonRpcError(-32000, 'Bad Request: no valid session for this request'));
       return;
     }
@@ -401,46 +403,46 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
       return;
     }
 
-    const owner = sessionOwner(req);
+    const admission = await sessions.admit(result.userKey);
+    if (!admission) {
+      res.set('Retry-After', String(SESSION_CAP_RETRY_AFTER_SEC));
+      res.status(503).json(jsonRpcError(-32002, 'Service unavailable: too many active sessions, retry later'));
+      return;
+    }
+
     const lease = registry.acquire(result.userKey);
-    let initialized = false;
     try {
       const newTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (sid: string) => {
-          initialized = true;
-          transports.set(sid, { transport: newTransport, owner });
-        },
+        onsessioninitialized: (sid: string) => admission.commit(sid),
       });
-      // Every session teardown (DELETE, transport close) releases the user's hold.
-      newTransport.onclose = () => {
-        const sid = newTransport.sessionId;
-        if (sid) transports.delete(sid);
-        lease.release();
-      };
+      // Every session teardown (DELETE, idle sweep, eviction, shutdown) goes
+      // through the transport's close, which releases the user's hold.
+      admission.bind(newTransport, sessionOwner(req), () => lease.release());
 
       const server = createServerForUser(result.ctx, lease.components);
-      await server.connect(newTransport as unknown as Parameters<typeof server.connect>[0]);
-      await newTransport.handleRequest(
-        req as unknown as IncomingMessage,
-        res as unknown as ServerResponse,
-        req.body
-      );
+      await server.connect(newTransport);
+      await newTransport.handleRequest(req, res, req.body);
     } finally {
       // An initialize that produced no session (refused by the transport, or the
       // server failed to build) holds nothing, and onclose may never run for it.
-      if (!initialized) lease.release();
+      admission.cancel();
     }
   });
 
   // Server -> client stream (GET) and explicit session teardown (DELETE).
   const sessionRequest = async (req: Request, res: Response): Promise<void> => {
-    const transport = findSession(req);
-    if (!transport) {
-      res.status(400).json(jsonRpcError(-32000, 'Bad Request: unknown or missing session id'));
+    const sessionId = req.header('mcp-session-id');
+    if (!sessionId) {
+      res.status(400).json(jsonRpcError(-32000, 'Bad Request: missing session id'));
       return;
     }
-    await transport.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
+    const transport = sessions.find(sessionId, sessionOwner(req), res);
+    if (!transport) {
+      sessionNotFound(res);
+      return;
+    }
+    await transport.handleRequest(req, res);
   };
   app.get('/mcp', sessionRequest);
   app.delete('/mcp', sessionRequest);
@@ -466,16 +468,18 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     }
   });
 
-  return app;
+  return { app, sessions };
 }
 
 /**
- * Build and start the HTTP server. Returns the Node http.Server.
+ * Build and start the HTTP server. Returns the Node http.Server; closing it
+ * also closes every live session (an open SSE stream would otherwise keep it
+ * from ever finishing closing) and stops the idle sweep.
  */
 export async function startHttpServer(
   config: HttpConfig
 ): Promise<ReturnType<express.Express['listen']>> {
-  const app = await createHttpApp(config);
+  const { app, sessions } = await buildHttpApp(config);
   const httpServer = app.listen(config.port, () => {
     console.error(`YNAB MCP Server (HTTP, ${config.authMode} auth) listening on port ${config.port}`);
     console.error(
@@ -492,5 +496,12 @@ export async function startHttpServer(
       );
     }
   });
+  const closeServer = httpServer.close.bind(httpServer);
+  httpServer.close = (callback) => {
+    // The streams ended by closing the sessions leave idle keep-alive
+    // connections, which would otherwise hold close() open until they time out.
+    void sessions.close().then(() => httpServer.closeIdleConnections());
+    return closeServer(callback);
+  };
   return httpServer;
 }

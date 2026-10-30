@@ -97,6 +97,8 @@ export interface HttpConfig {
   resourceUrl: string | undefined;
   /** Maximum concurrent MCP sessions (`MCP_MAX_SESSIONS`). */
   maxSessions: number;
+  /** Maximum concurrent sessions per user (`MCP_MAX_SESSIONS_PER_USER`); past it the user's least recently used one is closed. */
+  maxSessionsPerUser: number;
   /** Idle time in ms after which a session is closed (`MCP_SESSION_IDLE_TIMEOUT_MS`). */
   sessionIdleTimeoutMs: number;
   /** Number of reverse-proxy hops to trust for X-Forwarded-* headers (Express `trust proxy`). 0 = none (default). */
@@ -207,6 +209,8 @@ export function loadHttpConfig(): HttpConfig {
       process.env['ENABLE_DNS_REBINDING_PROTECTION'], true, 'ENABLE_DNS_REBINDING_PROTECTION'),
     resourceUrl,
     maxSessions: parsePositiveInteger(process.env['MCP_MAX_SESSIONS'], 100, 'MCP_MAX_SESSIONS'),
+    maxSessionsPerUser: parsePositiveInteger(
+      process.env['MCP_MAX_SESSIONS_PER_USER'], 10, 'MCP_MAX_SESSIONS_PER_USER'),
     sessionIdleTimeoutMs: parsePositiveInteger(
       process.env['MCP_SESSION_IDLE_TIMEOUT_MS'], 30 * 60 * 1000, 'MCP_SESSION_IDLE_TIMEOUT_MS'),
     trustProxy: parseInteger(process.env['TRUST_PROXY'], 0, 'TRUST_PROXY'),
