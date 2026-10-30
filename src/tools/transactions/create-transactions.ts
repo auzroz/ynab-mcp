@@ -37,7 +37,7 @@ const transactionSchema = z
     cleared: z.enum(['cleared', 'uncleared', 'reconciled']).optional(),
     approved: z.boolean().optional(),
     flag_color: z.enum(['red', 'orange', 'yellow', 'green', 'blue', 'purple']).optional(),
-    import_id: z.string().max(IMPORT_ID_MAX_LENGTH).optional().describe('Unique ID for import deduplication'),
+    import_id: z.string().min(1).max(IMPORT_ID_MAX_LENGTH).optional().describe('Unique ID for import deduplication'),
     subtransactions: subtransactionsSchema.optional(),
   })
   .superRefine(checkSplitRules);
@@ -96,7 +96,7 @@ Any item may carry subtransactions (at least 2, amounts in dollars) to create a 
               type: 'string',
               enum: ['red', 'orange', 'yellow', 'green', 'blue', 'purple'],
             },
-            import_id: { type: 'string', maxLength: 36, description: 'Unique ID for deduplication' },
+            import_id: { type: 'string', minLength: 1, maxLength: 36, description: 'Unique ID for deduplication' },
             subtransactions: subtransactionsJsonSchema,
           },
           required: ['account_id', 'date', 'amount'],

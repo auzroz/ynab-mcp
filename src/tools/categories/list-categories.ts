@@ -11,6 +11,7 @@ import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
+import { buildGoalDetail } from '../../utils/goals.js';
 
 const MONTH_DELTA_NOTE =
   'Budgeted, activity, balance and goal amounts are for the current month (UTC). When a new month begins they change without YNAB reporting a change, so a delta does not show it: re-read in full (omit since_server_knowledge) after a month boundary.';
@@ -41,7 +42,9 @@ Use when the user asks:
 - "List my budget breakdown"
 
 Returns category groups with their categories, including budgeted amounts, activity, and remaining balances.
-Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the groups and categories changed since then. Budgeted, activity and balance are for the current month, and a new month changes them without YNAB reporting a change, so re-read in full after a month begins.`,
+Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the groups and categories changed since then. Budgeted, activity and balance are for the current month, and a new month changes them without YNAB reporting a change, so re-read in full after a month begins.
+
+Not possible through the YNAB API (do it in the YNAB app): target cadences other than monthly/weekly/yearly, due days, choosing the target type, and snoozing a target; hiding, unhiding, deleting or reordering categories and groups.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -105,6 +108,7 @@ export async function handleListCategories(
         balance: formatCurrency(cat.balance),
         balance_raw: cat.balance,
         goal_type: cat.goal_type ?? null,
+        goal: buildGoalDetail(cat),
         goal_percentage_complete: cat.goal_percentage_complete ?? null,
         goal_under_funded:
           cat.goal_under_funded != null ? formatCurrency(cat.goal_under_funded) : null,
@@ -185,6 +189,7 @@ function formatCategoryDelta(groups: CategoryGroups, cursor: number, serverKnowl
         balance: formatCurrency(cat.balance),
         balance_raw: cat.balance,
         goal_type: cat.goal_type ?? null,
+        goal: buildGoalDetail(cat),
         goal_percentage_complete: cat.goal_percentage_complete ?? null,
         goal_under_funded:
           cat.goal_under_funded != null ? formatCurrency(cat.goal_under_funded) : null,

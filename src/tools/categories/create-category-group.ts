@@ -30,7 +30,9 @@ Use when the user asks:
 Category groups organize related categories (e.g., "Monthly Bills", "Fun Money").
 After creating a group, use ynab_create_category to add categories to it.
 
-**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
+**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
+
+Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering category groups.`,
   inputSchema: {
     type: 'object',
     properties: {

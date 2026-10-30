@@ -79,7 +79,9 @@ const mockApi = vi.hoisted(() => {
   };
 });
 
-vi.mock('ynab', () => ({
+vi.mock('ynab', async (importOriginal) => ({
+  // Keep the real Configuration/BASE_PATH (the client builds its API from them).
+  ...(await importOriginal<typeof import('ynab')>()),
   // Vitest 4: a mock invoked with `new` needs a function/class implementation, not an arrow.
   API: vi.fn(function () {
     return mockApi;
@@ -988,6 +990,19 @@ describe('updateTransaction (write)', () => {
 });
 
 describe('updateTransactions (bulk write)', () => {
+  it('records the row count of a bulk create in the audit entry', async () => {
+    const client = makeClient(false);
+    setResolve(mockApi.transactions.createTransaction, {
+      data: { transactions: [{ id: 't1' }, { id: 't2' }, { id: 't3' }] },
+    });
+    await client.createTransaction(BUDGET, {
+      transactions: [{ date: '2026-01-01' }, { date: '2026-01-02' }, { date: '2026-01-03' }],
+    } as never);
+    const entry = getAuditLog().getAll()[0];
+    expect(entry).toMatchObject({ tool: 'ynab_create_transaction', success: true });
+    expect(entry?.details).toMatchObject({ requested_count: 3 });
+  });
+
   it('succeeds and logs counts', async () => {
     const client = makeClient(false);
     setResolve(mockApi.transactions.updateTransactions, {

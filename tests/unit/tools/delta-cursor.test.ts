@@ -121,6 +121,20 @@ describe('ynab_list_categories', () => {
     expect(out.summary.total_budgeted).toBeUndefined();
     expect(out.alerts).toBeUndefined();
   });
+
+  it('delta categories carry the same goal object as a full read', async () => {
+    const g = mockCategoryGroups[2]!;
+    const target = { ...g.categories[0]!, goal_type: 'NEED', goal_target: 100000, goal_cadence: 1, goal_cadence_frequency: 1 };
+    mockClient.getCategories.mockResolvedValue({
+      data: { category_groups: [{ ...g, categories: [target] }], server_knowledge: 78 },
+    });
+    const delta = parse(await handleListCategories({ since_server_knowledge: 70 }, mockClient as never));
+    const full = parse(await handleListCategories({ include_hidden: true }, mockClient as never));
+    const pick = (o: { category_groups: Array<{ categories: Array<{ id: string; goal: unknown }> }> }) =>
+      o.category_groups.flatMap((grp) => grp.categories).find((c) => c.id === target.id)?.goal;
+    expect(pick(delta)).toEqual(pick(full));
+    expect(pick(delta)).toMatchObject({ type: 'NEED' });
+  });
 });
 
 describe('ynab_list_months / ynab_list_payees / ynab_list_scheduled_transactions', () => {

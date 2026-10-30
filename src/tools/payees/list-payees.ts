@@ -31,7 +31,9 @@ Use when the user asks:
 - "Find a payee"
 
 Returns payee names and IDs. Payees are merchants, people, or places you transact with.
-Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the payees changed since then.`,
+Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the payees changed since then.
+
+Not possible through the YNAB API (do it in the YNAB app): deleting or merging payees, and editing payee locations.`,
   inputSchema: {
     type: 'object',
     properties: {

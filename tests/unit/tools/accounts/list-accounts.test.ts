@@ -8,6 +8,8 @@ import {
   createMockClient,
   createAccountsResponse,
   mockAllAccounts,
+  mockCheckingAccount,
+  mockMortgageAccount,
   mockCreditCardWithOverpayment,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
@@ -104,5 +106,48 @@ describe('handleListAccounts', () => {
 
     expect(parsed.summary.total_accounts).toBe(0);
     expect(parsed.summary.liability_credits).toBeUndefined();
+  });
+
+  it('includes account detail fields and omits empty debt maps', async () => {
+    mockClient.getAccounts.mockResolvedValue(
+      createAccountsResponse([mockCheckingAccount, mockMortgageAccount])
+    );
+
+    const result = await handleListAccounts({}, mockClient as never);
+    const parsed = JSON.parse(result);
+
+    const checking = parsed.accounts_by_type.checking[0];
+    expect(checking.on_budget).toBe(true);
+    expect(checking.closed).toBe(false);
+    expect(checking.note).toBe('Main checking account');
+    expect(checking.last_reconciled_at).toBe('2024-01-15T12:00:00Z');
+    expect(checking.direct_import_linked).toBe(true);
+    expect(checking.direct_import_in_error).toBe(false);
+    expect(checking.transfer_payee_id).toBe('tp-checking-111');
+    expect(checking.debt_original_balance).toBeNull();
+    expect(checking.debt_interest_rates).toBeUndefined();
+    expect(checking.debt_minimum_payments).toBeUndefined();
+    // Existing fields are unchanged
+    expect(checking.balance).toBe('$2500.00');
+    expect(checking.cleared_balance).toBe('$2400.00');
+
+    const mortgage = parsed.accounts_by_type.mortgage[0];
+    expect(mortgage.debt_original_balance).toBe('-$300000.00');
+    expect(mortgage.debt_interest_rates).toEqual(mockMortgageAccount.debt_interest_rates);
+    expect(mortgage.debt_interest_rates_formatted).toEqual({ '44444444-4444-4444-4444-444444444444': '4.5%' });
+    expect(mortgage.debt_minimum_payments).toEqual(mockMortgageAccount.debt_minimum_payments);
+    expect(Object.values(mortgage.debt_minimum_payments_formatted)).toEqual(['$1500.00']);
+    expect(mortgage.debt_escrow_amounts).toBeUndefined();
+  });
+
+  it('sanitizes the account note', async () => {
+    mockClient.getAccounts.mockResolvedValue(
+      createAccountsResponse([{ ...mockCheckingAccount, note: 'hi\u0000 there\u0007' }])
+    );
+
+    const result = await handleListAccounts({}, mockClient as never);
+    const parsed = JSON.parse(result);
+
+    expect(parsed.accounts_by_type.checking[0].note).toBe('hi there');
   });
 });

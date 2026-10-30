@@ -14,6 +14,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { accountDetailFields } from './account-fields.js';
 import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 
@@ -41,8 +42,10 @@ Use when the user asks:
 - "List my bank accounts"
 - "How much money do I have?"
 
-Returns account names, types, and current/cleared/uncleared balances.
-Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the accounts changed since then.`,
+Returns account names, types, and current/cleared/uncleared balances, plus on_budget, closed, note, last_reconciled_at, direct import status, transfer_payee_id (use it as payee_id to record a transfer), and debt details (original balance, interest rates, minimum payments, escrow) when present.
+Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the accounts changed since then.
+
+Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening accounts, setting up loan accounts, and changing interest rates.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -88,14 +91,7 @@ export async function handleListAccounts(
   }
 
   // Group by account type
-  const byType: Record<string, Array<{
-    id: string;
-    name: string;
-    balance: string;
-    cleared_balance: string;
-    uncleared_balance: string;
-    closed: boolean;
-  }>> = {};
+  const byType: Record<string, Array<Record<string, unknown>>> = {};
 
   for (const account of accounts) {
     const type = account.type;
@@ -108,7 +104,7 @@ export async function handleListAccounts(
       balance: formatCurrency(account.balance),
       cleared_balance: formatCurrency(account.cleared_balance),
       uncleared_balance: formatCurrency(account.uncleared_balance),
-      closed: account.closed,
+      ...accountDetailFields(account, { includeEmptyMaps: false }),
     });
   }
 

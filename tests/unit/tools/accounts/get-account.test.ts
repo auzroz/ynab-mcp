@@ -61,4 +61,22 @@ describe('handleGetAccount', () => {
     expect(parsed.account.debt_original_balance).toContain('$');
     expect(parsed.account.type).toBe('mortgage');
   });
+
+  it('adds formatted debt maps and the transfer payee id without changing raw fields', async () => {
+    mockClient.getAccountById.mockResolvedValue(createAccountResponse(mockMortgageAccount));
+
+    const result = await handleGetAccount(
+      { account_id: mockMortgageAccount.id },
+      mockClient as never
+    );
+    const account = JSON.parse(result).account;
+
+    expect(account.debt_interest_rates).toEqual(mockMortgageAccount.debt_interest_rates);
+    expect(account.debt_minimum_payments).toEqual(mockMortgageAccount.debt_minimum_payments);
+    expect(Object.values(account.debt_minimum_payments_formatted)).toEqual(['$1500.00']);
+    expect(account.debt_escrow_amounts).toEqual({});
+    expect(account.debt_escrow_amounts_formatted).toEqual({});
+    expect(account.transfer_payee_id).toBe(mockMortgageAccount.transfer_payee_id);
+    expect(account.last_reconciled_at).toBe(mockMortgageAccount.last_reconciled_at);
+  });
 });

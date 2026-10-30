@@ -31,7 +31,9 @@ Use when the user asks:
 
 Requires a payee_id. Use ynab_list_payees first to find the payee ID.
 
-**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
+**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
+
+Not possible through the YNAB API (do it in the YNAB app): deleting or merging payees, and editing payee locations.`,
   inputSchema: {
     type: 'object',
     properties: {

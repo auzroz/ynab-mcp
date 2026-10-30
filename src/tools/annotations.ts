@@ -72,6 +72,15 @@ const NOOP_WRITE = {
   openWorldHint: false,
 } as const;
 
+// Shifts budgeted money between two categories: overwrites both amounts, and
+// repeating the call moves the money again, so it is not idempotent.
+const MOVE = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: false,
+} as const;
+
 const DELETE = {
   readOnlyHint: false,
   destructiveHint: true,
@@ -96,6 +105,7 @@ export const TOOL_METADATA = {
   ynab_get_month_category: { title: 'Get Month Category', annotations: READ },
   // Sets an absolute budgeted amount for one month, so repeats are no-ops.
   ynab_update_category: { title: 'Update Category Budget', annotations: UPDATE },
+  ynab_move_money: { title: 'Move Money Between Categories', annotations: MOVE },
   ynab_update_category_details: { title: 'Update Category Details', annotations: UPDATE },
   ynab_create_category: { title: 'Create Category', annotations: CREATE },
   ynab_create_category_group: { title: 'Create Category Group', annotations: CREATE },
