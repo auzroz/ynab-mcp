@@ -59,6 +59,13 @@ describe('decodeGoalDay', () => {
 });
 
 describe('buildGoalDetail', () => {
+  it('keeps every key, with null for values YNAB left out', () => {
+    const detail = buildGoalDetail({ goal_type: 'NEED', goal_target: 100000 });
+    expect(detail).not.toBeNull();
+    expect(detail).toHaveProperty('percentage_complete', null);
+    expect(detail).toHaveProperty('months_to_budget', null);
+  });
+
   it('returns null without a goal type', () => {
     expect(buildGoalDetail({ goal_type: null })).toBeNull();
     expect(buildGoalDetail({})).toBeNull();
