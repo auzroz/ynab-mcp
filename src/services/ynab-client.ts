@@ -435,13 +435,11 @@ export class YnabClient {
     await this.rateLimiter.acquire();
     // Invalidate categories cache after updating
     this.cache.delete(`categories:${budgetId}`);
-    // An assignment creates a money movement and group; drop the cached group
-    // reads (both the whole-budget and per-month keys share this prefix).
-    this.cache.deleteByPrefix(`money-movement-groups:${budgetId}`);
 
     const auditLog = this.auditLog;
     try {
       const response = await this.api.categories.updateMonthCategory(budgetId, month, categoryId, data);
+      this.invalidateMoneyMovementGroups(budgetId);
       auditLog.log({
         operation: 'update',
         tool: 'ynab_update_category',
@@ -1310,6 +1308,24 @@ export class YnabClient {
     );
   }
 
+  /**
+   * An assignment creates a money movement and its group, so drop the cached
+   * group reads once the write has landed. The generation bump stops a group
+   * read already in flight from caching pre-write data; an alias budget id
+   * could be any budget, so it drops every budget's entries.
+   */
+  private invalidateMoneyMovementGroups(budgetId: string): void {
+    this.cache.bumpGeneration();
+    if (isBudgetIdSentinel(budgetId)) {
+      this.cache.deleteByPrefix('money-movement-groups:');
+    } else {
+      // Exact whole-budget key plus its per-month keys; the trailing colon keeps
+      // budget "abc" from matching budget "abcd".
+      this.cache.delete(`money-movement-groups:${budgetId}`);
+      this.cache.deleteByPrefix(`money-movement-groups:${budgetId}:`);
+    }
+  }
+
   private async cachedMoneyMovementGroups(
     budgetId: string,
     cacheKey: string | undefined,
@@ -1320,9 +1336,10 @@ export class YnabClient {
       const cached = this.cache.get<ynab.MoneyMovementGroupsResponse>(cacheKey);
       if (cached !== undefined) return cached;
     }
+    const generation = this.cache.generation();
     await this.rateLimiter.acquire();
     const response = await fetchGroups();
-    if (cacheable) this.cache.set(cacheKey, response);
+    if (cacheable && generation === this.cache.generation()) this.cache.set(cacheKey, response);
     return response;
   }
 }

@@ -187,4 +187,54 @@ describe('YnabClient money movement groups cache', () => {
     await client.getMoneyMovementGroupsByMonth(id, '2024-01-01');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it('an assignment through a budget alias drops every budget\'s cached groups', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/months/') && url.includes('/categories/')) {
+        return ok({ data: { category: { id: 'c1', name: 'Gym' }, server_knowledge: 1 } });
+      }
+      return ok(groupsBody);
+    });
+    const limiter = new RateLimiter(180, () => clock.t);
+    const client = new YnabClient('tok', 'b1', limiter, new Cache(300000), false, new AuditLog());
+    const id = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+    const cat = '4f2504e0-4f89-41d3-9a0c-0305e82c3302';
+
+    await client.getMoneyMovementGroups(id);
+    await client.updateMonthCategory('last-used', '2024-01-01', cat, { category: { budgeted: 5000 } });
+    fetchMock.mockClear();
+
+    await client.getMoneyMovementGroups(id);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a group read in flight during an assignment does not cache pre-write data', async () => {
+    let releaseRead: (() => void) | undefined;
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/months/') && url.includes('/categories/')) {
+        return ok({ data: { category: { id: 'c1', name: 'Gym' }, server_knowledge: 1 } });
+      }
+      if (releaseRead === undefined) {
+        // The first group read stalls until the write has completed.
+        await new Promise<void>((resolve) => { releaseRead = resolve; });
+      }
+      return ok(groupsBody);
+    });
+    const limiter = new RateLimiter(180, () => clock.t);
+    const client = new YnabClient('tok', 'b1', limiter, new Cache(300000), false, new AuditLog());
+    const id = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+    const cat = '4f2504e0-4f89-41d3-9a0c-0305e82c3302';
+
+    const staleRead = client.getMoneyMovementGroups(id);
+    await vi.waitFor(() => expect(releaseRead).toBeDefined());
+    await client.updateMonthCategory(id, '2024-01-01', cat, { category: { budgeted: 5000 } });
+    releaseRead?.();
+    await staleRead;
+    fetchMock.mockClear();
+
+    await client.getMoneyMovementGroups(id);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
