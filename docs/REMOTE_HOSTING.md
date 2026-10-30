@@ -171,6 +171,12 @@ Session limits:
   request and re-initialize.
 - On shutdown (`SIGINT`/`SIGTERM`) all sessions are closed.
 
+In header mode `initialize` doesn't validate the token, so any client that can
+reach `/mcp` can fill the global cap with made-up tokens and get other clients
+`503`. Don't expose header mode publicly: use OAuth mode, or restrict access at
+the proxy. A lower `MCP_SESSION_IDLE_TIMEOUT_MS` shortens the lockout on
+exposed instances.
+
 All sessions of one user (in OAuth mode the YNAB user, in header mode the YNAB
 token) share one rate limit, one cache and one audit log, so several clients or
 a reconnecting client can't exceed the per-user YNAB budget
@@ -315,3 +321,6 @@ npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: <token>"
 ```
 
 Serve behind TLS; this mode has no per-user isolation beyond the token you send.
+Tokens aren't validated at `initialize`, so anyone who can reach `/mcp` can use up
+`MCP_MAX_SESSIONS` (see [Sessions](#sessions)); keep it off the public internet or
+restrict access at the proxy.

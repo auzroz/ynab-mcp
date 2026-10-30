@@ -410,15 +410,19 @@ export async function buildHttpApp(config: HttpConfig): Promise<HttpApp> {
       return;
     }
 
-    const lease = registry.acquire(result.userKey);
+    let lease: ReturnType<typeof registry.acquire> | undefined;
+    let bound = false;
     try {
+      lease = registry.acquire(result.userKey);
       const newTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid: string) => admission.commit(sid),
       });
       // Every session teardown (DELETE, idle sweep, eviction, shutdown) goes
       // through the transport's close, which releases the user's hold.
-      admission.bind(newTransport, sessionOwner(req), () => lease.release());
+      const held = lease;
+      admission.bind(newTransport, sessionOwner(req), () => held.release());
+      bound = true;
 
       const server = createServerForUser(result.ctx, lease.components);
       await server.connect(newTransport);
@@ -427,6 +431,8 @@ export async function buildHttpApp(config: HttpConfig): Promise<HttpApp> {
       // An initialize that produced no session (refused by the transport, or the
       // server failed to build) holds nothing, and onclose may never run for it.
       admission.cancel();
+      // Before bind the admission doesn't know the release, so give it back here.
+      if (!bound) lease?.release();
     }
   });
 
