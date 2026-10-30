@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { DATE_TEXT_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
@@ -16,19 +17,20 @@ const DEFAULT_RANGE_NOTE =
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  account_id: z.string().uuid().describe('The account UUID to get transactions for'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+  account_id: ynabId().describe('The account UUID to get transactions for'),
   since_date: z
     .string()
+    .max(DATE_TEXT_MAX_LENGTH)
     .optional()
     .describe(
       'Only return transactions on or after this date. Accepts ISO dates (YYYY-MM-DD) or natural language like "past 30 days", "this month". If omitted, YNAB returns only the last 12 months; pass an earlier date for older history'
     ),
   until_date: z
     .string()
+    .max(DATE_TEXT_MAX_LENGTH)
     .optional()
     .describe(
       'Only return transactions on or before this date (inclusive). Accepts ISO dates (YYYY-MM-DD) or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it'
@@ -60,19 +62,23 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       account_id: {
         type: 'string',
+        maxLength: 36,
         description: 'The account UUID to get transactions for',
       },
       since_date: {
         type: 'string',
+        maxLength: 100,
         description:
           'Only return transactions on or after this date. Accepts YYYY-MM-DD or natural language like "past 30 days". If omitted, YNAB returns only the last 12 months; pass an earlier date for older history',
       },
       until_date: {
         type: 'string',
+        maxLength: 100,
         description:
           'Only return transactions on or before this date (inclusive). Accepts YYYY-MM-DD or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it',
       },

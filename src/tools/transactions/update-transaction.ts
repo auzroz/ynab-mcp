@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -20,12 +21,11 @@ const flagColors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'] as con
 // Input schema
 const inputSchema = z
   .object({
-    budget_id: z
-      .string().max(64)
+    budget_id: budgetId()
       .optional()
-      .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-    transaction_id: z.string().uuid().describe('The transaction UUID to update'),
-    account_id: z.string().uuid().optional().describe('New account UUID'),
+      .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    transaction_id: ynabId().describe('The transaction UUID to update'),
+    account_id: ynabId().optional().describe('New account UUID'),
     date: z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -35,10 +35,10 @@ const inputSchema = z
       .number()
       .optional()
       .describe('New amount in dollars (negative for outflow, positive for inflow)'),
-    payee_id: z.string().uuid().optional().describe('New payee UUID'),
-    payee_name: z.string().max(200).optional().describe('New payee name'),
-    category_id: z.string().uuid().optional().describe('New category UUID'),
-    memo: z.string().max(200).optional().describe('New memo/note'),
+    payee_id: ynabId().optional().describe('New payee UUID'),
+    payee_name: z.string().max(TXN_PAYEE_NAME_MAX_LENGTH).optional().describe('New payee name'),
+    category_id: ynabId().optional().describe('New category UUID'),
+    memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('New memo/note'),
     cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),
     approved: z.boolean().optional().describe('New approved status'),
     flag_color: z.enum(flagColors).nullable().optional().describe('New flag color (null to remove)'),
@@ -80,18 +80,22 @@ Only provide the fields you want to change.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       transaction_id: {
         type: 'string',
+        maxLength: 36,
         description: 'The transaction UUID to update',
       },
       account_id: {
         type: 'string',
+        maxLength: 36,
         description: 'New account UUID',
       },
       date: {
         type: 'string',
+        maxLength: 10,
         description: 'New transaction date in YYYY-MM-DD format',
       },
       amount: {
@@ -100,18 +104,22 @@ Only provide the fields you want to change.`,
       },
       payee_id: {
         type: 'string',
+        maxLength: 36,
         description: 'New payee UUID',
       },
       payee_name: {
         type: 'string',
+        maxLength: 200,
         description: 'New payee name',
       },
       category_id: {
         type: 'string',
+        maxLength: 36,
         description: 'New category UUID',
       },
       memo: {
         type: 'string',
+        maxLength: 500,
         description: 'New memo/note',
       },
       cleared: {

@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
@@ -12,11 +13,10 @@ import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  account_id: z.string().uuid().describe('The account UUID to retrieve'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+  account_id: ynabId().describe('The account UUID to retrieve'),
 });
 
 // Tool definition
@@ -36,11 +36,12 @@ Requires an account_id. Use ynab_list_accounts first to find the account ID.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       account_id: {
         type: 'string',
-        format: 'uuid',
+        maxLength: 36,
         description: 'The account UUID to retrieve',
       },
     },

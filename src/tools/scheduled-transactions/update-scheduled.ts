@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -15,15 +16,12 @@ import { frequencies, flagColors } from '../../utils/scheduled-constants.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  scheduled_transaction_id: z
-    .string()
-    .uuid()
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+  scheduled_transaction_id: ynabId()
     .describe('The scheduled transaction UUID to update'),
-  account_id: z.string().uuid().optional().describe('New account UUID'),
+  account_id: ynabId().optional().describe('New account UUID'),
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -39,18 +37,16 @@ const inputSchema = z.object({
     .enum(frequencies)
     .optional()
     .describe('New recurrence frequency'),
-  payee_id: z.string().uuid().optional().describe('New payee UUID'),
+  payee_id: ynabId().optional().describe('New payee UUID'),
   payee_name: z
     .string()
-    .max(200)
+    .max(TXN_PAYEE_NAME_MAX_LENGTH)
     .optional()
     .describe('New payee name'),
-  category_id: z
-    .string()
-    .uuid()
+  category_id: ynabId()
     .optional()
     .describe('New category UUID (Credit Card Payment categories NOT allowed)'),
-  memo: z.string().max(200).optional().describe('New memo/note'),
+  memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('New memo/note'),
   flag_color: z
     .enum(flagColors)
     .nullable()
@@ -76,18 +72,22 @@ Only provided fields will be updated.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       scheduled_transaction_id: {
         type: 'string',
+        maxLength: 36,
         description: 'The scheduled transaction UUID to update',
       },
       account_id: {
         type: 'string',
+        maxLength: 36,
         description: 'New account UUID',
       },
       date: {
         type: 'string',
+        maxLength: 10,
         description: 'New date in YYYY-MM-DD format (must be future)',
       },
       amount: {
@@ -101,18 +101,22 @@ Only provided fields will be updated.`,
       },
       payee_id: {
         type: 'string',
+        maxLength: 36,
         description: 'New payee UUID',
       },
       payee_name: {
         type: 'string',
+        maxLength: 200,
         description: 'New payee name',
       },
       category_id: {
         type: 'string',
+        maxLength: 36,
         description: 'New category UUID',
       },
       memo: {
         type: 'string',
+        maxLength: 500,
         description: 'New memo/note',
       },
       flag_color: {

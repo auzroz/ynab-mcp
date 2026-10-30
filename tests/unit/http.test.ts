@@ -6,34 +6,10 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createHttpApp } from '../../src/http.js';
+import { makeHttpConfig } from './helpers/http-config.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
-function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
-  return {
-    port: 0,
-    publicUrl: undefined,
-    allowedHosts: undefined,
-    allowedOrigins: undefined,
-    enableDnsRebindingProtection: false,
-    trustProxy: 0,
-    fallbackAccessToken: undefined,
-    defaultBudgetId: undefined,
-    readOnly: true,
-    cacheTtlMs: 300000,
-    rateLimitPerHour: 180,
-    authMode: 'header',
-    oauthClientId: undefined,
-    oauthClientSecret: undefined,
-    encryptionKey: undefined,
-    allowWrite: true,
-    accessTokenTtlSec: 3600,
-    authCodeTtlSec: 600,
-    storageDriver: 'memory',
-    sqlitePath: undefined,
-    databaseUrl: undefined,
-    ...overrides,
-  };
-}
+const makeConfig = makeHttpConfig;
 
 const initializeBody = {
   jsonrpc: '2.0',

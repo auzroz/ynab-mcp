@@ -90,4 +90,14 @@ describe('RateLimiter', () => {
     // Should still be capped at 100
     expect(limiter.getAvailableTokens()).toBe(100);
   });
+
+  it('should give a token back on release, capped at the bucket size', async () => {
+    const limiter = new RateLimiter(100);
+    await limiter.acquire();
+    limiter.release();
+    expect(limiter.getAvailableTokens()).toBe(100);
+
+    limiter.release();
+    expect(limiter.getAvailableTokens()).toBe(100);
+  });
 });

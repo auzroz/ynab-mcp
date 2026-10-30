@@ -19,22 +19,28 @@ import type { Config } from './config/environment.js';
 // the project root in both dev (src/) and the compiled build (dist/).
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version: string };
-import { YnabClient } from './services/ynab-client.js';
-import { RateLimiter } from './services/rate-limiter.js';
-import { Cache } from './services/cache.js';
-import { AuditLog } from './services/audit-log.js';
+import { YnabClient, type AccessTokenSource } from './services/ynab-client.js';
+import { createUserComponents, type UserComponents } from './services/user-registry.js';
 import { tools, handleToolCall } from './tools/index.js';
-import { prompts, getPromptMessages, sanitizePromptName } from './prompts/index.js';
-import { formatErrorResponse } from './utils/errors.js';
+import {
+  prompts,
+  getPromptMessages,
+  sanitizePromptName,
+  UnknownPromptError,
+  InvalidPromptArgumentsError,
+} from './prompts/index.js';
+import { sanitizeErrorMessage } from './utils/sanitize.js';
+import { formatErrorResponse, ReadOnlyModeError } from './utils/errors.js';
 import { assertSafeToolInput } from './utils/input-guard.js';
 
 /**
- * Per-user context for building an isolated server instance. In multi-tenant
- * (HTTP) mode one of these is built per authenticated user so each gets its own
- * YNAB client, cache, rate limiter, and audit log — no cross-user leakage.
+ * Per-session context for building a server instance. In multi-tenant (HTTP)
+ * mode one is built per MCP session; the session's user supplies the shared
+ * components (see UserRegistry), so nothing is shared between users.
  */
 export interface UserContext {
-  accessToken: string;
+  /** A fixed token (stdio, header mode) or a per-request resolver (oauth mode). */
+  accessToken: AccessTokenSource;
   defaultBudgetId?: string | undefined;
   readOnly: boolean;
   rateLimitPerHour: number;
@@ -42,19 +48,20 @@ export interface UserContext {
 }
 
 /**
- * Build a fully-isolated YnabClient (own rate limiter, cache, and audit log).
+ * Build a session's YnabClient on the given per-user components (rate limiter,
+ * cache, audit log). Without them it gets its own set (stdio, tests).
  */
-export function buildYnabClient(ctx: UserContext): YnabClient {
-  const rateLimiter = new RateLimiter(ctx.rateLimitPerHour);
-  const cache = new Cache(ctx.cacheTtlMs);
-  const auditLog = new AuditLog();
+export function buildYnabClient(
+  ctx: UserContext,
+  components: UserComponents = createUserComponents(ctx)
+): YnabClient {
   return new YnabClient(
     ctx.accessToken,
     ctx.defaultBudgetId,
-    rateLimiter,
-    cache,
+    components.rateLimiter,
+    components.cache,
     ctx.readOnly,
-    auditLog
+    components.auditLog
   );
 }
 
@@ -65,7 +72,7 @@ export function buildYnabClient(ctx: UserContext): YnabClient {
 export function createServerFromClient(ynabClient: YnabClient): Server {
   const server = new Server(
     {
-      name: 'ynab-mcp-server',
+      name: 'ynab-mcp',
       version: pkg.version,
     },
     {
@@ -76,7 +83,15 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
     }
   );
 
+  const writeToolNames = new Set(tools.filter((t) => t.annotations?.readOnlyHint !== true).map((t) => t.name));
+
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    // Hide write tools from read-only sessions. This is a UX nicety only: the
+    // YnabClient write guard still rejects writes server-side. Uses the
+    // per-client value so each HTTP session gets its own list.
+    if (ynabClient.isReadOnly()) {
+      return { tools: tools.filter((t) => t.annotations?.readOnlyHint === true) };
+    }
     return { tools };
   });
 
@@ -85,8 +100,14 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
 
     try {
       // Reject oversized/deeply nested arguments before any zod parsing
-      // (mitigation for zod 3 GHSA-mrhx-c7xc-m3w5).
+      // (defense in depth against resource exhaustion).
       assertSafeToolInput(args ?? {});
+      // A tool hidden from a read-only session's list is rejected here too, so
+      // calling it by name gets the same read-only error even when its handler
+      // would not reach the client's write guard (the deprecated no-op import).
+      if (ynabClient.isReadOnly() && writeToolNames.has(name)) {
+        throw new ReadOnlyModeError(name);
+      }
       const result = await handleToolCall(name, args ?? {}, ynabClient);
       return {
         content: [{ type: 'text', text: result }],
@@ -108,8 +129,21 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
 
     try {
       return getPromptMessages(name, args ?? {});
-    } catch {
-      throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${sanitizePromptName(name)}`);
+    } catch (error) {
+      // Client errors map to InvalidParams with a sanitized name only.
+      if (error instanceof UnknownPromptError) {
+        throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${sanitizePromptName(name)}`);
+      }
+      if (error instanceof InvalidPromptArgumentsError) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Invalid arguments for prompt ${sanitizePromptName(name)}: ${error.message}`
+        );
+      }
+      // Anything else is ours. Log the detail server-side and return a generic
+      // message, because the SDK forwards plain Error text to the client.
+      console.error('[PromptError]', sanitizeErrorMessage(error));
+      throw new McpError(ErrorCode.InternalError, 'Failed to build prompt');
     }
   });
 
@@ -117,10 +151,11 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
 }
 
 /**
- * Build a per-user MCP server (multi-tenant / HTTP mode).
+ * Build a per-session MCP server (multi-tenant / HTTP mode), on the user's
+ * shared components when given.
  */
-export function createServerForUser(ctx: UserContext): Server {
-  return createServerFromClient(buildYnabClient(ctx));
+export function createServerForUser(ctx: UserContext, components?: UserComponents): Server {
+  return createServerFromClient(buildYnabClient(ctx, components));
 }
 
 /**

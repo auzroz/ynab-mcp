@@ -10,15 +10,15 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import DecimalJS from 'decimal.js';
+import { budgetId } from '../../utils/schemas.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   months: z
     .number()
     .int()
@@ -46,7 +46,8 @@ Analyzes spending to identify areas where cuts might be possible.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       months: {
         type: 'number',

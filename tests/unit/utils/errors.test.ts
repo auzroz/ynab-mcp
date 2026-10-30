@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
 import {
   ReadOnlyModeError,
   YnabApiError,
@@ -133,6 +134,48 @@ describe('formatErrorResponse', () => {
     expect(result.type).toBe('validation_error');
     expect(result.issues).toHaveLength(2);
     expect(result.issues[0].field).toBe('budget_id');
+  });
+
+  it('should not echo client-supplied values from real zod errors', () => {
+    const schema = z.object({ id: z.guid(), n: z.number().max(5) }).strict();
+    const secret = 'SECRET-VALUE-123';
+    const parsed = schema.safeParse({ id: secret, n: 99, [secret]: secret });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+
+    const result = JSON.parse(formatErrorResponse(parsed.error));
+    expect(result.type).toBe('validation_error');
+    expect(result.issues.length).toBeGreaterThanOrEqual(3);
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(JSON.stringify(result)).not.toContain('99');
+    expect(result.issues.map((i: { field: string }) => i.field)).toContain('id');
+  });
+
+  it('should keep author messages on regex/guid/min checks but not zod defaults', () => {
+    const schema = z.object({
+      month: z.string().regex(/^\d{4}-\d{2}-01$/, 'Month must be first-of-month format (YYYY-MM-01)'),
+      id: z.guid('Invalid payee UUID format'),
+      name: z.string().min(1, 'Name is required'),
+      plain: z.string().regex(/^abc$/),
+      short: z.string().min(5),
+    });
+    const parsed = schema.safeParse({ month: '2024-01-15', id: 'x', name: '', plain: 'zzz-secret', short: 'ab' });
+    if (parsed.success) throw new Error('expected failure');
+    const result = JSON.parse(formatErrorResponse(parsed.error));
+    const byField = Object.fromEntries(result.issues.map((i: { field: string; message: string }) => [i.field, i.message]));
+    expect(byField.month).toBe('Month must be first-of-month format (YYYY-MM-01)');
+    expect(byField.id).toBe('Invalid payee UUID format');
+    expect(byField.name).toBe('Name is required');
+    expect(byField.plain).toBe('Invalid format');
+    expect(byField.short).toBe('Value is too small or too short');
+  });
+
+  it('should keep custom refine messages from our own schemas', () => {
+    const schema = z.string().refine(() => false, { message: 'Month must be YYYY-MM-DD' });
+    const parsed = schema.safeParse('x');
+    if (parsed.success) throw new Error('expected failure');
+    const result = JSON.parse(formatErrorResponse(parsed.error));
+    expect(result.issues[0].message).toBe('Month must be YYYY-MM-DD');
   });
 
   it('should format YNAB SDK errors', () => {

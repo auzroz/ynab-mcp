@@ -5,18 +5,18 @@
  */
 
 import { z } from 'zod';
+import { PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  payee_id: z.string().uuid().describe('The payee UUID to update'),
-  name: z.string().min(1).max(500).describe('The new name for the payee'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+  payee_id: ynabId().describe('The payee UUID to update'),
+  name: z.string().min(1).max(PAYEE_NAME_MAX_LENGTH).describe('The new name for the payee'),
 });
 
 // Tool definition
@@ -37,14 +37,17 @@ Requires a payee_id. Use ynab_list_payees first to find the payee ID.
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       payee_id: {
         type: 'string',
+        maxLength: 36,
         description: 'The payee UUID to update',
       },
       name: {
         type: 'string',
+        maxLength: 500,
         description: 'The new name for the payee',
       },
     },

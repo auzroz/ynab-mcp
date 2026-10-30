@@ -9,13 +9,13 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { budgetId } from '../../utils/schemas.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   days: z
     .number()
     .int()
@@ -43,7 +43,8 @@ Returns projected cash flow including scheduled income and expenses.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       days: {
         type: 'number',
@@ -261,12 +262,10 @@ export async function handleCashFlowForecast(
   // Find low point
   let lowestBalance = currentCash;
   let lowestBalanceDate = todayStr;
-  let tempBalance = currentCash;
 
   for (const forecast of dailyForecasts) {
-    tempBalance = forecast.running_balance;
-    if (tempBalance < lowestBalance) {
-      lowestBalance = tempBalance;
+    if (forecast.running_balance < lowestBalance) {
+      lowestBalance = forecast.running_balance;
       lowestBalanceDate = forecast.date;
     }
   }

@@ -13,6 +13,9 @@ interface CacheEntry<T> {
 export class Cache {
   private readonly store: Map<string, CacheEntry<unknown>> = new Map();
   private readonly defaultTtlMs: number;
+  // See generation(). Lives here rather than on a YnabClient because in HTTP
+  // mode all of a user's sessions (one client each) share one cache.
+  private invalidations = 0;
 
   constructor(defaultTtlMs: number = 300000) { // 5 minutes default
     if (!Number.isFinite(defaultTtlMs) || defaultTtlMs <= 0) {
@@ -73,6 +76,19 @@ export class Cache {
       }
     }
     return count;
+  }
+
+  /**
+   * Counter bumped by bumpGeneration(). A read that started before a bump must
+   * not cache its (possibly stale) result, so an in-flight request can't
+   * restore what an invalidation just dropped.
+   */
+  generation(): number {
+    return this.invalidations;
+  }
+
+  bumpGeneration(): void {
+    this.invalidations++;
   }
 
   /**

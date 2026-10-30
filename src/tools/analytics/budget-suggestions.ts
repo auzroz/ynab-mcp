@@ -9,13 +9,14 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { budgetId } from '../../utils/schemas.js';
+import { indexCategoryGroups } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   months: z
     .number()
     .int()
@@ -43,7 +44,8 @@ Returns suggested monthly budget amounts for each category based on actual spend
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       months: {
         type: 'integer',
@@ -142,12 +144,7 @@ export async function handleBudgetSuggestions(
   }
 
   // Build group lookup
-  const groupLookup = new Map<string, string>();
-  for (const group of categoriesResponse.data.category_groups) {
-    for (const cat of group.categories) {
-      groupLookup.set(cat.id, group.name);
-    }
-  }
+  const { names: groupLookup, internalIds } = indexCategoryGroups(categoriesResponse.data.category_groups);
 
   // Build current budget lookup
   const currentBudgetLookup = new Map<string, number>();
@@ -164,7 +161,7 @@ export async function handleBudgetSuggestions(
   for (const monthResponse of historicalMonthResponses) {
     for (const cat of monthResponse.data.month.categories) {
       const groupName = groupLookup.get(cat.id) ?? 'Other';
-      if (groupName === 'Internal Master Category' || cat.hidden) continue;
+      if (internalIds.has(cat.id) || cat.hidden) continue;
 
       // Only count outflows (spending)
       const spending = cat.activity < 0 ? Math.abs(cat.activity) : 0;

@@ -10,13 +10,14 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { budgetId } from '../../utils/schemas.js';
+import { indexCategoryGroups } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   month: z
     .string()
     .regex(/^\d{4}-(0[1-9]|1[0-2])-01$/, 'Month must be first-of-month format (YYYY-MM-01) with valid month (01-12)')
@@ -46,10 +47,12 @@ Returns detailed budget vs actuals for all categories with variance analysis.`,
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       month: {
         type: 'string',
+        maxLength: 10,
         pattern: '^\\d{4}-(0[1-9]|1[0-2])-01$',
         description: 'Month to analyze in YYYY-MM-01 format (first of month, 01-12). Defaults to current month',
       },
@@ -105,12 +108,7 @@ export async function handleBudgetVsActuals(
   const monthData = monthResponse.data.month;
 
   // Build category group lookup
-  const groupLookup = new Map<string, string>();
-  for (const group of categoriesResponse.data.category_groups) {
-    for (const cat of group.categories) {
-      groupLookup.set(cat.id, group.name);
-    }
-  }
+  const { names: groupLookup, internalIds } = indexCategoryGroups(categoriesResponse.data.category_groups);
 
   // Build reports by category group
   const groupReports = new Map<string, GroupReport>();
@@ -128,7 +126,7 @@ export async function handleBudgetVsActuals(
     const groupName = groupLookup.get(category.id) ?? 'Other';
 
     // Skip hidden categories and internal master category
-    if (category.hidden || groupName === 'Internal Master Category') {
+    if (category.hidden || internalIds.has(category.id)) {
       continue;
     }
 
@@ -241,8 +239,7 @@ export async function handleBudgetVsActuals(
     let prevTotalActivity = 0;
 
     for (const category of prevData.categories) {
-      const prevGroupName = groupLookup.get(category.id) ?? 'Other';
-      if (category.hidden || prevGroupName === 'Internal Master Category') {
+      if (category.hidden || internalIds.has(category.id)) {
         continue;
       }
       prevTotalBudgeted += category.budgeted;

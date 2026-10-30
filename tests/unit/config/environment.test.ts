@@ -68,6 +68,21 @@ describe('loadConfig', () => {
       expect(config.defaultBudgetId).toBe('last-used');
     });
 
+    it('accepts the literal "default" sentinel', () => {
+      process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
+      process.env['YNAB_BUDGET_ID'] = 'default';
+
+      const config = loadConfig();
+      expect(config.defaultBudgetId).toBe('default');
+    });
+
+    it('rejects case variants of the sentinels', () => {
+      process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
+      process.env['YNAB_BUDGET_ID'] = 'DEFAULT';
+
+      expect(() => loadConfig()).toThrow(/Configuration validation failed/);
+    });
+
     it('treats an empty string budget id as undefined', () => {
       process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
       process.env['YNAB_BUDGET_ID'] = '';
@@ -76,7 +91,7 @@ describe('loadConfig', () => {
       expect(config.defaultBudgetId).toBeUndefined();
     });
 
-    it('rejects an arbitrary non-UUID, non-"last-used" string', () => {
+    it('rejects an arbitrary non-GUID string that is not a sentinel', () => {
       process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
       process.env['YNAB_BUDGET_ID'] = 'not-a-uuid';
 

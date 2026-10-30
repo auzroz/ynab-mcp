@@ -3,7 +3,7 @@
 # ============================================
 
 # Stage 1: Builder
-FROM node:20-alpine3.23@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS builder
+FROM node:24-alpine3.24@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS builder
 
 WORKDIR /app
 
@@ -29,10 +29,10 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # Stage 2: Production
-FROM node:20-alpine3.23@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS production
+FROM node:24-alpine3.24@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS production
 
 # Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init=1.2.5-r3
+RUN apk add --no-cache dumb-init=1.2.5-r4
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S mcp && \

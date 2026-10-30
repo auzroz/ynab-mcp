@@ -5,10 +5,11 @@
  */
 
 import { z } from 'zod';
+import { budgetIdSentinel, ynabId } from '../utils/schemas.js';
 
 const configSchema = z.object({
   accessToken: z.string().min(1, 'YNAB_ACCESS_TOKEN is required'),
-  defaultBudgetId: z.union([z.string().uuid(), z.literal('last-used')]).optional(),
+  defaultBudgetId: z.union([ynabId(), budgetIdSentinel()]).optional(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   cacheTtlMs: z.number().int().positive().default(300000), // 5 minutes
   rateLimitPerHour: z.number().int().min(1).max(200).default(180),
@@ -58,7 +59,14 @@ function parseInteger(value: string | undefined, defaultValue: number, varName?:
     );
   }
 
-  return Number(value);
+  // Digits alone still allow values past 2^53 (or Infinity for very long
+  // strings), which would not be the limit the operator wrote.
+  const n = Number(value);
+  if (!Number.isSafeInteger(n)) {
+    const nameHint = varName ? ` for ${varName}` : '';
+    throw new Error(`Invalid integer value "${value}"${nameHint}. Expected an integer no larger than ${Number.MAX_SAFE_INTEGER}.`);
+  }
+  return n;
 }
 
 /** Split a comma/space-separated env list into a trimmed string array (or undefined). */
@@ -89,6 +97,17 @@ export interface HttpConfig {
   allowedHosts: string[] | undefined;
   allowedOrigins: string[] | undefined;
   enableDnsRebindingProtection: boolean;
+  /**
+   * Absolute URL of the protected MCP resource (RFC 9728 / RFC 8707 audience).
+   * `MCP_RESOURCE_URL`, else `PUBLIC_URL` + `/mcp`; undefined when neither is set.
+   */
+  resourceUrl: string | undefined;
+  /** Maximum concurrent MCP sessions (`MCP_MAX_SESSIONS`). */
+  maxSessions: number;
+  /** Maximum concurrent sessions per user (`MCP_MAX_SESSIONS_PER_USER`); past it the user's least recently used one is closed. */
+  maxSessionsPerUser: number;
+  /** Idle time in ms after which a session is closed (`MCP_SESSION_IDLE_TIMEOUT_MS`). */
+  sessionIdleTimeoutMs: number;
   /** Number of reverse-proxy hops to trust for X-Forwarded-* headers (Express `trust proxy`). 0 = none (default). */
   trustProxy: number;
   // Shared knobs, reused per user context.
@@ -120,25 +139,96 @@ function parseStorageDriver(value: string | undefined): StorageDriver {
   throw new Error(`Invalid STORAGE_DRIVER "${value}". Expected: memory, sqlite, or postgres.`);
 }
 
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** Parse a positive integer (>= 1) env var; zero is rejected. */
+function parsePositiveInteger(value: string | undefined, defaultValue: number, varName: string): number {
+  const n = parseInteger(value, defaultValue, varName);
+  if (n < 1) throw new Error(`Invalid value "${value}" for ${varName}. Expected an integer >= 1.`);
+  return n;
+}
+
+/**
+ * Parse and validate an absolute http(s) URL used as a public identifier.
+ * https is required except for loopback hosts; fragments are rejected.
+ */
+function parseAbsoluteUrl(value: string, varName: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Invalid ${varName}: must be an absolute URL.`);
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`Invalid ${varName}: scheme must be https (http is allowed only for localhost).`);
+  }
+  if (url.protocol === 'http:' && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
+    throw new Error(`Invalid ${varName}: https is required (http is allowed only for localhost, 127.0.0.1 or [::1]).`);
+  }
+  if (url.hash !== '' || value.includes('#')) {
+    throw new Error(`Invalid ${varName}: must not contain a fragment.`);
+  }
+  return url;
+}
+
 export function loadHttpConfig(): HttpConfig {
-  const allowedHosts = parseList(process.env['ALLOWED_HOSTS']);
-  const allowedOrigins = parseList(process.env['ALLOWED_ORIGINS']);
   const publicUrl = process.env['PUBLIC_URL'] || undefined;
+  const port = parseInteger(process.env['PORT'], 3000, 'PORT');
+  const publicParsed = publicUrl ? parseAbsoluteUrl(publicUrl, 'PUBLIC_URL') : undefined;
+  const normalizedPublicUrl = publicUrl ? publicUrl.replace(/\/+$/, '') : undefined;
+
+  const explicitResource = process.env['MCP_RESOURCE_URL'] || undefined;
+  if (explicitResource) parseAbsoluteUrl(explicitResource, 'MCP_RESOURCE_URL');
+  const resourceUrl = explicitResource ?? (normalizedPublicUrl ? `${normalizedPublicUrl}/mcp` : undefined);
+
+  // Precedence: an explicit ALLOWED_HOSTS / ALLOWED_ORIGINS fully replaces the
+  // derived defaults. Defaults: PUBLIC_URL's host (and origin), plus localhost
+  // variants (with and without the listen port) when PUBLIC_URL is unset or loopback.
+  const loopbackBound = publicParsed === undefined || LOOPBACK_HOSTNAMES.has(publicParsed.hostname);
+  const derivedHosts: string[] = [];
+  if (publicParsed) derivedHosts.push(publicParsed.host);
+  if (loopbackBound) {
+    for (const h of LOOPBACK_HOSTNAMES) derivedHosts.push(h, `${h}:${port}`);
+  }
+  const allowedHosts = parseList(process.env['ALLOWED_HOSTS']) ?? [...new Set(derivedHosts)];
+  const allowedOrigins = parseList(process.env['ALLOWED_ORIGINS']) ?? (publicParsed ? [publicParsed.origin] : undefined);
   const oauthClientId = process.env['YNAB_OAUTH_CLIENT_ID'] || undefined;
   const oauthClientSecret = process.env['YNAB_OAUTH_CLIENT_SECRET'] || undefined;
   const encryptionKey = process.env['ENCRYPTION_KEY'] || undefined;
 
   const oauthConfigured = Boolean(oauthClientId && oauthClientSecret && encryptionKey && publicUrl);
+  // PUBLIC_URL is the OAuth issuer, and the MCP SDK accepts an http issuer only
+  // for localhost and 127.0.0.1. Fail here with a clear message instead of
+  // letting the SDK throw at startup.
+  if (oauthConfigured && publicParsed?.protocol === 'http:' && publicParsed.hostname === '[::1]') {
+    throw new Error(
+      'Invalid PUBLIC_URL: OAuth mode needs https (http is allowed only for localhost or 127.0.0.1; [::1] is not accepted as an OAuth issuer).'
+    );
+  }
+
+  // A per-user cap above the global one would never close a session, so one
+  // user could take every slot. An explicit value is rejected; the default
+  // follows a smaller global cap.
+  const maxSessions = parsePositiveInteger(process.env['MCP_MAX_SESSIONS'], 100, 'MCP_MAX_SESSIONS');
+  const maxSessionsPerUser = parsePositiveInteger(
+    process.env['MCP_MAX_SESSIONS_PER_USER'], Math.min(10, maxSessions), 'MCP_MAX_SESSIONS_PER_USER');
+  if (maxSessionsPerUser > maxSessions) {
+    throw new Error('Invalid MCP_MAX_SESSIONS_PER_USER: must not exceed MCP_MAX_SESSIONS.');
+  }
 
   return {
-    port: parseInteger(process.env['PORT'], 3000, 'PORT'),
-    publicUrl: publicUrl ? publicUrl.replace(/\/+$/, '') : undefined,
+    port,
+    publicUrl: normalizedPublicUrl,
     allowedHosts,
     allowedOrigins,
-    // Only meaningful when a host/origin allowlist is configured.
-    enableDnsRebindingProtection:
-      parseBoolean(process.env['ENABLE_DNS_REBINDING_PROTECTION'], false, 'ENABLE_DNS_REBINDING_PROTECTION') &&
-      (allowedHosts !== undefined || allowedOrigins !== undefined),
+    // ON by default; set ENABLE_DNS_REBINDING_PROTECTION=false to opt out.
+    enableDnsRebindingProtection: parseBoolean(
+      process.env['ENABLE_DNS_REBINDING_PROTECTION'], true, 'ENABLE_DNS_REBINDING_PROTECTION'),
+    resourceUrl,
+    maxSessions,
+    maxSessionsPerUser,
+    sessionIdleTimeoutMs: parsePositiveInteger(
+      process.env['MCP_SESSION_IDLE_TIMEOUT_MS'], 30 * 60 * 1000, 'MCP_SESSION_IDLE_TIMEOUT_MS'),
     trustProxy: parseInteger(process.env['TRUST_PROXY'], 0, 'TRUST_PROXY'),
     fallbackAccessToken: process.env['YNAB_ACCESS_TOKEN'] || undefined,
     defaultBudgetId: process.env['YNAB_BUDGET_ID'] || undefined,
@@ -174,7 +264,7 @@ export function loadConfig(): Config {
   const result = configSchema.safeParse(rawConfig);
   
   if (!result.success) {
-    const errors = result.error.errors
+    const errors = result.error.issues
       .map((e) => `  - ${e.path.join('.')}: ${e.message}`)
       .join('\n');
     throw new Error(`Configuration validation failed:\n${errors}`);

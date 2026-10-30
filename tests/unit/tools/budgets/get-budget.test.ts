@@ -37,23 +37,24 @@ describe('handleGetBudget', () => {
     expect(parsed.accounts_by_type.savings).toBeDefined();
   });
 
-  it('resolves budget_id and persists server_knowledge', async () => {
+  it('resolves budget_id and fetches the full budget', async () => {
     mockClient.getBudgetById.mockResolvedValue(createBudgetResponse());
 
     await handleGetBudget({ budget_id: 'custom-id' }, mockClient as never);
 
     expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-id');
-    expect(mockClient.getBudgetById).toHaveBeenCalledWith('custom-id', undefined);
-    expect(mockClient.updateServerKnowledge).toHaveBeenCalledWith('custom-id', 12345);
+    expect(mockClient.getBudgetById).toHaveBeenCalledWith('custom-id');
   });
 
-  it('uses prior server_knowledge for delta sync', async () => {
+  it('never sends a delta cursor, since the totals need the whole budget', async () => {
     mockClient.getServerKnowledge.mockReturnValue(999);
     mockClient.getBudgetById.mockResolvedValue(createBudgetResponse());
 
     await handleGetBudget({}, mockClient as never);
+    await handleGetBudget({}, mockClient as never);
 
-    expect(mockClient.getBudgetById).toHaveBeenCalledWith('test-budget-id', 999);
+    expect(mockClient.getBudgetById.mock.calls).toEqual([['test-budget-id'], ['test-budget-id']]);
+    expect(mockClient.getServerKnowledge).not.toHaveBeenCalled();
   });
 
   it('builds category_groups excluding hidden and Internal Master Category', async () => {
