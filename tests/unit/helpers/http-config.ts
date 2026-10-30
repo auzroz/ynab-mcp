@@ -10,6 +10,7 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     enableDnsRebindingProtection: false,
     resourceUrl: undefined,
     maxSessions: 100,
+    maxSessionsPerUser: 10,
     sessionIdleTimeoutMs: 30 * 60 * 1000,
     trustProxy: 0,
     fallbackAccessToken: undefined,

@@ -22,6 +22,26 @@ const DIRECT_REQUEST_TIMEOUT_MS = 30_000;
 
 type GoalFrequency = 'monthly' | 'weekly' | 'yearly';
 
+/**
+ * A fixed YNAB access token (stdio, header mode), or a function returning the
+ * current one, called for every YNAB request (oauth mode, where the ~2h YNAB
+ * token is refreshed under a long-lived session).
+ */
+export type AccessTokenSource = string | (() => Promise<string>);
+
+/**
+ * ynab.API that resolves its bearer token per request. The SDK's runtime
+ * Configuration accepts a token function, but ynab.API's constructor is typed
+ * for a string, so this swaps in such a Configuration before any endpoint
+ * accessor (which builds its API class lazily from it) has been used.
+ */
+class TokenProviderApi extends ynab.API {
+  constructor(getAccessToken: () => Promise<string>) {
+    super('');
+    this._configuration = new ynab.Configuration({ accessToken: getAccessToken, basePath: ynab.BASE_PATH });
+  }
+}
+
 /** Create body: the SDK's NewCategory plus the field the SDK cannot send. */
 export interface CreateCategoryBody {
   category: ynab.NewCategory & { goal_frequency?: GoalFrequency };
@@ -67,7 +87,7 @@ function updateCategoryDetailsAuditDetails(data: UpdateCategoryBody): Record<str
 export class YnabClient {
   private readonly api: ynab.API;
   // Only used by the goal_frequency direct-call workaround; never logged.
-  private readonly accessToken: string;
+  private readonly getAccessToken: () => Promise<string>;
   private readonly rateLimiter: RateLimiter;
   private readonly cache: Cache;
   private readonly defaultBudgetId: string;
@@ -77,13 +97,8 @@ export class YnabClient {
   // Track server knowledge for delta sync
   private serverKnowledge: Map<string, number> = new Map();
 
-  // Bumped on every transaction-history invalidation. Reads that started before a
-  // bump don't cache their (possibly stale) result, so an in-flight request can't
-  // restore what the invalidation just dropped.
-  private historyGeneration = 0;
-
   constructor(
-    accessToken: string,
+    accessToken: AccessTokenSource,
     defaultBudgetId: string | undefined,
     rateLimiter: RateLimiter,
     cache: Cache,
@@ -93,8 +108,22 @@ export class YnabClient {
     // per-user instance so one user's write history never leaks to another.
     auditLog: AuditLog = getAuditLog()
   ) {
-    this.api = new ynab.API(accessToken);
-    this.accessToken = accessToken;
+    if (typeof accessToken === 'string') {
+      this.api = new ynab.API(accessToken);
+      this.getAccessToken = () => Promise.resolve(accessToken);
+    } else {
+      // Every request takes a rate-limit token before resolving its access
+      // token; when resolution fails nothing reaches YNAB, so give it back.
+      this.getAccessToken = async () => {
+        try {
+          return await accessToken();
+        } catch (error) {
+          this.rateLimiter.release();
+          throw error;
+        }
+      };
+      this.api = new TokenProviderApi(this.getAccessToken);
+    }
     this.rateLimiter = rateLimiter;
     this.cache = cache;
     this.defaultBudgetId = defaultBudgetId ?? 'last-used';
@@ -182,10 +211,10 @@ export class YnabClient {
     const cached = this.cache.get<ynab.PlanSummaryResponse>(cacheKey);
     if (cached !== undefined) return cached;
 
-    const generation = this.historyGeneration;
+    const generation = this.cache.generation();
     await this.rateLimiter.acquire();
     const response = await this.api.plans.getPlans(includeAccounts);
-    if (generation === this.historyGeneration) this.cache.set(cacheKey, response);
+    if (generation === this.cache.generation()) this.cache.set(cacheKey, response);
     return response;
   }
 
@@ -231,7 +260,7 @@ export class YnabClient {
       if (cached !== undefined) return cached;
     }
 
-    const generation = this.historyGeneration;
+    const generation = this.cache.generation();
     let firstMonth: string | undefined;
     // Match the cached budget list by exact ID only. Aliases (and IDs missing from
     // the list) never borrow another budget's first month; they use the month list.
@@ -246,7 +275,7 @@ export class YnabClient {
       }
     }
 
-    if (firstMonth !== undefined && !isAlias && generation === this.historyGeneration) {
+    if (firstMonth !== undefined && !isAlias && generation === this.cache.generation()) {
       this.cache.set(cacheKey, firstMonth);
     }
     return firstMonth;
@@ -257,7 +286,9 @@ export class YnabClient {
    * and the budget list that carries it) after a successful transaction write.
    */
   private invalidateTransactionHistory(budgetId: string): void {
-    this.historyGeneration++;
+    // The generation is the cache's, so it also guards reads in flight in the
+    // user's other sessions (HTTP mode shares the cache between them).
+    this.cache.bumpGeneration();
     if (isBudgetIdSentinel(budgetId)) {
       // An alias write could have touched any budget, so drop every cached first month.
       this.cache.deleteByPrefix('first-month:');
@@ -456,10 +487,12 @@ export class YnabClient {
     path: string,
     body: unknown
   ): Promise<ynab.SaveCategoryResponse> {
+    // Resolved per request, like the SDK path, so a refreshed token is used.
+    const accessToken = await this.getAccessToken();
     const response = await fetch(`${YNAB_API_BASE_URL}${path}`, {
       method,
       headers: {
-        Authorization: `Bearer ${this.accessToken}`,
+        Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },

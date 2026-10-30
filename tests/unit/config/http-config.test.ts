@@ -3,7 +3,7 @@ import { loadHttpConfig } from '../../../src/config/environment.js';
 
 const KEYS = [
   'PUBLIC_URL', 'MCP_RESOURCE_URL', 'ALLOWED_HOSTS', 'ALLOWED_ORIGINS', 'ENABLE_DNS_REBINDING_PROTECTION',
-  'MCP_MAX_SESSIONS', 'MCP_SESSION_IDLE_TIMEOUT_MS', 'PORT',
+  'MCP_MAX_SESSIONS', 'MCP_MAX_SESSIONS_PER_USER', 'MCP_SESSION_IDLE_TIMEOUT_MS', 'PORT',
   'YNAB_OAUTH_CLIENT_ID', 'YNAB_OAUTH_CLIENT_SECRET', 'ENCRYPTION_KEY',
   // Also read by loadHttpConfig (directly or through loadConfig); cleared so an
   // ambient value can't make a test that expects success throw.
@@ -144,19 +144,42 @@ describe('loadHttpConfig', () => {
     it('has defaults', () => {
       const c = loadHttpConfig();
       expect(c.maxSessions).toBe(100);
+      expect(c.maxSessionsPerUser).toBe(10);
       expect(c.sessionIdleTimeoutMs).toBe(30 * 60 * 1000);
     });
     it('parses valid values', () => {
       process.env['MCP_MAX_SESSIONS'] = '5';
+      process.env['MCP_MAX_SESSIONS_PER_USER'] = '2';
       process.env['MCP_SESSION_IDLE_TIMEOUT_MS'] = '60000';
       const c = loadHttpConfig();
       expect(c.maxSessions).toBe(5);
+      expect(c.maxSessionsPerUser).toBe(2);
       expect(c.sessionIdleTimeoutMs).toBe(60000);
+    });
+    it('rejects integers too large to be exact', () => {
+      for (const v of ['9'.repeat(309), String(Number.MAX_SAFE_INTEGER + 2)]) {
+        process.env['MCP_MAX_SESSIONS'] = v;
+        expect(() => loadHttpConfig(), v.slice(0, 20)).toThrow(/MCP_MAX_SESSIONS/);
+      }
+    });
+    it('rejects a per-user cap above the global cap', () => {
+      process.env['MCP_MAX_SESSIONS'] = '5';
+      process.env['MCP_MAX_SESSIONS_PER_USER'] = '6';
+      expect(() => loadHttpConfig()).toThrow(/MCP_MAX_SESSIONS_PER_USER.*MCP_MAX_SESSIONS/);
+      process.env['MCP_MAX_SESSIONS_PER_USER'] = '5';
+      expect(loadHttpConfig().maxSessionsPerUser).toBe(5);
+    });
+    it('lowers the default per-user cap to a smaller global cap', () => {
+      process.env['MCP_MAX_SESSIONS'] = '3';
+      expect(loadHttpConfig().maxSessionsPerUser).toBe(3);
     });
     it.each(['10ms', '-1', '1.5', 'abc', '0'])('rejects %s', (v) => {
       process.env['MCP_MAX_SESSIONS'] = v;
       expect(() => loadHttpConfig()).toThrow(/MCP_MAX_SESSIONS/);
       delete process.env['MCP_MAX_SESSIONS'];
+      process.env['MCP_MAX_SESSIONS_PER_USER'] = v;
+      expect(() => loadHttpConfig()).toThrow(/MCP_MAX_SESSIONS_PER_USER/);
+      delete process.env['MCP_MAX_SESSIONS_PER_USER'];
       process.env['MCP_SESSION_IDLE_TIMEOUT_MS'] = v;
       expect(() => loadHttpConfig()).toThrow(/MCP_SESSION_IDLE_TIMEOUT_MS/);
     });

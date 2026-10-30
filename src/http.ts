@@ -9,12 +9,12 @@
  *                token maps to a YNAB-identified user; per request we resolve and
  *                refresh that user's YNAB token and build an isolated server.
  *
- * In both modes each MCP session gets its own YnabClient / cache / rate limiter /
- * audit log — nothing leaks between users.
+ * In both modes each MCP session gets its own YnabClient, built on its user's
+ * rate limiter, cache and audit log (UserRegistry), which all of that user's
+ * sessions share and no other user can reach.
  */
 
 import { randomUUID } from 'node:crypto';
-import type { IncomingMessage, ServerResponse } from 'node:http';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -28,6 +28,8 @@ import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middlew
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
 import { createServerForUser, type UserContext } from './server.js';
+import { UserRegistry, headerUserKey } from './services/user-registry.js';
+import { SessionManager } from './services/session-manager.js';
 import type { HttpConfig } from './config/environment.js';
 import { Encryptor } from './crypto.js';
 import { createStorage } from './storage/index.js';
@@ -70,40 +72,57 @@ function tokenAccessLevel(auth: AuthInfo): GrantedScope {
 }
 
 /**
- * Who a session belongs to: the authenticated MCP client and YNAB user, and the
- * access level of the token it was initialized with (oauth mode); or nobody
- * (header mode, which has no per-request identity). Binding the level means a
- * read-only token of the same client and user can't drive a session that a
- * read-write token initialized; a refreshed token of the same level still can.
+ * Who an oauth-mode session belongs to: the authenticated MCP client and YNAB
+ * user, and the access level of the token it was initialized with. Binding the
+ * level means a read-only token of the same client and user can't drive a
+ * session that a read-write token initialized; a refreshed token of the same
+ * level still can.
  *
  * The level is the token's own (from AuthInfo, no extra storage read per
  * request). The other inputs to a session's read-only flag (YNAB_READ_ONLY,
  * the user's YNAB grant) can only make a session stricter than its token, so
  * a request never gets more access through a session than its token grants.
  */
-function sessionOwner(req: Request): string | undefined {
-  const auth = (req as unknown as { auth?: AuthInfo }).auth;
+function oauthSessionOwner(req: Request): string | undefined {
+  const auth = req.auth;
   const userId = auth?.extra?.['userId'];
   if (auth === undefined || typeof userId !== 'string') return undefined;
   return JSON.stringify([auth.clientId, userId, tokenAccessLevel(auth)]);
 }
 
-/** A live MCP session and the identity it was created for. */
-interface SessionEntry {
-  transport: StreamableHTTPServerTransport;
-  owner: string | undefined;
+/**
+ * Result of resolving a session's user context and registry key (see
+ * UserRegistry), or an HTTP error to return.
+ */
+type ContextResult =
+  | { ok: true; ctx: UserContext; userKey: string }
+  | { ok: false; status: number; message: string };
+
+/** Seconds a client is told to wait before retrying an initialize refused at the session cap. */
+const SESSION_CAP_RETRY_AFTER_SEC = 30;
+
+/** An unknown, expired, closed or foreign session id: the client should re-initialize (MCP spec). */
+function sessionNotFound(res: Response): void {
+  res.status(404).json(jsonRpcError(-32001, 'Session not found'));
 }
 
-/** Result of resolving a session's user context, or an HTTP error to return. */
-type ContextResult =
-  | { ok: true; ctx: UserContext }
-  | { ok: false; status: number; message: string };
+/** The app and the session manager behind it. */
+export interface HttpApp {
+  app: express.Express;
+  /** Live sessions; close() it when the server stops. */
+  sessions: SessionManager;
+}
 
 /**
  * Build the Express app (async because oauth mode initializes storage).
  * Exported for testing without binding a port.
  */
 export async function createHttpApp(config: HttpConfig): Promise<express.Express> {
+  return (await buildHttpApp(config)).app;
+}
+
+/** Like createHttpApp, also returning the session manager so its owner can shut it down. */
+export async function buildHttpApp(config: HttpConfig): Promise<HttpApp> {
   const app = express();
   // Number of reverse-proxy hops to trust for X-Forwarded-* (rate limiting, audit
   // logging). Defaults to 0 (trust none) so a self-hosted, direct-exposed instance
@@ -129,28 +148,20 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
   }
   app.use(express.json({ limit: MAX_JSON_BODY }));
 
-  const transports = new Map<string, SessionEntry>();
-
-  /**
-   * The session named by `mcp-session-id`, only if the request is from the
-   * identity that created it. A session id presented with another user's (or
-   * client's, or a token of another access level) is treated exactly like an
-   * unknown id, so ids leaked from logs can't be used to drive someone else's
-   * session, nor probed.
-   */
-  const findSession = (req: Request): StreamableHTTPServerTransport | undefined => {
-    const sessionId = req.header('mcp-session-id');
-    const entry = sessionId ? transports.get(sessionId) : undefined;
-    if (!entry) return undefined;
-    if (entry.owner !== sessionOwner(req)) {
-      console.error('[Session] rejected a request for a session owned by a different identity');
-      return undefined;
-    }
-    return entry.transport;
-  };
+  const sessions = new SessionManager({
+    maxSessions: config.maxSessions,
+    maxSessionsPerUser: config.maxSessionsPerUser,
+    idleTimeoutMs: config.sessionIdleTimeoutMs,
+  });
+  const registry = new UserRegistry({
+    rateLimitPerHour: config.rateLimitPerHour,
+    cacheTtlMs: config.cacheTtlMs,
+  });
+  // Who a request is from, compared against the session's creator (set per mode).
+  let sessionOwner: (req: Request) => string | undefined;
 
   app.get('/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', transport: 'http', authMode: config.authMode, sessions: transports.size });
+    res.json({ status: 'ok', transport: 'http', authMode: config.authMode, sessions: sessions.size });
   });
 
   // Resolves the per-session UserContext at `initialize` time.
@@ -288,14 +299,18 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
       requireBearerAuth({ verifier: provider, resourceMetadataUrl, expectedResource: resourceServerUrl })
     );
 
+    sessionOwner = oauthSessionOwner;
     resolveInitContext = async (req: Request): Promise<ContextResult> => {
-      const auth = (req as unknown as { auth?: AuthInfo }).auth;
+      const auth = req.auth;
       const userId = auth?.extra?.['userId'];
       if (typeof userId !== 'string') {
         return { ok: false, status: 401, message: 'Unauthorized: token missing user identity' };
       }
       try {
-        const { accessToken, grantedScope } = await resolver.resolve(userId);
+        // Resolved here to refuse the initialize early and to read the grant;
+        // the session itself resolves the token per request (accessTokenFor),
+        // so it outlives the ~2h YNAB token and stops when the grant is gone.
+        const { grantedScope } = await resolver.resolve(userId);
         // Write access needs all of: writes enabled globally, a read-write grant
         // on this token (per client grant, not the user's latest consent), and
         // a read-write YNAB token for the user (YNAB enforces that one anyway).
@@ -304,12 +319,13 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
         return {
           ok: true,
           ctx: {
-            accessToken,
+            accessToken: resolver.accessTokenFor(userId),
             defaultBudgetId: config.defaultBudgetId,
             readOnly: config.readOnly || tokenScope === 'read-only' || grantedScope === 'read-only',
             rateLimitPerHour: config.rateLimitPerHour,
             cacheTtlMs: config.cacheTtlMs,
           },
+          userKey: userId,
         };
       } catch {
         return { ok: false, status: 401, message: 'Unauthorized: could not resolve YNAB access — re-authorize' };
@@ -317,8 +333,16 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     };
   } else {
     // --- Interim header mode ---
+    const effectiveToken = (req: Request): string | undefined =>
+      (req.header('x-ynab-token') ?? config.fallbackAccessToken) || undefined;
+    // A session belongs to the YNAB token that initialized it (by digest), so
+    // a request must present the same effective token to use it.
+    sessionOwner = (req: Request): string | undefined => {
+      const token = effectiveToken(req);
+      return token === undefined ? undefined : headerUserKey(token);
+    };
     resolveInitContext = async (req: Request): Promise<ContextResult> => {
-      const token = req.header('x-ynab-token') ?? config.fallbackAccessToken;
+      const token = effectiveToken(req);
       if (!token) {
         return { ok: false, status: 401, message: 'Unauthorized: provide a YNAB token via the X-YNAB-Token header' };
       }
@@ -331,6 +355,7 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
           rateLimitPerHour: config.rateLimitPerHour,
           cacheTtlMs: config.cacheTtlMs,
         },
+        userKey: headerUserKey(token),
       };
     };
   }
@@ -349,58 +374,81 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
 
   app.post('/mcp', rejectBatch, async (req: Request, res: Response) => {
     const sessionId = req.header('mcp-session-id');
-    let transport = findSession(req);
-
-    if (!transport) {
-      if (sessionId !== undefined || !isInitializeRequest(req.body)) {
-        res.status(400).json(jsonRpcError(-32000, 'Bad Request: no valid session for this request'));
-        return;
-      }
-
-      const result = await resolveInitContext(req);
-      if (!result.ok) {
-        if (result.status === 401 && resourceMetadataUrl) {
-          res.set(
-            'WWW-Authenticate',
-            `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`
-          );
-        }
-        res.status(result.status).json(jsonRpcError(-32001, result.message));
-        return;
-      }
-
-      const owner = sessionOwner(req);
-      const newTransport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (sid: string) => {
-          transports.set(sid, { transport: newTransport, owner });
-        },
-      });
-      newTransport.onclose = () => {
-        const sid = newTransport.sessionId;
-        if (sid) transports.delete(sid);
-      };
-
-      const server = createServerForUser(result.ctx);
-      await server.connect(newTransport as unknown as Parameters<typeof server.connect>[0]);
-      transport = newTransport;
+    const transport = sessions.find(sessionId, sessionOwner(req), res);
+    if (transport) {
+      await transport.handleRequest(req, res, req.body);
+      return;
     }
 
-    await transport.handleRequest(
-      req as unknown as IncomingMessage,
-      res as unknown as ServerResponse,
-      req.body
-    );
+    // A session id the server doesn't know (expired, closed, foreign): 404, so
+    // the client initializes a new session. No id and not an initialize: 400.
+    if (sessionId) {
+      sessionNotFound(res);
+      return;
+    }
+    if (!isInitializeRequest(req.body)) {
+      res.status(400).json(jsonRpcError(-32000, 'Bad Request: no valid session for this request'));
+      return;
+    }
+
+    const result = await resolveInitContext(req);
+    if (!result.ok) {
+      if (result.status === 401 && resourceMetadataUrl) {
+        res.set(
+          'WWW-Authenticate',
+          `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`
+        );
+      }
+      res.status(result.status).json(jsonRpcError(-32001, result.message));
+      return;
+    }
+
+    const admission = await sessions.admit(result.userKey);
+    if (!admission) {
+      res.set('Retry-After', String(SESSION_CAP_RETRY_AFTER_SEC));
+      res.status(503).json(jsonRpcError(-32002, 'Service unavailable: too many active sessions, retry later'));
+      return;
+    }
+
+    let lease: ReturnType<typeof registry.acquire> | undefined;
+    let bound = false;
+    try {
+      lease = registry.acquire(result.userKey);
+      const newTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid: string) => admission.commit(sid),
+      });
+      // Every session teardown (DELETE, idle sweep, eviction, shutdown) goes
+      // through the transport's close, which releases the user's hold.
+      const held = lease;
+      admission.bind(newTransport, sessionOwner(req), () => held.release());
+      bound = true;
+
+      const server = createServerForUser(result.ctx, lease.components);
+      await server.connect(newTransport);
+      await newTransport.handleRequest(req, res, req.body);
+    } finally {
+      // An initialize that produced no session (refused by the transport, or the
+      // server failed to build) holds nothing, and onclose may never run for it.
+      admission.cancel();
+      // Before bind the admission doesn't know the release, so give it back here.
+      if (!bound) lease?.release();
+    }
   });
 
   // Server -> client stream (GET) and explicit session teardown (DELETE).
   const sessionRequest = async (req: Request, res: Response): Promise<void> => {
-    const transport = findSession(req);
-    if (!transport) {
-      res.status(400).json(jsonRpcError(-32000, 'Bad Request: unknown or missing session id'));
+    const sessionId = req.header('mcp-session-id');
+    if (!sessionId) {
+      res.status(400).json(jsonRpcError(-32000, 'Bad Request: missing session id'));
       return;
     }
-    await transport.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
+    const transport = sessions.find(sessionId, sessionOwner(req), res);
+    if (!transport) {
+      sessionNotFound(res);
+      return;
+    }
+    await transport.handleRequest(req, res);
   };
   app.get('/mcp', sessionRequest);
   app.delete('/mcp', sessionRequest);
@@ -426,16 +474,18 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     }
   });
 
-  return app;
+  return { app, sessions };
 }
 
 /**
- * Build and start the HTTP server. Returns the Node http.Server.
+ * Build and start the HTTP server. Returns the Node http.Server; closing it
+ * also closes every live session (an open SSE stream would otherwise keep it
+ * from ever finishing closing) and stops the idle sweep.
  */
 export async function startHttpServer(
   config: HttpConfig
 ): Promise<ReturnType<express.Express['listen']>> {
-  const app = await createHttpApp(config);
+  const { app, sessions } = await buildHttpApp(config);
   const httpServer = app.listen(config.port, () => {
     console.error(`YNAB MCP Server (HTTP, ${config.authMode} auth) listening on port ${config.port}`);
     console.error(
@@ -452,5 +502,12 @@ export async function startHttpServer(
       );
     }
   });
+  const closeServer = httpServer.close.bind(httpServer);
+  httpServer.close = (callback) => {
+    // The streams ended by closing the sessions leave idle keep-alive
+    // connections, which would otherwise hold close() open until they time out.
+    void sessions.close().then(() => httpServer.closeIdleConnections());
+    return closeServer(callback);
+  };
   return httpServer;
 }

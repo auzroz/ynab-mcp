@@ -83,8 +83,9 @@ The server is configured via environment variables:
 
 By default the server speaks **stdio** (local). Set `MCP_TRANSPORT=http` to run it
 as a **remote** server over the MCP Streamable HTTP transport at `POST /mcp`, with a
-plain `GET /health` for load balancers. Each session gets an isolated
-client/cache/rate-limiter/audit-log.
+plain `GET /health` for load balancers. Each session gets its own client; all
+sessions of one user share one cache, rate limiter and audit log, never shared
+between users.
 
 | Variable | Description |
 |----------|-------------|
@@ -92,7 +93,9 @@ client/cache/rate-limiter/audit-log.
 | `PORT` | HTTP port (default `3000`) |
 | `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | Comma-separated allowlists for DNS-rebinding protection (default: derived from `PUBLIC_URL`, plus localhost) |
 | `ENABLE_DNS_REBINDING_PROTECTION` | Origin/Host checks, on by default (0.4.0 breaking default; behind a proxy forward `Host` or set `ALLOWED_HOSTS`); `false` disables them (unsafe). See docs/REMOTE_HOSTING.md |
-| `MCP_RESOURCE_URL` / `MCP_MAX_SESSIONS` / `MCP_SESSION_IDLE_TIMEOUT_MS` | Resource URL (default `PUBLIC_URL`/mcp), session cap (100) and idle timeout (30 min), both not enforced yet; see docs/REMOTE_HOSTING.md |
+| `MCP_RESOURCE_URL` | Resource URL (default `PUBLIC_URL`/mcp) |
+| `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` | Global cap on concurrent sessions (default 100; at the cap `initialize` gets `503` + `Retry-After`) and per-user cap (default 10; past it the user's least recently used session is closed). See docs/REMOTE_HOSTING.md |
+| `MCP_SESSION_IDLE_TIMEOUT_MS` | Idle time before a session is closed (default 30 min); a session with an open request or SSE stream is not idle |
 
 **Multi-user (YNAB OAuth).** Configure a YNAB OAuth app + `ENCRYPTION_KEY` +
 `PUBLIC_URL` and the server becomes an OAuth 2.1 Authorization Server federated to
