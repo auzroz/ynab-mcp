@@ -9,6 +9,7 @@ import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
 
 export const trueExpensesPrompt: Prompt = {
   name: 'ynab-true-expenses',
+  title: 'True Expenses',
   description:
     'Finds and plans for irregular or infrequent costs — annual subscriptions, car repairs, holiday spending, insurance premiums — and detects recurring bills that may be missing from the budget or scheduled transactions. Use for "help me plan for an annual expense", "I have a big bill coming up", "make sure my recurring bills are captured", "set up a sinking fund", "did I forget any subscriptions", or "embrace my true expenses". Not for general new-category creation unrelated to irregular costs (use ynab-assign-money) or fixing an already-overspent category (use ynab-overspending-triage).',
 };

@@ -9,6 +9,7 @@ import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
 
 export const overspendingTriagePrompt: Prompt = {
   name: 'ynab-overspending-triage',
+  title: 'Overspending Triage',
   description:
     'Finds where money is being overspent and helps roll with the punches: move funds from categories with slack, and surface discretionary cuts. Use for "find places I\'m overspending", "where did I overspend", "help me fix overspending", "roll with the punches", "where can I find extra money", or "help me cut back this month". Not for computing true-expense monthly contributions (use ynab-true-expenses) or the initial "assign new money" pass (use ynab-assign-money) — this is remediation of overspending, not allocation of unassigned money.',
 };

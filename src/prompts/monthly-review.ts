@@ -6,6 +6,7 @@
  */
 
 import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
+import { InvalidPromptArgumentsError } from './errors.js';
 
 // Matches the YYYY-MM-01 format the underlying ynab_budget_vs_actuals tool expects
 // (same pattern used in src/tools/analytics/budget-vs-actuals.ts).
@@ -13,6 +14,7 @@ const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-01$/;
 
 export const monthlyReviewPrompt: Prompt = {
   name: 'ynab-monthly-review',
+  title: 'Monthly Review',
   description:
     'Runs a complete end-of-month budget review: this month\'s performance vs. plan, goal progress, income/savings trend, net worth change, and suggested targets for next month. Use for "let\'s do my monthly budget review", "end of month check-in", "how did this month go", "review my budget", "close out this month", or "help me plan next month\'s budget". Not for a quick daily-style check (use ynab-pulse-check), or deep reconciliation/cash-flow work (use ynab-reconcile-cleanup / ynab-age-of-money) — this flags those but doesn\'t deep-dive them.',
   arguments: [
@@ -29,9 +31,13 @@ export function buildMonthlyReviewMessages(args: Record<string, string>): {
   messages: PromptMessage[];
 } {
   // A malformed month (wrong format, or an attempt to inject extra text into the
-  // prompt) is treated the same as no month at all, rather than interpolated raw.
+  // prompt) is rejected as a client error rather than interpolated raw. An empty
+  // or missing month means "current month".
   const rawMonth = args['month'];
-  const month = rawMonth && MONTH_PATTERN.test(rawMonth) ? rawMonth : undefined;
+  if (rawMonth !== undefined && rawMonth !== '' && (typeof rawMonth !== 'string' || !MONTH_PATTERN.test(rawMonth))) {
+    throw new InvalidPromptArgumentsError('month must be YYYY-MM-01 (first of month)');
+  }
+  const month = rawMonth ? rawMonth : undefined;
   const monthClause = month ? ` for ${month}` : '';
 
   return {

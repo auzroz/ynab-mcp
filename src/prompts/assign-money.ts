@@ -9,6 +9,7 @@ import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
 
 export const assignMoneyPrompt: Prompt = {
   name: 'ynab-assign-money',
+  title: 'Assign Money',
   description:
     'Helps give every dollar a job: assigns unallocated Ready to Assign money to categories, funds underfunded goals, and sets up new categories. Use for "I have money to assign", "help me budget this month", "what should I fund", "help me set up a new category", "organize my budget categories", or "assign my leftover funds". Not for fixing already-overspent categories (use ynab-overspending-triage) or the initial category structure of a brand-new budget (that\'s a bigger first-time-setup conversation).',
 };

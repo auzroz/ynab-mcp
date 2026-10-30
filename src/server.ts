@@ -24,7 +24,14 @@ import { RateLimiter } from './services/rate-limiter.js';
 import { Cache } from './services/cache.js';
 import { AuditLog } from './services/audit-log.js';
 import { tools, handleToolCall } from './tools/index.js';
-import { prompts, getPromptMessages, sanitizePromptName } from './prompts/index.js';
+import {
+  prompts,
+  getPromptMessages,
+  sanitizePromptName,
+  UnknownPromptError,
+  InvalidPromptArgumentsError,
+} from './prompts/index.js';
+import { sanitizeErrorMessage } from './utils/sanitize.js';
 import { formatErrorResponse } from './utils/errors.js';
 import { assertSafeToolInput } from './utils/input-guard.js';
 
@@ -108,8 +115,21 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
 
     try {
       return getPromptMessages(name, args ?? {});
-    } catch {
-      throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${sanitizePromptName(name)}`);
+    } catch (error) {
+      // Client errors map to InvalidParams with a sanitized name only.
+      if (error instanceof UnknownPromptError) {
+        throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${sanitizePromptName(name)}`);
+      }
+      if (error instanceof InvalidPromptArgumentsError) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Invalid arguments for prompt ${sanitizePromptName(name)}: ${error.message}`
+        );
+      }
+      // Anything else is ours. Log the detail server-side and return a generic
+      // message, because the SDK forwards plain Error text to the client.
+      console.error('[PromptError]', sanitizeErrorMessage(error));
+      throw new McpError(ErrorCode.InternalError, 'Failed to build prompt');
     }
   });
 
