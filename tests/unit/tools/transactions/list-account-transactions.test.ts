@@ -38,12 +38,11 @@ describe('handleListAccountTransactions', () => {
     expect(parsed.summary.total_inflow).toBeDefined();
     expect(parsed.summary.total_outflow).toBeDefined();
     expect(parsed.summary.net).toBeDefined();
-    expect(mockClient.getAccountTransactions).toHaveBeenCalledWith(
-      'test-budget-id',
-      ACCOUNT_ID,
-      undefined,
-      undefined
-    );
+    expect(mockClient.getAccountTransactions).toHaveBeenCalledWith('test-budget-id', ACCOUNT_ID, {
+      sinceDate: undefined,
+      untilDate: undefined,
+      type: undefined,
+    });
   });
 
   it('applies limit and passes parsed since_date', async () => {
@@ -58,12 +57,11 @@ describe('handleListAccountTransactions', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed.transactions.length).toBe(2);
-    expect(mockClient.getAccountTransactions).toHaveBeenCalledWith(
-      'test-budget-id',
-      ACCOUNT_ID,
-      '2024-01-01',
-      undefined
-    );
+    expect(mockClient.getAccountTransactions).toHaveBeenCalledWith('test-budget-id', ACCOUNT_ID, {
+      sinceDate: '2024-01-01',
+      untilDate: undefined,
+      type: undefined,
+    });
   });
 
   it('handles empty results', async () => {
@@ -100,12 +98,11 @@ describe('handleListAccountTransactions', () => {
       )
     );
 
-    expect(mockClient.getAccountTransactions).toHaveBeenCalledWith(
-      'test-budget-id',
-      ACCOUNT_ID,
-      '2023-01-01',
-      '2023-12-31'
-    );
+    expect(mockClient.getAccountTransactions).toHaveBeenCalledWith('test-budget-id', ACCOUNT_ID, {
+      sinceDate: '2023-01-01',
+      untilDate: '2023-12-31',
+      type: undefined,
+    });
     expect(parsed.summary.date_range_note).toBeUndefined();
   });
 
@@ -117,5 +114,26 @@ describe('handleListAccountTransactions', () => {
     );
 
     expect(parsed.summary.date_range_note).toContain('last 12 months');
+  });
+
+  it('passes the type filter through to the client', async () => {
+    mockClient.getAccountTransactions.mockResolvedValue(createTransactionsResponse([]));
+
+    await handleListAccountTransactions(
+      { account_id: ACCOUNT_ID, type: 'unapproved' },
+      mockClient as never
+    );
+
+    expect(mockClient.getAccountTransactions).toHaveBeenCalledWith('test-budget-id', ACCOUNT_ID, {
+      sinceDate: undefined,
+      untilDate: undefined,
+      type: 'unapproved',
+    });
+  });
+
+  it('rejects an unknown type filter', async () => {
+    await expect(
+      handleListAccountTransactions({ account_id: ACCOUNT_ID, type: 'cleared' }, mockClient as never)
+    ).rejects.toThrow();
   });
 });

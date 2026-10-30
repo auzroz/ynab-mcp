@@ -39,6 +39,38 @@ describe('handleGetCategory', () => {
     expect(mockClient.getCategoryById).toHaveBeenCalledWith('test-budget-id', CATEGORY_ID);
   });
 
+  it('adds decoded goal fields alongside the existing ones', async () => {
+    mockClient.getCategoryById.mockResolvedValue(
+      createCategoryResponse({
+        ...mockSavingsCategories[1],
+        goal_type: 'MF',
+        goal_target: 250000,
+        goal_cadence: 1,
+        goal_cadence_frequency: 1,
+        goal_day: 1,
+        goal_needs_whole_amount: false,
+        goal_creation_month: '2024-02-01',
+        goal_snoozed_at: null,
+      } as never)
+    );
+
+    const result = await handleGetCategory({ category_id: CATEGORY_ID }, mockClient as never);
+    const goal = JSON.parse(result).category.goal;
+
+    expect(goal.type).toBe('MF');
+    expect(goal.type_label).toBe('Monthly Funding');
+    expect(goal.target).toBe('$250.00');
+    expect(goal.target_milliunits).toBe(250000);
+    expect(goal.cadence).toEqual({ period: 'monthly', months_per_period: 1 });
+    expect(goal.due_day).toEqual({ kind: 'day_of_month', value: 1, label: '1st of the month' });
+    expect(goal.needs_whole_amount).toBe(false);
+    expect(goal.snoozed).toBe(false);
+    expect(goal.created_month).toBe('2024-02-01');
+    expect(goal.under_funded).toBe('$300.00');
+    expect(goal.under_funded_milliunits).toBe(300000);
+    expect(goal.target_month).toBe(goal.target_date);
+  });
+
   it('returns null goal for category without a goal type', async () => {
     // Entertainment category has no goal_type
     mockClient.getCategoryById.mockResolvedValue(

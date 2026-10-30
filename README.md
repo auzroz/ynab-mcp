@@ -16,17 +16,17 @@ Traditional YNAB integrations require manual API calls or custom scripting. This
 - **Talk to your budget naturally** — Ask Claude "Am I overspending on dining out?" and get instant insights
 - **Get AI-powered financial analysis** — Subscription detection, spending trends, savings recommendations, and budget health scores
 - **Stay safe by default** — Read-only mode protects against accidental changes
-- **Access everything** — 68 tools total: comprehensive YNAB API coverage (42 tools), 23 custom analytics tools, and 3 system tools
+- **Access everything** — 69 tools total: comprehensive YNAB API coverage (43 tools), 23 custom analytics tools, and 3 system tools
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Broad API Coverage** | 68 MCP tools spanning the YNAB API endpoints |
+| **Broad API Coverage** | 69 MCP tools spanning the YNAB API endpoints |
 | **Advanced Analytics** | 23 tools for spending analysis, trend detection, and financial insights |
 | **Read-Only by Default** | Write operations require explicit opt-in (`YNAB_READ_ONLY=false`) |
 | **Smart Rate Limiting** | Token bucket algorithm with 180 req/hour budget (10% safety margin) |
-| **Intelligent Caching** | Reduces API calls for infrequently changing data |
+| **Intelligent Caching** | TTL cache for slow-changing data plus delta sync (`last_knowledge_of_server`), so repeat reads fetch only what changed (see [Caching](#caching)) |
 | **Type-Safe** | Full TypeScript implementation with Zod schema validation |
 
 ## Quick Start
@@ -189,7 +189,7 @@ Once connected, try asking Claude:
 | "Am I on track this month?" | `ynab_spending_pace` |
 | "Compare this month to last month" | `ynab_monthly_comparison` |
 
-## Available Tools (68 Total)
+## Available Tools (69 Total)
 
 ### Analytics Tools (23)
 
@@ -221,7 +221,7 @@ These tools provide AI-powered financial insights beyond basic YNAB functionalit
 | `ynab_age_of_money` | Age of money metric with explanation |
 | `ynab_preview_scheduled_transaction` | Preview the budget impact of a scheduled transaction |
 
-### Core YNAB API Tools (42)
+### Core YNAB API Tools (43)
 
 Coverage of the YNAB API endpoints:
 
@@ -242,18 +242,19 @@ Coverage of the YNAB API endpoints:
 <details>
 <summary><strong>Account Tools (3)</strong></summary>
 
-- `ynab_list_accounts` — List all accounts with balances
+- `ynab_list_accounts` — List all accounts with balances, on-budget/closed status, notes, direct-import status, transfer payee ids, and debt details
 - `ynab_get_account` — Get specific account details
 - `ynab_create_account` — Create a new account *(write mode)*
 </details>
 
 <details>
-<summary><strong>Category Tools (8)</strong></summary>
+<summary><strong>Category Tools (9)</strong></summary>
 
 - `ynab_list_categories` — List all category groups and categories
 - `ynab_get_category` — Get category details
 - `ynab_get_month_category` — Get category budget for specific month
-- `ynab_update_category` — Update category budgeted amount *(write mode)*
+- `ynab_update_category` — Set a category's budgeted amount for one month *(write mode)*
+- `ynab_move_money` — Move budgeted money between two categories in one month (changes budgeted amounts; creates no YNAB money-movement record) *(write mode)*
 - `ynab_update_category_details` — Rename a category, change its note, move it to another group, or set/clear its target (including recurring targets via goal_frequency) *(write mode)*
 - `ynab_create_category` — Create a new category in a group, optionally with a target (goal_target in dollars, goal_target_date, goal_needs_whole_amount, goal_frequency for recurring targets like $50 weekly) *(write mode)*
 - `ynab_create_category_group` — Create a new category group *(write mode)*
@@ -319,6 +320,21 @@ Coverage of the YNAB API endpoints:
 - `ynab_audit_log` — View write operation audit log
 - `ynab_health_check` — Test API connectivity
 </details>
+
+### Tips and Common Recipes
+
+**Recording a transfer between accounts.** A transfer is a transaction whose payee is the *other* account's transfer payee. Look up the target account's `transfer_payee_id` (returned by `ynab_list_accounts` and `ynab_get_account`, or find the payee named "Transfer : <account>" in `ynab_list_payees` under `transfer_payees`), then call `ynab_create_transaction` on the source account with that value as `payee_id`. Leave `category_id` empty for transfers between on-budget accounts; YNAB creates the matching transaction in the other account itself.
+
+**Budgeting amounts vs. category details.** Two tools update a category, and they do different things:
+
+| Tool | Changes |
+|------|---------|
+| `ynab_update_category` | The *budgeted amount* for one category in one month (e.g. "budget $500 for Groceries in January") |
+| `ynab_update_category_details` | The category itself: name, note, category group, and target (goal) |
+
+To shift money between categories in one step, use `ynab_move_money`. It subtracts from one category's budgeted amount and adds to another's for the same month. It edits budgeted amounts only: YNAB's API has no money-movement write, so the move does not appear in `ynab_list_money_movements`, which lists moves made in YNAB's own apps. The two updates are not atomic; if the second fails the server tries to restore the first and reports whether that worked.
+
+**Budgets are "plans" in YNAB's API.** YNAB has renamed budgets to "plans" in its API and SDK. This server keeps the familiar `budget` naming for tools and parameters (`ynab_list_budgets`, `budget_id`), and it maps to YNAB's plan endpoints internally. Wherever YNAB documentation says "plan" or `plan_id`, read it as budget and `budget_id`.
 
 ## Available Prompts
 
@@ -396,7 +412,9 @@ src/
 │   ├── ynab-client.ts    # YNAB API wrapper with rate limiting
 │   ├── rate-limiter.ts   # Token bucket rate limiter
 │   ├── audit-log.ts      # Per-user write audit log
-│   └── cache.ts          # In-memory TTL cache
+│   ├── cache.ts          # In-memory TTL cache
+│   ├── delta-cache.ts    # Delta-sync snapshots (per user, bounded)
+│   └── delta-merge.ts    # Applies YNAB delta responses to snapshots
 ├── tools/                # MCP tool implementations
 │   ├── user/
 │   ├── budgets/
@@ -410,6 +428,75 @@ src/
 └── utils/                # Helpers (currency, dates, errors)
 ```
 
+## Caching
+
+Reads go through two layers, both in memory and per user:
+
+1. **TTL cache.** Accounts, categories, payees and the budget list are served
+   from a cache for `CACHE_TTL_MS` (default 5 minutes). A write through this
+   server drops the matching entry (a category write the category list, a
+   payee write the payee list, and so on).
+2. **Delta sync.** For every list read (accounts, categories, months, payees,
+   scheduled transactions, and every transaction list, whatever its filters)
+   the server keeps a snapshot of the last full result and its YNAB
+   `server_knowledge`. When the TTL entry has expired or a write dropped it
+   (transactions, months and scheduled transactions have no TTL entry, so
+   every read), it asks YNAB only for what changed since then and merges that
+   in. Tools always get the complete list a full fetch would return. The
+   saving is in payload size and latency: a refresh is one request, like the
+   full fetch it replaces, except that a category or payee transaction list
+   (or an `uncategorized` query) that a change touches costs the change-feed
+   request plus a full re-read, so two.
+
+   - Transaction lists are refreshed from the budget's change feed (all
+     transactions changed since the snapshot, from a far-past `since_date`,
+     so it never depends on a cached first month), not from their own
+     filtered endpoint, so a transaction approved, re-categorized, re-dated
+     or moved out of a filtered list doesn't linger in it. When a change
+     can't be placed exactly (the `uncategorized` type, a date at the edge of
+     YNAB's default 12-month window, a change touching a category or payee
+     list), that list is re-read in full instead.
+   - Transaction and scheduled transaction rows carry payee, category and
+     account names, and a rename doesn't change those rows, so no delta
+     reports it. Their snapshots are dropped when this server renames a payee
+     or category, and whenever a read of the account, category or payee list
+     shows a name changed elsewhere. A rename made in another app and not
+     revealed by such a read shows up within 15 minutes, as these snapshots
+     are re-read in full at least that often.
+   - Category amounts (assigned, activity, available, goals) are for the
+     current month, and a new month changes them with no change on the
+     server, so category and month snapshots start over each UTC month.
+   - Anything inconsistent (no or decreasing `server_knowledge`, a delta that
+     doesn't apply, a failed request) drops the snapshot and fetches in full.
+   - `ynab_get_budget`, budget aliases (`last-used`, `default`) and the
+     `current` month are always fetched in full.
+   - Per user at most 32 snapshots and 20,000 entities are kept (least recently
+     used first out); a snapshot unused for 30 minutes is dropped, and each is
+     re-read in full at least hourly (transaction lists every 15 minutes).
+     These are constants in `src/services/delta-cache.ts`.
+   - Merged lists keep YNAB's order: transactions by date, months by month;
+     new accounts, payees and categories are appended (a moved category goes
+     last in its new group); within one date, transaction order may differ
+     from YNAB's.
+
+**Cursor for clients.** Every list tool response includes `server_knowledge`.
+Pass it back as `since_server_knowledge` (same budget and filters) to get only
+what changed since: the response has `delta: true`, the changed entities in the
+usual fields, deleted ones by id in `deleted_ids` (`deleted_group_ids` for
+category groups, `deleted_months` for months), and counts instead of totals.
+
+- Transaction tools still apply `limit` to a delta. When more transactions
+  changed than `limit`, the response hands back your own cursor as
+  `server_knowledge` (with `cursor_withheld: true`), so the changes it left out
+  aren't skipped: raise `limit`, narrow the filters, or re-read in full.
+- A delta for a filtered transaction query comes from YNAB's filtered
+  endpoint, which may leave out a transaction that changed so it no longer
+  matches (approved, re-categorized, re-dated, moved); it is not in
+  `deleted_ids` either. Re-read filtered lists in full now and then to keep
+  them exact.
+- Category deltas don't show the change of month (see above); re-read in full
+  after a month begins.
+
 ## Security
 
 | Feature | Description |
@@ -422,13 +509,14 @@ src/
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Run tests and linting: `npm test && npm run lint`
-5. Commit your changes (`git commit -m 'Add amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
+Contributions are welcome: bug reports, fixes, new tools, docs and skills. [CONTRIBUTING.md](CONTRIBUTING.md) covers:
+- development setup;
+- the standards every change must meet (money math, validation, sanitizing, secrets, tests);
+- how to add a tool;
+- running the Postgres storage tests;
+- commit and PR conventions, and how review and releases work.
+
+Please report security issues privately, as described there, rather than in a public issue.
 
 ## License
 

@@ -11,13 +11,13 @@ import { createServerForUser } from '../../../src/server.js';
 import type { YnabClient } from '../../../src/services/ynab-client.js';
 
 const HINTS = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'] as const;
-const WRITE_NAME = /_(create|update|delete|import)_/;
+const WRITE_NAME = /_(create|update|delete|import|move)_/;
 const DELETE_TOOLS = ['ynab_delete_scheduled_transaction', 'ynab_delete_transaction'];
 
 describe('tool titles and annotations', () => {
-  it('registers 68 tools with unique names', () => {
+  it('registers 69 tools with unique names', () => {
     const names = tools.map((t) => t.name);
-    expect(names).toHaveLength(68);
+    expect(names).toHaveLength(69);
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -39,7 +39,7 @@ describe('tool titles and annotations', () => {
       .sort();
     const expected = tools
       .map((t) => t.name)
-      .filter((n) => /_(update|delete)_/.test(n))
+      .filter((n) => /_(update|delete|move)_/.test(n))
       .sort();
     expect(destructive).toEqual(expected);
     for (const name of DELETE_TOOLS) expect(destructive).toContain(name);

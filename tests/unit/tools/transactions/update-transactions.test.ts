@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleUpdateTransactions } from '../../../../src/tools/transactions/update-transactions.js';
+import { ZodError } from 'zod';
+import { handleUpdateTransactions, updateTransactionsTool } from '../../../../src/tools/transactions/update-transactions.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
 
@@ -93,5 +94,90 @@ describe('handleUpdateTransactions', () => {
     );
 
     expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
+  });
+
+  describe('clearing fields with null', () => {
+    it('passes null for category_id, payee_id and memo to the bulk PATCH', async () => {
+      mockClient.updateTransactions.mockResolvedValue({ data: { transaction_ids: [TXN_A, TXN_B] } });
+
+      await handleUpdateTransactions(
+        {
+          transactions: [
+            { id: TXN_A, category_id: null },
+            { id: TXN_B, payee_id: null, memo: null },
+          ],
+        },
+        mockClient as never
+      );
+
+      expect(mockClient.updateTransactions).toHaveBeenCalledWith('test-budget-id', {
+        transactions: [
+          { id: TXN_A, category_id: null },
+          { id: TXN_B, payee_id: null, memo: null },
+        ],
+      });
+    });
+
+    it('rejects payee_id null combined with payee_name', async () => {
+      await expect(
+        handleUpdateTransactions(
+          { transactions: [{ id: TXN_A, payee_id: null, payee_name: 'X' }] },
+          mockClient as never
+        )
+      ).rejects.toThrow(/payee_name/);
+    });
+  });
+
+  describe('addressing by import_id', () => {
+    it('passes import_id through instead of id', async () => {
+      mockClient.updateTransactions.mockResolvedValue({ data: { transaction_ids: [TXN_A, TXN_B] } });
+
+      await handleUpdateTransactions(
+        {
+          transactions: [
+            { import_id: 'YNAB:-42500:2024-02-01:1', category_id: CATEGORY_ID },
+            { id: TXN_B, memo: 'x' },
+          ],
+        },
+        mockClient as never
+      );
+
+      expect(mockClient.updateTransactions).toHaveBeenCalledWith('test-budget-id', {
+        transactions: [
+          { import_id: 'YNAB:-42500:2024-02-01:1', category_id: CATEGORY_ID },
+          { id: TXN_B, memo: 'x' },
+        ],
+      });
+    });
+
+    it('rejects an item with neither id nor import_id', async () => {
+      await expect(
+        handleUpdateTransactions({ transactions: [{ memo: 'x' }] }, mockClient as never)
+      ).rejects.toThrow(/exactly one of id or import_id/);
+    });
+
+    it('rejects an item with both id and import_id', async () => {
+      await expect(
+        handleUpdateTransactions(
+          { transactions: [{ id: TXN_A, import_id: 'abc', memo: 'x' }] },
+          mockClient as never
+        )
+      ).rejects.toThrow(/exactly one of id or import_id/);
+    });
+
+    it('rejects an import_id longer than 36 characters', async () => {
+      await expect(
+        handleUpdateTransactions(
+          { transactions: [{ import_id: 'x'.repeat(37), memo: 'x' }] },
+          mockClient as never
+        )
+      ).rejects.toBeInstanceOf(ZodError);
+    });
+
+    it('declares import_id (max 36) in the JSON schema and no longer requires id', () => {
+      const items = (updateTransactionsTool.inputSchema as any).properties.transactions.items;
+      expect(items.properties.import_id.maxLength).toBe(36);
+      expect(items.required).toBeUndefined();
+    });
   });
 });

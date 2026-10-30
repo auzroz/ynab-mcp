@@ -35,10 +35,10 @@ const inputSchema = z
       .number()
       .optional()
       .describe('New amount in dollars (negative for outflow, positive for inflow)'),
-    payee_id: ynabId().optional().describe('New payee UUID'),
+    payee_id: ynabId().nullable().optional().describe('New payee UUID (null to clear the payee)'),
     payee_name: z.string().max(TXN_PAYEE_NAME_MAX_LENGTH).optional().describe('New payee name'),
-    category_id: ynabId().optional().describe('New category UUID'),
-    memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('New memo/note'),
+    category_id: ynabId().nullable().optional().describe('New category UUID (null to uncategorize)'),
+    memo: z.string().max(MEMO_MAX_LENGTH).nullable().optional().describe('New memo/note (null to clear the memo)'),
     cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),
     approved: z.boolean().optional().describe('New approved status'),
     flag_color: z.enum(flagColors).nullable().optional().describe('New flag color (null to remove)'),
@@ -57,7 +57,7 @@ const inputSchema = z
       d.flag_color !== undefined,
     { message: 'Provide at least one field to update' }
   )
-  .refine((d) => !(d.payee_id && d.payee_name), {
+  .refine((d) => !(d.payee_id !== undefined && d.payee_name !== undefined), {
     message: 'Provide either payee_id or payee_name, not both',
   });
 
@@ -72,9 +72,12 @@ Use when the user asks:
 - "Mark transaction as cleared"
 - "Add a memo to the transaction"
 - "Recategorize a transaction"
+- "Uncategorize that transaction" / "Remove the memo" / "Clear the payee"
 
 Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
-Only provide the fields you want to change.`,
+Only provide the fields you want to change; omitted fields stay unchanged.
+To clear a field, pass null (distinct from omitting it): category_id null uncategorizes the transaction, payee_id null clears the payee, memo null clears the memo.
+Split limitation: YNAB cannot edit the splits of an existing transaction, so you cannot change, add or remove splits here. To restructure splits, delete the transaction and create a new one with subtransactions via ynab_create_transaction.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -103,9 +106,9 @@ Only provide the fields you want to change.`,
         description: 'New amount in dollars',
       },
       payee_id: {
-        type: 'string',
+        type: ['string', 'null'],
         maxLength: 36,
-        description: 'New payee UUID',
+        description: 'New payee UUID (null to clear the payee)',
       },
       payee_name: {
         type: 'string',
@@ -113,14 +116,14 @@ Only provide the fields you want to change.`,
         description: 'New payee name',
       },
       category_id: {
-        type: 'string',
+        type: ['string', 'null'],
         maxLength: 36,
-        description: 'New category UUID',
+        description: 'New category UUID (null to uncategorize)',
       },
       memo: {
-        type: 'string',
+        type: ['string', 'null'],
         maxLength: 500,
-        description: 'New memo/note',
+        description: 'New memo/note (null to clear the memo)',
       },
       cleared: {
         type: 'string',
@@ -167,10 +170,12 @@ export async function handleUpdateTransaction(
   if (validated.account_id !== undefined) updateData.account_id = validated.account_id;
   if (validated.date !== undefined) updateData.date = validated.date;
   if (validated.amount !== undefined) updateData.amount = toMilliunits(validated.amount);
-  if (validated.payee_id !== undefined) updateData.payee_id = validated.payee_id;
+  // null reaches the API as JSON null (clears the field); undefined means unchanged.
+  // The SDK types omit null for these fields, but its ToJSON passes it through.
+  if (validated.payee_id !== undefined) updateData.payee_id = validated.payee_id as string;
   if (validated.payee_name !== undefined) updateData.payee_name = validated.payee_name;
-  if (validated.category_id !== undefined) updateData.category_id = validated.category_id;
-  if (validated.memo !== undefined) updateData.memo = validated.memo;
+  if (validated.category_id !== undefined) updateData.category_id = validated.category_id as string;
+  if (validated.memo !== undefined) updateData.memo = validated.memo as string;
   if (validated.cleared !== undefined)
     updateData.cleared = validated.cleared as ynab.TransactionClearedStatus;
   if (validated.approved !== undefined) updateData.approved = validated.approved;

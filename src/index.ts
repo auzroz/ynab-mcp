@@ -11,6 +11,7 @@ import type { Server as HttpServer } from 'node:http';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createServer } from './server.js';
+import { redactSecretEnvValues } from './utils/sanitize.js';
 import { startHttpServer } from './http.js';
 import { loadConfig, loadHttpConfig } from './config/environment.js';
 
@@ -18,24 +19,32 @@ import { loadConfig, loadHttpConfig } from './config/environment.js';
 let server: Server | null = null;
 let httpServer: HttpServer | null = null;
 
+/**
+ * An error's message for the operator's stderr: only the message (never the
+ * whole error object), with the values of secret env vars removed. Config
+ * errors are value-free already; this also covers errors from libraries.
+ */
+function errorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  return redactSecretEnvValues(message);
+}
+
 async function shutdown(): Promise<void> {
   console.error('Shutting down YNAB MCP Server...');
   if (server) {
     try {
       await server.close();
     } catch (error) {
-      // Log close errors at debug level (to stderr), then continue shutdown
-      // Only log message to avoid leaking sensitive details from full error object
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      console.error('[DEBUG] Error during server close:', message);
+      // Log close errors at debug level (to stderr), then continue shutdown.
+      // Only the message, with secret env values removed.
+      console.error('[DEBUG] Error during server close:', errorMessage(error));
     }
   }
   if (httpServer) {
     try {
       await new Promise<void>((resolve) => httpServer?.close(() => resolve()));
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      console.error('[DEBUG] Error during HTTP server close:', message);
+      console.error('[DEBUG] Error during HTTP server close:', errorMessage(error));
     }
   }
   process.exit(0);
@@ -65,8 +74,6 @@ process.stdin.on('close', () => void shutdown());
 
 // Run the server
 main().catch((error: unknown) => {
-  // Only log error message to avoid leaking sensitive config details
-  const message = error instanceof Error ? error.message : 'Unknown error';
-  console.error('Failed to start YNAB MCP Server:', message);
+  console.error('Failed to start YNAB MCP Server:', errorMessage(error));
   process.exit(1);
 });

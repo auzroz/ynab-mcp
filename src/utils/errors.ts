@@ -27,7 +27,9 @@ export class YnabApiError extends Error {
   constructor(
     message: string,
     public readonly code: string,
-    public readonly details?: unknown
+    public readonly details?: unknown,
+    /** For a 429: seconds until requests are expected to succeed again. */
+    public readonly retryAfterSeconds?: number
   ) {
     super(message);
     this.name = 'YnabApiError';
@@ -151,6 +153,8 @@ export function formatErrorResponse(error: unknown): string {
       type: 'rate_limit',
       message: 'Rate limit exceeded',
       retry_after_ms: error.retryAfterMs,
+      retry_after_seconds:
+        error.retryAfterMs === undefined ? undefined : Math.ceil(error.retryAfterMs / 1000),
       // Note: Server uses 180 req/hr budget (10% below YNAB's 200 limit) for safety margin
       suggestion: 'Wait before making more requests. Check ynab_rate_limit_status for current limits.',
     }, null, 2);
@@ -188,6 +192,7 @@ export function formatErrorResponse(error: unknown): string {
       type: 'ynab_api_error',
       code: error.code,
       message: errorInfo.message,
+      ...(error.retryAfterSeconds !== undefined ? { retry_after_seconds: error.retryAfterSeconds } : {}),
       suggestion: errorInfo.suggestion,
     }, null, 2);
   }

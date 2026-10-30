@@ -27,6 +27,7 @@ describe('UserRegistry sharing and isolation', () => {
     const b = registry.acquire('user-1');
     expect(b.components.rateLimiter).toBe(a.components.rateLimiter);
     expect(b.components.cache).toBe(a.components.cache);
+    expect(b.components.deltaCache).toBe(a.components.deltaCache);
     expect(b.components.auditLog).toBe(a.components.auditLog);
     expect(registry.size).toBe(1);
   });
@@ -37,6 +38,7 @@ describe('UserRegistry sharing and isolation', () => {
     const bob = registry.acquire('bob').components;
     expect(bob.rateLimiter).not.toBe(alice.rateLimiter);
     expect(bob.cache).not.toBe(alice.cache);
+    expect(bob.deltaCache).not.toBe(alice.deltaCache);
     expect(bob.auditLog).not.toBe(alice.auditLog);
 
     await alice.rateLimiter.acquire();

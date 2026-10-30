@@ -34,9 +34,11 @@ function parseBoolean(value: string | undefined, defaultValue: boolean, varName?
   if (lower === 'true' || lower === '1' || lower === 'yes') return true;
   if (lower === 'false' || lower === '0' || lower === 'no') return false;
 
+  // The value is never quoted: a secret pasted into the wrong variable would
+  // otherwise reach the startup log.
   const nameHint = varName ? ` for ${varName}` : '';
   throw new Error(
-    `Invalid boolean value "${value}"${nameHint}. ` +
+    `Invalid boolean value${nameHint}. ` +
     `Expected: true, false, 1, 0, yes, or no.`
   );
 }
@@ -54,7 +56,7 @@ function parseInteger(value: string | undefined, defaultValue: number, varName?:
   if (!/^\d+$/.test(value)) {
     const nameHint = varName ? ` for ${varName}` : '';
     throw new Error(
-      `Invalid integer value "${value}"${nameHint}. ` +
+      `Invalid integer value${nameHint}. ` +
       `Expected a positive integer (digits only).`
     );
   }
@@ -64,7 +66,7 @@ function parseInteger(value: string | undefined, defaultValue: number, varName?:
   const n = Number(value);
   if (!Number.isSafeInteger(n)) {
     const nameHint = varName ? ` for ${varName}` : '';
-    throw new Error(`Invalid integer value "${value}"${nameHint}. Expected an integer no larger than ${Number.MAX_SAFE_INTEGER}.`);
+    throw new Error(`Invalid integer value${nameHint}. Expected an integer no larger than ${Number.MAX_SAFE_INTEGER}.`);
   }
   return n;
 }
@@ -136,7 +138,7 @@ export interface HttpConfig {
 function parseStorageDriver(value: string | undefined): StorageDriver {
   const v = (value ?? 'memory').toLowerCase();
   if (v === 'memory' || v === 'sqlite' || v === 'postgres') return v;
-  throw new Error(`Invalid STORAGE_DRIVER "${value}". Expected: memory, sqlite, or postgres.`);
+  throw new Error('Invalid STORAGE_DRIVER. Expected: memory, sqlite, or postgres.');
 }
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -144,7 +146,7 @@ const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 /** Parse a positive integer (>= 1) env var; zero is rejected. */
 function parsePositiveInteger(value: string | undefined, defaultValue: number, varName: string): number {
   const n = parseInteger(value, defaultValue, varName);
-  if (n < 1) throw new Error(`Invalid value "${value}" for ${varName}. Expected an integer >= 1.`);
+  if (n < 1) throw new Error(`Invalid value for ${varName}. Expected an integer >= 1.`);
   return n;
 }
 

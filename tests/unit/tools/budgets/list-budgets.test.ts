@@ -84,4 +84,32 @@ describe('handleListBudgets', () => {
     expect(parsed.count).toBe(0);
     expect(parsed.budgets).toEqual([]);
   });
+
+  it('includes first_month, last_month, date_format and account ids', async () => {
+    mockClient.getBudgets.mockResolvedValue(createBudgetsResponse([mockBudgetSummary]));
+
+    const result = await handleListBudgets({ include_accounts: true }, mockClient as never);
+    const budget = JSON.parse(result).budgets[0];
+
+    expect(budget.first_month).toBe('2023-01-01');
+    expect(budget.last_month).toBe('2024-12-01');
+    expect(budget.date_format).toEqual({ format: 'MM/DD/YYYY' });
+    expect(budget.accounts[0].id).toEqual(expect.any(String));
+    expect(budget.accounts[0].name).toBeDefined();
+  });
+
+  it('returns null for month range and date format when YNAB omits them', async () => {
+    mockClient.getBudgets.mockResolvedValue(
+      createBudgetsResponse([
+        { ...mockBudgetSummary, first_month: undefined, last_month: undefined, date_format: undefined },
+      ])
+    );
+
+    const result = await handleListBudgets({}, mockClient as never);
+    const budget = JSON.parse(result).budgets[0];
+
+    expect(budget.first_month).toBeNull();
+    expect(budget.last_month).toBeNull();
+    expect(budget.date_format).toBeNull();
+  });
 });

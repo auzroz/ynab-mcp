@@ -10,7 +10,21 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import {
+  formatSubtransaction,
+  transactionChainFields,
+  transactionTypeJsonSchema,
+  transactionTypeSchema,
+  truncationSummary,
+} from './format.js';
 import { DATE_TEXT_MAX_LENGTH, budgetId, monthParam } from '../../utils/schemas.js';
+import {
+  deltaFields,
+  sinceServerKnowledge,
+  sinceServerKnowledgeJsonSchema,
+  splitDeleted,
+  transactionDeltaResult,
+} from '../../utils/delta.js';
 
 const DEFAULT_RANGE_NOTE =
   'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.';
@@ -32,10 +46,7 @@ const inputSchema = z.object({
     .describe(
       'Only return transactions on or after this date. Accepts ISO dates (YYYY-MM-DD) or natural language: "today", "yesterday", "this week", "last week", "this month", "last month", "past 7 days", "past 30 days". If omitted, YNAB returns only the last 12 months; pass an earlier date for older history'
     ),
-  type: z
-    .enum(['uncategorized', 'unapproved'])
-    .optional()
-    .describe('Filter by transaction type: "uncategorized" or "unapproved"'),
+  type: transactionTypeSchema.optional(),
   until_date: z
     .string()
     .max(DATE_TEXT_MAX_LENGTH)
@@ -50,6 +61,7 @@ const inputSchema = z.object({
     .max(500)
     .optional()
     .describe('Maximum number of transactions to return (default 100, max 500)'),
+  since_server_knowledge: sinceServerKnowledge(),
 });
 
 // Tool definition
@@ -71,7 +83,8 @@ Supports filtering by date (ISO or natural language like "past 30 days", "this m
 Returns transaction details including date, payee, amount, category, and status.
 
 NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). Pass an earlier since_date to see older history. until_date sets an inclusive upper bound.
-Pass month (YYYY-MM-01 or "current") to list a single budget month instead of the default 12-month window; it can be narrowed further with since_date/until_date.`,
+Pass month (YYYY-MM-01 or "current") to list a single budget month instead of the default 12-month window; it can be narrowed further with since_date/until_date.
+Pass since_server_knowledge (the server_knowledge of an earlier response with the same filters) to get only the transactions changed since then. If more changed than limit, the response keeps your cursor (cursor_withheld: true) so nothing is skipped. A delta may leave out a transaction that changed so it no longer matches the filters; re-read in full to keep a filtered list exact.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -92,11 +105,7 @@ Pass month (YYYY-MM-01 or "current") to list a single budget month instead of th
         description:
           'Only return transactions on or after this date. Accepts YYYY-MM-DD or natural language: "today", "this week", "past 30 days", etc.. If omitted, YNAB returns only the last 12 months; pass an earlier date for older history',
       },
-      type: {
-        type: 'string',
-        enum: ['uncategorized', 'unapproved'],
-        description: 'Filter by transaction type',
-      },
+      type: transactionTypeJsonSchema,
       until_date: {
         type: 'string',
         maxLength: 100,
@@ -107,6 +116,7 @@ Pass month (YYYY-MM-01 or "current") to list a single budget month instead of th
         type: 'number',
         description: 'Maximum number of transactions to return (default 100, max 500)',
       },
+      since_server_knowledge: sinceServerKnowledgeJsonSchema,
     },
   },
 };
@@ -123,10 +133,12 @@ export async function handleListTransactions(
   const budgetId = client.resolveBudgetId(validated.budget_id);
   const limit = validated.limit ?? 100;
 
+  const cursor = validated.since_server_knowledge;
   const options: {
     sinceDate?: string;
     untilDate?: string;
     type?: 'uncategorized' | 'unapproved';
+    lastKnowledgeOfServer?: number;
   } = {};
   if (validated.since_date !== undefined) {
     // Parse natural language dates like "past 7 days", "this month", etc.
@@ -138,6 +150,9 @@ export async function handleListTransactions(
   if (validated.type !== undefined) {
     options.type = validated.type;
   }
+  if (cursor !== undefined) {
+    options.lastKnowledgeOfServer = cursor;
+  }
 
   const response =
     validated.month === undefined
@@ -145,6 +160,8 @@ export async function handleListTransactions(
       : await client.getTransactionsByMonth(budgetId, validated.month, options);
 
   let transactions = response.data.transactions;
+  let deletedIds: string[] = [];
+  if (cursor !== undefined) ({ changed: transactions, deletedIds } = splitDeleted(transactions, (t) => t.id));
 
   // Sort by date descending (most recent first)
   transactions.sort((a, b) => {
@@ -154,6 +171,7 @@ export async function handleListTransactions(
   });
 
   // Apply limit
+  const totalCount = transactions.length;
   transactions = transactions.slice(0, limit);
 
   // Calculate summary stats
@@ -174,15 +192,11 @@ export async function handleListTransactions(
     cleared: txn.cleared,
     approved: txn.approved,
     flag_color: txn.flag_color,
-    transfer_account_id: txn.transfer_account_id,
+    ...transactionChainFields(txn),
+    // A delta may list removed split lines as deleted.
     subtransactions:
-      (txn.subtransactions ?? []).length > 0
-        ? (txn.subtransactions ?? []).map((sub) => ({
-            amount: formatCurrency(sub.amount),
-            memo: sanitizeMemo(sub.memo),
-            payee_name: sanitizeName(sub.payee_name),
-            category_name: sanitizeName(sub.category_name),
-          }))
+      (txn.subtransactions ?? []).some((sub) => !sub.deleted)
+        ? (txn.subtransactions ?? []).filter((sub) => !sub.deleted).map(formatSubtransaction)
         : undefined,
   }));
 
@@ -191,17 +205,35 @@ export async function handleListTransactions(
   const minDate = dates.length > 0 ? dates[dates.length - 1] : null;
   const maxDate = dates.length > 0 ? dates[0] : null;
 
+  const rangeNote =
+    validated.since_date === undefined && validated.month === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {};
+  const delta = transactionDeltaResult(
+    cursor,
+    response.data.server_knowledge,
+    totalCount > formattedTransactions.length
+  );
   return JSON.stringify(
     {
+      ...(cursor !== undefined ? deltaFields(cursor, deletedIds) : {}),
       transactions: formattedTransactions,
-      summary: {
-        count: formattedTransactions.length,
-        total_inflow: formatCurrency(totalInflow),
-        total_outflow: formatCurrency(totalOutflow),
-        net: formatCurrency(totalInflow - totalOutflow),
-        date_range: minDate && maxDate ? { from: minDate, to: maxDate } : null,
-        ...(validated.since_date === undefined && validated.month === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {}),
-      },
+      summary:
+        cursor !== undefined
+          ? {
+              count: formattedTransactions.length,
+              ...truncationSummary(totalCount, formattedTransactions.length),
+              deleted_count: deletedIds.length,
+              ...rangeNote,
+              ...delta.summary,
+            }
+          : {
+              count: formattedTransactions.length,
+              ...truncationSummary(totalCount, formattedTransactions.length),
+              total_inflow: formatCurrency(totalInflow),
+              total_outflow: formatCurrency(totalOutflow),
+              net: formatCurrency(totalInflow - totalOutflow),
+              date_range: minDate && maxDate ? { from: minDate, to: maxDate } : null,
+              ...rangeNote,
+            },
       filters_applied: {
         month: validated.month ?? null,
         since_date: validated.since_date
@@ -212,8 +244,9 @@ export async function handleListTransactions(
           : null,
         type: validated.type ?? null,
         limit,
+        ...(cursor !== undefined ? { since_server_knowledge: cursor } : {}),
       },
-      server_knowledge: response.data.server_knowledge,
+      ...delta.cursor,
     },
     null,
     2

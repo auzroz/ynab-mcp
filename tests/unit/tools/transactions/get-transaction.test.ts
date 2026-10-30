@@ -36,6 +36,17 @@ describe('handleGetTransaction', () => {
     expect(mockClient.getTransactionById).toHaveBeenCalledWith('test-budget-id', TXN_ID);
   });
 
+  it('sanitizes the client-written import_id', async () => {
+    mockClient.getTransactionById.mockResolvedValue(
+      createTransactionResponse({ ...mockGroceryTransactions[0]!, import_id: 'YNAB:\u0000-8500:\u200b2024' })
+    );
+
+    const parsed = JSON.parse(await handleGetTransaction({ transaction_id: TXN_ID }, mockClient as never));
+
+    expect(parsed.transaction.import_id).not.toMatch(/[\u0000\u200b]/);
+    expect(parsed.transaction.import_id).toContain('YNAB:');
+  });
+
   it('includes formatted subtransactions when present', async () => {
     mockClient.getTransactionById.mockResolvedValue(
       createTransactionResponse(mockSplitTransaction)

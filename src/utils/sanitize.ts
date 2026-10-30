@@ -142,3 +142,27 @@ export function sanitizeErrorMessage(
   // Remove control characters and enforce length limit
   return sanitizeStringOrEmpty(sanitized, maxLength);
 }
+
+/** Environment variables whose values are secrets (DATABASE_URL may hold a password). */
+const SECRET_ENV_VARS = ['YNAB_ACCESS_TOKEN', 'YNAB_OAUTH_CLIENT_SECRET', 'ENCRYPTION_KEY', 'DATABASE_URL'] as const;
+
+/**
+ * Replace the exact values of secret environment variables in a message.
+ *
+ * For operator-facing logs (startup and shutdown), where sanitizeErrorMessage's
+ * pattern and path redaction would hide what the operator needs to fix a bad
+ * deployment ("YNAB_ACCESS_TOKEN is required" would come out garbled). Matching
+ * the actual values also catches a secret with no recognizable prefix.
+ */
+export function redactSecretEnvValues(
+  message: string,
+  env: Record<string, string | undefined> = process.env
+): string {
+  let out = message;
+  for (const name of SECRET_ENV_VARS) {
+    const value = env[name];
+    // Very short values would redact ordinary words; real secrets are longer.
+    if (value !== undefined && value.length >= 8) out = out.split(value).join(`[${name} REDACTED]`);
+  }
+  return out;
+}

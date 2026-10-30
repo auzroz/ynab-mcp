@@ -21,7 +21,7 @@ Use when you need to:
 - See if rate limiting might affect operations
 - Plan large operations that require many API calls
 
-YNAB allows 200 requests per hour. This server uses 180 as a safety margin.`,
+YNAB allows 200 requests per hour. This server uses 180 as a safety margin. If YNAB itself has answered 429 (too many requests), ynab_exhausted shows when that happened and when requests are allowed again; until then requests fail fast.`,
   inputSchema: {
     type: 'object',
     properties: {},
@@ -61,10 +61,27 @@ export async function handleRateLimitStatus(
     statusMessage = 'API quota is low - limit requests to essential operations';
   }
 
+  // YNAB answered 429 to this user's requests: reported until the window passes
+  // (active) and afterwards as history (active false).
+  const ynab = status.ynabExhausted;
+  const ynabExhausted = ynab
+    ? {
+        active: ynab.active,
+        exhausted_at: new Date(ynab.exhaustedAtMs).toISOString(),
+        resets_at: new Date(ynab.untilMs).toISOString(),
+        retry_after_seconds: Math.ceil(ynab.retryAfterMs / 1000),
+      }
+    : null;
+  if (ynab?.active) {
+    statusLevel = 'critical';
+    statusMessage = 'YNAB rate-limited this account (429); requests are paused until it resets';
+  }
+
   return JSON.stringify(
     {
       status: statusLevel,
       message: statusMessage,
+      ynab_exhausted: ynabExhausted,
       rate_limit: {
         available_requests: status.available,
         total_limit: status.limit,

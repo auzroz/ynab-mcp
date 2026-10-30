@@ -14,7 +14,9 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { accountDetailFields } from './account-fields.js';
 import { budgetId } from '../../utils/schemas.js';
+import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -25,6 +27,7 @@ const inputSchema = z.object({
     .boolean()
     .optional()
     .describe('Whether to include closed accounts'),
+  since_server_knowledge: sinceServerKnowledge(),
 });
 
 // Tool definition
@@ -39,7 +42,10 @@ Use when the user asks:
 - "List my bank accounts"
 - "How much money do I have?"
 
-Returns account names, types, and current/cleared/uncleared balances.`,
+Returns account names, types, and current/cleared/uncleared balances, plus on_budget, closed, note, last_reconciled_at, direct import status, transfer_payee_id (use it as payee_id to record a transfer), and debt details (original balance, interest rates, minimum payments, escrow) when present.
+Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the accounts changed since then.
+
+Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening accounts, setting up loan accounts, and changing interest rates.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -52,6 +58,7 @@ Returns account names, types, and current/cleared/uncleared balances.`,
         type: 'boolean',
         description: 'Whether to include closed accounts',
       },
+      since_server_knowledge: sinceServerKnowledgeJsonSchema,
     },
   },
 };
@@ -67,23 +74,24 @@ export async function handleListAccounts(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
   const includeClosed = validated.include_closed ?? false;
+  const cursor = validated.since_server_knowledge;
 
-  const response = await client.getAccounts(budgetId);
+  const response =
+    cursor === undefined
+      ? await client.getAccounts(budgetId)
+      : await client.getAccounts(budgetId, { lastKnowledgeOfServer: cursor });
   let accounts = response.data.accounts;
+  let deletedIds: string[] = [];
 
-  if (!includeClosed) {
+  if (cursor !== undefined) {
+    // Delta: every changed account, closed or not, so the caller sees closures.
+    ({ changed: accounts, deletedIds } = splitDeleted(accounts, (a) => a.id));
+  } else if (!includeClosed) {
     accounts = accounts.filter((a) => !a.closed);
   }
 
   // Group by account type
-  const byType: Record<string, Array<{
-    id: string;
-    name: string;
-    balance: string;
-    cleared_balance: string;
-    uncleared_balance: string;
-    closed: boolean;
-  }>> = {};
+  const byType: Record<string, Array<Record<string, unknown>>> = {};
 
   for (const account of accounts) {
     const type = account.type;
@@ -96,8 +104,25 @@ export async function handleListAccounts(
       balance: formatCurrency(account.balance),
       cleared_balance: formatCurrency(account.cleared_balance),
       uncleared_balance: formatCurrency(account.uncleared_balance),
-      closed: account.closed,
+      ...accountDetailFields(account, { includeEmptyMaps: false }),
     });
+  }
+
+  if (cursor !== undefined) {
+    return JSON.stringify(
+      {
+        ...deltaFields(cursor, deletedIds),
+        accounts_by_type: byType,
+        summary: {
+          changed_count: accounts.length,
+          deleted_count: deletedIds.length,
+          note: DELTA_SUMMARY_NOTE,
+        },
+        server_knowledge: response.data.server_knowledge,
+      },
+      null,
+      2
+    );
   }
 
   // Calculate totals
@@ -155,6 +180,7 @@ export async function handleListAccounts(
         }),
         net_worth: formatCurrency(netWorth),
       },
+      server_knowledge: response.data.server_knowledge,
     },
     null,
     2

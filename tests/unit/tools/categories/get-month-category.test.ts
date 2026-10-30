@@ -59,6 +59,31 @@ describe('handleGetMonthCategory', () => {
     expect(parsed.category.goal.type).toBe('TB');
   });
 
+  it('adds decoded cadence, due day and snooze fields', async () => {
+    mockClient.getMonthCategoryById.mockResolvedValue(
+      createCategoryResponse({
+        ...mockSavingsCategories[1],
+        goal_type: 'NEED',
+        goal_cadence: 2,
+        goal_cadence_frequency: 2,
+        goal_day: 1,
+        goal_snoozed_at: '2024-01-05T00:00:00Z',
+      } as never)
+    );
+
+    const result = await handleGetMonthCategory(
+      { month: MONTH, category_id: CATEGORY_ID },
+      mockClient as never
+    );
+    const goal = JSON.parse(result).category.goal;
+
+    expect(goal.type_label).toBe('Spending Target');
+    expect(goal.cadence.period).toBe('every 2 weeks');
+    expect(goal.due_day).toEqual({ kind: 'weekday', value: 1, label: 'Monday' });
+    expect(goal.snoozed).toBe(true);
+    expect(goal.snoozed_at).toBe('2024-01-05T00:00:00Z');
+  });
+
   it('rejects an invalid month format', async () => {
     await expect(
       handleGetMonthCategory(

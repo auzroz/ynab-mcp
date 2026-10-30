@@ -5,12 +5,19 @@
  */
 
 import { z } from 'zod';
-import { MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
+import { IMPORT_ID_MAX_LENGTH, MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
-import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { sanitizeName, sanitizeMemo, sanitizeString } from '../../utils/sanitize.js';
+import {
+  checkSplitRules,
+  formatSubtransactions,
+  subtransactionsJsonSchema,
+  subtransactionsSchema,
+  toSaveSubTransactions,
+} from './subtransactions.js';
 
 // Cleared status options
 const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
@@ -19,37 +26,46 @@ const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
 const flagColors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'] as const;
 
 // Input schema
-const inputSchema = z.object({
-  budget_id: budgetId()
-    .optional()
-    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  account_id: ynabId().describe('The account UUID for this transaction'),
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .describe('Transaction date in YYYY-MM-DD format'),
-  amount: z
-    .number()
-    .describe(
-      'Amount in dollars (negative for outflow, positive for inflow). E.g., -50.00 for a $50 expense'
-    ),
-  payee_id: ynabId().optional().describe('Payee UUID (use ynab_list_payees to find)'),
-  payee_name: z
-    .string()
-    .max(TXN_PAYEE_NAME_MAX_LENGTH)
-    .optional()
-    .describe('Payee name (creates new payee if payee_id not provided)'),
-  category_id: ynabId()
-    .optional()
-    .describe('Category UUID (use ynab_list_categories to find)'),
-  memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('Transaction memo/note'),
-  cleared: z
-    .enum(clearedStatuses)
-    .optional()
-    .describe('Cleared status: cleared, uncleared, or reconciled'),
-  approved: z.boolean().optional().describe('Whether the transaction is approved'),
-  flag_color: z.enum(flagColors).optional().describe('Flag color for the transaction'),
-});
+const inputSchema = z
+  .object({
+    budget_id: budgetId()
+      .optional()
+      .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    account_id: ynabId().describe('The account UUID for this transaction'),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .describe('Transaction date in YYYY-MM-DD format'),
+    amount: z
+      .number()
+      .describe(
+        'Amount in dollars (negative for outflow, positive for inflow). E.g., -50.00 for a $50 expense'
+      ),
+    payee_id: ynabId().optional().describe('Payee UUID (use ynab_list_payees to find)'),
+    payee_name: z
+      .string()
+      .max(TXN_PAYEE_NAME_MAX_LENGTH)
+      .optional()
+      .describe('Payee name (creates new payee if payee_id not provided)'),
+    category_id: ynabId()
+      .optional()
+      .describe('Category UUID (use ynab_list_categories to find)'),
+    memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('Transaction memo/note'),
+    cleared: z
+      .enum(clearedStatuses)
+      .optional()
+      .describe('Cleared status: cleared, uncleared, or reconciled'),
+    approved: z.boolean().optional().describe('Whether the transaction is approved'),
+    flag_color: z.enum(flagColors).optional().describe('Flag color for the transaction'),
+    import_id: z
+      .string()
+      .min(1)
+      .max(IMPORT_ID_MAX_LENGTH)
+      .optional()
+      .describe('Unique import ID for deduplication (max 36 chars). A repeat of an existing import_id is not created again'),
+    subtransactions: subtransactionsSchema.optional(),
+  })
+  .superRefine(checkSplitRules);
 
 // Tool definition
 export const createTransactionTool: Tool = {
@@ -62,8 +78,13 @@ Use when the user asks:
 - "Log an expense"
 - "Create a transaction"
 
+- "Split this $100 purchase between groceries and household"
+
 Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
-Amount should be negative for expenses/outflows and positive for income/inflows.`,
+Amount should be negative for expenses/outflows and positive for income/inflows.
+
+Split transactions: pass subtransactions (at least 2, each with amount in dollars and optional payee_id/payee_name, category_id, memo). Split amounts must sum exactly to the parent amount, and the parent must not set category_id. The splits of an existing transaction cannot be edited afterwards (YNAB limitation), so get them right on creation.
+Pass import_id to make the create idempotent: the request is sent in YNAB's skip-duplicates form, so if that import_id already exists nothing is created and the result has success=false with duplicate_import_ids.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -120,6 +141,12 @@ Amount should be negative for expenses/outflows and positive for income/inflows.
         enum: flagColors,
         description: 'Flag color',
       },
+      import_id: {
+        type: 'string',
+        maxLength: IMPORT_ID_MAX_LENGTH,
+        description: 'Unique import ID for deduplication (max 36 chars)',
+      },
+      subtransactions: subtransactionsJsonSchema,
     },
     required: ['account_id', 'date', 'amount'],
   },
@@ -162,14 +189,34 @@ export async function handleCreateTransaction(
   if (validated.approved !== undefined) transactionData.approved = validated.approved;
   if (validated.flag_color !== undefined)
     transactionData.flag_color = validated.flag_color as ynab.TransactionFlagColor;
+  if (validated.import_id !== undefined) transactionData.import_id = validated.import_id;
+  if (validated.subtransactions !== undefined)
+    transactionData.subtransactions = toSaveSubTransactions(validated.subtransactions);
 
-  const response = await client.createTransaction(budgetId, {
-    transaction: transactionData,
-  });
+  // A single `transaction` body makes YNAB answer a repeated import_id with HTTP 409. The bulk
+  // `transactions` form skips duplicates and reports them in duplicate_import_ids instead, so
+  // use it whenever an import_id is given.
+  const response = await client.createTransaction(
+    budgetId,
+    validated.import_id !== undefined ? { transactions: [transactionData] } : { transaction: transactionData }
+  );
 
-  const txn = response.data.transaction;
+  const txn = response.data.transaction ?? response.data.transactions?.[0];
 
   if (txn == null) {
+    // A repeated import_id is a normal outcome, not a failure: YNAB skips the create.
+    const duplicates = response.data.duplicate_import_ids ?? [];
+    if (validated.import_id !== undefined && duplicates.length > 0) {
+      return JSON.stringify(
+        {
+          success: false,
+          message: 'No transaction created: a transaction with this import_id already exists',
+          duplicate_import_ids: duplicates.map((id) => sanitizeString(id, 100) ?? ''),
+        },
+        null,
+        2
+      );
+    }
     throw new Error('Transaction creation failed: no transaction returned');
   }
 
@@ -187,6 +234,7 @@ export async function handleCreateTransaction(
         memo: sanitizeMemo(txn.memo),
         cleared: txn.cleared,
         approved: txn.approved,
+        subtransactions: formatSubtransactions(txn.subtransactions),
       },
     },
     null,

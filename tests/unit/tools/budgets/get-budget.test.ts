@@ -77,4 +77,18 @@ describe('handleGetBudget', () => {
 
     expect(parsed.summary.total_assets).toContain('$');
   });
+
+  it('includes month range, date format and account ids', async () => {
+    mockClient.getBudgetById.mockResolvedValue(createBudgetResponse());
+
+    const result = await handleGetBudget({}, mockClient as never);
+    const parsed = JSON.parse(result);
+
+    expect(parsed.first_month).toBe('2023-01-01');
+    expect(parsed.last_month).toBe('2024-12-01');
+    expect(parsed.date_format).toEqual({ format: 'MM/DD/YYYY' });
+    const checking = parsed.accounts_by_type.checking[0];
+    expect(checking.id).toEqual(expect.any(String));
+    expect(checking.name).toBe('Primary Checking');
+  });
 });
