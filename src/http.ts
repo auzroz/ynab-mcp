@@ -16,6 +16,7 @@
 
 import { randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import {
@@ -240,6 +241,20 @@ export async function buildHttpApp(config: HttpConfig): Promise<HttpApp> {
     // browser that was shown the consent page.
     const consentNonce = (req: Request, state: string): string | undefined =>
       provider.consentCookie.read(req.header('cookie'), state);
+    // The SDK rate-limits its own OAuth endpoints; give these legs the same
+    // limit. The callback reads storage and can call YNAB's token endpoint, so
+    // an unlimited route would let anyone who can reach it hammer both. The
+    // client IP comes from req.ip, so TRUST_PROXY must match the proxy hops.
+    app.use(
+      '/oauth',
+      rateLimit({
+        windowMs: 15 * 60 * 1000,
+        limit: 50,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: 'Too many authorization requests. Please wait and try again.',
+      })
+    );
     app.get('/oauth/ynab/start', async (req: Request, res: Response) => {
       try {
         const state = String(req.query['state'] ?? '');

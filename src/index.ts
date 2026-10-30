@@ -11,6 +11,7 @@ import type { Server as HttpServer } from 'node:http';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createServer } from './server.js';
+import { sanitizeErrorMessage } from './utils/sanitize.js';
 import { startHttpServer } from './http.js';
 import { loadConfig, loadHttpConfig } from './config/environment.js';
 
@@ -65,8 +66,8 @@ process.stdin.on('close', () => void shutdown());
 
 // Run the server
 main().catch((error: unknown) => {
-  // Only log error message to avoid leaking sensitive config details
-  const message = error instanceof Error ? error.message : 'Unknown error';
-  console.error('Failed to start YNAB MCP Server:', message);
+  // Log only a sanitized message: startup errors can come from parsing the
+  // environment, which holds the YNAB token.
+  console.error('Failed to start YNAB MCP Server:', sanitizeErrorMessage(error));
   process.exit(1);
 });
