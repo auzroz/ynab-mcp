@@ -47,8 +47,8 @@ Set these environment variables (see `.env.example`):
 | `MCP_RESOURCE_URL` | no | Absolute URL of the MCP endpoint (the OAuth resource/audience). Default `PUBLIC_URL` + `/mcp`. Must be https (http only for `localhost`, `127.0.0.1`, `[::1]`), no fragment |
 | `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | no | Comma-separated Host / Origin allowlists. Explicit values **replace** the derived defaults. Defaults: host and origin of `PUBLIC_URL`, plus `localhost`, `127.0.0.1`, `[::1]` (bare and with `:PORT`) when `PUBLIC_URL` is unset or loopback |
 | `ENABLE_DNS_REBINDING_PROTECTION` | no | Host/Origin validation, **on by default** (previously off; a breaking default in 0.4.0). `false` disables it entirely. **Unsafe**: see "Host and Origin validation" |
-| `MCP_MAX_SESSIONS` | no | Max concurrent MCP sessions (integer >= 1, default `100`) |
-| `MCP_SESSION_IDLE_TIMEOUT_MS` | no | Idle time before a session is closed (integer >= 1, default `1800000`) |
+| `MCP_MAX_SESSIONS` | no | Max concurrent MCP sessions (integer >= 1, default `100`). **Not enforced yet**: validated at startup only; session limits arrive with session management later in 0.4.0 |
+| `MCP_SESSION_IDLE_TIMEOUT_MS` | no | Idle time before a session is closed (integer >= 1, default `1800000`). **Not enforced yet**: validated at startup only; session limits arrive with session management later in 0.4.0 |
 | `TRUST_PROXY` | if behind a reverse proxy | Hop count to trust for `X-Forwarded-*` (e.g. `1` behind a single Traefik/Caddy/nginx) — needed for accurate per-client rate limiting |
 
 OAuth mode activates automatically once `YNAB_OAUTH_CLIENT_ID`,

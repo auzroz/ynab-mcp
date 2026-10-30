@@ -5,6 +5,11 @@ const KEYS = [
   'PUBLIC_URL', 'MCP_RESOURCE_URL', 'ALLOWED_HOSTS', 'ALLOWED_ORIGINS', 'ENABLE_DNS_REBINDING_PROTECTION',
   'MCP_MAX_SESSIONS', 'MCP_SESSION_IDLE_TIMEOUT_MS', 'PORT',
   'YNAB_OAUTH_CLIENT_ID', 'YNAB_OAUTH_CLIENT_SECRET', 'ENCRYPTION_KEY',
+  // Also read by loadHttpConfig (directly or through loadConfig); cleared so an
+  // ambient value can't make a test that expects success throw.
+  'TRUST_PROXY', 'YNAB_OAUTH_ALLOW_WRITE', 'MCP_ACCESS_TOKEN_TTL_SEC', 'MCP_AUTH_CODE_TTL_SEC',
+  'STORAGE_DRIVER', 'SQLITE_PATH', 'DATABASE_URL',
+  'YNAB_ACCESS_TOKEN', 'YNAB_BUDGET_ID', 'YNAB_READ_ONLY', 'CACHE_TTL_MS', 'RATE_LIMIT_PER_HOUR',
 ];
 
 describe('loadHttpConfig', () => {
