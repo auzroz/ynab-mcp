@@ -127,4 +127,52 @@ describe('handleCreateTransaction', () => {
 
     expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
   });
+
+  describe('import_id', () => {
+    it('passes import_id to the API', async () => {
+      mockClient.createTransaction.mockResolvedValue(createdTxnResponse());
+
+      await handleCreateTransaction(
+        { account_id: ACCOUNT_ID, date: '2024-02-01', amount: -1, import_id: 'YNAB:-1000:2024-02-01:1' },
+        mockClient as never
+      );
+
+      const sent = mockClient.createTransaction.mock.calls[0]![1] as { transaction: Record<string, unknown> };
+      expect(sent.transaction['import_id']).toBe('YNAB:-1000:2024-02-01:1');
+    });
+
+    it('rejects an import_id over 36 characters and accepts exactly 36', async () => {
+      mockClient.createTransaction.mockResolvedValue(createdTxnResponse());
+      const args = { account_id: ACCOUNT_ID, date: '2024-02-01', amount: -1 };
+      await expect(
+        handleCreateTransaction({ ...args, import_id: 'x'.repeat(37) }, mockClient as never)
+      ).rejects.toThrow();
+      await expect(
+        handleCreateTransaction({ ...args, import_id: 'x'.repeat(36) }, mockClient as never)
+      ).resolves.toBeTypeOf('string');
+    });
+
+    it('reports a duplicate import_id as a result, not an error', async () => {
+      mockClient.createTransaction.mockResolvedValue({
+        data: { transaction: undefined, duplicate_import_ids: ['dup-1'] },
+      });
+
+      const parsed = JSON.parse(
+        await handleCreateTransaction(
+          { account_id: ACCOUNT_ID, date: '2024-02-01', amount: -1, import_id: 'dup-1' },
+          mockClient as never
+        )
+      );
+
+      expect(parsed.success).toBe(false);
+      expect(parsed.duplicate_import_ids).toEqual(['dup-1']);
+    });
+
+    it('still throws when no transaction is returned and it is not a duplicate', async () => {
+      mockClient.createTransaction.mockResolvedValue({ data: { transaction: undefined } });
+      await expect(
+        handleCreateTransaction({ account_id: ACCOUNT_ID, date: '2024-02-01', amount: -1 }, mockClient as never)
+      ).rejects.toThrow(/no transaction returned/);
+    });
+  });
 });

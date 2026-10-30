@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import { MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
+import { IMPORT_ID_MAX_LENGTH, MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -15,26 +15,39 @@ import { toMilliunits } from '../../utils/milliunits.js';
 const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
 const flagColors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'] as const;
 
-const transactionUpdateSchema = z.object({
-  id: ynabId().describe('The UUID of the transaction to update'),
-  account_id: ynabId().optional().describe('New account UUID'),
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .optional()
-    .describe('New transaction date in YYYY-MM-DD format'),
-  amount: z
-    .number()
-    .optional()
-    .describe('New amount in dollars (negative for outflow, positive for inflow)'),
-  payee_id: ynabId().optional().describe('New payee UUID'),
-  payee_name: z.string().max(TXN_PAYEE_NAME_MAX_LENGTH).optional().describe('New payee name'),
-  category_id: ynabId().optional().describe('New category UUID'),
-  memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('New memo/note'),
-  cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),
-  approved: z.boolean().optional().describe('New approved status'),
-  flag_color: z.enum(flagColors).nullable().optional().describe('New flag color (null to remove)'),
-});
+const transactionUpdateSchema = z
+  .object({
+    id: ynabId().optional().describe('The UUID of the transaction to update (provide id or import_id, not both)'),
+    import_id: z
+      .string()
+      .min(1)
+      .max(IMPORT_ID_MAX_LENGTH)
+      .optional()
+      .describe('The import_id of the transaction to update (provide id or import_id, not both)'),
+    account_id: ynabId().optional().describe('New account UUID'),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional()
+      .describe('New transaction date in YYYY-MM-DD format'),
+    amount: z
+      .number()
+      .optional()
+      .describe('New amount in dollars (negative for outflow, positive for inflow)'),
+    payee_id: ynabId().nullable().optional().describe('New payee UUID (null to clear the payee)'),
+    payee_name: z.string().max(TXN_PAYEE_NAME_MAX_LENGTH).optional().describe('New payee name'),
+    category_id: ynabId().nullable().optional().describe('New category UUID (null to uncategorize)'),
+    memo: z.string().max(MEMO_MAX_LENGTH).nullable().optional().describe('New memo/note (null to clear the memo)'),
+    cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),
+    approved: z.boolean().optional().describe('New approved status'),
+    flag_color: z.enum(flagColors).nullable().optional().describe('New flag color (null to remove)'),
+  })
+  .refine((t) => (t.id === undefined) !== (t.import_id === undefined), {
+    message: 'Each transaction needs exactly one of id or import_id',
+  })
+  .refine((t) => !(t.payee_id === null && t.payee_name !== undefined), {
+    message: 'payee_id null clears the payee; do not combine it with payee_name',
+  });
 
 // Input schema
 const inputSchema = z.object({
@@ -45,7 +58,7 @@ const inputSchema = z.object({
     .array(transactionUpdateSchema)
     .min(1)
     .max(100)
-    .describe('Array of transactions to update (1-100). Each must include the transaction id.'),
+    .describe('Array of transactions to update (1-100). Each must include exactly one of id or import_id.'),
 });
 
 // Tool definition
@@ -58,8 +71,10 @@ Use when the user asks:
 - "Mark these transactions as cleared"
 - "Approve all imported transactions"
 
-Each entry must include the transaction id. Use ynab_list_transactions first to find ids.
+Each entry must include exactly one of id or import_id to address the transaction. Use ynab_list_transactions first to find ids.
 Amounts are in dollars (e.g., -42.50 for a $42.50 outflow).
+To clear a field, pass null (distinct from omitting it, which leaves it unchanged): category_id null uncategorizes, payee_id null clears the payee, memo null clears the memo.
+YNAB cannot edit the splits of an existing transaction.
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
   inputSchema: {
@@ -72,18 +87,27 @@ Amounts are in dollars (e.g., -42.50 for a $42.50 outflow).
       },
       transactions: {
         type: 'array',
-        description: 'Array of transactions to update (1-100). Each must include the transaction id.',
+        description: 'Array of transactions to update (1-100). Each must include exactly one of id or import_id.',
         items: {
           type: 'object',
           properties: {
-            id: { type: 'string', maxLength: 36, description: 'The UUID of the transaction to update' },
+            id: {
+              type: 'string',
+              maxLength: 36,
+              description: 'The UUID of the transaction to update (provide id or import_id, not both)',
+            },
+            import_id: {
+              type: 'string',
+              maxLength: IMPORT_ID_MAX_LENGTH,
+              description: 'The import_id of the transaction to update (provide id or import_id, not both)',
+            },
             account_id: { type: 'string', maxLength: 36, description: 'New account UUID' },
             date: { type: 'string', maxLength: 10, description: 'New date in YYYY-MM-DD format' },
             amount: { type: 'number', description: 'New amount in dollars' },
-            payee_id: { type: 'string', maxLength: 36, description: 'New payee UUID' },
+            payee_id: { type: ['string', 'null'], maxLength: 36, description: 'New payee UUID (null to clear the payee)' },
             payee_name: { type: 'string', maxLength: 200, description: 'New payee name' },
-            category_id: { type: 'string', maxLength: 36, description: 'New category UUID' },
-            memo: { type: 'string', maxLength: 500, description: 'New memo/note' },
+            category_id: { type: ['string', 'null'], maxLength: 36, description: 'New category UUID (null to uncategorize)' },
+            memo: { type: ['string', 'null'], maxLength: 500, description: 'New memo/note (null to clear the memo)' },
             cleared: { type: 'string', enum: [...clearedStatuses], description: 'New cleared status' },
             approved: { type: 'boolean', description: 'New approved status' },
             flag_color: {
@@ -92,7 +116,7 @@ Amounts are in dollars (e.g., -42.50 for a $42.50 outflow).
               description: 'New flag color (null to remove)',
             },
           },
-          required: ['id'],
+          description: 'Provide exactly one of id or import_id',
         },
       },
     },
@@ -112,14 +136,18 @@ export async function handleUpdateTransactions(
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
   const transactions: ynab.SaveTransactionWithIdOrImportId[] = validated.transactions.map((t) => {
-    const update: ynab.SaveTransactionWithIdOrImportId = { id: t.id };
+    const update: ynab.SaveTransactionWithIdOrImportId = {};
+    if (t.id !== undefined) update.id = t.id;
+    if (t.import_id !== undefined) update.import_id = t.import_id;
     if (t.account_id !== undefined) update.account_id = t.account_id;
     if (t.date !== undefined) update.date = t.date;
     if (t.amount !== undefined) update.amount = toMilliunits(t.amount);
-    if (t.payee_id !== undefined) update.payee_id = t.payee_id;
+    // null reaches the API as JSON null (clears the field); undefined means unchanged.
+    // The SDK types omit null for these fields, but its ToJSON passes it through.
+    if (t.payee_id !== undefined) update.payee_id = t.payee_id as string;
     if (t.payee_name !== undefined) update.payee_name = t.payee_name;
-    if (t.category_id !== undefined) update.category_id = t.category_id;
-    if (t.memo !== undefined) update.memo = t.memo;
+    if (t.category_id !== undefined) update.category_id = t.category_id as string;
+    if (t.memo !== undefined) update.memo = t.memo as string;
     if (t.cleared !== undefined) update.cleared = t.cleared as ynab.TransactionClearedStatus;
     if (t.approved !== undefined) update.approved = t.approved;
     if (t.flag_color !== undefined)

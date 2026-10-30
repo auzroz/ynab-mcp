@@ -13,6 +13,8 @@ import { Cache } from '../../../src/services/cache.js';
 import { AuditLog } from '../../../src/services/audit-log.js';
 import { handleCreateTransaction } from '../../../src/tools/transactions/create-transaction.js';
 import { handleCreateTransactions } from '../../../src/tools/transactions/create-transactions.js';
+import { handleUpdateTransaction } from '../../../src/tools/transactions/update-transaction.js';
+import { handleUpdateTransactions } from '../../../src/tools/transactions/update-transactions.js';
 
 const fetchMock = vi.fn<typeof fetch>();
 
@@ -138,5 +140,94 @@ describe('split transactions on the wire', () => {
     const entry = auditLog.getAll().at(-1)!;
     expect(entry.details['split_count']).toBe(2);
     expect(JSON.stringify(entry)).not.toMatch(/secret/i);
+  });
+});
+
+describe('clearing fields with null on the wire', () => {
+  it('ynab_update_transaction sends category_id, payee_id and memo as JSON null', async () => {
+    fetchMock.mockImplementation(async () => json({ data: { transaction: savedTxn, server_knowledge: 1 } }));
+
+    await handleUpdateTransaction({ transaction_id: ACCOUNT, category_id: null, payee_id: null, memo: null }, makeClient());
+
+    const { url, method, body } = request();
+    expect(url).toBe(`https://api.ynab.com/v1/plans/budget-1/transactions/${ACCOUNT}`);
+    expect(method).toBe('PUT');
+    expect(body).toEqual({ transaction: { category_id: null, payee_id: null, memo: null } });
+    // Explicit nulls survive serialization (key present), unlike omitted fields.
+    expect(Object.keys(body.transaction).sort()).toEqual(['category_id', 'memo', 'payee_id']);
+  });
+
+  it('ynab_update_transaction omits untouched fields entirely', async () => {
+    fetchMock.mockImplementation(async () => json({ data: { transaction: savedTxn, server_knowledge: 1 } }));
+
+    await handleUpdateTransaction({ transaction_id: ACCOUNT, memo: 'hi' }, makeClient());
+
+    expect(request().body).toEqual({ transaction: { memo: 'hi' } });
+  });
+
+  it('ynab_update_transactions sends nulls in the bulk PATCH', async () => {
+    fetchMock.mockImplementation(async () =>
+      json({ data: { transaction_ids: ['t1', 't2'], transactions: [], server_knowledge: 1 } })
+    );
+
+    await handleUpdateTransactions(
+      {
+        transactions: [
+          { id: CAT_A, category_id: null, memo: null },
+          { id: CAT_B, payee_id: null },
+        ],
+      },
+      makeClient()
+    );
+
+    const { url, method, body } = request();
+    expect(url).toBe('https://api.ynab.com/v1/plans/budget-1/transactions');
+    expect(method).toBe('PATCH');
+    expect(body.transactions).toEqual([
+      { id: CAT_A, category_id: null, memo: null },
+      { id: CAT_B, payee_id: null },
+    ]);
+  });
+
+  it('audit log names the cleared fields without values', async () => {
+    fetchMock.mockImplementation(async () => json({ data: { transaction: savedTxn, server_knowledge: 1 } }));
+    await handleUpdateTransaction({ transaction_id: ACCOUNT, category_id: null, memo: null }, makeClient());
+    expect(auditLog.getAll().at(-1)!.details['cleared_fields']).toEqual(['category_id', 'memo']);
+  });
+});
+
+describe('import_id on the wire', () => {
+  it('ynab_create_transaction sends import_id', async () => {
+    fetchMock.mockImplementation(async () => json({ data: { transaction: savedTxn, server_knowledge: 1 } }));
+
+    await handleCreateTransaction(
+      { account_id: ACCOUNT, date: '2024-02-01', amount: -1, import_id: 'YNAB:-1000:2024-02-01:1' },
+      makeClient()
+    );
+
+    expect(request().body.transaction.import_id).toBe('YNAB:-1000:2024-02-01:1');
+  });
+
+  it('ynab_update_transactions addresses rows by import_id without an id', async () => {
+    fetchMock.mockImplementation(async () =>
+      json({ data: { transaction_ids: ['t1', 't2'], transactions: [], server_knowledge: 1 } })
+    );
+
+    await handleUpdateTransactions(
+      {
+        transactions: [
+          { import_id: 'YNAB:-1000:2024-02-01:1', approved: true },
+          { id: CAT_A, approved: true },
+        ],
+      },
+      makeClient()
+    );
+
+    const { body } = request();
+    expect(body.transactions[0]).toEqual({ import_id: 'YNAB:-1000:2024-02-01:1', approved: true });
+    expect(body.transactions[0]).not.toHaveProperty('id');
+    expect(body.transactions[1]).toEqual({ id: CAT_A, approved: true });
+    expect(body.transactions[1]).not.toHaveProperty('import_id');
+    expect(auditLog.getAll().at(-1)!.details['addressed_by_import_id_count']).toBe(1);
   });
 });

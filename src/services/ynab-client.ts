@@ -799,6 +799,10 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     const txn = data.transaction;
+    // Fields explicitly cleared with null (names only, never values).
+    const clearedFields = (['category_id', 'payee_id', 'memo'] as const).filter(
+      (f) => (txn[f] as string | null | undefined) === null
+    );
     try {
       const response = await this.api.transactions.updateTransaction(budgetId, transactionId, data);
       this.invalidateTransactionHistory(budgetId);
@@ -814,6 +818,7 @@ export class YnabClient {
           date: txn.date,
           has_memo: txn.memo !== undefined && txn.memo !== null && txn.memo !== '',
           category_id: txn.category_id,
+          ...(clearedFields.length > 0 ? { cleared_fields: clearedFields } : {}),
         },
         success: true,
       });
@@ -830,6 +835,7 @@ export class YnabClient {
           date: txn.date,
           has_memo: txn.memo !== undefined && txn.memo !== null && txn.memo !== '',
           category_id: txn.category_id,
+          ...(clearedFields.length > 0 ? { cleared_fields: clearedFields } : {}),
         },
         success: false,
         error: sanitizeErrorMessage(error),
@@ -846,6 +852,17 @@ export class YnabClient {
     await this.rateLimiter.acquire();
 
     const auditLog = this.auditLog;
+    // Counts only: how many rows are addressed by import_id and how many fields are cleared with null.
+    const byImportId = data.transactions.filter((t) => t.id === undefined && t.import_id != null).length;
+    const clearedFieldCount = data.transactions.reduce(
+      (n, t) =>
+        n + (['category_id', 'payee_id', 'memo'] as const).filter((f) => (t[f] as string | null | undefined) === null).length,
+      0
+    );
+    const extra = {
+      ...(byImportId > 0 ? { addressed_by_import_id_count: byImportId } : {}),
+      ...(clearedFieldCount > 0 ? { cleared_field_count: clearedFieldCount } : {}),
+    };
     try {
       const response = await this.api.transactions.updateTransactions(budgetId, data);
       this.invalidateTransactionHistory(budgetId);
@@ -858,6 +875,7 @@ export class YnabClient {
         details: {
           requested_count: data.transactions.length,
           updated_count: response.data.transaction_ids.length,
+          ...extra,
         },
         success: true,
       });
@@ -868,7 +886,7 @@ export class YnabClient {
         tool: 'ynab_update_transactions',
         budgetId,
         resourceType: 'transaction',
-        details: { requested_count: data.transactions.length },
+        details: { requested_count: data.transactions.length, ...extra },
         success: false,
         error: sanitizeErrorMessage(error),
       });
