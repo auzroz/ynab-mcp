@@ -25,9 +25,10 @@ describe('isInternalGroup', () => {
 });
 
 describe('isInternalCategory', () => {
-  it('prefers the category flag', () => {
+  it('is internal when either the category or its group is', () => {
     expect(isInternalCategory({ internal: true }, { name: 'Bills', internal: false })).toBe(true);
-    expect(isInternalCategory({ internal: false }, { name: NAME })).toBe(false);
+    expect(isInternalCategory({ internal: false }, { name: NAME })).toBe(true);
+    expect(isInternalCategory({ internal: false }, { name: NAME, internal: false })).toBe(false);
   });
 
   it('falls back to the group when the flag is undefined', () => {
@@ -50,5 +51,12 @@ describe('indexCategoryGroups', () => {
     expect(names.get('a')).toBe(NAME);
     expect(names.get('b')).toBe('Bills');
     expect([...internalIds].sort()).toEqual(['a', 'c']);
+  });
+
+  it('excludes categories flagged false inside an internal group', () => {
+    const { internalIds } = indexCategoryGroups([
+      { name: NAME, internal: true, categories: [{ id: 'x', internal: false }] },
+    ]);
+    expect([...internalIds]).toEqual(['x']);
   });
 });

@@ -32,12 +32,18 @@ describe('tool titles and annotations', () => {
     }
   });
 
-  it('marks exactly the two delete tools as destructive', () => {
+  it('marks the delete and overwriting update tools as destructive, not creates or the import no-op', () => {
     const destructive = tools
       .filter((t) => t.annotations?.destructiveHint === true)
       .map((t) => t.name)
       .sort();
-    expect(destructive).toEqual(DELETE_TOOLS);
+    const expected = tools
+      .map((t) => t.name)
+      .filter((n) => /_(update|delete)_/.test(n))
+      .sort();
+    expect(destructive).toEqual(expected);
+    for (const name of DELETE_TOOLS) expect(destructive).toContain(name);
+    expect(destructive).not.toContain('ynab_import_transactions');
   });
 
   it('marks every create/update/delete/import tool as not read-only', () => {

@@ -13,9 +13,11 @@
  *   create, update, delete or import action is false. That includes the
  *   deprecated import tool, which is now a no-op: its name still advertises a
  *   write, and a client should not be told it may run it unprompted.
- * - destructiveHint: true only for the two delete tools. Creates are additive
- *   and updates change fields the caller names, so neither is destructive.
- *   Read tools are false.
+ * - destructiveHint: the spec says false means "only additive updates". True
+ *   for the two delete tools and for every update tool, because updates
+ *   overwrite fields in place (memo, amount, category, cleared status, budgeted
+ *   amount, names) and the old value is not recoverable through the API.
+ *   Creates, reads and the no-op import are false.
  * - idempotentHint: true when repeating the call with the same arguments leaves
  *   the budget in the same state: reads, updates that set absolute values by
  *   id, deletes by id, and the no-op import. Creates are false because each
@@ -56,6 +58,14 @@ const CREATE = {
 } as const;
 
 const UPDATE = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+// The deprecated import tool makes no API call, so nothing is overwritten.
+const NOOP_WRITE = {
   readOnlyHint: false,
   destructiveHint: false,
   idempotentHint: true,
@@ -118,7 +128,7 @@ export const TOOL_METADATA = {
   // destructive, but it keeps readOnlyHint false because it is named as a write.
   ynab_import_transactions: {
     title: 'Import Transactions (Deprecated)',
-    annotations: UPDATE,
+    annotations: NOOP_WRITE,
   },
   // Scheduled Transactions
   ynab_list_scheduled_transactions: { title: 'List Scheduled Transactions', annotations: READ },

@@ -18,14 +18,15 @@ export function isInternalGroup(group: InternalFlagged & { name?: string | null 
 }
 
 /**
- * True when a category is YNAB-internal. The category's own flag wins; when it
- * is undefined the category inherits the answer for its group.
+ * True when a category is YNAB-internal: its own flag is set, or its group is
+ * internal. The checks are combined with OR so a category in an internal group
+ * is never counted, even if the API leaves the category flag false.
  */
 export function isInternalCategory(
   category: InternalFlagged,
   group?: InternalFlagged & { name?: string | null }
 ): boolean {
-  return category.internal ?? (group ? isInternalGroup(group) : false);
+  return category.internal === true || (group ? isInternalGroup(group) : false);
 }
 
 interface IndexableGroup extends InternalFlagged {
