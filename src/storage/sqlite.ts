@@ -457,7 +457,7 @@ export class SqliteStorage implements Storage {
       if (row) this.database.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(t);
       return row;
     });
-    const row = take(token);
+    const row = take.immediate(token); // as in rotateRefreshToken
     return row ? refreshTokenFromRow(row) : undefined;
   }
 
@@ -491,7 +491,12 @@ export class SqliteStorage implements Storage {
       this.insertRefreshToken(rotation.refreshToken);
       return row;
     });
-    const row = rotate(token);
+    // IMMEDIATE takes the write lock before the SELECT. A deferred transaction
+    // would upgrade its read snapshot at the DELETE, and when another process
+    // sharing the file has just rotated the same token that upgrade fails with
+    // SQLITE_BUSY_SNAPSHOT (busy_timeout doesn't retry it) instead of waiting
+    // and finding the row gone, which skips the reuse response.
+    const row = rotate.immediate(token);
     return row ? refreshTokenFromRow(row) : undefined;
   }
 
