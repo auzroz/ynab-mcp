@@ -33,6 +33,14 @@
  * tokens written before 0.4.0 carry none and are treated as read-only. A client
  * that requests only the `read-only` scope is never offered or granted write
  * access.
+ *
+ * Refresh-token reuse detection (RFC 9700 section 4.14.2): each code exchange
+ * starts a token family that every token issued from it, and from refreshes in
+ * its chain, carries. A rotated refresh token leaves a tombstone for
+ * {@link REFRESH_TOKEN_REUSE_WINDOW_MS}; presenting it again revokes the whole
+ * family, as does presenting a live one from the wrong client or revoking one at
+ * `/revoke`. The client sees the same `invalid_grant` as for an unknown token.
+ * A 0.3.x refresh token carries no family and starts one at its next refresh.
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -55,7 +63,13 @@ import {
   InvalidTokenError,
   ServerError,
 } from '@modelcontextprotocol/sdk/server/auth/errors.js';
-import type { Storage, GrantedScope, PendingAuthRecord } from '../storage/types.js';
+import type {
+  Storage,
+  GrantedScope,
+  PendingAuthRecord,
+  AccessTokenRecord,
+  RefreshTokenRecord,
+} from '../storage/types.js';
 import type { Encryptor } from '../crypto.js';
 import {
   buildAuthorizeUrl,
@@ -103,6 +117,15 @@ function normalizeScopes(scopes: string[] | undefined): string[] {
 }
 
 const FOREIGN_RESOURCE = 'The requested resource is not served by this server';
+
+const INVALID_REFRESH_TOKEN = 'Invalid refresh token';
+
+/**
+ * How long a rotated refresh token's tombstone is kept (30 days). A replay
+ * within this window is reuse and revokes the token's family; after it, the
+ * replay simply fails like any unknown token.
+ */
+export const REFRESH_TOKEN_REUSE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * The most access a requested scope list allows: read-only when it names
@@ -436,7 +459,19 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     }
     // RFC 8707 section 2.2: a resource sent here must match the one authorized.
     const bound = this.bindResource(rec.resource, resource);
-    return this.issueTokens(rec.clientId, rec.userId, rec.scopes, rec.scopes, bound, rec.grantedScope);
+    // Each code exchange starts a new token family.
+    const pair = this.newTokenPair(
+      rec.clientId,
+      rec.userId,
+      rec.scopes,
+      rec.scopes,
+      bound,
+      rec.grantedScope,
+      randomUUID()
+    );
+    await this.opts.storage.saveAccessToken(pair.accessToken);
+    await this.opts.storage.saveRefreshToken(pair.refreshToken);
+    return pair.tokens;
   }
 
   async exchangeRefreshToken(
@@ -453,12 +488,13 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     }
     const storage = this.opts.storage;
     const rec = await storage.getRefreshToken(refreshToken);
-    if (!rec) throw new InvalidGrantError('Invalid refresh token');
+    if (!rec) return this.rejectRefreshToken(refreshToken);
     if (rec.clientId !== client.client_id) {
       // A refresh token presented by a client it was not issued to has likely
-      // leaked: revoke it (OAuth 2.1 section 4.3.1, RFC 9700 section 4.14).
-      await storage.deleteRefreshToken(refreshToken);
-      throw new InvalidGrantError('Invalid refresh token');
+      // leaked: revoke it and its family (OAuth 2.1 section 4.3.1, RFC 9700
+      // section 4.14).
+      await this.revokeRefreshToken(rec);
+      throw new InvalidGrantError(INVALID_REFRESH_TOKEN);
     }
 
     // RFC 6749 section 6: the requested scope must not include any scope not
@@ -471,64 +507,102 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     }
     const bound = this.bindResource(rec.resource, resource);
 
-    // The atomic one-time use. Nothing taken means a concurrent request spent it
-    // first. Refresh-token rows are never updated, so `rec` is the row taken.
-    if (!(await storage.takeRefreshToken(refreshToken))) {
-      throw new InvalidGrantError('Invalid refresh token');
-    }
     const accessScopes = requested.length > 0 ? requested : rec.scopes;
+    // A 0.3.x refresh token (no family) starts one here.
+    const familyId = rec.familyId ?? randomUUID();
     // The access level travels with the grant and is never widened by a refresh;
     // refresh tokens written before 0.4.0 carry none and stay read-only.
-    return this.issueTokens(
+    const pair = this.newTokenPair(
       rec.clientId,
       rec.userId,
       accessScopes,
       rec.scopes,
       bound,
-      rec.grantedScope ?? 'read-only'
+      rec.grantedScope ?? 'read-only',
+      familyId
     );
+
+    // The atomic one-time use: spends the token, leaves its tombstone and saves
+    // the new pair in one step. Refresh-token rows are never updated, so `rec`
+    // is the row taken. Nothing taken means a concurrent request spent it first;
+    // that is reuse like any other (RFC 9700) and revokes the family, including
+    // the pair the winner just saved.
+    const taken = await storage.rotateRefreshToken(refreshToken, {
+      familyId,
+      consumedUntil: Date.now() + REFRESH_TOKEN_REUSE_WINDOW_MS,
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken,
+    });
+    if (!taken) return this.rejectRefreshToken(refreshToken);
+    return pair.tokens;
   }
 
   /**
-   * Save a new access / refresh token pair for a grant. The refresh token keeps
-   * the grant's scopes and access level; the access token's level is lowered to
-   * read-only when its own scopes say so (a refresh narrowed to `read-only`), so
-   * the stored level never claims more than the token's scope.
+   * Fail a refresh with a token that is not live. A tombstone means the token
+   * was already rotated and is being replayed: revoke its family. Either way the
+   * client gets the same `invalid_grant` as for a token never issued.
    */
-  private async issueTokens(
+  private async rejectRefreshToken(refreshToken: string): Promise<never> {
+    const storage = this.opts.storage;
+    const consumed = await storage.getConsumedRefreshToken(refreshToken);
+    if (consumed) {
+      await storage.deleteTokenFamily(consumed.familyId);
+      console.error('[OAuth] Refresh token reuse detected; revoked its token family');
+    }
+    throw new InvalidGrantError(INVALID_REFRESH_TOKEN);
+  }
+
+  /** Revoke a live refresh token: its whole family, or just the token for a 0.3.x one. */
+  private async revokeRefreshToken(rec: RefreshTokenRecord): Promise<void> {
+    if (rec.familyId !== undefined) await this.opts.storage.deleteTokenFamily(rec.familyId);
+    await this.opts.storage.deleteRefreshToken(rec.token);
+  }
+
+  /**
+   * Mint a new access / refresh token pair for a grant (the caller saves it).
+   * The refresh token keeps the grant's scopes and access level; the access
+   * token's level is lowered to read-only when its own scopes say so (a refresh
+   * narrowed to `read-only`), so the stored level never claims more than the
+   * token's scope. Both tokens join `familyId`.
+   */
+  private newTokenPair(
     clientId: string,
     userId: string,
     accessScopes: string[],
     grantScopes: string[],
     resource: string,
-    grantedScope: GrantedScope
-  ): Promise<OAuthTokens> {
-    const accessToken = newToken();
-    const refreshToken = newToken();
-    const expiresAt = Date.now() + this.opts.accessTokenTtlSec * 1000;
-    await this.opts.storage.saveAccessToken({
-      token: accessToken,
+    grantedScope: GrantedScope,
+    familyId: string
+  ): { accessToken: AccessTokenRecord; refreshToken: RefreshTokenRecord; tokens: OAuthTokens } {
+    const accessToken: AccessTokenRecord = {
+      token: newToken(),
       clientId,
       userId,
       scopes: accessScopes,
-      expiresAt,
+      expiresAt: Date.now() + this.opts.accessTokenTtlSec * 1000,
       resource,
       grantedScope: minScope(grantedScope, scopeCeiling(accessScopes)),
-    });
-    await this.opts.storage.saveRefreshToken({
-      token: refreshToken,
+      familyId,
+    };
+    const refreshToken: RefreshTokenRecord = {
+      token: newToken(),
       clientId,
       userId,
       scopes: grantScopes,
       resource,
       grantedScope,
-    });
+      familyId,
+    };
     return {
-      access_token: accessToken,
-      token_type: 'bearer',
-      expires_in: this.opts.accessTokenTtlSec,
-      refresh_token: refreshToken,
-      scope: accessScopes.join(' '),
+      accessToken,
+      refreshToken,
+      tokens: {
+        access_token: accessToken.token,
+        token_type: 'bearer',
+        expires_in: this.opts.accessTokenTtlSec,
+        refresh_token: refreshToken.token,
+        scope: accessScopes.join(' '),
+      },
     };
   }
 
@@ -559,13 +633,18 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     };
   }
 
+  /**
+   * RFC 7009 revocation. An access token is deleted on its own; a refresh token
+   * takes its whole family (every access and refresh token of the grant) with it.
+   */
   async revokeToken(
     _client: OAuthClientInformationFull,
     request: OAuthTokenRevocationRequest
   ): Promise<void> {
     try {
       await this.opts.storage.deleteAccessToken(request.token);
-      await this.opts.storage.deleteRefreshToken(request.token);
+      const refresh = await this.opts.storage.getRefreshToken(request.token);
+      if (refresh) await this.revokeRefreshToken(refresh);
     } catch {
       // Generic on purpose: storage errors can carry connection details.
       throw new ServerError('Token revocation failed');
