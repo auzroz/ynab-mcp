@@ -59,6 +59,7 @@ const inputSchema = z
     flag_color: z.enum(flagColors).optional().describe('Flag color for the transaction'),
     import_id: z
       .string()
+      .min(1)
       .max(IMPORT_ID_MAX_LENGTH)
       .optional()
       .describe('Unique import ID for deduplication (max 36 chars). A repeat of an existing import_id is not created again'),

@@ -53,7 +53,8 @@ export function transactionChainFields(txn: TransactionLike) {
     transfer_account_id: txn.transfer_account_id ?? null,
     transfer_transaction_id: txn.transfer_transaction_id ?? null,
     matched_transaction_id: txn.matched_transaction_id ?? null,
-    import_id: txn.import_id ?? null,
+    // Written by API clients, not YNAB: sanitized like other free text.
+    import_id: sanitizeString(txn.import_id, 36),
     debt_transaction_type: txn.debt_transaction_type ?? null,
     flag_name: sanitizeFlagName(txn.flag_name),
   };
