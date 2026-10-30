@@ -82,3 +82,91 @@ describe('HTTP transport (oauth mode)', () => {
     expect(res.body.issuer).toBeTruthy();
   });
 });
+
+describe('OAuth protected-resource metadata (RFC 9728) and 401 challenges', () => {
+  const expectedMeta = 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp';
+
+  it('serves path-aware metadata with the expected shape', async () => {
+    const app = await createHttpApp(makeConfig());
+    const res = await request(app).get('/.well-known/oauth-protected-resource/mcp');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      resource: 'https://mcp.example.com/mcp',
+      authorization_servers: ['https://mcp.example.com/'],
+      scopes_supported: ['read-only', 'read-write'],
+      bearer_methods_supported: ['header'],
+      resource_name: 'YNAB MCP Server',
+    });
+    const as = await request(app).get('/.well-known/oauth-authorization-server');
+    expect(res.body.authorization_servers[0]).toBe(as.body.issuer);
+  });
+
+  it('honors a custom MCP_RESOURCE_URL path and keeps the root alias', async () => {
+    const app = await createHttpApp(makeConfig({ resourceUrl: 'https://mcp.example.com/api/mcp' }));
+    const custom = await request(app).get('/.well-known/oauth-protected-resource/api/mcp');
+    expect(custom.status).toBe(200);
+    expect(custom.body.resource).toBe('https://mcp.example.com/api/mcp');
+    const root = await request(app).get('/.well-known/oauth-protected-resource');
+    expect(root.status).toBe(200);
+    expect(root.body.resource).toBe('https://mcp.example.com/api/mcp');
+    const unknown = await request(app).get('/.well-known/oauth-protected-resource/other');
+    expect(unknown.status).toBe(404);
+  });
+
+  it('uses CORS and method rules consistent with the other well-known endpoints', async () => {
+    const app = await createHttpApp(makeConfig());
+    for (const path of [
+      '/.well-known/oauth-protected-resource/mcp',
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-authorization-server',
+    ]) {
+      const get = await request(app).get(path).set('Origin', 'https://client.example');
+      expect(get.headers['access-control-allow-origin']).toBe('*');
+      const post = await request(app).post(path).send({});
+      expect(post.status).toBe(405);
+    }
+  });
+
+  it('401 without a token carries resource_metadata', async () => {
+    const app = await createHttpApp(makeConfig());
+    const res = await request(app)
+      .post('/mcp')
+      .set('Accept', 'application/json, text/event-stream')
+      .send(initializeBody);
+    expect(res.status).toBe(401);
+    const h = res.headers['www-authenticate'] ?? '';
+    expect(h).toMatch(/^Bearer /);
+    expect(h).toContain('error="invalid_token"');
+    expect(h).toContain(`resource_metadata="${expectedMeta}"`);
+  });
+
+  it('401 with an invalid token carries resource_metadata and no internals', async () => {
+    const app = await createHttpApp(makeConfig());
+    const res = await request(app)
+      .post('/mcp')
+      .set('Authorization', 'Bearer not-a-real-token')
+      .set('Accept', 'application/json, text/event-stream')
+      .send(initializeBody);
+    expect(res.status).toBe(401);
+    expect(res.headers['www-authenticate']).toContain(`resource_metadata="${expectedMeta}"`);
+    expect(JSON.stringify(res.body)).not.toContain('not-a-real-token');
+  });
+
+  it('malformed Authorization scheme also gets the challenge', async () => {
+    const app = await createHttpApp(makeConfig());
+    const res = await request(app).post('/mcp').set('Authorization', 'Basic abc').send(initializeBody);
+    expect(res.status).toBe(401);
+    expect(res.headers['www-authenticate']).toContain('resource_metadata=');
+  });
+
+  it('header-auth mode serves no protected-resource metadata and no challenge', async () => {
+    const app = await createHttpApp(makeHttpConfig({ authMode: 'header', fallbackAccessToken: undefined }));
+    const meta = await request(app).get('/.well-known/oauth-protected-resource/mcp');
+    expect(meta.status).toBe(404);
+    const res = await request(app)
+      .post('/mcp')
+      .set('Accept', 'application/json, text/event-stream')
+      .send(initializeBody);
+    expect(res.headers['www-authenticate']).toBeUndefined();
+  });
+});

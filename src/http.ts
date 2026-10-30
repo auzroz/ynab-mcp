@@ -18,7 +18,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import {
+  getOAuthProtectedResourceMetadataUrl,
+  mcpAuthRouter,
+} from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { metadataHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/metadata.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
@@ -79,6 +83,8 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
 
   // Resolves the per-session UserContext at `initialize` time.
   let resolveInitContext: (req: Request) => Promise<ContextResult>;
+  // RFC 9728 metadata URL advertised in 401 challenges (oauth mode only).
+  let resourceMetadataUrl: string | undefined;
 
   if (config.authMode === 'oauth') {
     // --- OAuth mode: AS endpoints + YNAB federation ---
@@ -101,8 +107,31 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     });
     const resolver = new YnabTokenResolver(storage, encryptor, ynab);
 
+    // Protected-resource metadata (RFC 9728) describes the MCP endpoint, so it is
+    // served at the path-aware well-known URL for the resource (e.g.
+    // /.well-known/oauth-protected-resource/mcp). The SDK's own PRM lacks
+    // bearer_methods_supported, so it is mounted explicitly (first match wins)
+    // with the SDK's metadataHandler (CORS: any origin, GET/OPTIONS only).
+    const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
+    const issuerUrl = new URL(publicUrl);
+    const scopesSupported = ['read-only', 'read-write'];
+    const resourceName = 'YNAB MCP Server';
+    resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceServerUrl);
+    const protectedResourceMetadata = {
+      resource: resourceServerUrl.href,
+      authorization_servers: [issuerUrl.href],
+      scopes_supported: scopesSupported,
+      bearer_methods_supported: ['header'],
+      resource_name: resourceName,
+    };
+    app.use(new URL(resourceMetadataUrl).pathname, metadataHandler(protectedResourceMetadata));
+    // Root alias for clients that probe the non-path-aware location.
+    app.use('/.well-known/oauth-protected-resource', metadataHandler(protectedResourceMetadata));
+
     // OAuth 2.1 AS endpoints (/authorize, /token, /register, /revoke, metadata).
-    app.use(mcpAuthRouter({ provider, issuerUrl: new URL(publicUrl) }));
+    app.use(
+      mcpAuthRouter({ provider, issuerUrl, resourceServerUrl, scopesSupported, resourceName })
+    );
 
     // YNAB federation legs.
     app.get('/oauth/ynab/start', async (req: Request, res: Response) => {
@@ -131,7 +160,7 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     });
 
     // Protect the MCP endpoint with the bearer verifier.
-    app.use('/mcp', requireBearerAuth({ verifier: provider }));
+    app.use('/mcp', requireBearerAuth({ verifier: provider, resourceMetadataUrl }));
 
     resolveInitContext = async (req: Request): Promise<ContextResult> => {
       const auth = (req as unknown as { auth?: AuthInfo }).auth;
@@ -199,6 +228,12 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
 
       const result = await resolveInitContext(req);
       if (!result.ok) {
+        if (result.status === 401 && resourceMetadataUrl) {
+          res.set(
+            'WWW-Authenticate',
+            `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`
+          );
+        }
         res.status(result.status).json(jsonRpcError(-32001, result.message));
         return;
       }

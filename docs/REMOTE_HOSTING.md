@@ -102,6 +102,19 @@ volumes: { ynab-data: {} }
   npx mcp-remote https://YOUR_PUBLIC_URL/mcp
   ```
 
+### Discovery (RFC 9728 / RFC 8414)
+
+In OAuth mode the server publishes protected-resource metadata for the MCP
+endpoint at the path-aware URL, e.g.
+`https://YOUR_PUBLIC_URL/.well-known/oauth-protected-resource/mcp` (derived from
+`MCP_RESOURCE_URL`), with a root alias at
+`/.well-known/oauth-protected-resource`. It lists the resource, the authorization
+server (this server's issuer), `bearer_methods_supported: ["header"]` and the
+scopes. Every `401` from `/mcp` carries
+`WWW-Authenticate: Bearer ..., resource_metadata="<that URL>"`, so MCP clients can
+discover the authorization server automatically. Header-auth mode serves neither.
+No new environment variables.
+
 ## Prompts
 
 The server also exposes 7 MCP Prompts — guided, YNAB-methodology-grounded
