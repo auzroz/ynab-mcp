@@ -4,6 +4,7 @@
  * Provides structured error handling for the YNAB MCP server.
  */
 
+import { z } from 'zod';
 import { sanitizeErrorMessage } from './sanitize.js';
 
 /**
@@ -190,13 +191,12 @@ export function formatErrorResponse(error: unknown): string {
 
   // Handle Zod validation errors
   if (isZodError(error)) {
-    const issues = error.issues.map((issue: { path?: unknown; message?: unknown }) => {
+    const issues = error.issues.map((issue: { path?: unknown; code?: unknown; message?: unknown }) => {
       // Defensive checks for malformed issue shapes
-      const path = Array.isArray(issue.path) ? issue.path.join('.') : '';
-      const message = typeof issue.message === 'string'
-        ? sanitizeErrorMessage(issue.message)
-        : 'Validation error';
-      return { field: path, message };
+      const path = Array.isArray(issue.path)
+        ? issue.path.map((segment) => sanitizeErrorMessage(String(segment))).join('.')
+        : '';
+      return { field: path, message: mapZodIssueMessage(issue) };
     });
     return JSON.stringify({
       error: true,
@@ -232,9 +232,63 @@ function isYnabSdkError(error: unknown): error is { error: { id: string; detail?
 }
 
 /**
+ * Map a Zod issue to a client-safe message. Zod 4 messages can echo
+ * client-supplied values (e.g. unrecognized key names), so only the issue code
+ * is trusted. Messages written in our own schemas are kept: refine issues
+ * (code 'custom') and regex/guid/min checks whose message differs from zod's
+ * built-in English text for that issue.
+ */
+function isAuthorMessage(issue: object, message: unknown): boolean {
+  if (typeof message !== 'string') return false;
+  try {
+    const def = z.locales.en().localeError(issue as never);
+    const defMsg = typeof def === 'string' ? def : def?.message;
+    return defMsg !== message;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Client-facing message for one zod issue: our own schema messages pass through
+ * (sanitized); zod's built-in text, which can echo patterns or key names, is
+ * replaced by a generic message for the issue code.
+ */
+function mapZodIssueMessage(issue: { code?: unknown; message?: unknown }): string {
+  const { code, message } = issue;
+  if ((code === 'invalid_format' || code === 'too_small' || code === 'too_big') && isAuthorMessage(issue, message)) {
+    return sanitizeErrorMessage(message as string);
+  }
+  switch (code) {
+    case 'invalid_type':
+      return 'Invalid type';
+    case 'invalid_format':
+      return 'Invalid format';
+    case 'invalid_value':
+    case 'not_multiple_of':
+      return 'Invalid value';
+    case 'invalid_union':
+      return 'Invalid input';
+    case 'too_big':
+      return 'Value is too large or too long';
+    case 'too_small':
+      return 'Value is too small or too short';
+    case 'unrecognized_keys':
+      return 'Unrecognized parameter';
+    case 'invalid_key':
+    case 'invalid_element':
+      return 'Invalid entry';
+    case 'custom':
+      return typeof message === 'string' ? sanitizeErrorMessage(message) : 'Validation error';
+    default:
+      return 'Validation error';
+  }
+}
+
+/**
  * Type guard for Zod validation errors.
  */
-function isZodError(error: unknown): error is { issues: { path: (string | number)[]; message: string }[] } {
+function isZodError(error: unknown): error is { issues: { path: (string | number)[]; code?: string; message: string }[] } {
   return (
     typeof error === 'object' &&
     error !== null &&

@@ -29,7 +29,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
@@ -129,7 +129,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
 
@@ -139,13 +139,63 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Trusted publishing (OIDC) needs npm >= 11.5.1 and id-token: write.
+      # Node 24 bundles a new enough npm; fail loudly rather than publish with an old one.
+      - name: Assert npm supports trusted publishing
+        run: |
+          node -e "const [a,b,c]=process.argv[1].split('.').map(Number);const ok=a>11||(a===11&&(b>5||(b===5&&c>=1)));if(!ok){console.error('::error::npm '+process.argv[1]+' is older than 11.5.1 (required for trusted publishing)');process.exit(1);}" "$(npm --version)"
+
+      # No NODE_AUTH_TOKEN: npm exchanges the job's OIDC token with the trusted
+      # publisher configured for this workflow on npmjs.com (first used by v0.3.5)
+      # and attaches provenance automatically.
       - name: Publish to npm
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  # NOTE: MCP Registry publishing will be added when anthropics/publish-mcp-server-action
-  # becomes publicly available. The server.json manifest is ready for registration.
+  # Opt-in: claiming the io.github.auzroz namespace is the maintainer's decision.
+  # Enable by setting the repository variable PUBLISH_MCP_REGISTRY=true.
+  # Nothing else depends on this job, so a registry failure never blocks the GitHub release.
+  mcp-registry:
+    name: MCP Registry Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [npm, docker]
+    if: ${{ vars.PUBLISH_MCP_REGISTRY == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.6
+      # sha256 of mcp-publisher_linux_amd64.tar.gz for the pinned version
+      MCP_PUBLISHER_SHA256: 1fbe93fc0783c2394d8012c8d6e50a59e98cb2cc2d216264cc69f405d0e21340
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download and verify mcp-publisher
+        run: |
+          set -euo pipefail
+          archive="mcp-publisher_linux_amd64.tar.gz"
+          base_url="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          curl --fail --location --silent --show-error --output "$archive" "$base_url/$archive"
+          curl --fail --location --silent --show-error --output checksums.txt "$base_url/registry_${MCP_PUBLISHER_VERSION#v}_checksums.txt"
+          # Must match both the hash pinned here and the checksum file published with the release.
+          echo "${MCP_PUBLISHER_SHA256}  ${archive}" | sha256sum --check --strict -
+          # Exact filename match: the file also lists "${archive}.sbom.json", which is not downloaded.
+          entry="$(awk -v f="$archive" '$2 == f' checksums.txt)"
+          if [ "$(printf '%s\n' "$entry" | grep -c .)" -ne 1 ]; then
+            echo "expected exactly one checksum entry for ${archive}" >&2
+            exit 1
+          fi
+          printf '%s\n' "$entry" | sha256sum --check --strict -
+          tar xzf "$archive" mcp-publisher
+          ./mcp-publisher --help >/dev/null
+
+      - name: Login to MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish server.json
 
   github-release:
     name: GitHub Release

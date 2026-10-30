@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
@@ -23,9 +24,7 @@ const inputSchema = z.object({
     .max(12)
     .optional()
     .describe('Number of months to analyze (default 6)'),
-  category_id: z
-    .string()
-    .uuid()
+  category_id: ynabId()
     .optional()
     .describe('Specific category UUID to analyze (optional)'),
 });

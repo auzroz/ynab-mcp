@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
 
 permissions:
   contents: read
@@ -35,7 +35,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
@@ -55,7 +55,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
@@ -67,6 +67,29 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        # postgres 18-alpine, pinned by multi-arch index digest
+        image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+        env:
+          POSTGRES_USER: ynab
+          # Throwaway container reachable only from this job: trust auth, so no
+          # credential is committed or needed.
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: ynab_test
+        ports:
+          # Loopback only: the service uses trust auth.
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ynab -d ynab_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # CI must exercise the storage suites; the test file fails instead of skipping.
+      REQUIRE_DB_TESTS: '1'
+      # Plain-text localhost connection: PostgresStorage does not configure SSL.
+      DATABASE_URL: postgres://ynab@localhost:5432/ynab_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -75,11 +98,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Verify better-sqlite3 native addon loads
+        run: node -e "new (require('better-sqlite3'))(':memory:').close()"
 
       - name: Run tests with coverage
         run: npm run test:coverage
@@ -89,6 +115,55 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  # Separate job rather than a matrix so the "Test" check name stays stable for branch protection.
+  # Runs the same tests on the Node 22 floor; coverage is uploaded only from the Node 24 job.
+  test-node-22:
+    name: Test (Node 22)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # postgres 18-alpine, pinned by multi-arch index digest
+        image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+        env:
+          POSTGRES_USER: ynab
+          # Throwaway container reachable only from this job: trust auth, so no
+          # credential is committed or needed.
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: ynab_test
+        ports:
+          # Loopback only: the service uses trust auth.
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ynab -d ynab_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # CI must exercise the storage suites; the test file fails instead of skipping.
+      REQUIRE_DB_TESTS: '1'
+      # Plain-text localhost connection: PostgresStorage does not configure SSL.
+      DATABASE_URL: postgres://ynab@localhost:5432/ynab_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # The exact engines floor: better-sqlite3 13 needs Node-API 10, first shipped in 22.14.0.
+          node-version: '22.14.0'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify better-sqlite3 native addon loads
+        run: node -e "new (require('better-sqlite3'))(':memory:').close()"
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
 
   audit:
     name: Dependency Audit
@@ -101,7 +176,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
@@ -124,7 +199,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies

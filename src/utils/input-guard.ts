@@ -1,9 +1,9 @@
 /**
  * Pre-parse input guard for tool arguments.
  *
- * Interim mitigation for zod 3 GHSA-mrhx-c7xc-m3w5 (memory exhaustion when
- * validating oversized constrained collections; no 3.x fix exists). Runs
- * centrally in the tools/call dispatch BEFORE any zod parsing.
+ * Defense in depth against memory exhaustion from oversized or deeply nested
+ * payloads, independent of schema validation. Runs centrally in the
+ * tools/call dispatch BEFORE any zod parsing.
  *
  * Limits (a legitimate 100-transaction bulk create, including split
  * subtransactions, is well inside all of them):

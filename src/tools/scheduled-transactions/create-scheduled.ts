@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -19,7 +20,7 @@ const inputSchema = z.object({
     .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  account_id: z.string().uuid().describe('The account UUID for this scheduled transaction'),
+  account_id: ynabId().describe('The account UUID for this scheduled transaction'),
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -35,15 +36,13 @@ const inputSchema = z.object({
     .describe(
       'Recurrence frequency: never, daily, weekly, everyOtherWeek, twiceAMonth, every4Weeks, monthly, everyOtherMonth, every3Months, every4Months, twiceAYear, yearly, everyOtherYear'
     ),
-  payee_id: z.string().uuid().optional().describe('Payee UUID (use ynab_list_payees to find)'),
+  payee_id: ynabId().optional().describe('Payee UUID (use ynab_list_payees to find)'),
   payee_name: z
     .string()
     .max(200)
     .optional()
     .describe('Payee name (creates new payee if payee_id not provided)'),
-  category_id: z
-    .string()
-    .uuid()
+  category_id: ynabId()
     .optional()
     .describe('Category UUID (use ynab_list_categories to find). Credit Card Payment categories NOT allowed.'),
   memo: z.string().max(200).optional().describe('Transaction memo/note'),

@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
@@ -16,7 +17,7 @@ const inputSchema = z.object({
     .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  transaction_id: z.string().uuid().describe('The transaction UUID to delete'),
+  transaction_id: ynabId().describe('The transaction UUID to delete'),
 });
 
 // Tool definition

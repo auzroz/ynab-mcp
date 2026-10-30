@@ -258,7 +258,16 @@ const sqliteAvailable = ((): boolean => {
   }
 })();
 
-describe.skipIf(!sqliteAvailable)('SqliteStorage suite', () => {
+// CI sets REQUIRE_DB_TESTS=1 so a missing driver or database fails instead of silently skipping.
+const requireDbTests = process.env.REQUIRE_DB_TESTS === '1';
+
+describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage suite', () => {
+  if (requireDbTests) {
+    it('has better-sqlite3 available (REQUIRE_DB_TESTS=1)', () => {
+      expect(sqliteAvailable).toBe(true);
+    });
+  }
+
   const sqliteFiles: string[] = [];
 
   runStorageConformance('SqliteStorage', async () => {
@@ -280,7 +289,13 @@ describe.skipIf(!sqliteAvailable)('SqliteStorage suite', () => {
 });
 
 // --- PostgresStorage (only when DATABASE_URL is set) ---
-describe.skipIf(!process.env.DATABASE_URL)('PostgresStorage suite', () => {
+describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage suite', () => {
+  if (requireDbTests) {
+    it('has DATABASE_URL set (REQUIRE_DB_TESTS=1)', () => {
+      expect(process.env.DATABASE_URL).toBeTruthy();
+    });
+  }
+
   runStorageConformance('PostgresStorage', async () => {
     const { PostgresStorage } = await import('../../../src/storage/postgres.js');
     const connectionString = process.env.DATABASE_URL;

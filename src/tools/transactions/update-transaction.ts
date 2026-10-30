@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -24,8 +25,8 @@ const inputSchema = z
       .string().max(64)
       .optional()
       .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-    transaction_id: z.string().uuid().describe('The transaction UUID to update'),
-    account_id: z.string().uuid().optional().describe('New account UUID'),
+    transaction_id: ynabId().describe('The transaction UUID to update'),
+    account_id: ynabId().optional().describe('New account UUID'),
     date: z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -35,9 +36,9 @@ const inputSchema = z
       .number()
       .optional()
       .describe('New amount in dollars (negative for outflow, positive for inflow)'),
-    payee_id: z.string().uuid().optional().describe('New payee UUID'),
+    payee_id: ynabId().optional().describe('New payee UUID'),
     payee_name: z.string().max(200).optional().describe('New payee name'),
-    category_id: z.string().uuid().optional().describe('New category UUID'),
+    category_id: ynabId().optional().describe('New category UUID'),
     memo: z.string().max(200).optional().describe('New memo/note'),
     cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),
     approved: z.boolean().optional().describe('New approved status'),

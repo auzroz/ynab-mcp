@@ -3,9 +3,9 @@
 [![npm version](https://img.shields.io/npm/v/ynab-mcp)](https://www.npmjs.com/package/ynab-mcp)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fauzroz%2Fynab--mcp-blue)](https://github.com/auzroz/ynab-mcp/pkgs/container/ynab-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js 20+](https://img.shields.io/badge/node-20%2B-brightgreen)](https://nodejs.org)
+[![Node.js 22.14+](https://img.shields.io/badge/node-22.14%2B-brightgreen)](https://nodejs.org)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-blue)](https://modelcontextprotocol.io)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue)](https://www.typescriptlang.org/)
 
 A comprehensive [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for **YNAB (You Need A Budget)** that enables AI assistants like **Claude Desktop** to read your budget, analyze spending patterns, detect subscriptions, and provide personalized financial insights—all through natural conversation.
 

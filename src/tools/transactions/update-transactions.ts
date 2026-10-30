@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -15,8 +16,8 @@ const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
 const flagColors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'] as const;
 
 const transactionUpdateSchema = z.object({
-  id: z.string().uuid().describe('The UUID of the transaction to update'),
-  account_id: z.string().uuid().optional().describe('New account UUID'),
+  id: ynabId().describe('The UUID of the transaction to update'),
+  account_id: ynabId().optional().describe('New account UUID'),
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -26,9 +27,9 @@ const transactionUpdateSchema = z.object({
     .number()
     .optional()
     .describe('New amount in dollars (negative for outflow, positive for inflow)'),
-  payee_id: z.string().uuid().optional().describe('New payee UUID'),
+  payee_id: ynabId().optional().describe('New payee UUID'),
   payee_name: z.string().max(200).optional().describe('New payee name'),
-  category_id: z.string().uuid().optional().describe('New category UUID'),
+  category_id: ynabId().optional().describe('New category UUID'),
   memo: z.string().max(500).optional().describe('New memo/note'),
   cleared: z.enum(clearedStatuses).optional().describe('New cleared status'),
   approved: z.boolean().optional().describe('New approved status'),

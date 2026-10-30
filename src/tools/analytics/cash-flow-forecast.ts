@@ -261,12 +261,10 @@ export async function handleCashFlowForecast(
   // Find low point
   let lowestBalance = currentCash;
   let lowestBalanceDate = todayStr;
-  let tempBalance = currentCash;
 
   for (const forecast of dailyForecasts) {
-    tempBalance = forecast.running_balance;
-    if (tempBalance < lowestBalance) {
-      lowestBalance = tempBalance;
+    if (forecast.running_balance < lowestBalance) {
+      lowestBalance = forecast.running_balance;
       lowestBalanceDate = forecast.date;
     }
   }

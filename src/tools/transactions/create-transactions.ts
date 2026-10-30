@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -13,7 +14,7 @@ import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 
 // Transaction schema for bulk creation
 const transactionSchema = z.object({
-  account_id: z.string().uuid().describe('The account UUID for this transaction'),
+  account_id: ynabId().describe('The account UUID for this transaction'),
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -21,9 +22,9 @@ const transactionSchema = z.object({
   amount: z
     .number()
     .describe('Amount in dollars (negative for outflow, positive for inflow)'),
-  payee_id: z.string().uuid().optional().describe('Payee UUID'),
+  payee_id: ynabId().optional().describe('Payee UUID'),
   payee_name: z.string().max(200).optional().describe('Payee name'),
-  category_id: z.string().uuid().optional().describe('Category UUID'),
+  category_id: ynabId().optional().describe('Category UUID'),
   memo: z.string().max(200).optional().describe('Transaction memo'),
   cleared: z.enum(['cleared', 'uncleared', 'reconciled']).optional(),
   approved: z.boolean().optional(),
