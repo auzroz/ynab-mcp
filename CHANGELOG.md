@@ -5,7 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-10-30
+
+Republishes 0.3.4 to npm. The 0.3.4 npm publish failed because the release
+workflow's npm token had expired, so `ynab-mcp@0.3.4` never reached npm (its
+Docker image did). The code is identical to 0.3.4; use 0.3.5.
+
+### Changed
+
+- The release workflow publishes to npm through npm trusted publishing (OIDC)
+  instead of a long-lived token. The publish job runs on Node 24 for npm 11;
+  the package still supports Node 20.
+
 ## [0.3.4] - 2026-10-29
+
+> Note: published to ghcr.io only. The npm publish failed; install 0.3.5 instead.
+
 
 Hotfix release. It keeps Node 20 support (`engines` stays `>=20.0.0`) and stays
 on zod 3.x and MCP SDK 1.x. Upgrading from 0.2.0-0.3.3 is recommended: fresh
