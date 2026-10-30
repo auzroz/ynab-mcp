@@ -204,6 +204,57 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
       });
     });
 
+    describe('resource binding (RFC 8707)', () => {
+      const resource = 'https://mcp.example.com/mcp';
+
+      it('round-trips a resource on pending auth, codes, access and refresh tokens', async () => {
+        const pending = makePending({ resource });
+        await storage.savePendingAuth(pending);
+        expect((await storage.takePendingAuth(pending.state))?.resource).toBe(resource);
+
+        const code = makeAuthCode({ resource });
+        await storage.saveAuthCode(code);
+        expect((await storage.takeAuthCode(code.code))?.resource).toBe(resource);
+
+        const at = makeAccessToken({ resource });
+        await storage.saveAccessToken(at);
+        expect(await storage.getAccessToken(at.token)).toEqual(at);
+
+        const rt = makeRefreshToken({ resource });
+        await storage.saveRefreshToken(rt);
+        expect(await storage.takeRefreshToken(rt.token)).toEqual(rt);
+      });
+
+      it('returns undefined (not null or "") for records saved without a resource', async () => {
+        const pending = makePending();
+        await storage.savePendingAuth(pending);
+        expect((await storage.takePendingAuth(pending.state))?.resource).toBeUndefined();
+
+        const code = makeAuthCode();
+        await storage.saveAuthCode(code);
+        expect((await storage.takeAuthCode(code.code))?.resource).toBeUndefined();
+
+        const at = makeAccessToken();
+        await storage.saveAccessToken(at);
+        expect((await storage.getAccessToken(at.token))?.resource).toBeUndefined();
+
+        const rt = makeRefreshToken();
+        await storage.saveRefreshToken(rt);
+        expect((await storage.takeRefreshToken(rt.token))?.resource).toBeUndefined();
+      });
+
+      it('keeps the resource through a pending-auth take and re-save', async () => {
+        const pending = makePending({ resource });
+        await storage.savePendingAuth(pending);
+        const taken = await storage.takePendingAuth(pending.state);
+        if (!taken) throw new Error('expected pending record');
+        await storage.savePendingAuth({ ...taken, grantedScope: 'read-only' });
+        const again = await storage.takePendingAuth(pending.state);
+        expect(again?.resource).toBe(resource);
+        expect(again?.grantedScope).toBe('read-only');
+      });
+    });
+
     describe('refresh tokens (one-time / rotation)', () => {
       it('takes a refresh token exactly once', async () => {
         const rec = makeRefreshToken();
@@ -236,6 +287,94 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
       });
     });
   });
+}
+
+// --- Upgrading a database created by 0.3.x ---
+
+/** The 0.3.x schema, verbatim (SQLite flavor; Postgres uses BIGINT for the integers). */
+function legacySchema(int: 'INTEGER' | 'BIGINT'): string {
+  return `
+    CREATE TABLE users (
+      user_id TEXT PRIMARY KEY, granted_scope TEXT NOT NULL,
+      encrypted_refresh_token TEXT NOT NULL, updated_at ${int} NOT NULL
+    );
+    CREATE TABLE oauth_clients (client_id TEXT PRIMARY KEY, client_json TEXT NOT NULL);
+    CREATE TABLE pending_auth (
+      state TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL,
+      code_challenge TEXT NOT NULL, client_state TEXT, scopes TEXT NOT NULL,
+      granted_scope TEXT NOT NULL, expires_at ${int} NOT NULL
+    );
+    CREATE TABLE auth_codes (
+      code TEXT PRIMARY KEY, client_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL, code_challenge TEXT NOT NULL, scopes TEXT NOT NULL,
+      expires_at ${int} NOT NULL
+    );
+    CREATE TABLE access_tokens (
+      token TEXT PRIMARY KEY, client_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      scopes TEXT NOT NULL, expires_at ${int} NOT NULL
+    );
+    CREATE TABLE refresh_tokens (
+      token TEXT PRIMARY KEY, client_id TEXT NOT NULL, user_id TEXT NOT NULL, scopes TEXT NOT NULL
+    );
+  `;
+}
+
+/** Rows as 0.3.x wrote them (no resource column anywhere). */
+function legacyRows(expiresAt: number): string {
+  return `
+    INSERT INTO users VALUES ('legacy-user', 'read-write', 'enc', 1);
+    INSERT INTO pending_auth VALUES ('legacy-state', 'c1', 'https://client/cb', 'chal', NULL, '[]', 'read-only', ${expiresAt});
+    INSERT INTO auth_codes VALUES ('legacy-code', 'c1', 'legacy-user', 'https://client/cb', 'chal', '["read-only"]', ${expiresAt});
+    INSERT INTO access_tokens VALUES ('legacy-at', 'c1', 'legacy-user', '["read-only"]', ${expiresAt});
+    INSERT INTO refresh_tokens VALUES ('legacy-rt', 'c1', 'legacy-user', '["read-only"]');
+  `;
+}
+
+const RESOURCE_TABLES = ['pending_auth', 'auth_codes', 'access_tokens', 'refresh_tokens'] as const;
+
+/**
+ * Open a 0.3.x database with the current driver twice and check that legacy rows
+ * still read (with no resource), new rows carry one, and re-running init() is a
+ * no-op that adds each new column exactly once.
+ */
+async function checkLegacyUpgrade(
+  open: () => Promise<Storage>,
+  columnsOf: (table: string) => Promise<string[]>
+): Promise<void> {
+  const first = await open();
+  try {
+    expect(await first.getUser('legacy-user')).toMatchObject({ grantedScope: 'read-write' });
+    expect(await first.getAccessToken('legacy-at')).toEqual({
+      token: 'legacy-at',
+      clientId: 'c1',
+      userId: 'legacy-user',
+      scopes: ['read-only'],
+      expiresAt: expect.any(Number),
+      resource: undefined,
+    });
+    expect((await first.takeAuthCode('legacy-code'))?.resource).toBeUndefined();
+    expect((await first.takePendingAuth('legacy-state'))?.resource).toBeUndefined();
+    const legacyRefresh = await first.takeRefreshToken('legacy-rt');
+    expect(legacyRefresh?.userId).toBe('legacy-user');
+    expect(legacyRefresh?.resource).toBeUndefined();
+
+    await first.saveAccessToken(makeAccessToken({ token: 'new-at', resource: 'https://r.example/mcp' }));
+  } finally {
+    await first.close();
+  }
+
+  const second = await open();
+  try {
+    expect((await second.getAccessToken('new-at'))?.resource).toBe('https://r.example/mcp');
+    expect((await second.getAccessToken('legacy-at'))?.resource).toBeUndefined();
+  } finally {
+    await second.close();
+  }
+
+  for (const table of RESOURCE_TABLES) {
+    const cols = await columnsOf(table);
+    expect(cols.filter((c) => c === 'resource')).toHaveLength(1);
+  }
 }
 
 // --- MemoryStorage (always) ---
@@ -279,6 +418,35 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage suite', () =
     return s;
   });
 
+  it('upgrades a 0.3.x SQLite database in place (idempotent)', async () => {
+    const { SqliteStorage } = await import('../../../src/storage/sqlite.js');
+    const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3');
+    const file = join(tmpdir(), `ynab-mcp-sqlite-legacy-${randomUUID()}.db`);
+    sqliteFiles.push(file);
+    const raw = new Database(file);
+    raw.exec(legacySchema('INTEGER'));
+    raw.exec(legacyRows(Date.now() + 3_600_000));
+    raw.close();
+
+    await checkLegacyUpgrade(
+      async () => {
+        const s = new SqliteStorage({ path: file });
+        await s.init();
+        return s;
+      },
+      async (table) => {
+        const db = new Database(file, { readonly: true });
+        try {
+          return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+            (c) => c.name
+          );
+        } finally {
+          db.close();
+        }
+      }
+    );
+  });
+
   afterAll(() => {
     for (const f of sqliteFiles) {
       rmSync(f, { force: true });
@@ -295,6 +463,73 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
       expect(process.env.DATABASE_URL).toBeTruthy();
     });
   }
+
+  it('upgrades a 0.3.x Postgres schema in place (idempotent)', async () => {
+    const { PostgresStorage } = await import('../../../src/storage/postgres.js');
+    const pg = (await import('pg')).default;
+    const base = process.env.DATABASE_URL;
+    if (!base) throw new Error('DATABASE_URL not set');
+    // An isolated schema so the legacy tables don't collide with the conformance suite's.
+    const schema = `legacy_${randomUUID().replace(/-/g, '')}`;
+    const url = new URL(base);
+    url.searchParams.set('options', `-c search_path=${schema}`);
+    const connectionString = url.toString();
+
+    const admin = new pg.Pool({ connectionString: base });
+    try {
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      const raw = new pg.Pool({ connectionString });
+      try {
+        await raw.query(legacySchema('BIGINT'));
+        await raw.query(legacyRows(Date.now() + 3_600_000));
+      } finally {
+        await raw.end();
+      }
+
+      await checkLegacyUpgrade(
+        async () => {
+          const s = new PostgresStorage({ connectionString });
+          await s.init();
+          return s;
+        },
+        async (table) => {
+          const res = await admin.query<{ column_name: string }>(
+            'SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2',
+            [schema, table]
+          );
+          return res.rows.map((r) => r.column_name);
+        }
+      );
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.end();
+    }
+  });
+
+  it('initializes a fresh schema from several replicas at once', async () => {
+    const { PostgresStorage } = await import('../../../src/storage/postgres.js');
+    const pg = (await import('pg')).default;
+    const base = process.env.DATABASE_URL;
+    if (!base) throw new Error('DATABASE_URL not set');
+    const schema = `fresh_${randomUUID().replace(/-/g, '')}`;
+    const url = new URL(base);
+    url.searchParams.set('options', `-c search_path=${schema}`);
+    const admin = new pg.Pool({ connectionString: base });
+    try {
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      const replicas = Array.from(
+        { length: 4 },
+        () => new PostgresStorage({ connectionString: url.toString() })
+      );
+      await Promise.all(replicas.map((r) => r.init()));
+      await replicas[0]?.saveAccessToken(makeAccessToken({ token: 'at-1', resource: 'https://r/mcp' }));
+      expect((await replicas[1]?.getAccessToken('at-1'))?.resource).toBe('https://r/mcp');
+      await Promise.all(replicas.map((r) => r.close()));
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.end();
+    }
+  });
 
   runStorageConformance('PostgresStorage', async () => {
     const { PostgresStorage } = await import('../../../src/storage/postgres.js');

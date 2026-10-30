@@ -19,6 +19,7 @@ import type {
   PendingAuthRecord,
   GrantedScope,
 } from './types.js';
+import { ADDED_COLUMNS } from './migrations.js';
 
 export interface PostgresStorageOptions {
   connectionString: string;
@@ -44,6 +45,7 @@ interface PendingRow extends QueryResultRow {
   scopes: string;
   granted_scope: string;
   expires_at: string | number;
+  resource: string | null;
 }
 
 interface AuthCodeRow extends QueryResultRow {
@@ -54,6 +56,7 @@ interface AuthCodeRow extends QueryResultRow {
   code_challenge: string;
   scopes: string;
   expires_at: string | number;
+  resource: string | null;
 }
 
 interface AccessTokenRow extends QueryResultRow {
@@ -62,6 +65,7 @@ interface AccessTokenRow extends QueryResultRow {
   user_id: string;
   scopes: string;
   expires_at: string | number;
+  resource: string | null;
 }
 
 interface RefreshTokenRow extends QueryResultRow {
@@ -69,6 +73,7 @@ interface RefreshTokenRow extends QueryResultRow {
   client_id: string;
   user_id: string;
   scopes: string;
+  resource: string | null;
 }
 
 function parseScopes(json: string): string[] {
@@ -81,29 +86,20 @@ function toMillis(value: string | number): number {
   return typeof value === 'number' ? value : Number(value);
 }
 
-export class PostgresStorage implements Storage {
-  private pool: PgPool | undefined;
+/** Arbitrary constant key for the schema advisory lock (serializes replicas starting together). */
+const SCHEMA_LOCK_KEY = 0x796e6162; // "ynab"
 
-  constructor(private readonly options: PostgresStorageOptions) {}
-
-  private get db(): PgPool {
-    if (!this.pool) throw new Error('PostgresStorage used before init()');
-    return this.pool;
-  }
-
-  async init(): Promise<void> {
-    let Pool: typeof PgPool;
-    try {
-      const mod = await import('pg');
-      // `pg` is a CommonJS module; the Pool constructor lives on the default export.
-      Pool = mod.default.Pool;
-    } catch {
-      throw new Error('Postgres driver selected but pg is not installed');
-    }
-
-    const pool = new Pool({ connectionString: this.options.connectionString });
-
-    await pool.query(`
+/**
+ * Create the base (0.3.x) tables and apply {@link ADDED_COLUMNS}, in one
+ * transaction under an advisory lock so concurrent replicas don't race. Postgres
+ * DDL is transactional, so a failure leaves the schema unchanged.
+ */
+async function migrate(pool: PgPool): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1)', [SCHEMA_LOCK_KEY]);
+    await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,
         granted_scope TEXT NOT NULL,
@@ -147,6 +143,46 @@ export class PostgresStorage implements Storage {
         scopes TEXT NOT NULL
       );
     `);
+    for (const { table, column, type } of ADDED_COLUMNS) {
+      await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export class PostgresStorage implements Storage {
+  private pool: PgPool | undefined;
+
+  constructor(private readonly options: PostgresStorageOptions) {}
+
+  private get db(): PgPool {
+    if (!this.pool) throw new Error('PostgresStorage used before init()');
+    return this.pool;
+  }
+
+  async init(): Promise<void> {
+    let Pool: typeof PgPool;
+    try {
+      const mod = await import('pg');
+      // `pg` is a CommonJS module; the Pool constructor lives on the default export.
+      Pool = mod.default.Pool;
+    } catch {
+      throw new Error('Postgres driver selected but pg is not installed');
+    }
+
+    const pool = new Pool({ connectionString: this.options.connectionString });
+
+    try {
+      await migrate(pool);
+    } catch (err) {
+      await pool.end();
+      throw err;
+    }
 
     this.pool = pool;
   }
@@ -157,6 +193,7 @@ export class PostgresStorage implements Storage {
       this.pool = undefined;
     }
   }
+
 
   // Users + YNAB tokens
 
@@ -214,8 +251,8 @@ export class PostgresStorage implements Storage {
   async savePendingAuth(rec: PendingAuthRecord): Promise<void> {
     await this.db.query(
       `INSERT INTO pending_auth
-         (state, client_id, redirect_uri, code_challenge, client_state, scopes, granted_scope, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         (state, client_id, redirect_uri, code_challenge, client_state, scopes, granted_scope, expires_at, resource)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         rec.state,
         rec.clientId,
@@ -225,6 +262,7 @@ export class PostgresStorage implements Storage {
         JSON.stringify(rec.scopes),
         rec.grantedScope,
         rec.expiresAt,
+        rec.resource ?? null,
       ]
     );
   }
@@ -247,6 +285,7 @@ export class PostgresStorage implements Storage {
       scopes: parseScopes(row.scopes),
       grantedScope: row.granted_scope as GrantedScope,
       expiresAt,
+      resource: row.resource ?? undefined,
     };
   }
 
@@ -255,8 +294,8 @@ export class PostgresStorage implements Storage {
   async saveAuthCode(rec: AuthCodeRecord): Promise<void> {
     await this.db.query(
       `INSERT INTO auth_codes
-         (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at, resource)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         rec.code,
         rec.clientId,
@@ -265,6 +304,7 @@ export class PostgresStorage implements Storage {
         rec.codeChallenge,
         JSON.stringify(rec.scopes),
         rec.expiresAt,
+        rec.resource ?? null,
       ]
     );
   }
@@ -286,6 +326,7 @@ export class PostgresStorage implements Storage {
       codeChallenge: row.code_challenge,
       scopes: parseScopes(row.scopes),
       expiresAt,
+      resource: row.resource ?? undefined,
     };
   }
 
@@ -293,9 +334,9 @@ export class PostgresStorage implements Storage {
 
   async saveAccessToken(rec: AccessTokenRecord): Promise<void> {
     await this.db.query(
-      `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [rec.token, rec.clientId, rec.userId, JSON.stringify(rec.scopes), rec.expiresAt]
+      `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, resource)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [rec.token, rec.clientId, rec.userId, JSON.stringify(rec.scopes), rec.expiresAt, rec.resource ?? null]
     );
   }
 
@@ -317,6 +358,7 @@ export class PostgresStorage implements Storage {
       userId: row.user_id,
       scopes: parseScopes(row.scopes),
       expiresAt,
+      resource: row.resource ?? undefined,
     };
   }
 
@@ -328,9 +370,9 @@ export class PostgresStorage implements Storage {
 
   async saveRefreshToken(rec: RefreshTokenRecord): Promise<void> {
     await this.db.query(
-      `INSERT INTO refresh_tokens (token, client_id, user_id, scopes)
-       VALUES ($1, $2, $3, $4)`,
-      [rec.token, rec.clientId, rec.userId, JSON.stringify(rec.scopes)]
+      `INSERT INTO refresh_tokens (token, client_id, user_id, scopes, resource)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [rec.token, rec.clientId, rec.userId, JSON.stringify(rec.scopes), rec.resource ?? null]
     );
   }
 
@@ -346,6 +388,7 @@ export class PostgresStorage implements Storage {
       clientId: row.client_id,
       userId: row.user_id,
       scopes: parseScopes(row.scopes),
+      resource: row.resource ?? undefined,
     };
   }
 

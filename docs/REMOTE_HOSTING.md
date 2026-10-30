@@ -115,6 +115,33 @@ scopes. Every `401` from `/mcp` carries
 discover the authorization server automatically. Header-auth mode serves neither.
 No new environment variables.
 
+### Token audience (RFC 8707)
+
+Every authorization code, access token and refresh token is bound to the MCP
+resource (`MCP_RESOURCE_URL`). Clients may send a `resource` parameter to
+`/authorize` and `/token`. If they do, it must name this server's resource. The
+comparison ignores the case of the scheme and host, a default port, a fragment
+and one trailing slash. Any other value is refused with `invalid_target`. A
+refresh may ask for a narrower scope than the original grant but never a wider
+one (`invalid_scope`). `/mcp` returns `401 invalid_token` for a token bound to a
+different resource.
+
+Clients that send no `resource` still work. Tokens issued by 0.3.x (stored
+without a resource) keep working against this server until they expire, so
+existing users stay connected. If you change `MCP_RESOURCE_URL` (or `PUBLIC_URL`
+when it supplies the default), tokens issued for the old URL stop working and
+users must reconnect.
+
+## Upgrading
+
+**Back up your database before upgrading** (copy the SQLite file while the
+server is stopped, or `pg_dump` the Postgres database). On startup the server
+migrates the schema in place. Migrations only add nullable columns and are safe
+to re-run. 0.4.0 adds a `resource` column to `pending_auth`, `auth_codes`,
+`access_tokens` and `refresh_tokens`. On Postgres the migration runs in one
+transaction under an advisory lock, so replicas that start together don't race.
+The previous release can still read a migrated database if you need to roll back.
+
 ## Prompts
 
 The server also exposes 7 MCP Prompts — guided, YNAB-methodology-grounded

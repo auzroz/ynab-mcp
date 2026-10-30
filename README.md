@@ -99,7 +99,9 @@ client/cache/rate-limiter/audit-log.
 YNAB: many users connect their own YNAB accounts to one instance, each isolated,
 choosing read-only or read-write at consent. See
 **[docs/REMOTE_HOSTING.md](docs/REMOTE_HOSTING.md)** for the full deployer guide
-(registering the YNAB app, storage, TLS).
+(registering the YNAB app, storage, TLS). Tokens are bound to the MCP resource
+URL (RFC 8707). **Back up your SQLite/Postgres database before upgrading**: the
+schema is migrated in place on startup (see the guide's *Upgrading* section).
 
 > **Single-user (header auth).** If the OAuth variables aren't all set, HTTP mode
 > takes the YNAB token per request via the `X-YNAB-Token` header (falling back to

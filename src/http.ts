@@ -95,11 +95,14 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
       clientSecret: config.oauthClientSecret as string,
     };
     const publicUrl = config.publicUrl as string;
+    // The protected resource (RFC 8707 audience) every token is bound to.
+    const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
     const provider = new McpOAuthProvider({
       storage,
       encryptor,
       ynab,
       publicUrl,
+      resourceUrl: resourceServerUrl.href,
       allowWrite: config.allowWrite,
       globalReadOnly: config.readOnly,
       accessTokenTtlSec: config.accessTokenTtlSec,
@@ -112,7 +115,6 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     // /.well-known/oauth-protected-resource/mcp). The SDK's own PRM lacks
     // bearer_methods_supported, so it is mounted explicitly (first match wins)
     // with the SDK's metadataHandler (CORS: any origin, GET/OPTIONS only).
-    const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
     const issuerUrl = new URL(publicUrl);
     const scopesSupported = ['read-only', 'read-write'];
     const resourceName = 'YNAB MCP Server';
@@ -159,8 +161,13 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
       }
     });
 
-    // Protect the MCP endpoint with the bearer verifier.
-    app.use('/mcp', requireBearerAuth({ verifier: provider, resourceMetadataUrl }));
+    // Protect the MCP endpoint with the bearer verifier. expectedResource makes the
+    // SDK refuse (401 invalid_token) any token whose audience is not this resource;
+    // the provider also checks it, and reports 0.3.x tokens as bound to it.
+    app.use(
+      '/mcp',
+      requireBearerAuth({ verifier: provider, resourceMetadataUrl, expectedResource: resourceServerUrl })
+    );
 
     resolveInitContext = async (req: Request): Promise<ContextResult> => {
       const auth = (req as unknown as { auth?: AuthInfo }).auth;

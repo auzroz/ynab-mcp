@@ -31,6 +31,12 @@ export interface AuthCodeRecord {
   codeChallenge: string;
   scopes: string[];
   expiresAt: number;
+  /**
+   * Canonical RFC 8707 resource this record is bound to. Undefined for rows
+   * written by 0.3.x (and, for pending auth / codes, when the client sent no
+   * `resource`); the provider treats those as bound to the configured resource.
+   */
+  resource?: string | undefined;
 }
 
 export interface AccessTokenRecord {
@@ -39,6 +45,12 @@ export interface AccessTokenRecord {
   userId: string;
   scopes: string[];
   expiresAt: number;
+  /**
+   * Canonical RFC 8707 resource this record is bound to. Undefined for rows
+   * written by 0.3.x (and, for pending auth / codes, when the client sent no
+   * `resource`); the provider treats those as bound to the configured resource.
+   */
+  resource?: string | undefined;
 }
 
 export interface RefreshTokenRecord {
@@ -46,6 +58,12 @@ export interface RefreshTokenRecord {
   clientId: string;
   userId: string;
   scopes: string[];
+  /**
+   * Canonical RFC 8707 resource this record is bound to. Undefined for rows
+   * written by 0.3.x (and, for pending auth / codes, when the client sent no
+   * `resource`); the provider treats those as bound to the configured resource.
+   */
+  resource?: string | undefined;
 }
 
 /** Bridges the MCP `/authorize` leg to the YNAB `/oauth/ynab/callback` leg. */
@@ -62,6 +80,12 @@ export interface PendingAuthRecord {
   /** The YNAB scope chosen at consent ("read-only" or full). */
   grantedScope: GrantedScope;
   expiresAt: number;
+  /**
+   * Canonical RFC 8707 resource this record is bound to. Undefined for rows
+   * written by 0.3.x (and, for pending auth / codes, when the client sent no
+   * `resource`); the provider treats those as bound to the configured resource.
+   */
+  resource?: string | undefined;
 }
 
 export interface Storage {

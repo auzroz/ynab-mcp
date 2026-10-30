@@ -14,6 +14,14 @@ import type {
   OAuthClientMetadata,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { AuthorizationParams } from '@modelcontextprotocol/sdk/server/auth/provider.js';
+import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import {
+  InvalidGrantError,
+  InvalidScopeError,
+  InvalidTargetError,
+  InvalidTokenError,
+  ServerError,
+} from '@modelcontextprotocol/sdk/server/auth/errors.js';
 
 vi.mock('../../../src/auth/ynab-oauth.js', async () => {
   const actual =
@@ -107,11 +115,12 @@ beforeEach(() => {
 /** Register a client and drive the full flow up to (and returning) an MCP auth code. */
 async function driveToAuthCode(
   provider: McpOAuthProvider,
-  scope: 'read-only' | 'read-write' = 'read-write'
+  scope: 'read-only' | 'read-write' = 'read-write',
+  params: Partial<AuthorizationParams> = {}
 ): Promise<{ client: OAuthClientInformationFull; code: string; redirectUrl: string }> {
   const client = await provider.clientsStore.registerClient(clientMetadata);
   const res = makeRes();
-  await provider.authorize(client, authParams, res as unknown as Response);
+  await provider.authorize(client, { ...authParams, ...params }, res as unknown as Response);
   const html = res.send.mock.calls[0]?.[0] as string;
   const state = extractState(html);
   await provider.startYnabAuthorization(state, scope);
@@ -360,5 +369,384 @@ describe('McpOAuthProvider.revokeToken', () => {
     await expect(provider.verifyAccessToken(tokens.access_token)).resolves.toBeDefined();
     await provider.revokeToken(client, { token: tokens.access_token });
     await expect(provider.verifyAccessToken(tokens.access_token)).rejects.toThrow();
+  });
+});
+
+describe('McpOAuthProvider.revokeToken errors', () => {
+  it('reports a generic server_error without storage details', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    vi.spyOn(storage, 'deleteAccessToken').mockRejectedValueOnce(
+      new Error('connect ECONNREFUSED postgres://admin:hunter2@db:5432')
+    );
+    const err = await provider.revokeToken(client, { token: 't' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ServerError);
+    expect((err as Error).message).toBe('Token revocation failed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RFC 8707 resource binding + refresh scope narrowing
+// ---------------------------------------------------------------------------
+
+const RESOURCE = 'https://mcp.example.com/mcp';
+
+/** Full flow to issued tokens; `resource` is sent at /authorize and/or /token as given. */
+async function driveToTokens(
+  provider: McpOAuthProvider,
+  opts: { authorizeResource?: string; tokenResource?: string; scopes?: string[] } = {}
+): Promise<{ client: OAuthClientInformationFull; tokens: OAuthTokens }> {
+  const params: Partial<AuthorizationParams> = {};
+  if (opts.authorizeResource !== undefined) params.resource = new URL(opts.authorizeResource);
+  if (opts.scopes !== undefined) params.scopes = opts.scopes;
+  const { client, code } = await driveToAuthCode(provider, 'read-write', params);
+  await provider.challengeForAuthorizationCode(client, code);
+  const tokens = await provider.exchangeAuthorizationCode(
+    client,
+    code,
+    undefined,
+    undefined,
+    opts.tokenResource !== undefined ? new URL(opts.tokenResource) : undefined
+  );
+  return { client, tokens };
+}
+
+function refreshOf(tokens: OAuthTokens): string {
+  if (tokens.refresh_token === undefined) throw new Error('expected a refresh token');
+  return tokens.refresh_token;
+}
+
+async function errorOf(p: Promise<unknown>): Promise<unknown> {
+  return p.then(
+    () => {
+      throw new Error('expected rejection');
+    },
+    (e: unknown) => e
+  );
+}
+
+describe('McpOAuthProvider resource binding: /authorize', () => {
+  it('rejects a foreign resource with invalid_target and saves nothing', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    const res = makeRes();
+    const save = vi.spyOn(storage, 'savePendingAuth');
+
+    const err = await errorOf(
+      provider.authorize(
+        client,
+        { ...authParams, resource: new URL('https://evil.example.com/mcp') },
+        res as unknown as Response
+      )
+    );
+    expect(err).toBeInstanceOf(InvalidTargetError);
+    expect((err as InvalidTargetError).errorCode).toBe('invalid_target');
+    expect(res.send).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'https://mcp.example.com/other',
+    'https://mcp.example.com:8443/mcp',
+    'http://mcp.example.com/mcp',
+    'https://mcp.example.com/mcp?x=1',
+  ])('rejects near-miss resource %s', async (resource) => {
+    const { provider } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await expect(
+      provider.authorize(
+        client,
+        { ...authParams, resource: new URL(resource) },
+        makeRes() as unknown as Response
+      )
+    ).rejects.toBeInstanceOf(InvalidTargetError);
+  });
+
+  it.each([RESOURCE, 'HTTPS://MCP.EXAMPLE.COM:443/mcp', `${RESOURCE}/`, `${RESOURCE}#frag`])(
+    'accepts %s and binds the canonical resource through to the tokens',
+    async (resource) => {
+      const { provider, storage } = makeProvider();
+      const saveCode = vi.spyOn(storage, 'saveAuthCode');
+      const { tokens } = await driveToTokens(provider, { authorizeResource: resource });
+      expect(saveCode.mock.calls[0]?.[0].resource).toBe(RESOURCE);
+      expect((await storage.getAccessToken(tokens.access_token))?.resource).toBe(RESOURCE);
+      const info = await provider.verifyAccessToken(tokens.access_token);
+      expect(info.resource?.href).toBe(RESOURCE);
+    }
+  );
+
+  it('allows a legacy client that sends no resource; tokens are still bound', async () => {
+    const { provider, storage } = makeProvider();
+    const saveCode = vi.spyOn(storage, 'saveAuthCode');
+    const { tokens } = await driveToTokens(provider);
+    expect(saveCode.mock.calls[0]?.[0].resource).toBeUndefined();
+    expect((await storage.getAccessToken(tokens.access_token))?.resource).toBe(RESOURCE);
+    expect((await provider.verifyAccessToken(tokens.access_token)).resource?.href).toBe(RESOURCE);
+  });
+
+  it('uses an explicit resourceUrl option instead of publicUrl + /mcp', async () => {
+    const { provider } = makeProvider({ resourceUrl: 'https://mcp.example.com/api/mcp' });
+    expect(provider.resource).toBe('https://mcp.example.com/api/mcp');
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await expect(
+      provider.authorize(
+        client,
+        { ...authParams, resource: new URL(RESOURCE) },
+        makeRes() as unknown as Response
+      )
+    ).rejects.toBeInstanceOf(InvalidTargetError);
+  });
+
+  it('refuses to start with an unparseable resource URL', () => {
+    expect(() => makeProvider({ resourceUrl: 'not a url' })).toThrow('Invalid MCP resource URL');
+  });
+});
+
+describe('McpOAuthProvider resource binding: /token (authorization_code)', () => {
+  it('accepts a matching resource at the token endpoint', async () => {
+    const { provider } = makeProvider();
+    const { tokens } = await driveToTokens(provider, {
+      authorizeResource: RESOURCE,
+      tokenResource: 'https://MCP.example.com/mcp/',
+    });
+    expect(tokens.access_token).toBeTruthy();
+  });
+
+  it('rejects a token request whose resource differs from the code', async () => {
+    const { provider } = makeProvider();
+    const err = await errorOf(
+      driveToTokens(provider, {
+        authorizeResource: RESOURCE,
+        tokenResource: 'https://evil.example.com/mcp',
+      })
+    );
+    expect(err).toBeInstanceOf(InvalidTargetError);
+  });
+
+  it('rejects a foreign resource at /token even when /authorize sent none', async () => {
+    const { provider } = makeProvider();
+    const err = await errorOf(
+      driveToTokens(provider, { tokenResource: 'https://evil.example.com/mcp' })
+    );
+    expect(err).toBeInstanceOf(InvalidTargetError);
+  });
+
+  it('accepts a resource first named at /token when /authorize sent none', async () => {
+    const { provider, storage } = makeProvider();
+    const { tokens } = await driveToTokens(provider, { tokenResource: RESOURCE });
+    expect((await storage.getAccessToken(tokens.access_token))?.resource).toBe(RESOURCE);
+  });
+
+  it('a mismatched resource burns the code (single use)', async () => {
+    const { provider } = makeProvider();
+    const { client, code } = await driveToAuthCode(provider);
+    await provider.challengeForAuthorizationCode(client, code);
+    await expect(
+      provider.exchangeAuthorizationCode(
+        client,
+        code,
+        undefined,
+        undefined,
+        new URL('https://evil.example.com/mcp')
+      )
+    ).rejects.toBeInstanceOf(InvalidTargetError);
+    await expect(provider.exchangeAuthorizationCode(client, code)).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+  });
+
+  it('exchanges a 0.3.x code (no stored resource) and binds the new tokens', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await storage.saveAuthCode({
+      code: 'legacy-code',
+      clientId: client.client_id,
+      userId: 'ynab-user-1',
+      redirectUri: 'https://client/cb',
+      codeChallenge: 'chal',
+      scopes: ['read-only'],
+      expiresAt: Date.now() + 60_000,
+    });
+    await provider.challengeForAuthorizationCode(client, 'legacy-code');
+    const tokens = await provider.exchangeAuthorizationCode(
+      client,
+      'legacy-code',
+      undefined,
+      undefined,
+      new URL(RESOURCE)
+    );
+    expect((await storage.getAccessToken(tokens.access_token))?.resource).toBe(RESOURCE);
+  });
+
+  it('rejects a code bound to a resource this server no longer serves', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await storage.saveAuthCode({
+      code: 'stale-code',
+      clientId: client.client_id,
+      userId: 'ynab-user-1',
+      redirectUri: 'https://client/cb',
+      codeChallenge: 'chal',
+      scopes: [],
+      expiresAt: Date.now() + 60_000,
+      resource: 'https://old.example.com/mcp',
+    });
+    await provider.challengeForAuthorizationCode(client, 'stale-code');
+    await expect(provider.exchangeAuthorizationCode(client, 'stale-code')).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+  });
+});
+
+describe('McpOAuthProvider resource binding: /token (refresh_token)', () => {
+  it('accepts a matching resource on refresh and keeps the binding', async () => {
+    const { provider, storage } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider, { authorizeResource: RESOURCE });
+    const rotated = await provider.exchangeRefreshToken(
+      client,
+      refreshOf(tokens),
+      undefined,
+      new URL(RESOURCE)
+    );
+    expect((await storage.getAccessToken(rotated.access_token))?.resource).toBe(RESOURCE);
+    expect((await storage.takeRefreshToken(refreshOf(rotated)))?.resource).toBe(RESOURCE);
+  });
+
+  it('rejects a different resource on refresh and leaves the refresh token usable', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider, { authorizeResource: RESOURCE });
+    const err = await errorOf(
+      provider.exchangeRefreshToken(
+        client,
+        refreshOf(tokens),
+        undefined,
+        new URL('https://evil.example.com/mcp')
+      )
+    );
+    expect(err).toBeInstanceOf(InvalidTargetError);
+    await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).resolves.toHaveProperty(
+      'access_token'
+    );
+  });
+
+  it('refreshes a 0.3.x refresh token (no stored resource) and binds the new tokens', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await storage.saveRefreshToken({
+      token: 'legacy-rt',
+      clientId: client.client_id,
+      userId: 'ynab-user-1',
+      scopes: ['read-only', 'read-write'],
+    });
+    const rotated = await provider.exchangeRefreshToken(
+      client,
+      'legacy-rt',
+      undefined,
+      new URL(RESOURCE)
+    );
+    expect(rotated.scope).toBe('read-only read-write');
+    expect((await storage.getAccessToken(rotated.access_token))?.resource).toBe(RESOURCE);
+    expect((await storage.takeRefreshToken(refreshOf(rotated)))?.resource).toBe(RESOURCE);
+  });
+
+  it('rejects a refresh token bound to a resource this server no longer serves', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await storage.saveRefreshToken({
+      token: 'stale-rt',
+      clientId: client.client_id,
+      userId: 'ynab-user-1',
+      scopes: [],
+      resource: 'https://old.example.com/mcp',
+    });
+    await expect(provider.exchangeRefreshToken(client, 'stale-rt')).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+  });
+});
+
+describe('McpOAuthProvider refresh scope (never widened)', () => {
+  it('rejects a refresh that asks for a scope outside the original grant', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider, { scopes: ['read-only'] });
+    const err = await errorOf(
+      provider.exchangeRefreshToken(client, refreshOf(tokens), ['read-only', 'read-write'])
+    );
+    expect(err).toBeInstanceOf(InvalidScopeError);
+    expect((err as InvalidScopeError).errorCode).toBe('invalid_scope');
+  });
+
+  it('rejects any requested scope when the original grant had none', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider, { scopes: [] });
+    await expect(
+      provider.exchangeRefreshToken(client, refreshOf(tokens), ['read-write'])
+    ).rejects.toBeInstanceOf(InvalidScopeError);
+  });
+
+  it('keeps the original scope when none is requested (or only blanks)', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider, {
+      scopes: ['read-only', 'read-write'],
+    });
+    const a = await provider.exchangeRefreshToken(client, refreshOf(tokens));
+    expect(a.scope).toBe('read-only read-write');
+    const b = await provider.exchangeRefreshToken(client, refreshOf(a), ['', ' ']);
+    expect(b.scope).toBe('read-only read-write');
+  });
+
+  it('narrows the access token on request; the rotated refresh token keeps the original grant', async () => {
+    const { provider, storage } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider, {
+      scopes: ['read-only', 'read-write'],
+    });
+    const narrowed = await provider.exchangeRefreshToken(client, refreshOf(tokens), [
+      'read-only',
+      'read-only',
+    ]);
+    expect(narrowed.scope).toBe('read-only');
+    expect((await provider.verifyAccessToken(narrowed.access_token)).scopes).toEqual(['read-only']);
+
+    // RFC 6749 section 6: the new refresh token carries the original scope, so a
+    // later refresh may return to it but still never beyond it.
+    const restored = await provider.exchangeRefreshToken(client, refreshOf(narrowed), [
+      'read-write',
+    ]);
+    expect(restored.scope).toBe('read-write');
+    expect((await storage.takeRefreshToken(refreshOf(restored)))?.scopes).toEqual([
+      'read-only',
+      'read-write',
+    ]);
+  });
+});
+
+describe('McpOAuthProvider.verifyAccessToken resource checks', () => {
+  it('accepts a 0.3.x access token (no stored resource) and reports this resource', async () => {
+    const { provider, storage } = makeProvider();
+    await storage.saveAccessToken({
+      token: 'legacy-at',
+      clientId: 'c1',
+      userId: 'ynab-user-1',
+      scopes: [],
+      expiresAt: Date.now() + 60_000,
+    });
+    const info = await provider.verifyAccessToken('legacy-at');
+    expect(info.resource?.href).toBe(RESOURCE);
+    expect(info.extra?.['userId']).toBe('ynab-user-1');
+  });
+
+  it('rejects an access token bound to another resource', async () => {
+    const { provider, storage } = makeProvider();
+    await storage.saveAccessToken({
+      token: 'foreign-at',
+      clientId: 'c1',
+      userId: 'ynab-user-1',
+      scopes: [],
+      expiresAt: Date.now() + 60_000,
+      resource: 'https://mcp.example.com/other',
+    });
+    const err = await errorOf(provider.verifyAccessToken('foreign-at'));
+    expect(err).toBeInstanceOf(InvalidTokenError);
+    expect((err as Error).message).toBe('Invalid or expired access token');
   });
 });

@@ -9,6 +9,12 @@
  * (wired in http.ts, which calls {@link McpOAuthProvider.handleYnabCallback})
  * exchanges the YNAB code, records the YNAB-identified user + encrypted refresh
  * token, and issues our own MCP authorization code back to the client.
+ *
+ * Resource binding (RFC 8707): every code and token is bound to this server's one
+ * protected resource (the MCP endpoint). A `resource` sent at `/authorize` or
+ * `/token` must name that resource, otherwise the request fails with
+ * `invalid_target`. Rows written by 0.3.x carry no resource and are treated as
+ * bound to the configured resource, so existing users keep working.
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -26,6 +32,8 @@ import type {
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import {
   InvalidGrantError,
+  InvalidScopeError,
+  InvalidTargetError,
   InvalidTokenError,
   ServerError,
 } from '@modelcontextprotocol/sdk/server/auth/errors.js';
@@ -37,6 +45,7 @@ import {
   getYnabUserId,
   type YnabOAuthConfig,
 } from './ynab-oauth.js';
+import { canonicalResource, isSameResource } from './resource.js';
 
 export interface McpProviderOptions {
   storage: Storage;
@@ -44,6 +53,11 @@ export interface McpProviderOptions {
   ynab: YnabOAuthConfig;
   /** Public base URL (no trailing slash), e.g. https://ynab-mcp.example.com */
   publicUrl: string;
+  /**
+   * The protected resource (MCP endpoint) tokens are issued for, e.g.
+   * https://ynab-mcp.example.com/mcp. Defaults to `publicUrl` + `/mcp`.
+   */
+  resourceUrl?: string;
   /** Whether read-write access may be offered at consent. */
   allowWrite: boolean;
   /** Force read-only regardless of the user's choice (defense in depth). */
@@ -55,6 +69,13 @@ export interface McpProviderOptions {
 function newToken(): string {
   return randomBytes(32).toString('base64url');
 }
+
+/** Split, trim and de-duplicate a requested scope list; empty entries are dropped. */
+function normalizeScopes(scopes: string[] | undefined): string[] {
+  return [...new Set((scopes ?? []).map((s) => s.trim()).filter((s) => s.length > 0))];
+}
+
+const FOREIGN_RESOURCE = 'The requested resource is not served by this server';
 
 function htmlEscape(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
@@ -68,11 +89,40 @@ export class McpOAuthProvider implements OAuthServerProvider {
   // single token request (the code is consumed from storage at challenge time).
   private readonly consumedCodes = new Map<
     string,
-    { clientId: string; userId: string; redirectUri: string; codeChallenge: string; scopes: string[] }
+    {
+      clientId: string;
+      userId: string;
+      redirectUri: string;
+      codeChallenge: string;
+      scopes: string[];
+      resource: string | undefined;
+    }
   >();
+  /** Canonical form of the one resource this server issues tokens for. */
+  readonly resource: string;
 
   constructor(opts: McpProviderOptions) {
     this.opts = opts;
+    const resource = canonicalResource(opts.resourceUrl ?? `${opts.publicUrl}/mcp`);
+    if (resource === undefined) throw new Error('Invalid MCP resource URL');
+    this.resource = resource;
+  }
+
+  /**
+   * Resolve the resource a grant's new tokens are bound to, enforcing RFC 8707.
+   * `stored` is the canonical resource saved with the code / refresh token
+   * (undefined for 0.3.x rows and for clients that sent none); `requested` is the
+   * `resource` parameter of the token request, if any.
+   */
+  private bindResource(stored: string | undefined, requested: URL | undefined): string {
+    const bound = stored ?? this.resource;
+    // A grant bound to a resource this server no longer serves (MCP_RESOURCE_URL
+    // changed) cannot produce usable tokens; make the client re-authorize.
+    if (bound !== this.resource) throw new InvalidGrantError('Grant is not valid for this resource');
+    if (requested !== undefined && !isSameResource(requested, bound)) {
+      throw new InvalidTargetError(FOREIGN_RESOURCE);
+    }
+    return bound;
   }
 
   private get callbackUrl(): string {
@@ -104,6 +154,11 @@ export class McpOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response
   ): Promise<void> {
+    // RFC 8707 section 2: reject a resource this server does not serve. The SDK's
+    // authorize handler turns this into an `error=invalid_target` redirect.
+    if (params.resource !== undefined && !isSameResource(params.resource, this.resource)) {
+      throw new InvalidTargetError(FOREIGN_RESOURCE);
+    }
     const state = newToken();
     await this.opts.storage.savePendingAuth({
       state,
@@ -114,6 +169,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
       scopes: params.scopes ?? [],
       grantedScope: 'read-only',
       expiresAt: Date.now() + this.opts.authCodeTtlSec * 1000,
+      resource: params.resource !== undefined ? this.resource : undefined,
     });
 
     const startBase = `${this.opts.publicUrl}/oauth/ynab/start`;
@@ -184,6 +240,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       codeChallenge: rec.codeChallenge,
       scopes: rec.scopes,
       expiresAt: Date.now() + this.opts.authCodeTtlSec * 1000,
+      resource: rec.resource,
     });
 
     const url = new URL(rec.redirectUri);
@@ -204,6 +261,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       redirectUri: rec.redirectUri,
       codeChallenge: rec.codeChallenge,
       scopes: rec.scopes,
+      resource: rec.resource,
     });
     return rec.codeChallenge;
   }
@@ -212,7 +270,8 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     client: OAuthClientInformationFull,
     authorizationCode: string,
     _codeVerifier?: string,
-    redirectUri?: string
+    redirectUri?: string,
+    resource?: URL
   ): Promise<OAuthTokens> {
     const rec = this.consumedCodes.get(authorizationCode);
     this.consumedCodes.delete(authorizationCode);
@@ -221,43 +280,90 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     if (redirectUri !== undefined && redirectUri !== rec.redirectUri) {
       throw new InvalidGrantError('redirect_uri mismatch');
     }
-    return this.issueTokens(rec.clientId, rec.userId, rec.scopes);
+    // RFC 8707 section 2.2: a resource sent here must match the one authorized.
+    const bound = this.bindResource(rec.resource, resource);
+    return this.issueTokens(rec.clientId, rec.userId, rec.scopes, rec.scopes, bound);
   }
 
   async exchangeRefreshToken(
     client: OAuthClientInformationFull,
     refreshToken: string,
-    scopes?: string[]
+    scopes?: string[],
+    resource?: URL
   ): Promise<OAuthTokens> {
+    // Checked before the one-time refresh token is consumed, so a client that
+    // names the wrong resource keeps its (still valid) refresh token.
+    if (resource !== undefined && !isSameResource(resource, this.resource)) {
+      throw new InvalidTargetError(FOREIGN_RESOURCE);
+    }
     const rec = await this.opts.storage.takeRefreshToken(refreshToken);
     if (!rec) throw new InvalidGrantError('Invalid refresh token');
     if (rec.clientId !== client.client_id) throw new InvalidGrantError('Client mismatch');
-    return this.issueTokens(rec.clientId, rec.userId, scopes && scopes.length ? scopes : rec.scopes);
+    const bound = this.bindResource(rec.resource, resource);
+
+    // RFC 6749 section 6: the requested scope must not include any scope not
+    // originally granted; omitted means the original scope. The new refresh
+    // token keeps the original grant, so a narrowed refresh is not permanent.
+    const requested = normalizeScopes(scopes);
+    if (requested.some((s) => !rec.scopes.includes(s))) {
+      throw new InvalidScopeError('Requested scope exceeds the original grant');
+    }
+    const accessScopes = requested.length > 0 ? requested : rec.scopes;
+    return this.issueTokens(rec.clientId, rec.userId, accessScopes, rec.scopes, bound);
   }
 
-  private async issueTokens(clientId: string, userId: string, scopes: string[]): Promise<OAuthTokens> {
+  private async issueTokens(
+    clientId: string,
+    userId: string,
+    accessScopes: string[],
+    grantScopes: string[],
+    resource: string
+  ): Promise<OAuthTokens> {
     const accessToken = newToken();
     const refreshToken = newToken();
     const expiresAt = Date.now() + this.opts.accessTokenTtlSec * 1000;
-    await this.opts.storage.saveAccessToken({ token: accessToken, clientId, userId, scopes, expiresAt });
-    await this.opts.storage.saveRefreshToken({ token: refreshToken, clientId, userId, scopes });
+    await this.opts.storage.saveAccessToken({
+      token: accessToken,
+      clientId,
+      userId,
+      scopes: accessScopes,
+      expiresAt,
+      resource,
+    });
+    await this.opts.storage.saveRefreshToken({
+      token: refreshToken,
+      clientId,
+      userId,
+      scopes: grantScopes,
+      resource,
+    });
     return {
       access_token: accessToken,
       token_type: 'bearer',
       expires_in: this.opts.accessTokenTtlSec,
       refresh_token: refreshToken,
-      scope: scopes.join(' '),
+      scope: accessScopes.join(' '),
     };
   }
 
+  /**
+   * Verify an MCP access token. `AuthInfo.resource` is always set: the bound
+   * resource, or (for 0.3.x tokens with none stored) this server's resource,
+   * the only one it has ever issued tokens for. A token bound to any other
+   * resource is rejected here as well as by the bearer middleware's
+   * `expectedResource` check.
+   */
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const rec = await this.opts.storage.getAccessToken(token);
     if (!rec) throw new InvalidTokenError('Invalid or expired access token');
+    const resource = rec.resource ?? this.resource;
+    if (resource !== this.resource) throw new InvalidTokenError('Invalid or expired access token');
     return {
       token,
       clientId: rec.clientId,
       scopes: rec.scopes,
       expiresAt: Math.floor(rec.expiresAt / 1000),
+      resource: new URL(resource),
       extra: { userId: rec.userId },
     };
   }
@@ -269,8 +375,9 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     try {
       await this.opts.storage.deleteAccessToken(request.token);
       await this.opts.storage.deleteRefreshToken(request.token);
-    } catch (err) {
-      throw new ServerError(err instanceof Error ? err.message : 'revoke failed');
+    } catch {
+      // Generic on purpose: storage errors can carry connection details.
+      throw new ServerError('Token revocation failed');
     }
   }
 }
