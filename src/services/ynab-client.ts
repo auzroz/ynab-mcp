@@ -94,7 +94,9 @@ export class YnabClient {
   private readonly readOnly: boolean;
   private readonly auditLog: AuditLog;
 
-  // Track server knowledge for delta sync
+  // Track server knowledge for delta sync. Keyed by budget, resource and any
+  // request parameters that change the result set (see knowledgeKey), because a
+  // cursor is only valid for the endpoint and query that produced it.
   private serverKnowledge: Map<string, number> = new Map();
 
   constructor(
@@ -184,17 +186,46 @@ export class YnabClient {
   }
 
   /**
-   * Get server knowledge for a budget (used for delta sync).
+   * Build the delta-sync key for one endpoint + query within a budget.
+   * `resource` names the endpoint (e.g. "budget", "transactions"); `params`
+   * are the request parameters that change which records come back, so a
+   * cursor from a filtered query is never reused for a different one.
    */
-  getServerKnowledge(budgetId: string): number | undefined {
-    return this.serverKnowledge.get(budgetId);
+  private knowledgeKey(
+    budgetId: string,
+    resource: string,
+    params: Record<string, string | undefined> = {}
+  ): string {
+    const query = Object.keys(params)
+      .filter((k) => params[k] !== undefined)
+      .sort()
+      .map((k) => `${k}=${params[k]}`)
+      .join('&');
+    return JSON.stringify([budgetId, resource, query]);
   }
 
   /**
-   * Update server knowledge after a response.
+   * Get server knowledge for one endpoint of a budget (used for delta sync).
+   * Only valid for the same resource and params it was recorded with.
    */
-  updateServerKnowledge(budgetId: string, knowledge: number): void {
-    this.serverKnowledge.set(budgetId, knowledge);
+  getServerKnowledge(
+    budgetId: string,
+    resource: string,
+    params?: Record<string, string | undefined>
+  ): number | undefined {
+    return this.serverKnowledge.get(this.knowledgeKey(budgetId, resource, params));
+  }
+
+  /**
+   * Update server knowledge for one endpoint after a response.
+   */
+  updateServerKnowledge(
+    budgetId: string,
+    knowledge: number,
+    resource: string,
+    params?: Record<string, string | undefined>
+  ): void {
+    this.serverKnowledge.set(this.knowledgeKey(budgetId, resource, params), knowledge);
   }
 
   // ==================== User ====================
@@ -226,7 +257,7 @@ export class YnabClient {
     const response = await this.api.plans.getPlanById(budgetId, lastKnowledgeOfServer);
 
     if (response.data.server_knowledge !== undefined) {
-      this.updateServerKnowledge(budgetId, response.data.server_knowledge);
+      this.updateServerKnowledge(budgetId, response.data.server_knowledge, 'budget');
     }
 
     return response;
@@ -649,11 +680,15 @@ export class YnabClient {
       options?.type,
       options?.lastKnowledgeOfServer
     );
-    
+
     if (response.data.server_knowledge !== undefined) {
-      this.updateServerKnowledge(budgetId, response.data.server_knowledge);
+      this.updateServerKnowledge(budgetId, response.data.server_knowledge, 'transactions', {
+        sinceDate: options?.sinceDate,
+        untilDate: options?.untilDate,
+        type: options?.type,
+      });
     }
-    
+
     return response;
   }
 
@@ -679,7 +714,12 @@ export class YnabClient {
     );
 
     if (response.data.server_knowledge !== undefined) {
-      this.updateServerKnowledge(budgetId, response.data.server_knowledge);
+      this.updateServerKnowledge(budgetId, response.data.server_knowledge, 'transactions-by-month', {
+        month,
+        sinceDate: options?.sinceDate,
+        untilDate: options?.untilDate,
+        type: options?.type,
+      });
     }
 
     return response;

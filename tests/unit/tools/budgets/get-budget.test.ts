@@ -44,7 +44,7 @@ describe('handleGetBudget', () => {
 
     expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-id');
     expect(mockClient.getBudgetById).toHaveBeenCalledWith('custom-id', undefined);
-    expect(mockClient.updateServerKnowledge).toHaveBeenCalledWith('custom-id', 12345);
+    expect(mockClient.updateServerKnowledge).toHaveBeenCalledWith('custom-id', 12345, 'budget');
   });
 
   it('uses prior server_knowledge for delta sync', async () => {
@@ -53,6 +53,8 @@ describe('handleGetBudget', () => {
 
     await handleGetBudget({}, mockClient as never);
 
+    expect(mockClient.getServerKnowledge).toHaveBeenCalledWith('test-budget-id', 'budget');
+    expect(mockClient.getServerKnowledge).toHaveBeenCalledWith('test-budget-id', 'budget');
     expect(mockClient.getBudgetById).toHaveBeenCalledWith('test-budget-id', 999);
   });
 
