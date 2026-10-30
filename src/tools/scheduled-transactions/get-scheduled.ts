@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
+import { sanitizeFlagName } from '../transactions/format.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
@@ -74,6 +75,7 @@ export async function handleGetScheduledTransaction(
         amount: formatCurrency(txn.amount),
         memo: sanitizeMemo(txn.memo),
         flag_color: txn.flag_color,
+        flag_name: sanitizeFlagName(txn.flag_name),
         account_id: txn.account_id,
         account_name: sanitizeName(txn.account_name),
         payee_id: txn.payee_id,

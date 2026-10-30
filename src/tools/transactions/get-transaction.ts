@@ -9,6 +9,7 @@ import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
+import { sanitizeFlagName } from './format.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
 // Input schema
@@ -78,6 +79,7 @@ export async function handleGetTransaction(
         cleared: txn.cleared,
         approved: txn.approved,
         flag_color: txn.flag_color,
+        flag_name: sanitizeFlagName(txn.flag_name),
         import_id: txn.import_id,
         import_payee_name: sanitizeName(txn.import_payee_name),
         import_payee_name_original: sanitizeName(txn.import_payee_name_original),
