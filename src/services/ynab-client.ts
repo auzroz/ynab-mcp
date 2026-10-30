@@ -7,13 +7,28 @@
 import * as ynab from 'ynab';
 import type { RateLimiter } from './rate-limiter.js';
 import type { Cache } from './cache.js';
-import { ReadOnlyModeError } from '../utils/errors.js';
+import { ReadOnlyModeError, YnabApiError } from '../utils/errors.js';
 import { getAuditLog, type AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { isBudgetIdSentinel } from '../utils/schemas.js';
 
+// TEMPORARY WORKAROUND: the ynab SDK (4.5.0) drops `goal_frequency` when it
+// serializes SaveCategory/NewCategory/ExistingCategory, so requests carrying it
+// are sent straight to the API. Tracked in auzroz/ynab-mcp#22 and
+// ynab/ynab-sdk-js#308. Delete the direct-call path (sendCategoryDirect and the
+// goal_frequency branches below) once a regenerated SDK is released.
+const YNAB_API_BASE_URL = 'https://api.ynab.com/v1'; // same as the SDK's BASE_PATH
+const DIRECT_REQUEST_TIMEOUT_MS = 30_000;
+
+type GoalFrequency = 'monthly' | 'weekly' | 'yearly';
+
+/** Create body: the SDK's NewCategory plus the field the SDK cannot send. */
+export interface CreateCategoryBody {
+  category: ynab.NewCategory & { goal_frequency?: GoalFrequency };
+}
+
 /** Audit details for category creation: presence flags only, no amounts or names. */
-function createCategoryAuditDetails(data: ynab.PostCategoryWrapper): Record<string, unknown> {
+function createCategoryAuditDetails(data: CreateCategoryBody): Record<string, unknown> {
   const c = data.category;
   return {
     has_name: !!c.name,
@@ -21,6 +36,7 @@ function createCategoryAuditDetails(data: ynab.PostCategoryWrapper): Record<stri
     ...(c.goal_target !== undefined ? { has_goal_target: true } : {}),
     ...(c.goal_target_date !== undefined ? { has_goal_target_date: true } : {}),
     ...(c.goal_needs_whole_amount !== undefined ? { has_goal_needs_whole_amount: true } : {}),
+    ...(c.goal_frequency !== undefined ? { has_goal_frequency: true } : {}),
   };
 }
 
@@ -31,7 +47,7 @@ function createCategoryAuditDetails(data: ynab.PostCategoryWrapper): Record<stri
  * The SDK serializer passes values (including null) through unchanged.
  */
 export interface UpdateCategoryBody {
-  category: ynab.SaveCategory;
+  category: ynab.SaveCategory & { goal_frequency?: GoalFrequency };
 }
 
 /** Audit details for category detail updates: presence flags only, no names, notes or amounts. */
@@ -44,11 +60,14 @@ function updateCategoryDetailsAuditDetails(data: UpdateCategoryBody): Record<str
     ...(c.goal_target !== undefined ? { has_goal_target: true } : {}),
     ...(c.goal_target_date !== undefined ? { has_goal_target_date: true } : {}),
     ...(c.goal_needs_whole_amount !== undefined ? { has_goal_needs_whole_amount: true } : {}),
+    ...(c.goal_frequency !== undefined ? { has_goal_frequency: true } : {}),
   };
 }
 
 export class YnabClient {
   private readonly api: ynab.API;
+  // Only used by the goal_frequency direct-call workaround; never logged.
+  private readonly accessToken: string;
   private readonly rateLimiter: RateLimiter;
   private readonly cache: Cache;
   private readonly defaultBudgetId: string;
@@ -75,6 +94,7 @@ export class YnabClient {
     auditLog: AuditLog = getAuditLog()
   ) {
     this.api = new ynab.API(accessToken);
+    this.accessToken = accessToken;
     this.rateLimiter = rateLimiter;
     this.cache = cache;
     this.defaultBudgetId = defaultBudgetId ?? 'last-used';
@@ -388,11 +408,18 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     try {
-      const response = await this.api.categories.updateCategory(
-        budgetId,
-        categoryId,
-        data as ynab.PatchCategoryWrapper
-      );
+      const response =
+        data.category.goal_frequency !== undefined
+          ? await this.sendCategoryDirect(
+              'PATCH',
+              `/plans/${encodeURIComponent(budgetId)}/categories/${encodeURIComponent(categoryId)}`,
+              data
+            )
+          : await this.api.categories.updateCategory(
+              budgetId,
+              categoryId,
+              data as ynab.PatchCategoryWrapper
+            );
       auditLog.log({
         operation: 'update',
         tool: 'ynab_update_category_details',
@@ -418,9 +445,36 @@ export class YnabClient {
     }
   }
 
+  /**
+   * Send a category write straight to the YNAB API (see the workaround note at
+   * the top of this file). Non-2xx responses throw a YnabApiError carrying only
+   * the HTTP status, so formatErrorResponse returns its mapped generic message;
+   * upstream response text is never read into an error.
+   */
+  private async sendCategoryDirect(
+    method: 'POST' | 'PATCH',
+    path: string,
+    body: unknown
+  ): Promise<ynab.SaveCategoryResponse> {
+    const response = await fetch(`${YNAB_API_BASE_URL}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${this.accessToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(DIRECT_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw new YnabApiError('YNAB API request failed', String(response.status));
+    }
+    return (await response.json()) as ynab.SaveCategoryResponse;
+  }
+
   async createCategory(
     budgetId: string,
-    data: ynab.PostCategoryWrapper
+    data: CreateCategoryBody
   ): Promise<ynab.SaveCategoryResponse> {
     this.assertWriteAllowed('createCategory');
     await this.rateLimiter.acquire();
@@ -429,7 +483,14 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     try {
-      const response = await this.api.categories.createCategory(budgetId, data);
+      const response =
+        data.category.goal_frequency !== undefined
+          ? await this.sendCategoryDirect(
+              'POST',
+              `/plans/${encodeURIComponent(budgetId)}/categories`,
+              data
+            )
+          : await this.api.categories.createCategory(budgetId, data);
       auditLog.log({
         operation: 'create',
         tool: 'ynab_create_category',

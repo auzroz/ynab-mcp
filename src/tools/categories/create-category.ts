@@ -14,6 +14,7 @@ import {
   categoryTargetCreateShape,
   categoryTargetCreateJsonProperties,
   pickCategoryTargets,
+  refineGoalFrequency,
 } from './category-targets.js';
 
 // Input schema
@@ -26,7 +27,7 @@ const inputSchema = z.object({
   name: z.string().min(1).max(NAME_MAX_LENGTH).describe('The name of the new category'),
   note: z.string().max(NOTE_MAX_LENGTH).optional().describe('Optional note for the category'),
   ...categoryTargetCreateShape,
-});
+}).superRefine(refineGoalFrequency);
 
 // Tool definition
 export const createCategoryTool: Tool = {
@@ -39,7 +40,7 @@ Use when the user asks:
 
 Requires a category_group_id. Use ynab_list_categories first to find the group ID.
 
-Optionally set a target (goal) at creation: goal_target (in dollars, e.g. 200 for $200), goal_target_date (YYYY-MM-DD) and goal_needs_whole_amount. Supplying goal_target creates a monthly spending target.
+Optionally set a target (goal) at creation: goal_target (in dollars, e.g. 200 for $200), goal_target_date (YYYY-MM-DD) and goal_needs_whole_amount. Supplying goal_target creates a monthly spending target. Add goal_frequency (monthly, weekly or yearly) with goal_target for a recurring "set aside" target (e.g. "Create Dining Out with a $50 weekly target" = goal_target 50, goal_frequency weekly); it cannot be combined with goal_target_date.
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
   inputSchema: {

@@ -200,4 +200,29 @@ describe('handleUpdateCategoryDetails', () => {
     expect(updateCategoryDetailsTool.inputSchema.required).toEqual(['category_id']);
     expect(updateCategoryDetailsTool.description).toContain('ynab_update_category');
   });
+
+  describe('goal_frequency', () => {
+    it('passes goal_frequency with a milliunit goal_target', async () => {
+      await handleUpdateCategoryDetails(
+        { category_id: CAT_ID, goal_target: 50, goal_frequency: 'weekly' },
+        mockClient as never
+      );
+      expect(mockClient.updateCategory).toHaveBeenCalledWith('test-budget-id', CAT_ID, {
+        category: { goal_target: 50000, goal_frequency: 'weekly' },
+      });
+    });
+
+    it.each([
+      ['missing goal_target', { goal_frequency: 'weekly' }],
+      ['null goal_target', { goal_frequency: 'weekly', goal_target: null }],
+      ['goal_target_date', { goal_frequency: 'weekly', goal_target: 50, goal_target_date: '2030-01-01' }],
+      ['invalid value', { goal_frequency: 'daily', goal_target: 50 }],
+      ['null frequency', { goal_frequency: null, goal_target: 50 }],
+    ])('rejects %s', async (_label, extra) => {
+      await expect(
+        handleUpdateCategoryDetails({ category_id: CAT_ID, ...extra }, mockClient as never)
+      ).rejects.toThrow();
+      expect(mockClient.updateCategory).not.toHaveBeenCalled();
+    });
+  });
 });

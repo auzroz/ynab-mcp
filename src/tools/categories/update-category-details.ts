@@ -20,6 +20,7 @@ import {
   categoryTargetUpdateJsonProperties,
   pickCategoryTargets,
   CATEGORY_TARGET_FIELDS,
+  refineGoalFrequency,
 } from './category-targets.js';
 
 const UPDATABLE_FIELDS = ['name', 'note', 'category_group_id', ...CATEGORY_TARGET_FIELDS] as const;
@@ -43,6 +44,7 @@ const inputSchema = z
       .describe('UUID of the category group to move the category into'),
     ...categoryTargetUpdateShape,
   })
+  .superRefine(refineGoalFrequency)
   .refine((v) => UPDATABLE_FIELDS.some((f) => v[f] !== undefined), {
     message: `Provide at least one field to update: ${UPDATABLE_FIELDS.join(', ')}`,
   });
@@ -57,8 +59,9 @@ Use when the user asks:
 - "Add a note to [category]" or "Clear the note on [category]"
 - "Move [category] to the [group] group"
 - "Set a $200 monthly target on [category]" or "Remove the target from [category]"
+- "Set a $50 weekly target for Dining Out" (goal_target 50 + goal_frequency "weekly")
 
-Provide at least one of name, note, category_group_id, goal_target (in dollars, e.g. 200 for $200), goal_target_date, goal_needs_whole_amount. Target fields accept null to remove the existing value; note accepts null or "" to clear it. Moving into YNAB's internal category group is rejected.
+Provide at least one of name, note, category_group_id, goal_target (in dollars, e.g. 200 for $200), goal_target_date, goal_needs_whole_amount, goal_frequency (monthly|weekly|yearly; recurring target, requires goal_target, not combinable with goal_target_date). Target fields accept null to remove the existing value; note accepts null or "" to clear it. Moving into YNAB's internal category group is rejected.
 
 Requires a category_id (and a category_group_id when moving). Use ynab_list_categories first to find the IDs.
 

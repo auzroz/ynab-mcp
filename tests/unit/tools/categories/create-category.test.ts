@@ -126,4 +126,30 @@ describe('handleCreateCategory', () => {
       expect(mockClient.createCategory).not.toHaveBeenCalled();
     });
   });
+
+  describe('goal_frequency', () => {
+    const gbase = { category_group_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: 'Dining Out' };
+
+    it('passes goal_frequency with a milliunit goal_target', async () => {
+      mockClient.createCategory.mockResolvedValue({
+        data: { category: { id: 'c', name: 'Dining Out', category_group_id: gbase.category_group_id, goal_target: 50000 } },
+      });
+      await handleCreateCategory({ ...gbase, goal_target: 50, goal_frequency: 'weekly' }, mockClient as never);
+      expect(mockClient.createCategory).toHaveBeenCalledWith(
+        'test-budget-id',
+        expect.objectContaining({
+          category: expect.objectContaining({ goal_target: 50000, goal_frequency: 'weekly' }),
+        })
+      );
+    });
+
+    it.each([
+      ['missing goal_target', { goal_frequency: 'weekly' }],
+      ['null goal_target', { goal_frequency: 'weekly', goal_target: null }],
+      ['goal_target_date', { goal_frequency: 'weekly', goal_target: 50, goal_target_date: '2030-01-01' }],
+    ])('rejects %s', async (_label, extra) => {
+      await expect(handleCreateCategory({ ...gbase, ...extra }, mockClient as never)).rejects.toThrow();
+      expect(mockClient.createCategory).not.toHaveBeenCalled();
+    });
+  });
 });
