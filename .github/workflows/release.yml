@@ -145,15 +145,11 @@ jobs:
         run: |
           node -e "const [a,b,c]=process.argv[1].split('.').map(Number);const ok=a>11||(a===11&&(b>5||(b===5&&c>=1)));if(!ok){console.error('::error::npm '+process.argv[1]+' is older than 11.5.1 (required for trusted publishing)');process.exit(1);}" "$(npm --version)"
 
-      # npm detects the GitHub OIDC environment and authenticates with it before
-      # falling back to a token; provenance is generated automatically on that path.
-      # NPM_TOKEN stays wired as a fallback until the trusted publisher is configured
-      # on npmjs.com. Cut-over: after one successful OIDC publish, delete the NPM_TOKEN
-      # secret and remove the env block below.
+      # No NODE_AUTH_TOKEN: npm exchanges the job's OIDC token with the trusted
+      # publisher configured for this workflow on npmjs.com (first used by v0.3.5)
+      # and attaches provenance automatically.
       - name: Publish to npm
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # Opt-in: claiming the io.github.auzroz namespace is the maintainer's decision.
   # Enable by setting the repository variable PUBLISH_MCP_REGISTRY=true.
