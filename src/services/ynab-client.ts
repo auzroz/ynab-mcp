@@ -30,15 +30,13 @@ type GoalFrequency = 'monthly' | 'weekly' | 'yearly';
 export type AccessTokenSource = string | (() => Promise<string>);
 
 /**
- * ynab.API that resolves its bearer token per request. The SDK's runtime
- * Configuration accepts a token function, but ynab.API's constructor is typed
- * for a string, so this swaps in such a Configuration before any endpoint
- * accessor (which builds its API class lazily from it) has been used.
+ * ynab.API built from a ready Configuration, so SDK middleware (the 429 hook)
+ * can be attached for both fixed and per-request tokens.
  */
-class TokenProviderApi extends ynab.API {
-  constructor(getAccessToken: () => Promise<string>) {
+class ConfiguredApi extends ynab.API {
+  constructor(configuration: ynab.Configuration) {
     super('');
-    this._configuration = new ynab.Configuration({ accessToken: getAccessToken, basePath: ynab.BASE_PATH });
+    this._configuration = configuration;
   }
 }
 
@@ -119,8 +117,19 @@ export class YnabClient {
     // per-user instance so one user's write history never leaks to another.
     auditLog: AuditLog = getAuditLog()
   ) {
+    // Every YNAB response passes this hook; a 429 marks the limiter exhausted.
+    const middleware: ynab.Middleware[] = [
+      {
+        post: async ({ response }) => {
+          if (response.status === 429) throw this.noteYnabRateLimited(response);
+          return undefined;
+        },
+      },
+    ];
     if (typeof accessToken === 'string') {
-      this.api = new ynab.API(accessToken);
+      this.api = new ConfiguredApi(
+        new ynab.Configuration({ accessToken, basePath: ynab.BASE_PATH, middleware })
+      );
       this.getAccessToken = () => Promise.resolve(accessToken);
     } else {
       // Every request takes a rate-limit token before resolving its access
@@ -133,7 +142,9 @@ export class YnabClient {
           throw error;
         }
       };
-      this.api = new TokenProviderApi(this.getAccessToken);
+      this.api = new ConfiguredApi(
+        new ynab.Configuration({ accessToken: this.getAccessToken, basePath: ynab.BASE_PATH, middleware })
+      );
     }
     this.rateLimiter = rateLimiter;
     this.cache = cache;
@@ -437,6 +448,7 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.categories.updateMonthCategory(budgetId, month, categoryId, data);
+      this.invalidateMoneyMovementGroups(budgetId);
       auditLog.log({
         operation: 'update',
         tool: 'ynab_update_category',
@@ -517,6 +529,16 @@ export class YnabClient {
   }
 
   /**
+   * YNAB answered 429: stop the limiter sending requests until YNAB's window
+   * resets (Retry-After when sent) and return the mapped error to throw. Only
+   * the status and the Retry-After header are read; no response text.
+   */
+  private noteYnabRateLimited(response: Response): YnabApiError {
+    const windowMs = this.rateLimiter.markExhaustedByYnab(response.headers.get('retry-after'));
+    return new YnabApiError('YNAB API request failed', '429', undefined, Math.ceil(windowMs / 1000));
+  }
+
+  /**
    * Send a category write straight to the YNAB API (see the workaround note at
    * the top of this file). Non-2xx responses throw a YnabApiError carrying only
    * the HTTP status, so formatErrorResponse returns its mapped generic message;
@@ -542,6 +564,7 @@ export class YnabClient {
     if (!response.ok) {
       // Release the connection without reading upstream text into the error.
       await response.body?.cancel().catch(() => {});
+      if (response.status === 429) throw this.noteYnabRateLimited(response);
       throw new YnabApiError('YNAB API request failed', String(response.status));
     }
     return (await response.json()) as ynab.SaveCategoryResponse;
@@ -1335,16 +1358,60 @@ export class YnabClient {
     return this.api.money_movements.getMoneyMovementsByMonth(budgetId, month);
   }
 
+  /**
+   * Money movement groups, cached like the other metadata reads (not under the
+   * "last-used"/"default" aliases, which can point at a different budget later).
+   */
   async getMoneyMovementGroups(budgetId: string): Promise<ynab.MoneyMovementGroupsResponse> {
-    await this.rateLimiter.acquire();
-    return this.api.money_movements.getMoneyMovementGroups(budgetId);
+    return this.cachedMoneyMovementGroups(budgetId, `money-movement-groups:${budgetId}`, () =>
+      this.api.money_movements.getMoneyMovementGroups(budgetId)
+    );
   }
 
   async getMoneyMovementGroupsByMonth(
     budgetId: string,
     month: string
   ): Promise<ynab.MoneyMovementGroupsResponse> {
+    return this.cachedMoneyMovementGroups(
+      budgetId,
+      // "current" moves with the calendar, so it is never cached under that name.
+      month === 'current' ? undefined : `money-movement-groups:${budgetId}:${month}`,
+      () => this.api.money_movements.getMoneyMovementGroupsByMonth(budgetId, month)
+    );
+  }
+
+  /**
+   * An assignment creates a money movement and its group, so drop the cached
+   * group reads once the write has landed. The generation bump stops a group
+   * read already in flight from caching pre-write data; an alias budget id
+   * could be any budget, so it drops every budget's entries.
+   */
+  private invalidateMoneyMovementGroups(budgetId: string): void {
+    this.cache.bumpGeneration();
+    if (isBudgetIdSentinel(budgetId)) {
+      this.cache.deleteByPrefix('money-movement-groups:');
+    } else {
+      // Exact whole-budget key plus its per-month keys; the trailing colon keeps
+      // budget "abc" from matching budget "abcd".
+      this.cache.delete(`money-movement-groups:${budgetId}`);
+      this.cache.deleteByPrefix(`money-movement-groups:${budgetId}:`);
+    }
+  }
+
+  private async cachedMoneyMovementGroups(
+    budgetId: string,
+    cacheKey: string | undefined,
+    fetchGroups: () => Promise<ynab.MoneyMovementGroupsResponse>
+  ): Promise<ynab.MoneyMovementGroupsResponse> {
+    const cacheable = cacheKey !== undefined && !isBudgetIdSentinel(budgetId);
+    if (cacheable) {
+      const cached = this.cache.get<ynab.MoneyMovementGroupsResponse>(cacheKey);
+      if (cached !== undefined) return cached;
+    }
+    const generation = this.cache.generation();
     await this.rateLimiter.acquire();
-    return this.api.money_movements.getMoneyMovementGroupsByMonth(budgetId, month);
+    const response = await fetchGroups();
+    if (cacheable && generation === this.cache.generation()) this.cache.set(cacheKey, response);
+    return response;
   }
 }

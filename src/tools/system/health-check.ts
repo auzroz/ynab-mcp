@@ -4,6 +4,7 @@
  * Verifies the YNAB API connection and server status.
  */
 
+import { maskId } from '../../utils/mask.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -98,9 +99,7 @@ export async function handleHealthCheck(
   // Check 4: Default budget configuration
   const defaultBudgetId = client.getDefaultBudgetId();
   // Mask UUID to avoid exposing internal IDs (show first 4 and last 4 chars)
-  const maskedBudgetId = defaultBudgetId.length > 12
-    ? `${defaultBudgetId.slice(0, 4)}...${defaultBudgetId.slice(-4)}`
-    : defaultBudgetId;
+  const maskedBudgetId = maskId(defaultBudgetId);
   checks.push({
     name: 'default_budget',
     status: 'pass',

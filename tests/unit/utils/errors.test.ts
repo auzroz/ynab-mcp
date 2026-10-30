@@ -75,6 +75,22 @@ describe('formatErrorResponse', () => {
     expect(result.error).toBe(true);
     expect(result.type).toBe('rate_limit');
     expect(result.retry_after_ms).toBe(10000);
+    expect(result.retry_after_seconds).toBe(10);
+  });
+
+  it('should round RateLimitError retry_after_seconds up', () => {
+    expect(JSON.parse(formatErrorResponse(new RateLimitError(1500))).retry_after_seconds).toBe(2);
+    expect(JSON.parse(formatErrorResponse(new RateLimitError())).retry_after_seconds).toBeUndefined();
+  });
+
+  it('should include retry_after_seconds on a 429 YnabApiError, mapped message only', () => {
+    const result = JSON.parse(
+      formatErrorResponse(new YnabApiError('secret upstream text', '429', undefined, 42))
+    );
+    expect(result).toMatchObject({ type: 'ynab_api_error', code: '429', message: 'Too many requests', retry_after_seconds: 42 });
+    expect(JSON.stringify(result)).not.toContain('secret');
+    const plain = JSON.parse(formatErrorResponse(new YnabApiError('x', '404')));
+    expect(plain).not.toHaveProperty('retry_after_seconds');
   });
 
   it('should format ValidationError', () => {

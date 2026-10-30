@@ -79,7 +79,9 @@ const mockApi = vi.hoisted(() => {
   };
 });
 
-vi.mock('ynab', () => ({
+vi.mock('ynab', async (importOriginal) => ({
+  // Keep the real Configuration/BASE_PATH (the client builds its API from them).
+  ...(await importOriginal<typeof import('ynab')>()),
   // Vitest 4: a mock invoked with `new` needs a function/class implementation, not an arrow.
   API: vi.fn(function () {
     return mockApi;
