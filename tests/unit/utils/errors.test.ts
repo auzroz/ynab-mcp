@@ -151,6 +151,25 @@ describe('formatErrorResponse', () => {
     expect(result.issues.map((i: { field: string }) => i.field)).toContain('id');
   });
 
+  it('should keep author messages on regex/guid/min checks but not zod defaults', () => {
+    const schema = z.object({
+      month: z.string().regex(/^\d{4}-\d{2}-01$/, 'Month must be first-of-month format (YYYY-MM-01)'),
+      id: z.guid('Invalid payee UUID format'),
+      name: z.string().min(1, 'Name is required'),
+      plain: z.string().regex(/^abc$/),
+      short: z.string().min(5),
+    });
+    const parsed = schema.safeParse({ month: '2024-01-15', id: 'x', name: '', plain: 'zzz-secret', short: 'ab' });
+    if (parsed.success) throw new Error('expected failure');
+    const result = JSON.parse(formatErrorResponse(parsed.error));
+    const byField = Object.fromEntries(result.issues.map((i: { field: string; message: string }) => [i.field, i.message]));
+    expect(byField.month).toBe('Month must be first-of-month format (YYYY-MM-01)');
+    expect(byField.id).toBe('Invalid payee UUID format');
+    expect(byField.name).toBe('Name is required');
+    expect(byField.plain).toBe('Invalid format');
+    expect(byField.short).toBe('Value is too small or too short');
+  });
+
   it('should keep custom refine messages from our own schemas', () => {
     const schema = z.string().refine(() => false, { message: 'Month must be YYYY-MM-DD' });
     const parsed = schema.safeParse('x');

@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js 22.12+](https://img.shields.io/badge/node-22.12%2B-brightgreen)](https://nodejs.org)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-blue)](https://modelcontextprotocol.io)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue)](https://www.typescriptlang.org/)
 
 A comprehensive [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for **YNAB (You Need A Budget)** that enables AI assistants like **Claude Desktop** to read your budget, analyze spending patterns, detect subscriptions, and provide personalized financial insights—all through natural conversation.
 
