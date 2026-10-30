@@ -51,7 +51,6 @@ Requires a category_id. Use ynab_list_categories first to find the category ID.`
       },
       category_id: {
         type: 'string',
-        format: 'uuid',
         description: 'The category UUID to retrieve',
       },
     },

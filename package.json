@@ -39,7 +39,7 @@
     "url": "https://github.com/auzroz/ynab-mcp.git"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.14.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

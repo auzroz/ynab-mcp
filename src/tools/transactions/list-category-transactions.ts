@@ -65,7 +65,6 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
       },
       category_id: {
         type: 'string',
-        format: 'uuid',
         description: 'The category UUID to get transactions for',
       },
       since_date: {

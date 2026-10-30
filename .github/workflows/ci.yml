@@ -146,7 +146,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          # The exact engines floor: better-sqlite3 13 needs Node-API 10, first shipped in 22.14.0.
+          node-version: '22.14.0'
           cache: 'npm'
 
       - name: Install dependencies

@@ -44,7 +44,6 @@ Returns uncleared transactions organized by account with totals.`,
       },
       account_id: {
         type: 'string',
-        format: 'uuid',
         description: 'Specific account ID to check (optional)',
       },
     },
