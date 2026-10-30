@@ -259,6 +259,28 @@ describe('read methods', () => {
     expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2018-11-01');
   });
 
+  it('a budget list read in flight during a transaction write does not re-cache stale data', async () => {
+    let releaseStaleRead: (value: unknown) => void = () => {};
+    asMock(mockApi.plans.getPlans).mockImplementationOnce(
+      () => new Promise((resolve) => (releaseStaleRead = resolve))
+    );
+    setResolve(mockApi.transactions.createTransaction, { data: { transaction: { id: 't1' } } });
+    const client = makeClient(false);
+
+    // The read starts before the write and returns the pre-write first month after it
+    const staleLookup = client.getBudgetFirstMonth(BUDGET);
+    await vi.waitFor(() => expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledTimes(1));
+    await client.createTransaction(BUDGET, { transaction: { date: '2018-11-15' } } as never);
+    releaseStaleRead({ data: { plans: [{ id: BUDGET, first_month: '2019-03-01' }] } });
+    expect(await staleLookup).toBe('2019-03-01');
+
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2018-11-01' }] },
+    });
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2018-11-01');
+    expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledTimes(2);
+  });
+
   it('getBudgetFirstMonth does not borrow the sole budget for an unmatched explicit id', async () => {
     setResolve(mockApi.plans.getPlans, {
       data: { plans: [{ id: 'other', first_month: '2019-03-01' }] },

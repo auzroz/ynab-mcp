@@ -22,6 +22,11 @@ export class YnabClient {
   // Track server knowledge for delta sync
   private serverKnowledge: Map<string, number> = new Map();
 
+  // Bumped on every transaction-history invalidation. Reads that started before a
+  // bump don't cache their (possibly stale) result, so an in-flight request can't
+  // restore what the invalidation just dropped.
+  private historyGeneration = 0;
+
   constructor(
     accessToken: string,
     defaultBudgetId: string | undefined,
@@ -121,9 +126,10 @@ export class YnabClient {
     const cached = this.cache.get<ynab.PlanSummaryResponse>(cacheKey);
     if (cached !== undefined) return cached;
 
+    const generation = this.historyGeneration;
     await this.rateLimiter.acquire();
     const response = await this.api.plans.getPlans(includeAccounts);
-    this.cache.set(cacheKey, response);
+    if (generation === this.historyGeneration) this.cache.set(cacheKey, response);
     return response;
   }
 
@@ -169,6 +175,7 @@ export class YnabClient {
       if (cached !== undefined) return cached;
     }
 
+    const generation = this.historyGeneration;
     let firstMonth: string | undefined;
     // Match the cached budget list by exact ID only. Aliases (and IDs missing from
     // the list) never borrow another budget's first month; they use the month list.
@@ -183,7 +190,9 @@ export class YnabClient {
       }
     }
 
-    if (firstMonth !== undefined && !isAlias) this.cache.set(cacheKey, firstMonth);
+    if (firstMonth !== undefined && !isAlias && generation === this.historyGeneration) {
+      this.cache.set(cacheKey, firstMonth);
+    }
     return firstMonth;
   }
 
@@ -192,6 +201,7 @@ export class YnabClient {
    * and the budget list that carries it) after a successful transaction write.
    */
   private invalidateTransactionHistory(budgetId: string): void {
+    this.historyGeneration++;
     if (budgetId === 'last-used' || budgetId === 'default') {
       // An alias write could have touched any budget, so drop every cached first month.
       this.cache.deleteByPrefix('first-month:');
