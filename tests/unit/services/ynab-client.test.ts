@@ -492,11 +492,13 @@ describe('read methods', () => {
 
   it('getAccountTransactions maps to getTransactionsByAccount', async () => {
     setResolve(mockApi.transactions.getTransactionsByAccount, { data: { transactions: [] } });
-    await makeClient(true).getAccountTransactions(BUDGET, 'acc-1', '2026-01-01');
+    await makeClient(true).getAccountTransactions(BUDGET, 'acc-1', { sinceDate: '2026-01-01' });
     expect(asMock(mockApi.transactions.getTransactionsByAccount)).toHaveBeenCalledWith(
       BUDGET,
       'acc-1',
       '2026-01-01',
+      undefined,
+      undefined,
       undefined
     );
   });
@@ -508,19 +510,45 @@ describe('read methods', () => {
       BUDGET,
       'cat-1',
       undefined,
+      undefined,
+      undefined,
       undefined
     );
   });
 
   it('getPayeeTransactions maps to getTransactionsByPayee', async () => {
     setResolve(mockApi.transactions.getTransactionsByPayee, { data: { transactions: [] } });
-    await makeClient(true).getPayeeTransactions(BUDGET, 'payee-1', '2026-02-02', '2026-03-01');
+    await makeClient(true).getPayeeTransactions(BUDGET, 'payee-1', {
+      sinceDate: '2026-02-02',
+      untilDate: '2026-03-01',
+    });
     expect(asMock(mockApi.transactions.getTransactionsByPayee)).toHaveBeenCalledWith(
       BUDGET,
       'payee-1',
       '2026-02-02',
-      '2026-03-01'
+      '2026-03-01',
+      undefined,
+      undefined
     );
+  });
+
+  it.each([
+    ['getAccountTransactions', 'getTransactionsByAccount', 'account-transactions'],
+    ['getCategoryTransactions', 'getTransactionsByCategory', 'category-transactions'],
+    ['getPayeeTransactions', 'getTransactionsByPayee', 'payee-transactions'],
+  ] as const)('%s passes the type filter and keys server_knowledge by it', async (method, sdk, resource) => {
+    const sdkFn = mockApi.transactions[sdk];
+    setResolve(sdkFn, { data: { transactions: [], server_knowledge: 7 } });
+    const client = makeClient(true);
+
+    await client[method](BUDGET, 'scope-1', { sinceDate: '2026-01-01', type: 'unapproved' });
+
+    expect(asMock(sdkFn)).toHaveBeenCalledWith(BUDGET, 'scope-1', '2026-01-01', undefined, 'unapproved', undefined);
+    const key = { id: 'scope-1', sinceDate: '2026-01-01' };
+    expect(client.getServerKnowledge(BUDGET, resource, { ...key, type: 'unapproved' })).toBe(7);
+    // A cursor from the filtered query is not reused for the unfiltered or other-type query.
+    expect(client.getServerKnowledge(BUDGET, resource, key)).toBeUndefined();
+    expect(client.getServerKnowledge(BUDGET, resource, { ...key, type: 'uncategorized' })).toBeUndefined();
   });
 
   it('getScheduledTransactions maps correctly', async () => {

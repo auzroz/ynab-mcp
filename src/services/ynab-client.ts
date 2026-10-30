@@ -84,6 +84,15 @@ function updateCategoryDetailsAuditDetails(data: UpdateCategoryBody): Record<str
   };
 }
 
+/** Query options for the account/category/payee transaction endpoints. */
+export interface ScopedTransactionOptions {
+  sinceDate?: string | undefined;
+  /** Inclusive upper bound (ynab SDK 4.5+); undefined means no upper bound. */
+  untilDate?: string | undefined;
+  type?: 'uncategorized' | 'unapproved' | undefined;
+  lastKnowledgeOfServer?: number | undefined;
+}
+
 export class YnabClient {
   private readonly api: ynab.API;
   // Only used by the goal_frequency direct-call workaround; never logged.
@@ -934,49 +943,82 @@ export class YnabClient {
     }
   }
 
+  /** Transactions for one account. `type` filters to unapproved/uncategorized transactions. */
   async getAccountTransactions(
     budgetId: string,
     accountId: string,
-    sinceDate?: string,
-    untilDate?: string
+    options?: ScopedTransactionOptions
   ): Promise<ynab.TransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByAccount(
+    const response = await this.api.transactions.getTransactionsByAccount(
       budgetId,
       accountId,
-      sinceDate,
-      untilDate
+      options?.sinceDate,
+      options?.untilDate,
+      options?.type,
+      options?.lastKnowledgeOfServer
     );
+    this.recordScopedKnowledge(budgetId, 'account-transactions', accountId, response, options);
+    return response;
   }
 
+  /** Transactions for one category. `type` filters to unapproved/uncategorized transactions. */
   async getCategoryTransactions(
     budgetId: string,
     categoryId: string,
-    sinceDate?: string,
-    untilDate?: string
+    options?: ScopedTransactionOptions
   ): Promise<ynab.HybridTransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByCategory(
+    const response = await this.api.transactions.getTransactionsByCategory(
       budgetId,
       categoryId,
-      sinceDate,
-      untilDate
+      options?.sinceDate,
+      options?.untilDate,
+      options?.type,
+      options?.lastKnowledgeOfServer
     );
+    this.recordScopedKnowledge(budgetId, 'category-transactions', categoryId, response, options);
+    return response;
   }
 
+  /** Transactions for one payee. `type` filters to unapproved/uncategorized transactions. */
   async getPayeeTransactions(
     budgetId: string,
     payeeId: string,
-    sinceDate?: string,
-    untilDate?: string
+    options?: ScopedTransactionOptions
   ): Promise<ynab.HybridTransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByPayee(
+    const response = await this.api.transactions.getTransactionsByPayee(
       budgetId,
       payeeId,
-      sinceDate,
-      untilDate
+      options?.sinceDate,
+      options?.untilDate,
+      options?.type,
+      options?.lastKnowledgeOfServer
     );
+    this.recordScopedKnowledge(budgetId, 'payee-transactions', payeeId, response, options);
+    return response;
+  }
+
+  /**
+   * Record the delta-sync cursor for an account/category/payee transaction query.
+   * The id and every filter (including type) are part of the key, so a cursor from a
+   * filtered query is never reused for a different one.
+   */
+  private recordScopedKnowledge(
+    budgetId: string,
+    resource: string,
+    scopeId: string,
+    response: { data: { server_knowledge?: number } },
+    options?: ScopedTransactionOptions
+  ): void {
+    if (response.data.server_knowledge === undefined) return;
+    this.updateServerKnowledge(budgetId, response.data.server_knowledge, resource, {
+      id: scopeId,
+      sinceDate: options?.sinceDate,
+      untilDate: options?.untilDate,
+      type: options?.type,
+    });
   }
 
   // ==================== Scheduled Transactions ====================

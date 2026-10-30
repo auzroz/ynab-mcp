@@ -11,6 +11,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { transactionTypeJsonSchema, transactionTypeSchema } from './format.js';
 
 const DEFAULT_RANGE_NOTE =
   'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.';
@@ -35,6 +36,7 @@ const inputSchema = z.object({
     .describe(
       'Only return transactions on or before this date (inclusive). Accepts ISO dates (YYYY-MM-DD) or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it'
     ),
+  type: transactionTypeSchema.optional(),
   limit: z
     .number()
     .int()
@@ -53,7 +55,9 @@ Use when the user asks:
 - "Show my Amazon purchases"
 - "What have I spent at Costco?"
 - "List transactions for [payee name]"
+- "Are there unapproved transactions for [payee]?"
 
+Pass type ("unapproved" or "uncategorized") to narrow to transactions that need attention.
 Requires a payee_id. Use ynab_list_payees first to find the payee ID.
 
 NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). Pass an earlier since_date to see older history. until_date sets an inclusive upper bound.`,
@@ -82,6 +86,7 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
         description:
           'Only return transactions on or before this date (inclusive). Accepts YYYY-MM-DD or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it',
       },
+      type: transactionTypeJsonSchema,
       limit: {
         type: 'integer',
         minimum: 1,
@@ -109,12 +114,11 @@ export async function handleListPayeeTransactions(
   const sinceDate = validated.since_date ? parseNaturalDate(validated.since_date) : undefined;
   const untilDate = validated.until_date ? parseNaturalDate(validated.until_date) : undefined;
 
-  const response = await client.getPayeeTransactions(
-    budgetId,
-    validated.payee_id,
+  const response = await client.getPayeeTransactions(budgetId, validated.payee_id, {
     sinceDate,
-    untilDate
-  );
+    untilDate,
+    type: validated.type,
+  });
 
   // Sort by date descending and apply limit (avoid mutating response)
   const transactions = [...response.data.transactions]

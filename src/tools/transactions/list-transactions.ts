@@ -10,6 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { transactionTypeJsonSchema, transactionTypeSchema } from './format.js';
 import { DATE_TEXT_MAX_LENGTH, budgetId, monthParam } from '../../utils/schemas.js';
 
 const DEFAULT_RANGE_NOTE =
@@ -32,10 +33,7 @@ const inputSchema = z.object({
     .describe(
       'Only return transactions on or after this date. Accepts ISO dates (YYYY-MM-DD) or natural language: "today", "yesterday", "this week", "last week", "this month", "last month", "past 7 days", "past 30 days". If omitted, YNAB returns only the last 12 months; pass an earlier date for older history'
     ),
-  type: z
-    .enum(['uncategorized', 'unapproved'])
-    .optional()
-    .describe('Filter by transaction type: "uncategorized" or "unapproved"'),
+  type: transactionTypeSchema.optional(),
   until_date: z
     .string()
     .max(DATE_TEXT_MAX_LENGTH)
@@ -92,11 +90,7 @@ Pass month (YYYY-MM-01 or "current") to list a single budget month instead of th
         description:
           'Only return transactions on or after this date. Accepts YYYY-MM-DD or natural language: "today", "this week", "past 30 days", etc.. If omitted, YNAB returns only the last 12 months; pass an earlier date for older history',
       },
-      type: {
-        type: 'string',
-        enum: ['uncategorized', 'unapproved'],
-        description: 'Filter by transaction type',
-      },
+      type: transactionTypeJsonSchema,
       until_date: {
         type: 'string',
         maxLength: 100,
