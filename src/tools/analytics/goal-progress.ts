@@ -12,6 +12,9 @@ import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
+import DecimalJS from 'decimal.js';
+
+const Decimal = DecimalJS.default ?? DecimalJS;
 
 // Input schema
 const inputSchema = z.object({
@@ -19,7 +22,7 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   filter: z
-    .enum(['all', 'on_track', 'behind', 'underfunded', 'complete'])
+    .enum(['all', 'on_track', 'behind', 'underfunded', 'complete', 'snoozed'])
     .optional()
     .describe('Filter goals by status (default: all)'),
 });
@@ -47,7 +50,7 @@ Returns goal progress, funding status, and projections for each category with a 
       },
       filter: {
         type: 'string',
-        enum: ['all', 'on_track', 'behind', 'underfunded', 'complete'],
+        enum: ['all', 'on_track', 'behind', 'underfunded', 'complete', 'snoozed'],
         description: 'Filter goals by status',
       },
     },
@@ -62,12 +65,14 @@ interface GoalInfo {
   goal_type_label: string;
   target_amount: string | null;
   target_date: string | null;
-  monthly_funding: string | null;
+  period: string | null;
+  monthly_equivalent: string | null;
+  snoozed: boolean;
   current_balance: string;
   percent_complete: number | null;
   underfunded: string;
   underfunded_raw: number;
-  status: 'on_track' | 'behind' | 'underfunded' | 'complete';
+  status: 'on_track' | 'behind' | 'underfunded' | 'complete' | 'snoozed';
   status_message: string;
   days_until_target: number | null;
 }
@@ -80,6 +85,67 @@ const goalTypeLabels: Record<string, string> = {
   NEED: 'Spending Target',
   DEBT: 'Debt Payoff',
 };
+
+// YNAB goal_cadence values with a repeat interval of goal_cadence * goal_cadence_frequency
+const CADENCE_MONTHLY = 1;
+const CADENCE_WEEKLY = 2;
+const CADENCE_YEARLY = 13;
+// goal_cadence 14 (every 2 years) ignores goal_cadence_frequency
+const CADENCE_EVERY_2_YEARS = 14;
+
+interface GoalPeriod {
+  label: string;
+  /** Length of one repeat period in months (weeks are normalised as 12/52 months). */
+  monthsPerPeriod: InstanceType<typeof Decimal>;
+}
+
+/**
+ * Derive a goal's repeat period from goal_cadence and goal_cadence_frequency.
+ * Returns null when the goal does not repeat (cadence 0/undefined) or the
+ * cadence is not a recognised value.
+ */
+export function getGoalPeriod(
+  cadence: number | null | undefined,
+  frequency: number | null | undefined
+): GoalPeriod | null {
+  if (cadence === null || cadence === undefined || !Number.isInteger(cadence)) return null;
+
+  // Frequency only applies to cadences 1, 2 and 13; treat missing/invalid as 1
+  const freq = frequency !== null && frequency !== undefined && Number.isInteger(frequency) && frequency >= 1
+    ? frequency
+    : 1;
+
+  if (cadence === CADENCE_MONTHLY) {
+    return {
+      label: freq === 1 ? 'monthly' : `every ${freq} months`,
+      monthsPerPeriod: new Decimal(freq),
+    };
+  }
+  if (cadence === CADENCE_WEEKLY) {
+    return {
+      label: freq === 1 ? 'weekly' : `every ${freq} weeks`,
+      monthsPerPeriod: new Decimal(freq).times(12).dividedBy(52),
+    };
+  }
+  if (cadence === CADENCE_YEARLY) {
+    return {
+      label: freq === 1 ? 'yearly' : `every ${freq} years`,
+      monthsPerPeriod: new Decimal(freq).times(12),
+    };
+  }
+  if (cadence >= 3 && cadence <= 12) {
+    // 3 = every 2 months ... 12 = every 11 months
+    const months = cadence - 1;
+    return { label: `every ${months} months`, monthsPerPeriod: new Decimal(months) };
+  }
+  if (cadence === CADENCE_EVERY_2_YEARS) {
+    return { label: 'every 2 years', monthsPerPeriod: new Decimal(24) };
+  }
+  return null;
+}
+
+// Goal types whose goal_target is an amount per repeat period
+const PER_PERIOD_GOAL_TYPES = new Set(['MF', 'NEED', 'DEBT']);
 
 // Handler function
 /**
@@ -122,7 +188,13 @@ export async function handleGoalProgress(
     const goalType = category.goal_type;
     const targetAmount = category.goal_target ?? null;
     const targetDate = category.goal_target_date ?? category.goal_target_month ?? null;
-    const monthlyFunding = category.goal_cadence_frequency === 1 ? category.goal_target : null;
+    const period = getGoalPeriod(category.goal_cadence, category.goal_cadence_frequency);
+    // Per-month equivalent of a recurring target (e.g. a yearly NEED target / 12)
+    const monthlyEquivalent =
+      period !== null && targetAmount !== null && PER_PERIOD_GOAL_TYPES.has(String(goalType))
+        ? new Decimal(targetAmount).dividedBy(period.monthsPerPeriod).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber()
+        : null;
+    const snoozed = Boolean(category.goal_snoozed_at);
     const underfunded = category.goal_under_funded ?? 0;
     const balance = category.balance;
 
@@ -146,7 +218,11 @@ export async function handleGoalProgress(
     let status: GoalInfo['status'];
     let statusMessage: string;
 
-    if (percentComplete !== null && percentComplete >= 100) {
+    if (snoozed) {
+      // Snoozed targets are paused for this month: never underfunded or at risk
+      status = 'snoozed';
+      statusMessage = 'Snoozed, not counted toward underfunded totals';
+    } else if (percentComplete !== null && percentComplete >= 100) {
       status = 'complete';
       statusMessage = 'Goal fully funded';
     } else if (targetDate && daysUntilTarget !== null && daysUntilTarget <= 0) {
@@ -177,7 +253,9 @@ export async function handleGoalProgress(
       goal_type_label: goalTypeLabels[goalTypeStr] ?? goalTypeStr,
       target_amount: targetAmount !== null ? formatCurrency(targetAmount) : null,
       target_date: targetDate,
-      monthly_funding: monthlyFunding !== null && monthlyFunding !== undefined ? formatCurrency(monthlyFunding) : null,
+      period: period?.label ?? null,
+      monthly_equivalent: monthlyEquivalent !== null ? formatCurrency(monthlyEquivalent) : null,
+      snoozed,
       current_balance: formatCurrency(balance),
       percent_complete: percentComplete,
       underfunded: formatCurrency(underfunded),
@@ -200,16 +278,18 @@ export async function handleGoalProgress(
     behind: 1,
     on_track: 2,
     complete: 3,
+    snoozed: 4,
   };
   filteredGoals.sort((a, b) => (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99));
 
   // Calculate summary stats
+  // Snoozed goals are excluded from underfunded/at-risk totals
   const totalUnderfunded = goalsInfo.reduce(
-    (sum, g) => sum + g.underfunded_raw,
+    (sum, g) => (g.snoozed ? sum : sum + g.underfunded_raw),
     0
   );
 
-  const statusCounts = { complete: 0, on_track: 0, behind: 0, underfunded: 0 };
+  const statusCounts = { complete: 0, on_track: 0, behind: 0, underfunded: 0, snoozed: 0 };
   for (const g of goalsInfo) {
     statusCounts[g.status]++;
   }
@@ -218,13 +298,15 @@ export async function handleGoalProgress(
   let overallStatus: 'healthy' | 'attention_needed' | 'critical';
   let overallMessage: string;
 
+  const activeGoalCount = goalsInfo.length - statusCounts.snoozed;
+
   if (goalsInfo.length === 0) {
     overallStatus = 'healthy';
     overallMessage = 'No goals configured';
   } else if (statusCounts.underfunded === 0 && statusCounts.behind === 0) {
     overallStatus = 'healthy';
     overallMessage = 'All goals are on track or complete';
-  } else if (statusCounts.underfunded > goalsInfo.length / 2) {
+  } else if (statusCounts.underfunded > activeGoalCount / 2) {
     overallStatus = 'critical';
     overallMessage = `${statusCounts.underfunded} goals need funding`;
   } else {
@@ -243,6 +325,7 @@ export async function handleGoalProgress(
         on_track: statusCounts.on_track,
         behind: statusCounts.behind,
         underfunded: statusCounts.underfunded,
+        snoozed: statusCounts.snoozed,
         total_underfunded: formatCurrency(totalUnderfunded),
       },
       goals: filteredGoals.map((g) => ({
@@ -254,6 +337,9 @@ export async function handleGoalProgress(
         balance: g.current_balance,
         progress: g.percent_complete !== null ? `${g.percent_complete}%` : null,
         underfunded: g.underfunded,
+        period: g.period,
+        monthly_equivalent: g.monthly_equivalent,
+        snoozed: g.snoozed,
         status: g.status,
         status_message: g.status_message,
       })),
