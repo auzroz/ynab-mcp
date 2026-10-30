@@ -91,7 +91,9 @@ deployment.
 
 - Security: the OAuth consent page could be skipped by a crafted
   `/oauth/ynab/start` link (confused deputy). Each pending authorization is now
-  bound to the browser that saw the consent page with a `__Host-` cookie.
+  bound to the browser that saw the consent page with an HttpOnly cookie
+  (`__Host-` prefixed and `Secure` over https; unprefixed on a loopback http
+  `PUBLIC_URL`).
 - Security: write access came from the user's latest consent rather than the
   token's own grant; the access level is now stored per code and token.
 - Security: MCP sessions are bound to the client, user and access level that
