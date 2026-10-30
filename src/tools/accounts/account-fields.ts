@@ -5,20 +5,28 @@
  * values (milliunits for payments and escrow) so existing consumers keep working.
  */
 
+import DecimalJS from 'decimal.js';
 import type { Account } from 'ynab';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 
+const Decimal = DecimalJS.default ?? DecimalJS;
+
 type MonthMap = { [key: string]: number } | null | undefined;
 
-function formatMonthMap(map: MonthMap): Record<string, string> {
+function formatMonthMap(map: MonthMap, format: (value: number) => string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [month, value] of Object.entries(map ?? {})) {
     if (typeof value === 'number') {
-      out[month] = formatCurrency(value);
+      out[month] = format(value);
     }
   }
   return out;
+}
+
+/** YNAB reports interest rates in milliunits of a percent: 18990 = 18.99%. */
+function formatRate(value: number): string {
+  return `${new Decimal(value).dividedBy(1000).toString()}%`;
 }
 
 function hasEntries(map: MonthMap): boolean {
@@ -28,7 +36,8 @@ function hasEntries(map: MonthMap): boolean {
 /**
  * Detail fields shared by the list and get tools. The debt maps are keyed by
  * month (YYYY-MM-DD) and hold numbers only, so they need no sanitizing.
- * Rates are passed through exactly as YNAB returns them. Empty maps are
+ * Raw rates are kept exactly as YNAB returns them (milliunits of a percent),
+ * with a percent string beside them in debt_interest_rates_formatted. Empty maps are
  * omitted unless includeEmptyMaps is set.
  */
 export function accountDetailFields(
@@ -49,17 +58,15 @@ export function accountDetailFields(
         : null,
   };
 
-  const maps: Array<[string, MonthMap, boolean]> = [
-    ['debt_interest_rates', account.debt_interest_rates, false],
-    ['debt_minimum_payments', account.debt_minimum_payments, true],
-    ['debt_escrow_amounts', account.debt_escrow_amounts, true],
+  const maps: Array<[string, MonthMap, (value: number) => string]> = [
+    ['debt_interest_rates', account.debt_interest_rates, formatRate],
+    ['debt_minimum_payments', account.debt_minimum_payments, formatCurrency],
+    ['debt_escrow_amounts', account.debt_escrow_amounts, formatCurrency],
   ];
-  for (const [key, map, isMoney] of maps) {
+  for (const [key, map, format] of maps) {
     if (!options.includeEmptyMaps && !hasEntries(map)) continue;
     fields[key] = map ?? {};
-    if (isMoney) {
-      fields[`${key}_formatted`] = formatMonthMap(map);
-    }
+    fields[`${key}_formatted`] = formatMonthMap(map, format);
   }
   return fields;
 }

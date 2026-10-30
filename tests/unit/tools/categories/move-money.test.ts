@@ -94,7 +94,7 @@ describe('handleMoveMoney', () => {
     expect(parsed.warnings[0]).toContain('Dining Out');
   });
 
-  it('records one summary audit entry without names or amounts text', async () => {
+  it('adds one move_money summary audit entry without names or amounts text (the per-leg update entries come from the client)', async () => {
     mockClient.updateMonthCategory
       .mockResolvedValueOnce(category(FROM, 'Dining Out', 150000, 0))
       .mockResolvedValueOnce(category(TO, 'Groceries', 350000, 0));
