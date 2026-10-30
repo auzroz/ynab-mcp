@@ -83,8 +83,9 @@ The server is configured via environment variables:
 
 By default the server speaks **stdio** (local). Set `MCP_TRANSPORT=http` to run it
 as a **remote** server over the MCP Streamable HTTP transport at `POST /mcp`, with a
-plain `GET /health` for load balancers. Each session gets an isolated
-client/cache/rate-limiter/audit-log.
+plain `GET /health` for load balancers. Each session gets its own client; all
+sessions of one user share one cache, rate limiter and audit log, never shared
+between users.
 
 | Variable | Description |
 |----------|-------------|

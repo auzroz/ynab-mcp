@@ -156,6 +156,17 @@ describe('loadHttpConfig', () => {
       expect(c.maxSessionsPerUser).toBe(2);
       expect(c.sessionIdleTimeoutMs).toBe(60000);
     });
+    it('rejects a per-user cap above the global cap', () => {
+      process.env['MCP_MAX_SESSIONS'] = '5';
+      process.env['MCP_MAX_SESSIONS_PER_USER'] = '6';
+      expect(() => loadHttpConfig()).toThrow(/MCP_MAX_SESSIONS_PER_USER.*MCP_MAX_SESSIONS/);
+      process.env['MCP_MAX_SESSIONS_PER_USER'] = '5';
+      expect(loadHttpConfig().maxSessionsPerUser).toBe(5);
+    });
+    it('lowers the default per-user cap to a smaller global cap', () => {
+      process.env['MCP_MAX_SESSIONS'] = '3';
+      expect(loadHttpConfig().maxSessionsPerUser).toBe(3);
+    });
     it.each(['10ms', '-1', '1.5', 'abc', '0'])('rejects %s', (v) => {
       process.env['MCP_MAX_SESSIONS'] = v;
       expect(() => loadHttpConfig()).toThrow(/MCP_MAX_SESSIONS/);

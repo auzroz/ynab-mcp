@@ -199,6 +199,16 @@ export function loadHttpConfig(): HttpConfig {
     );
   }
 
+  // A per-user cap above the global one would never close a session, so one
+  // user could take every slot. An explicit value is rejected; the default
+  // follows a smaller global cap.
+  const maxSessions = parsePositiveInteger(process.env['MCP_MAX_SESSIONS'], 100, 'MCP_MAX_SESSIONS');
+  const maxSessionsPerUser = parsePositiveInteger(
+    process.env['MCP_MAX_SESSIONS_PER_USER'], Math.min(10, maxSessions), 'MCP_MAX_SESSIONS_PER_USER');
+  if (maxSessionsPerUser > maxSessions) {
+    throw new Error('Invalid MCP_MAX_SESSIONS_PER_USER: must not exceed MCP_MAX_SESSIONS.');
+  }
+
   return {
     port,
     publicUrl: normalizedPublicUrl,
@@ -208,9 +218,8 @@ export function loadHttpConfig(): HttpConfig {
     enableDnsRebindingProtection: parseBoolean(
       process.env['ENABLE_DNS_REBINDING_PROTECTION'], true, 'ENABLE_DNS_REBINDING_PROTECTION'),
     resourceUrl,
-    maxSessions: parsePositiveInteger(process.env['MCP_MAX_SESSIONS'], 100, 'MCP_MAX_SESSIONS'),
-    maxSessionsPerUser: parsePositiveInteger(
-      process.env['MCP_MAX_SESSIONS_PER_USER'], 10, 'MCP_MAX_SESSIONS_PER_USER'),
+    maxSessions,
+    maxSessionsPerUser,
     sessionIdleTimeoutMs: parsePositiveInteger(
       process.env['MCP_SESSION_IDLE_TIMEOUT_MS'], 30 * 60 * 1000, 'MCP_SESSION_IDLE_TIMEOUT_MS'),
     trustProxy: parseInteger(process.env['TRUST_PROXY'], 0, 'TRUST_PROXY'),
