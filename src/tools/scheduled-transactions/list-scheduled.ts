@@ -11,12 +11,14 @@ import { sanitizeFlagName } from '../transactions/format.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 
 // Input schema
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+  since_server_knowledge: sinceServerKnowledge(),
 });
 
 // Tool definition
@@ -30,7 +32,8 @@ Use when the user asks:
 - "List my subscriptions"
 - "What payments are coming up?"
 
-Returns scheduled transaction details including frequency, next occurrence, and amounts.`,
+Returns scheduled transaction details including frequency, next occurrence, and amounts.
+Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the scheduled transactions changed since then.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -39,6 +42,7 @@ Returns scheduled transaction details including frequency, next occurrence, and 
         maxLength: 64,
         description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
+      since_server_knowledge: sinceServerKnowledgeJsonSchema,
     },
   },
 };
@@ -54,16 +58,19 @@ export async function handleListScheduledTransactions(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
-  const response = await client.getScheduledTransactions(budgetId);
-  const transactions = response.data.scheduled_transactions;
+  const cursor = validated.since_server_knowledge;
+  const response =
+    cursor === undefined
+      ? await client.getScheduledTransactions(budgetId)
+      : await client.getScheduledTransactions(budgetId, { lastKnowledgeOfServer: cursor });
+  const { changed, deletedIds } = splitDeleted(response.data.scheduled_transactions, (t) => t.id);
 
   // Filter out deleted and sort by next date
-  const activeTransactions = transactions
-    .filter((t) => !t.deleted)
-    .sort((a, b) => a.date_next.localeCompare(b.date_next));
+  const activeTransactions = changed.sort((a, b) => a.date_next.localeCompare(b.date_next));
 
   const formattedTransactions = activeTransactions.map((txn) => {
-    const subs = txn.subtransactions ?? [];
+    // A delta may list removed split lines as deleted.
+    const subs = (txn.subtransactions ?? []).filter((sub) => !sub.deleted);
     return {
       id: txn.id,
       date_first: txn.date_first,
@@ -94,6 +101,23 @@ export async function handleListScheduledTransactions(
           : [],
     };
   });
+
+  if (cursor !== undefined) {
+    return JSON.stringify(
+      {
+        ...deltaFields(cursor, deletedIds),
+        scheduled_transactions: formattedTransactions,
+        summary: {
+          changed_count: formattedTransactions.length,
+          deleted_count: deletedIds.length,
+          note: DELTA_SUMMARY_NOTE,
+        },
+        server_knowledge: response.data.server_knowledge,
+      },
+      null,
+      2
+    );
+  }
 
   // Calculate monthly total (approximate)
   const monthlyAmounts = activeTransactions.map((t) => {
@@ -146,6 +170,7 @@ export async function handleListScheduledTransactions(
         estimated_monthly_total: formatCurrency(estimatedMonthlyTotal),
         by_frequency: byFrequency,
       },
+      server_knowledge: response.data.server_knowledge,
     },
     null,
     2

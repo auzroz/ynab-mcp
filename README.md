@@ -26,7 +26,7 @@ Traditional YNAB integrations require manual API calls or custom scripting. This
 | **Advanced Analytics** | 23 tools for spending analysis, trend detection, and financial insights |
 | **Read-Only by Default** | Write operations require explicit opt-in (`YNAB_READ_ONLY=false`) |
 | **Smart Rate Limiting** | Token bucket algorithm with 180 req/hour budget (10% safety margin) |
-| **Intelligent Caching** | Reduces API calls for infrequently changing data |
+| **Intelligent Caching** | TTL cache for slow-changing data plus delta sync (`last_knowledge_of_server`), so repeat reads fetch only what changed (see [Caching](#caching)) |
 | **Type-Safe** | Full TypeScript implementation with Zod schema validation |
 
 ## Quick Start
@@ -412,7 +412,9 @@ src/
 │   ├── ynab-client.ts    # YNAB API wrapper with rate limiting
 │   ├── rate-limiter.ts   # Token bucket rate limiter
 │   ├── audit-log.ts      # Per-user write audit log
-│   └── cache.ts          # In-memory TTL cache
+│   ├── cache.ts          # In-memory TTL cache
+│   ├── delta-cache.ts    # Delta-sync snapshots (per user, bounded)
+│   └── delta-merge.ts    # Applies YNAB delta responses to snapshots
 ├── tools/                # MCP tool implementations
 │   ├── user/
 │   ├── budgets/
@@ -425,6 +427,75 @@ src/
 │   └── analytics/
 └── utils/                # Helpers (currency, dates, errors)
 ```
+
+## Caching
+
+Reads go through two layers, both in memory and per user:
+
+1. **TTL cache.** Accounts, categories, payees and the budget list are served
+   from a cache for `CACHE_TTL_MS` (default 5 minutes). A write through this
+   server drops the matching entry (a category write the category list, a
+   payee write the payee list, and so on).
+2. **Delta sync.** For every list read (accounts, categories, months, payees,
+   scheduled transactions, and every transaction list, whatever its filters)
+   the server keeps a snapshot of the last full result and its YNAB
+   `server_knowledge`. When the TTL entry has expired or a write dropped it
+   (transactions, months and scheduled transactions have no TTL entry, so
+   every read), it asks YNAB only for what changed since then and merges that
+   in. Tools always get the complete list a full fetch would return. The
+   saving is in payload size and latency: a refresh is one request, like the
+   full fetch it replaces, except that a category or payee transaction list
+   (or an `uncategorized` query) that a change touches costs the change-feed
+   request plus a full re-read, so two.
+
+   - Transaction lists are refreshed from the budget's change feed (all
+     transactions changed since the snapshot, from a far-past `since_date`,
+     so it never depends on a cached first month), not from their own
+     filtered endpoint, so a transaction approved, re-categorized, re-dated
+     or moved out of a filtered list doesn't linger in it. When a change
+     can't be placed exactly (the `uncategorized` type, a date at the edge of
+     YNAB's default 12-month window, a change touching a category or payee
+     list), that list is re-read in full instead.
+   - Transaction and scheduled transaction rows carry payee, category and
+     account names, and a rename doesn't change those rows, so no delta
+     reports it. Their snapshots are dropped when this server renames a payee
+     or category, and whenever a read of the account, category or payee list
+     shows a name changed elsewhere. A rename made in another app and not
+     revealed by such a read shows up within 15 minutes, as these snapshots
+     are re-read in full at least that often.
+   - Category amounts (assigned, activity, available, goals) are for the
+     current month, and a new month changes them with no change on the
+     server, so category and month snapshots start over each UTC month.
+   - Anything inconsistent (no or decreasing `server_knowledge`, a delta that
+     doesn't apply, a failed request) drops the snapshot and fetches in full.
+   - `ynab_get_budget`, budget aliases (`last-used`, `default`) and the
+     `current` month are always fetched in full.
+   - Per user at most 32 snapshots and 20,000 entities are kept (least recently
+     used first out); a snapshot unused for 30 minutes is dropped, and each is
+     re-read in full at least hourly (transaction lists every 15 minutes).
+     These are constants in `src/services/delta-cache.ts`.
+   - Merged lists keep YNAB's order: transactions by date, months by month;
+     new accounts, payees and categories are appended (a moved category goes
+     last in its new group); within one date, transaction order may differ
+     from YNAB's.
+
+**Cursor for clients.** Every list tool response includes `server_knowledge`.
+Pass it back as `since_server_knowledge` (same budget and filters) to get only
+what changed since: the response has `delta: true`, the changed entities in the
+usual fields, deleted ones by id in `deleted_ids` (`deleted_group_ids` for
+category groups, `deleted_months` for months), and counts instead of totals.
+
+- Transaction tools still apply `limit` to a delta. When more transactions
+  changed than `limit`, the response hands back your own cursor as
+  `server_knowledge` (with `cursor_withheld: true`), so the changes it left out
+  aren't skipped: raise `limit`, narrow the filters, or re-read in full.
+- A delta for a filtered transaction query comes from YNAB's filtered
+  endpoint, which may leave out a transaction that changed so it no longer
+  matches (approved, re-categorized, re-dated, moved); it is not in
+  `deleted_ids` either. Re-read filtered lists in full now and then to keep
+  them exact.
+- Category deltas don't show the change of month (see above); re-read in full
+  after a month begins.
 
 ## Security
 

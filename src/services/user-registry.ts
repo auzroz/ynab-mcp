@@ -4,14 +4,17 @@
  * YNAB rate-limits per access token (200 requests/hour), so every session of one
  * user must draw on one RateLimiter: per-session limiters would give a user with
  * several clients (or a client that reconnects) several independent budgets.
- * The sessions also share one Cache and one AuditLog, so ynab_audit_log shows
- * the user's writes from every session. Each session still builds its own
- * YnabClient on top (its read-only flag and delta-sync knowledge are its own).
+ * The sessions also share one Cache, one DeltaCache (delta-sync snapshots) and
+ * one AuditLog, so ynab_audit_log shows the user's writes from every session and
+ * a snapshot one session built saves the others a full fetch. Each session still
+ * builds its own YnabClient on top (its read-only flag and its record of the
+ * last server_knowledge it saw are its own).
  */
 
 import { createHash } from 'node:crypto';
 import { RateLimiter } from './rate-limiter.js';
 import { Cache } from './cache.js';
+import { DeltaCache } from './delta-cache.js';
 import { AuditLog } from './audit-log.js';
 
 /** The rate limiter's refill window: an idle hour refills any bucket completely. */
@@ -24,6 +27,7 @@ export const DEFAULT_MAX_USER_ENTRIES = 10_000;
 export interface UserComponents {
   readonly rateLimiter: RateLimiter;
   readonly cache: Cache;
+  readonly deltaCache: DeltaCache;
   readonly auditLog: AuditLog;
 }
 
@@ -35,6 +39,7 @@ export function createUserComponents(
   return {
     rateLimiter: new RateLimiter(limits.rateLimitPerHour, now),
     cache: new Cache(limits.cacheTtlMs),
+    deltaCache: new DeltaCache({ now }),
     auditLog: new AuditLog(),
   };
 }
