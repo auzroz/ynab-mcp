@@ -3,7 +3,7 @@
   "name": "io.github.auzroz/ynab-mcp",
   "title": "YNAB Budget Assistant",
   "description": "Full YNAB API coverage plus spending analytics, for self-hosted use with Claude.",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "websiteUrl": "https://github.com/auzroz/ynab-mcp",
   "repository": {
     "url": "https://github.com/auzroz/ynab-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "ynab-mcp",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "runtimeHint": "npx",
       "runtimeArguments": [{ "type": "positional", "value": "-y" }],
       "transport": { "type": "stdio" },
@@ -39,7 +39,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/auzroz/ynab-mcp:0.3.4",
+      "identifier": "ghcr.io/auzroz/ynab-mcp:0.3.5",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
