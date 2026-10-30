@@ -467,6 +467,8 @@ export class YnabClient {
       signal: AbortSignal.timeout(DIRECT_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
+      // Release the connection without reading upstream text into the error.
+      await response.body?.cancel().catch(() => {});
       throw new YnabApiError('YNAB API request failed', String(response.status));
     }
     return (await response.json()) as ynab.SaveCategoryResponse;
