@@ -83,7 +83,7 @@ Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
 Amount should be negative for expenses/outflows and positive for income/inflows.
 
 Split transactions: pass subtransactions (at least 2, each with amount in dollars and optional payee_id/payee_name, category_id, memo). Split amounts must sum exactly to the parent amount, and the parent must not set category_id. The splits of an existing transaction cannot be edited afterwards (YNAB limitation), so get them right on creation.
-Pass import_id to make the create idempotent: if that import_id already exists, nothing is created and duplicate_import_ids is returned.`,
+Pass import_id to make the create idempotent: the request is sent in YNAB's skip-duplicates form, so if that import_id already exists nothing is created and the result has success=false with duplicate_import_ids.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -192,11 +192,15 @@ export async function handleCreateTransaction(
   if (validated.subtransactions !== undefined)
     transactionData.subtransactions = toSaveSubTransactions(validated.subtransactions);
 
-  const response = await client.createTransaction(budgetId, {
-    transaction: transactionData,
-  });
+  // A single `transaction` body makes YNAB answer a repeated import_id with HTTP 409. The bulk
+  // `transactions` form skips duplicates and reports them in duplicate_import_ids instead, so
+  // use it whenever an import_id is given.
+  const response = await client.createTransaction(
+    budgetId,
+    validated.import_id !== undefined ? { transactions: [transactionData] } : { transaction: transactionData }
+  );
 
-  const txn = response.data.transaction;
+  const txn = response.data.transaction ?? response.data.transactions?.[0];
 
   if (txn == null) {
     // A repeated import_id is a normal outcome, not a failure: YNAB skips the create.

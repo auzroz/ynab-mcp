@@ -750,9 +750,10 @@ export class YnabClient {
     await this.rateLimiter.acquire();
 
     const auditLog = this.auditLog;
-    const txn = data.transaction;
+    // Single-body requests use `transaction`; the skip-duplicates form uses a one-item `transactions`.
+    const txn = data.transaction ?? data.transactions?.[0];
     // Count of split parts across the request (counts only; split memos/payees are never logged).
-    const splitCount = [txn, ...(data.transactions ?? [])].reduce(
+    const splitCount = [data.transaction, ...(data.transactions ?? [])].reduce(
       (n, t) => n + (t?.subtransactions?.length ?? 0),
       0
     );
@@ -774,7 +775,7 @@ export class YnabClient {
         },
         success: true,
       };
-      const createdId = response.data.transaction?.id;
+      const createdId = response.data.transaction?.id ?? response.data.transactions?.[0]?.id;
       if (createdId !== undefined) logEntry.resourceId = createdId;
       auditLog.log(logEntry);
       return response;

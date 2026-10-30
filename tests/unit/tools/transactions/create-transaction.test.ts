@@ -137,8 +137,37 @@ describe('handleCreateTransaction', () => {
         mockClient as never
       );
 
-      const sent = mockClient.createTransaction.mock.calls[0]![1] as { transaction: Record<string, unknown> };
-      expect(sent.transaction['import_id']).toBe('YNAB:-1000:2024-02-01:1');
+      const sent = mockClient.createTransaction.mock.calls[0]![1] as {
+        transaction?: unknown;
+        transactions: Array<Record<string, unknown>>;
+      };
+      // import_id uses the skip-duplicates (bulk) request form
+      expect(sent.transaction).toBeUndefined();
+      expect(sent.transactions).toHaveLength(1);
+      expect(sent.transactions[0]!['import_id']).toBe('YNAB:-1000:2024-02-01:1');
+    });
+
+    it('reads the created transaction from the bulk-shaped response', async () => {
+      mockClient.createTransaction.mockResolvedValue({
+        data: { transactions: [createdTxnResponse().data.transaction], duplicate_import_ids: [] },
+      });
+
+      const parsed = JSON.parse(
+        await handleCreateTransaction(
+          { account_id: ACCOUNT_ID, date: '2024-02-01', amount: -42.5, import_id: 'abc' },
+          mockClient as never
+        )
+      );
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.transaction.id).toBe('new-txn-001');
+    });
+
+    it('sends a plain transaction body when no import_id is given', async () => {
+      mockClient.createTransaction.mockResolvedValue(createdTxnResponse());
+      await handleCreateTransaction({ account_id: ACCOUNT_ID, date: '2024-02-01', amount: -1 }, mockClient as never);
+      const sent = mockClient.createTransaction.mock.calls[0]![1] as Record<string, unknown>;
+      expect('transactions' in sent).toBe(false);
     });
 
     it('rejects an import_id over 36 characters and accepts exactly 36', async () => {
@@ -154,7 +183,7 @@ describe('handleCreateTransaction', () => {
 
     it('reports a duplicate import_id as a result, not an error', async () => {
       mockClient.createTransaction.mockResolvedValue({
-        data: { transaction: undefined, duplicate_import_ids: ['dup-1'] },
+        data: { transactions: [], duplicate_import_ids: ['dup-1'] },
       });
 
       const parsed = JSON.parse(

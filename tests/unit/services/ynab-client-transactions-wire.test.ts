@@ -198,14 +198,49 @@ describe('clearing fields with null on the wire', () => {
 
 describe('import_id on the wire', () => {
   it('ynab_create_transaction sends import_id', async () => {
-    fetchMock.mockImplementation(async () => json({ data: { transaction: savedTxn, server_knowledge: 1 } }));
-
-    await handleCreateTransaction(
-      { account_id: ACCOUNT, date: '2024-02-01', amount: -1, import_id: 'YNAB:-1000:2024-02-01:1' },
-      makeClient()
+    fetchMock.mockImplementation(async () =>
+      json({
+        data: { transaction_ids: ['t1'], transactions: [savedTxn], duplicate_import_ids: [], server_knowledge: 1 },
+      })
     );
 
-    expect(request().body.transaction.import_id).toBe('YNAB:-1000:2024-02-01:1');
+    const out = JSON.parse(
+      await handleCreateTransaction(
+        { account_id: ACCOUNT, date: '2024-02-01', amount: -1, import_id: 'YNAB:-1000:2024-02-01:1' },
+        makeClient()
+      )
+    );
+
+    const { body } = request();
+    expect(body.transaction).toBeUndefined();
+    expect(body.transactions).toHaveLength(1);
+    expect(body.transactions[0].import_id).toBe('YNAB:-1000:2024-02-01:1');
+    expect(out.success).toBe(true);
+    expect(out.transaction.id).toBe('t1');
+    expect(auditLog.getAll().some((e) => e.resourceId === 't1')).toBe(true);
+  });
+
+  it('ynab_create_transaction reports a duplicate import_id (skip-duplicates response) as a result', async () => {
+    fetchMock.mockImplementation(async () =>
+      json({ data: { transaction_ids: [], transactions: [], duplicate_import_ids: ['dup-1'], server_knowledge: 1 } })
+    );
+
+    const out = JSON.parse(
+      await handleCreateTransaction(
+        { account_id: ACCOUNT, date: '2024-02-01', amount: -1, import_id: 'dup-1' },
+        makeClient()
+      )
+    );
+
+    expect(out.success).toBe(false);
+    expect(out.duplicate_import_ids).toEqual(['dup-1']);
+  });
+
+  it('ynab_create_transaction without import_id keeps the single-transaction body', async () => {
+    fetchMock.mockImplementation(async () => json({ data: { transaction: savedTxn, server_knowledge: 1 } }));
+    await handleCreateTransaction({ account_id: ACCOUNT, date: '2024-02-01', amount: -1 }, makeClient());
+    expect(request().body.transaction.amount).toBe(-1000);
+    expect(request().body.transactions).toBeUndefined();
   });
 
   it('ynab_update_transactions addresses rows by import_id without an id', async () => {
