@@ -27,7 +27,7 @@ cp .env.example .env          # then set YNAB_ACCESS_TOKEN
 npm run build
 ```
 
-Node doesn't load `.env` on its own, and the server reads only real environment variables. Either pass the file, as in `node --env-file=.env dist/index.js` or `npx tsx watch --env-file=.env src/index.ts`, or export the variables in your shell. For MCP Inspector, pass them with `-e YNAB_ACCESS_TOKEN=...`.
+`npm run dev` loads `.env` if it exists. Everywhere else, Node doesn't load it on its own, and the server reads only real environment variables. Pass the file, as in `node --env-file=.env dist/index.js`, or export the variables in your shell. For MCP Inspector, pass them with `-e YNAB_ACCESS_TOKEN=...`.
 
 `better-sqlite3` and `pg` are optional dependencies, used only by HTTP mode's OAuth storage. `npm ci` doesn't fail if `better-sqlite3`'s native build fails, so check it loads with `node -e "new (require('better-sqlite3'))(':memory:').close()"`.
 
@@ -35,7 +35,7 @@ Useful commands:
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Run from source with reload (stdio) |
+| `npm run dev` | Run from source with reload (stdio), loading `.env` if present |
 | `npm run build` | Compile to `dist/` |
 | `npm test` | Run the test suite once |
 | `npm test -- tests/unit/tools/payees/create-payee.test.ts` | Run one test file |
@@ -126,6 +126,7 @@ If you touch `src/storage/` or `src/auth/`, run the full suite against a throwaw
 docker run --rm -d --name ynab-mcp-pg -p 127.0.0.1:5432:5432 \
   -e POSTGRES_USER=ynab -e POSTGRES_DB=ynab_test -e POSTGRES_HOST_AUTH_METHOD=trust \
   postgres:18-alpine
+until docker exec ynab-mcp-pg pg_isready -U ynab -d ynab_test >/dev/null 2>&1; do sleep 1; done
 DATABASE_URL=postgres://ynab@localhost:5432/ynab_test REQUIRE_DB_TESTS=1 npm test
 docker stop ynab-mcp-pg
 ```

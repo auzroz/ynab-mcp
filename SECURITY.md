@@ -4,10 +4,10 @@
 
 Please report vulnerabilities privately through [GitHub's private vulnerability reporting](https://github.com/auzroz/ynab-mcp/security/advisories/new) (the Security tab, then "Report a vulnerability"). Don't open a public issue.
 
-- **Include:** the affected version, the transport (stdio or HTTP) and auth mode (header or OAuth), and steps to reproduce.
+- **Include:** the affected version, how the server gets its YNAB credentials (stdio with `YNAB_ACCESS_TOKEN`, HTTP header mode, or HTTP OAuth mode), and steps to reproduce.
 - **Leave out:** real tokens, budget data, and working exploits against anyone else's instance.
 
-You'll get an acknowledgement as soon as the maintainer sees the report. A fix ships in a patch release, and an advisory is published once it's available.
+You'll get an acknowledgement as soon as the maintainer sees the report. A fix ships in the next appropriate release: a patch release, or a minor release if the fix has to change behaviour. An advisory is published once the fix is available.
 
 ## Supported versions
 
