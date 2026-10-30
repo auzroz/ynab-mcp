@@ -36,7 +36,9 @@ Use when the user asks:
 - "What are my spending categories?"
 - "List my budget breakdown"
 
-Returns category groups with their categories, including budgeted amounts, activity, and remaining balances.`,
+Returns category groups with their categories, including budgeted amounts, activity, and remaining balances.
+
+Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering categories and groups.`,
   inputSchema: {
     type: 'object',
     properties: {

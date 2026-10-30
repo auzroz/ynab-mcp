@@ -39,7 +39,9 @@ Use when the user asks:
 - "List my bank accounts"
 - "How much money do I have?"
 
-Returns account names, types, and current/cleared/uncleared balances.`,
+Returns account names, types, and current/cleared/uncleared balances.
+
+Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening accounts, setting up loan accounts, and changing interest rates.`,
   inputSchema: {
     type: 'object',
     properties: {

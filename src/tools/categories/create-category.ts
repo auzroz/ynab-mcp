@@ -42,7 +42,9 @@ Requires a category_group_id. Use ynab_list_categories first to find the group I
 
 Optionally set a target (goal) at creation: goal_target (in dollars, e.g. 200 for $200), goal_target_date (YYYY-MM-DD) and goal_needs_whole_amount. Supplying goal_target creates a monthly spending target. Add goal_frequency (monthly, weekly or yearly) with goal_target for a recurring "set aside" target (e.g. "Create Dining Out with a $50 weekly target" = goal_target 50, goal_frequency weekly); it cannot be combined with goal_target_date.
 
-**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
+**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
+
+Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering categories, and setting a target's due day or cadence beyond monthly/weekly/yearly.`,
   inputSchema: {
     type: 'object',
     properties: {

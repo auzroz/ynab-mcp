@@ -36,7 +36,9 @@ Use when the user asks:
 - "What was my [category] balance in [month]?"
 
 Use first-of-month format for the month parameter (e.g., 2024-01-01 for January 2024).
-Requires a category_id. Use ynab_list_categories first to find the category ID.`,
+Requires a category_id. Use ynab_list_categories first to find the category ID.
+
+Not possible through the YNAB API (do it in the YNAB app): snoozing a target, changing a target's cadence or due day, and choosing its type.`,
   inputSchema: {
     type: 'object',
     properties: {

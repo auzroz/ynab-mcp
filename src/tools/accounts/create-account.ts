@@ -52,7 +52,9 @@ Use when the user asks:
 
 Account types (only these can be created via the YNAB API): checking, savings, cash, creditCard, otherAsset, otherLiability
 
-Balance should be provided in dollars (e.g., 1000.50). For credit cards and liability accounts, use a negative balance for amounts owed.`,
+Balance should be provided in dollars (e.g., 1000.50). For credit cards and liability accounts, use a negative balance for amounts owed.
+
+Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening accounts, setting up loan accounts, and changing interest rates.`,
   inputSchema: {
     type: 'object',
     properties: {

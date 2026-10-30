@@ -30,7 +30,9 @@ Use when the user asks:
 - "Give me an overview of my budget"
 - "Tell me about my main budget"
 
-Returns comprehensive budget data including all accounts, category groups, categories, and payees.`,
+Returns comprehensive budget data including all accounts, category groups, categories, and payees.
+
+Not possible through the YNAB API (do it in the YNAB app): creating, renaming or deleting plans (budgets), and changing plan settings.`,
   inputSchema: {
     type: 'object',
     properties: {
