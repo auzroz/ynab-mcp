@@ -5,15 +5,14 @@
  */
 
 import { z } from 'zod';
-import { ynabId } from '../../utils/schemas.js';
+import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeString } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   payee_id: ynabId('Invalid payee UUID format').describe('The payee UUID'),
@@ -35,10 +34,12 @@ Returns all recorded locations for a specific payee.`,
     properties: {
       budget_id: {
         type: 'string',
+        maxLength: 64,
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       payee_id: {
         type: 'string',
+        maxLength: 36,
         description: 'The payee UUID',
       },
     },

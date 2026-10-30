@@ -9,7 +9,7 @@ import { ynabId } from '../utils/schemas.js';
 
 const configSchema = z.object({
   accessToken: z.string().min(1, 'YNAB_ACCESS_TOKEN is required'),
-  defaultBudgetId: z.union([ynabId(), z.literal('last-used')]).optional(),
+  defaultBudgetId: z.union([ynabId(), z.literal('last-used'), z.literal('default')]).optional(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   cacheTtlMs: z.number().int().positive().default(300000), // 5 minutes
   rateLimitPerHour: z.number().int().min(1).max(200).default(180),

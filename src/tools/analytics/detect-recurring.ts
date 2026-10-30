@@ -12,13 +12,13 @@ import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import type { ScheduledFrequency } from '../../utils/scheduled-constants.js';
 import DecimalJS from 'decimal.js';
+import { budgetId } from '../../utils/schemas.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   months: z
@@ -54,6 +54,7 @@ Analyzes transaction history to find patterns and estimates monthly costs.`,
     properties: {
       budget_id: {
         type: 'string',
+        maxLength: 64,
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       months: {

@@ -9,11 +9,11 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, formatCurrencyWithFormat } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { budgetId } from '../../utils/schemas.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
@@ -35,6 +35,7 @@ Returns comprehensive budget data including all accounts, category groups, categ
     properties: {
       budget_id: {
         type: 'string',
+        maxLength: 64,
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
     },

@@ -68,6 +68,14 @@ describe('loadConfig', () => {
       expect(config.defaultBudgetId).toBe('last-used');
     });
 
+    it('accepts the literal "default" sentinel', () => {
+      process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
+      process.env['YNAB_BUDGET_ID'] = 'default';
+
+      const config = loadConfig();
+      expect(config.defaultBudgetId).toBe('default');
+    });
+
     it('treats an empty string budget id as undefined', () => {
       process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
       process.env['YNAB_BUDGET_ID'] = '';

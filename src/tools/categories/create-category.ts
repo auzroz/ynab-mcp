@@ -5,21 +5,20 @@
  */
 
 import { z } from 'zod';
-import { ynabId } from '../../utils/schemas.js';
+import { NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   category_group_id: ynabId()
     .describe('The UUID of the category group to add the category to'),
-  name: z.string().min(1).max(500).describe('The name of the new category'),
-  note: z.string().max(500).optional().describe('Optional note for the category'),
+  name: z.string().min(1).max(NAME_MAX_LENGTH).describe('The name of the new category'),
+  note: z.string().max(NOTE_MAX_LENGTH).optional().describe('Optional note for the category'),
 });
 
 // Tool definition
@@ -39,18 +38,22 @@ Requires a category_group_id. Use ynab_list_categories first to find the group I
     properties: {
       budget_id: {
         type: 'string',
+        maxLength: 64,
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       category_group_id: {
         type: 'string',
+        maxLength: 36,
         description: 'The UUID of the category group to add the category to',
       },
       name: {
         type: 'string',
+        maxLength: 200,
         description: 'The name of the new category',
       },
       note: {
         type: 'string',
+        maxLength: 500,
         description: 'Optional note for the category',
       },
     },

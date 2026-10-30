@@ -9,11 +9,11 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { budgetId } from '../../utils/schemas.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   months: z
@@ -23,7 +23,7 @@ const inputSchema = z.object({
     .max(12)
     .optional()
     .describe('Number of months to analyze (default 3)'),
-  category_id: z.string().optional().describe('Optional: Focus on a specific category'),
+  category_id: z.string().max(36).optional().describe('Optional: Focus on a specific category'),
 });
 
 // Tool definition
@@ -44,6 +44,7 @@ Provides category breakdowns, trends, and insights.`,
     properties: {
       budget_id: {
         type: 'string',
+        maxLength: 64,
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       months: {
@@ -52,6 +53,7 @@ Provides category breakdowns, trends, and insights.`,
       },
       category_id: {
         type: 'string',
+        maxLength: 36,
         description: 'Optional: Focus on a specific category',
       },
     },

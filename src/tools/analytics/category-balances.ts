@@ -10,11 +10,11 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
+import { NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   filter: z
@@ -23,10 +23,12 @@ const inputSchema = z.object({
     .describe('Filter categories by balance status (default: all)'),
   group: z
     .string()
+    .max(NAME_MAX_LENGTH)
     .optional()
     .describe('Filter by category group name (partial match)'),
   search: z
     .string()
+    .max(NAME_MAX_LENGTH)
     .optional()
     .describe('Search category names (partial match)'),
 });
@@ -49,6 +51,7 @@ Returns current category balances with filtering options.`,
     properties: {
       budget_id: {
         type: 'string',
+        maxLength: 64,
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       filter: {
@@ -58,10 +61,12 @@ Returns current category balances with filtering options.`,
       },
       group: {
         type: 'string',
+        maxLength: 200,
         description: 'Filter by category group name (partial match)',
       },
       search: {
         type: 'string',
+        maxLength: 200,
         description: 'Search category names (partial match)',
       },
     },

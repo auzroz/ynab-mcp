@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import { ynabId } from '../../utils/schemas.js';
+import { IMPORT_ID_MAX_LENGTH, MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -23,19 +23,18 @@ const transactionSchema = z.object({
     .number()
     .describe('Amount in dollars (negative for outflow, positive for inflow)'),
   payee_id: ynabId().optional().describe('Payee UUID'),
-  payee_name: z.string().max(200).optional().describe('Payee name'),
+  payee_name: z.string().max(TXN_PAYEE_NAME_MAX_LENGTH).optional().describe('Payee name'),
   category_id: ynabId().optional().describe('Category UUID'),
-  memo: z.string().max(200).optional().describe('Transaction memo'),
+  memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('Transaction memo'),
   cleared: z.enum(['cleared', 'uncleared', 'reconciled']).optional(),
   approved: z.boolean().optional(),
   flag_color: z.enum(['red', 'orange', 'yellow', 'green', 'blue', 'purple']).optional(),
-  import_id: z.string().max(36).optional().describe('Unique ID for import deduplication'),
+  import_id: z.string().max(IMPORT_ID_MAX_LENGTH).optional().describe('Unique ID for import deduplication'),
 });
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   transactions: z
@@ -63,6 +62,7 @@ Use import_id to prevent duplicate imports.`,
     properties: {
       budget_id: {
         type: 'string',
+        maxLength: 64,
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       transactions: {
@@ -71,20 +71,20 @@ Use import_id to prevent duplicate imports.`,
         items: {
           type: 'object',
           properties: {
-            account_id: { type: 'string', description: 'Account UUID' },
-            date: { type: 'string', description: 'Date in YYYY-MM-DD format' },
+            account_id: { type: 'string', maxLength: 36, description: 'Account UUID' },
+            date: { type: 'string', maxLength: 10, description: 'Date in YYYY-MM-DD format' },
             amount: { type: 'number', description: 'Amount in dollars' },
-            payee_id: { type: 'string', description: 'Payee UUID' },
-            payee_name: { type: 'string', description: 'Payee name' },
-            category_id: { type: 'string', description: 'Category UUID' },
-            memo: { type: 'string', description: 'Memo' },
+            payee_id: { type: 'string', maxLength: 36, description: 'Payee UUID' },
+            payee_name: { type: 'string', maxLength: 200, description: 'Payee name' },
+            category_id: { type: 'string', maxLength: 36, description: 'Category UUID' },
+            memo: { type: 'string', maxLength: 500, description: 'Memo' },
             cleared: { type: 'string', enum: ['cleared', 'uncleared', 'reconciled'] },
             approved: { type: 'boolean' },
             flag_color: {
               type: 'string',
               enum: ['red', 'orange', 'yellow', 'green', 'blue', 'purple'],
             },
-            import_id: { type: 'string', description: 'Unique ID for deduplication' },
+            import_id: { type: 'string', maxLength: 36, description: 'Unique ID for deduplication' },
           },
           required: ['account_id', 'date', 'amount'],
         },

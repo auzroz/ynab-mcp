@@ -6,7 +6,7 @@
  */
 
 import { z } from 'zod';
-import { ynabId } from '../../utils/schemas.js';
+import { MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -17,8 +17,7 @@ import { frequencies, flagColors } from '../../utils/scheduled-constants.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   account_id: ynabId().describe('The account UUID for this scheduled transaction'),
@@ -34,7 +33,7 @@ const inputSchema = z.object({
   payee_id: ynabId().optional().describe('Payee UUID'),
   payee_name: z
     .string()
-    .max(200)
+    .max(TXN_PAYEE_NAME_MAX_LENGTH)
     .optional()
     .describe('Payee name (one of payee_id or payee_name should be provided)'),
   category_id: ynabId()
@@ -45,7 +44,7 @@ const inputSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional()
     .describe('Start date in YYYY-MM-DD format (defaults to next expected date based on frequency)'),
-  memo: z.string().max(200).optional().describe('Transaction memo/note'),
+  memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('Transaction memo/note'),
   flag_color: z.enum(flagColors).optional().describe('Flag color'),
 }).refine((data) => data.payee_id || data.payee_name, {
   message: 'Either payee_id or payee_name must be provided',
@@ -70,10 +69,12 @@ Does NOT create anything - use ynab_create_scheduled_transaction to actually cre
     properties: {
       budget_id: {
         type: 'string',
+        maxLength: 64,
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       account_id: {
         type: 'string',
+        maxLength: 36,
         description: 'The account UUID for this scheduled transaction',
       },
       amount: {
@@ -87,22 +88,27 @@ Does NOT create anything - use ynab_create_scheduled_transaction to actually cre
       },
       payee_id: {
         type: 'string',
+        maxLength: 36,
         description: 'Payee UUID',
       },
       payee_name: {
         type: 'string',
+        maxLength: 200,
         description: 'Payee name',
       },
       category_id: {
         type: 'string',
+        maxLength: 36,
         description: 'Category UUID',
       },
       start_date: {
         type: 'string',
+        maxLength: 10,
         description: 'Start date in YYYY-MM-DD format',
       },
       memo: {
         type: 'string',
+        maxLength: 500,
         description: 'Transaction memo/note',
       },
       flag_color: {

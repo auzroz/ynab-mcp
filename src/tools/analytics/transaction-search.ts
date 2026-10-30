@@ -10,20 +10,20 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { DATE_TEXT_MAX_LENGTH, NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   query: z
     .string()
-    .max(500)
+    .max(NOTE_MAX_LENGTH)
     .optional()
     .describe('Search text to match in payee name, memo, or category'),
-  payee: z.string().max(200).optional().describe('Filter by payee name (partial match)'),
-  category: z.string().max(200).optional().describe('Filter by category name (partial match)'),
+  payee: z.string().max(NAME_MAX_LENGTH).optional().describe('Filter by payee name (partial match)'),
+  category: z.string().max(NAME_MAX_LENGTH).optional().describe('Filter by category name (partial match)'),
   min_amount: z
     .number()
     .finite()
@@ -36,12 +36,14 @@ const inputSchema = z.object({
     .describe('Maximum transaction amount in dollars (absolute value)'),
   since_date: z
     .string()
+    .max(DATE_TEXT_MAX_LENGTH)
     .optional()
     .describe(
       'Start date (YYYY-MM-DD or natural language like "last month"). If omitted, YNAB returns only the last 12 months, unless until_date is given'
     ),
   until_date: z
     .string()
+    .max(DATE_TEXT_MAX_LENGTH)
     .optional()
     .describe(
       'End date, inclusive (YYYY-MM-DD or natural language). Prefer ISO dates: period names such as "last month" resolve to the START of that period, so they would exclude most of it. Without since_date, searches from the budget first month'
@@ -80,6 +82,7 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
     properties: {
       budget_id: {
         type: 'string',
+        maxLength: 64,
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       query: {
@@ -107,11 +110,13 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
       },
       since_date: {
         type: 'string',
+        maxLength: 100,
         description:
           'Start date (YYYY-MM-DD or natural language). If omitted, YNAB returns only the last 12 months, unless until_date is given (then the search starts at the budget\'s first month).',
       },
       until_date: {
         type: 'string',
+        maxLength: 100,
         description:
           'End date, inclusive (YYYY-MM-DD or natural language). Prefer ISO dates: period names such as "last month" resolve to the START of that period, so they would exclude most of it. Applied server-side. Without since_date this searches from the budget\'s first month, which can fetch a lot of data.',
       },

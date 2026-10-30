@@ -15,6 +15,7 @@ import * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
 
 // Derive account types from the YNAB SDK enum to prevent drift. The YNAB API
 // only supports CREATING this restricted set (SaveAccountType) — loan/mortgage
@@ -23,15 +24,14 @@ const accountTypeValues = Object.values(ynab.SaveAccountType).filter(
   (v): v is ynab.SaveAccountType => typeof v === 'string'
 );
 
-// Input schema using nativeEnum for proper enum validation
+// Input schema using z.enum (zod 4 enum-object form) for proper enum validation
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  name: z.string().min(1).max(100).describe('The name of the account'),
+  name: z.string().min(1).max(NAME_MAX_LENGTH).describe('The name of the account'),
   type: z
-    .nativeEnum(ynab.SaveAccountType)
+    .enum(ynab.SaveAccountType)
     .describe('The type of account (checking, savings, cash, creditCard, otherAsset, otherLiability)'),
   balance: z
     .number()
@@ -58,10 +58,12 @@ Balance should be provided in dollars (e.g., 1000.50). For credit cards and liab
     properties: {
       budget_id: {
         type: 'string',
+        maxLength: 64,
         description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       name: {
         type: 'string',
+        maxLength: 200,
         description: 'The name of the account',
       },
       type: {
