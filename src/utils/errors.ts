@@ -249,6 +249,11 @@ function isAuthorMessage(issue: object, message: unknown): boolean {
   }
 }
 
+/**
+ * Client-facing message for one zod issue: our own schema messages pass through
+ * (sanitized); zod's built-in text, which can echo patterns or key names, is
+ * replaced by a generic message for the issue code.
+ */
 function mapZodIssueMessage(issue: { code?: unknown; message?: unknown }): string {
   const { code, message } = issue;
   if ((code === 'invalid_format' || code === 'too_small' || code === 'too_big') && isAuthorMessage(issue, message)) {
