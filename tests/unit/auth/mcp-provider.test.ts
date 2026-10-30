@@ -6,7 +6,7 @@
  * is kept real so the produced YNAB authorize URL is genuinely exercised.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import type { Response } from 'express';
 import type {
@@ -39,7 +39,11 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 
 import { MemoryStorage } from '../../../src/storage/memory.js';
 import { Encryptor } from '../../../src/crypto.js';
-import { McpOAuthProvider, type McpProviderOptions } from '../../../src/auth/mcp-provider.js';
+import {
+  McpOAuthProvider,
+  REFRESH_TOKEN_REUSE_WINDOW_MS,
+  type McpProviderOptions,
+} from '../../../src/auth/mcp-provider.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
 
 const exchangeCodeMock = vi.mocked(ynabOauth.exchangeCode);
@@ -890,7 +894,7 @@ describe('McpOAuthProvider refresh validation (before the token is spent)', () =
       scopes: [],
       resource: 'https://old.example.com/mcp',
     });
-    const take = vi.spyOn(storage, 'takeRefreshToken');
+    const take = vi.spyOn(storage, 'rotateRefreshToken');
     await expect(provider.exchangeRefreshToken(client, 'stale-rt')).rejects.toBeInstanceOf(
       InvalidGrantError
     );
@@ -916,24 +920,35 @@ describe('McpOAuthProvider refresh validation (before the token is spent)', () =
   it('issues nothing when a concurrent request spent the token between lookup and take', async () => {
     const { provider, storage } = makeProvider();
     const { client, tokens } = await driveToTokens(provider);
-    vi.spyOn(storage, 'takeRefreshToken').mockResolvedValueOnce(undefined);
-    const save = vi.spyOn(storage, 'saveAccessToken');
+    vi.spyOn(storage, 'rotateRefreshToken').mockResolvedValueOnce(undefined);
+    const saveAccess = vi.spyOn(storage, 'saveAccessToken');
+    const saveRefresh = vi.spyOn(storage, 'saveRefreshToken');
     await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
       InvalidGrantError
     );
-    expect(save).not.toHaveBeenCalled();
+    expect(saveAccess).not.toHaveBeenCalled();
+    expect(saveRefresh).not.toHaveBeenCalled();
   });
 
-  it('two concurrent refreshes with one token: exactly one succeeds', async () => {
+  it('two concurrent refreshes with one token: exactly one succeeds, then the loser revokes the family', async () => {
     const { provider } = makeProvider();
     const { client, tokens } = await driveToTokens(provider);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const results = await Promise.allSettled([
       provider.exchangeRefreshToken(client, refreshOf(tokens)),
       provider.exchangeRefreshToken(client, refreshOf(tokens)),
     ]);
-    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const won = results.filter((r) => r.status === 'fulfilled');
+    expect(won).toHaveLength(1);
     const rejected = results.find((r) => r.status === 'rejected');
     expect(rejected?.status === 'rejected' && rejected.reason).toBeInstanceOf(InvalidGrantError);
+    // The loser looks like reuse (RFC 9700): the winner's new pair is revoked.
+    const winner = won[0]?.status === 'fulfilled' ? won[0].value : undefined;
+    if (!winner) throw new Error('expected a winner');
+    await expect(provider.verifyAccessToken(winner.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+    await expect(provider.exchangeRefreshToken(client, refreshOf(winner))).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
   });
 });
 
@@ -1247,5 +1262,256 @@ describe('McpOAuthProvider per-grant access level', () => {
     await provider.challengeForAuthorizationCode(client, 'legacy-code');
     const fromCode = await provider.exchangeAuthorizationCode(client, 'legacy-code');
     expect(await accessOf(provider, fromCode.access_token)).toBe('read-only');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Refresh-token families and reuse detection (RFC 9700 section 4.14.2)
+// ---------------------------------------------------------------------------
+
+describe('McpOAuthProvider refresh-token reuse detection', () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    errorSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  /** A further grant for an already-registered client (a new code, so a new family). */
+  async function grantFor(provider: McpOAuthProvider, client: OAuthClientInformationFull): Promise<OAuthTokens> {
+    const res = makeRes();
+    await provider.authorize(client, authParams, res as unknown as Response);
+    const { state, nonce } = consentOf(res);
+    await provider.startYnabAuthorization(state, 'read-write', nonce);
+    const code = new URL(await provider.handleYnabCallback('ynabcode', state, nonce)).searchParams.get('code') ?? '';
+    await provider.challengeForAuthorizationCode(client, code);
+    return provider.exchangeAuthorizationCode(client, code);
+  }
+
+  /** Assert every token of `pairs` is dead: access tokens fail to verify, refresh tokens to refresh. */
+  async function expectRevoked(
+    provider: McpOAuthProvider,
+    client: OAuthClientInformationFull,
+    ...pairs: OAuthTokens[]
+  ): Promise<void> {
+    for (const pair of pairs) {
+      await expect(provider.verifyAccessToken(pair.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+      await expect(provider.exchangeRefreshToken(client, refreshOf(pair))).rejects.toBeInstanceOf(
+        InvalidGrantError
+      );
+    }
+  }
+
+  it('tags every token of a grant, across refreshes, with one family; each code starts a new one', async () => {
+    const { provider, storage } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    const familyId = (await storage.getAccessToken(tokens.access_token))?.familyId;
+    expect(familyId).toEqual(expect.any(String));
+    expect((await storage.getRefreshToken(refreshOf(tokens)))?.familyId).toBe(familyId);
+
+    const rotated = await provider.exchangeRefreshToken(client, refreshOf(tokens));
+    expect((await storage.getAccessToken(rotated.access_token))?.familyId).toBe(familyId);
+    expect((await storage.getRefreshToken(refreshOf(rotated)))?.familyId).toBe(familyId);
+
+    const second = await grantFor(provider, client);
+    const secondFamily = (await storage.getAccessToken(second.access_token))?.familyId;
+    expect(secondFamily).toEqual(expect.any(String));
+    expect(secondFamily).not.toBe(familyId);
+  });
+
+  it('replaying a rotated refresh token revokes the whole family', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    const first = await provider.exchangeRefreshToken(client, refreshOf(tokens));
+    const second = await provider.exchangeRefreshToken(client, refreshOf(first));
+
+    // The attacker (or a confused client) replays the first, long-rotated token.
+    const err = await errorOf(provider.exchangeRefreshToken(client, refreshOf(tokens)));
+    expect(err).toBeInstanceOf(InvalidGrantError);
+    expect((err as Error).message).toBe('Invalid refresh token');
+
+    // The current pair, and every earlier access token, is now dead.
+    await expectRevoked(provider, client, second);
+    await expect(provider.verifyAccessToken(tokens.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+    await expect(provider.verifyAccessToken(first.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+
+    // Logged for the operator, without the token.
+    expect(errorSpy).toHaveBeenCalledWith('[OAuth] Refresh token reuse detected; revoked its token family');
+    expect(errorSpy.mock.calls.flat().join(' ')).not.toContain(refreshOf(tokens));
+  });
+
+  it('a replay after the legitimate client already rotated again still revokes the newest pair', async () => {
+    // The attacker used the stolen token first; the legitimate client's later
+    // refresh with the same token is the replay, and kills the attacker's chain.
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    const attacker = await provider.exchangeRefreshToken(client, refreshOf(tokens));
+    await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+    await expectRevoked(provider, client, attacker);
+  });
+
+  it('answers a reused token exactly like an unknown one', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    await provider.exchangeRefreshToken(client, refreshOf(tokens));
+
+    const reused = await errorOf(provider.exchangeRefreshToken(client, refreshOf(tokens)));
+    const unknown = await errorOf(provider.exchangeRefreshToken(client, 'never-issued'));
+    expect(reused).toBeInstanceOf(InvalidGrantError);
+    expect(unknown).toBeInstanceOf(InvalidGrantError);
+    expect((reused as InvalidGrantError).toResponseObject()).toEqual(
+      (unknown as InvalidGrantError).toResponseObject()
+    );
+    expect((reused as InvalidGrantError).toResponseObject()).toEqual({
+      error: 'invalid_grant',
+      error_description: 'Invalid refresh token',
+    });
+  });
+
+  it("leaves the user's other families alone, for the same client and for another client", async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    const sameClient = await grantFor(provider, client);
+    const other = await driveToTokens(provider);
+    await provider.exchangeRefreshToken(client, refreshOf(tokens));
+
+    await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+
+    for (const [c, pair] of [
+      [client, sameClient],
+      [other.client, other.tokens],
+    ] as const) {
+      await expect(provider.verifyAccessToken(pair.access_token)).resolves.toMatchObject({
+        extra: { userId: 'ynab-user-1' },
+      });
+      await expect(provider.exchangeRefreshToken(c, refreshOf(pair))).resolves.toHaveProperty('access_token');
+    }
+  });
+
+  it(`keeps a tombstone for ${REFRESH_TOKEN_REUSE_WINDOW_MS / 86_400_000} days, then a replay just fails`, async () => {
+    expect(REFRESH_TOKEN_REUSE_WINDOW_MS).toBe(30 * 24 * 3600_000);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { provider, storage } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    const rotatedAt = Date.now();
+    const rotated = await provider.exchangeRefreshToken(client, refreshOf(tokens));
+    expect(await storage.getConsumedRefreshToken(refreshOf(tokens))).toMatchObject({
+      clientId: client.client_id,
+      expiresAt: rotatedAt + REFRESH_TOKEN_REUSE_WINDOW_MS,
+    });
+
+    // Past the window the replay is an unknown token: refused, nothing revoked.
+    vi.setSystemTime(rotatedAt + REFRESH_TOKEN_REUSE_WINDOW_MS + 1);
+    const del = vi.spyOn(storage, 'deleteTokenFamily');
+    await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+    expect(del).not.toHaveBeenCalled();
+    await expect(provider.exchangeRefreshToken(client, refreshOf(rotated))).resolves.toHaveProperty(
+      'access_token'
+    );
+  });
+
+  it('prunes expired tombstones on the next rotation', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { provider, storage } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    const t0 = Date.now();
+    const rotated = await provider.exchangeRefreshToken(client, refreshOf(tokens));
+
+    vi.setSystemTime(t0 + REFRESH_TOKEN_REUSE_WINDOW_MS + 1);
+    await provider.exchangeRefreshToken(client, refreshOf(rotated));
+
+    // Back inside the first tombstone's window it would still be readable, had
+    // it not been pruned; the second tombstone is kept.
+    vi.setSystemTime(t0);
+    expect(await storage.getConsumedRefreshToken(refreshOf(tokens))).toBeUndefined();
+    vi.setSystemTime(t0 + REFRESH_TOKEN_REUSE_WINDOW_MS + 1);
+    expect(await storage.getConsumedRefreshToken(refreshOf(rotated))).toBeDefined();
+  });
+
+  it('a refresh token presented by another client takes its family with it', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    const other = await provider.clientsStore.registerClient(clientMetadata);
+    await expect(provider.exchangeRefreshToken(other, refreshOf(tokens))).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+    await expectRevoked(provider, client, tokens);
+  });
+
+  it('/revoke of a refresh token revokes its family', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    const rotated = await provider.exchangeRefreshToken(client, refreshOf(tokens));
+    const unrelated = await grantFor(provider, client);
+
+    await provider.revokeToken(client, { token: refreshOf(rotated) });
+
+    await expectRevoked(provider, client, rotated);
+    await expect(provider.verifyAccessToken(tokens.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+    await expect(provider.verifyAccessToken(unrelated.access_token)).resolves.toBeDefined();
+    await expect(provider.exchangeRefreshToken(client, refreshOf(unrelated))).resolves.toHaveProperty(
+      'access_token'
+    );
+  });
+
+  it('/revoke of an access token revokes only that token', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    await provider.revokeToken(client, { token: tokens.access_token });
+    await expect(provider.verifyAccessToken(tokens.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+    await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).resolves.toHaveProperty(
+      'access_token'
+    );
+  });
+
+  it('a 0.3.x refresh token (no family) refreshes into a new family that its replay revokes', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await storage.saveRefreshToken({
+      token: 'legacy-rt',
+      clientId: client.client_id,
+      userId: 'ynab-user-1',
+      scopes: ['read-only'],
+    });
+    const rotated = await provider.exchangeRefreshToken(client, 'legacy-rt');
+    const familyId = (await storage.getAccessToken(rotated.access_token))?.familyId;
+    expect(familyId).toEqual(expect.any(String));
+    expect((await storage.getRefreshToken(refreshOf(rotated)))?.familyId).toBe(familyId);
+    expect((await storage.getConsumedRefreshToken('legacy-rt'))?.familyId).toBe(familyId);
+
+    await expect(provider.exchangeRefreshToken(client, 'legacy-rt')).rejects.toBeInstanceOf(InvalidGrantError);
+    await expectRevoked(provider, client, rotated);
+  });
+
+  it('a 0.3.x refresh token spent before the upgrade (no tombstone) just fails; /revoke of one deletes only it', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    const legacyAt = {
+      token: 'legacy-at',
+      clientId: client.client_id,
+      userId: 'ynab-user-1',
+      scopes: [],
+      expiresAt: Date.now() + 60_000,
+    };
+    await storage.saveAccessToken(legacyAt);
+    const del = vi.spyOn(storage, 'deleteTokenFamily');
+    await expect(provider.exchangeRefreshToken(client, 'spent-by-0.3.x')).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+    expect(del).not.toHaveBeenCalled();
+
+    await storage.saveRefreshToken({ token: 'legacy-rt', clientId: client.client_id, userId: 'ynab-user-1', scopes: [] });
+    await provider.revokeToken(client, { token: 'legacy-rt' });
+    expect(await storage.getRefreshToken('legacy-rt')).toBeUndefined();
+    expect(del).not.toHaveBeenCalled();
+    await expect(provider.verifyAccessToken('legacy-at')).resolves.toBeDefined();
   });
 });
