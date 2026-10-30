@@ -50,6 +50,20 @@ describe('loadHttpConfig', () => {
         expect(() => loadHttpConfig(), bad).toThrow(/MCP_RESOURCE_URL/);
       }
     });
+    it('does not echo credentials from a rejected URL', () => {
+      const secret = 'dummy-secret';
+      for (const bad of [`http://user:${secret}@mcp.example.com/mcp`, `https://user:${secret}@[bad/mcp`]) {
+        process.env['MCP_RESOURCE_URL'] = bad;
+        let message = '';
+        try {
+          loadHttpConfig();
+        } catch (e) {
+          message = (e as Error).message;
+        }
+        expect(message, bad).toMatch(/MCP_RESOURCE_URL/);
+        expect(message, bad).not.toContain(secret);
+      }
+    });
     it('applies the same rules to PUBLIC_URL', () => {
       process.env['PUBLIC_URL'] = 'http://mcp.example.com';
       expect(() => loadHttpConfig()).toThrow(/PUBLIC_URL/);

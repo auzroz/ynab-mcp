@@ -439,9 +439,11 @@ async function checkLegacyUpgrade(
     });
     expect((await first.getAccessToken('legacy-at'))?.grantedScope).toBeUndefined();
     const legacyCode = await first.takeAuthCode('legacy-code');
+    expect(legacyCode).toMatchObject({ code: 'legacy-code', clientId: 'c1', userId: 'legacy-user' });
     expect(legacyCode?.resource).toBeUndefined();
     expect(legacyCode?.grantedScope).toBeUndefined();
     const legacyPending = await first.takePendingAuth('legacy-state');
+    expect(legacyPending).toMatchObject({ state: 'legacy-state', clientId: 'c1' });
     expect(legacyPending?.resource).toBeUndefined();
     expect(legacyPending?.browserBinding).toBeUndefined();
     const legacyRefresh = await first.takeRefreshToken('legacy-rt');
