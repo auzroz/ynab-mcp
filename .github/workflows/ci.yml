@@ -73,7 +73,9 @@ jobs:
         image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
         env:
           POSTGRES_USER: ynab
-          POSTGRES_PASSWORD: ynab
+          # Throwaway container reachable only from this job: trust auth, so no
+          # credential is committed or needed.
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: ynab_test
         ports:
           - 5432:5432
@@ -86,7 +88,7 @@ jobs:
       # CI must exercise the storage suites; the test file fails instead of skipping.
       REQUIRE_DB_TESTS: '1'
       # Plain-text localhost connection: PostgresStorage does not configure SSL.
-      DATABASE_URL: postgres://ynab:ynab@localhost:5432/ynab_test
+      DATABASE_URL: postgres://ynab@localhost:5432/ynab_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -124,7 +126,9 @@ jobs:
         image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
         env:
           POSTGRES_USER: ynab
-          POSTGRES_PASSWORD: ynab
+          # Throwaway container reachable only from this job: trust auth, so no
+          # credential is committed or needed.
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: ynab_test
         ports:
           - 5432:5432
@@ -137,7 +141,7 @@ jobs:
       # CI must exercise the storage suites; the test file fails instead of skipping.
       REQUIRE_DB_TESTS: '1'
       # Plain-text localhost connection: PostgresStorage does not configure SSL.
-      DATABASE_URL: postgres://ynab:ynab@localhost:5432/ynab_test
+      DATABASE_URL: postgres://ynab@localhost:5432/ynab_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
