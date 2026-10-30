@@ -16,6 +16,7 @@ import {
   transactionChainFields,
   transactionTypeJsonSchema,
   transactionTypeSchema,
+  truncationSummary,
 } from './format.js';
 
 const DEFAULT_RANGE_NOTE =
@@ -130,6 +131,7 @@ export async function handleListAccountTransactions(
   transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // Apply limit
+  const totalCount = transactions.length;
   transactions = transactions.slice(0, limit);
 
   // Calculate summary
@@ -161,6 +163,7 @@ export async function handleListAccountTransactions(
       transactions: formattedTransactions,
       summary: {
         count: formattedTransactions.length,
+        ...truncationSummary(totalCount, formattedTransactions.length),
         ...(validated.since_date === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {}),
         total_inflow: formatCurrency(totalInflow),
         total_outflow: formatCurrency(totalOutflow),

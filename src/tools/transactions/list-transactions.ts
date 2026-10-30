@@ -15,6 +15,7 @@ import {
   transactionChainFields,
   transactionTypeJsonSchema,
   transactionTypeSchema,
+  truncationSummary,
 } from './format.js';
 import { DATE_TEXT_MAX_LENGTH, budgetId, monthParam } from '../../utils/schemas.js';
 
@@ -153,6 +154,7 @@ export async function handleListTransactions(
   });
 
   // Apply limit
+  const totalCount = transactions.length;
   transactions = transactions.slice(0, limit);
 
   // Calculate summary stats
@@ -190,6 +192,7 @@ export async function handleListTransactions(
       transactions: formattedTransactions,
       summary: {
         count: formattedTransactions.length,
+        ...truncationSummary(totalCount, formattedTransactions.length),
         total_inflow: formatCurrency(totalInflow),
         total_outflow: formatCurrency(totalOutflow),
         net: formatCurrency(totalInflow - totalOutflow),

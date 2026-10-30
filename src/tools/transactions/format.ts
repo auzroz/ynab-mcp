@@ -87,3 +87,11 @@ export function formatSubtransaction(sub: SubtransactionLike) {
     transfer_transaction_id: sub.transfer_transaction_id ?? null,
   };
 }
+
+/**
+ * Truncation info for a list sliced to a limit: total_count is the number of
+ * matches before the limit, truncated is true when some were left out.
+ */
+export function truncationSummary(totalCount: number, returnedCount: number) {
+  return { total_count: totalCount, truncated: totalCount > returnedCount };
+}
