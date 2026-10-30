@@ -106,7 +106,7 @@ describe('tool titles and annotations', () => {
     const server = createServerForUser({
       accessToken: 'test-token',
       defaultBudgetId: undefined,
-      readOnly: true,
+      readOnly: false,
       rateLimitPerHour: 180,
       cacheTtlMs: 300000,
     });

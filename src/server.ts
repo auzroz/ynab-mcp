@@ -84,6 +84,12 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    // Hide write tools from read-only sessions. This is a UX nicety only: the
+    // YnabClient write guard still rejects writes server-side. Uses the
+    // per-client value so each HTTP session gets its own list.
+    if (ynabClient.isReadOnly()) {
+      return { tools: tools.filter((t) => t.annotations?.readOnlyHint === true) };
+    }
     return { tools };
   });
 

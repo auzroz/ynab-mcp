@@ -406,7 +406,7 @@ src/
 
 | Feature | Description |
 |---------|-------------|
-| **Read-Only Default** | Write operations disabled unless `YNAB_READ_ONLY=false` |
+| **Read-Only Default** | Write operations disabled unless `YNAB_READ_ONLY=false`; in read-only mode (including read-only OAuth sessions) write tools are hidden from the tool list and still rejected if called |
 | **Token Security** | Never commit your `YNAB_ACCESS_TOKEN`; use environment variables |
 | **Input Validation** | All tool parameters validated with Zod schemas |
 | **Rate Limiting** | Built-in protection against API quota exhaustion |
