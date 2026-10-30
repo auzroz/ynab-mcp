@@ -3,9 +3,10 @@
  *
  * Holds: users (identified by their YNAB user id), each user's encrypted YNAB
  * refresh token + granted scope, dynamically-registered MCP clients, short-lived
- * MCP authorization codes, MCP access/refresh tokens, and the short-lived
- * "pending authorization" records that bridge the MCP-authorize and YNAB-callback
- * legs of the federated flow.
+ * MCP authorization codes, MCP access/refresh tokens, tombstones of rotated
+ * refresh tokens (for reuse detection), and the short-lived "pending
+ * authorization" records that bridge the MCP-authorize and YNAB-callback legs of
+ * the federated flow.
  *
  * All secrets (YNAB refresh tokens) are stored already-encrypted by the caller.
  */
@@ -61,6 +62,12 @@ export interface AccessTokenRecord {
    * written before 0.4.0; the provider treats those as read-only.
    */
   grantedScope?: GrantedScope | undefined;
+  /**
+   * Grant family (RFC 9700 section 4.14.2): one id per authorization-code
+   * exchange, carried by every token issued from that code and from refreshes
+   * in its chain. Undefined for rows written before 0.4.0.
+   */
+  familyId?: string | undefined;
 }
 
 export interface RefreshTokenRecord {
@@ -79,6 +86,35 @@ export interface RefreshTokenRecord {
    * written before 0.4.0; the provider treats those as read-only.
    */
   grantedScope?: GrantedScope | undefined;
+  /**
+   * Grant family (RFC 9700 section 4.14.2): one id per authorization-code
+   * exchange, carried by every token issued from that code and from refreshes
+   * in its chain. Undefined for rows written before 0.4.0.
+   */
+  familyId?: string | undefined;
+}
+
+/**
+ * Tombstone of a refresh token that was spent by rotation, kept until
+ * `expiresAt` so a later replay of it can be recognized as reuse.
+ */
+export interface ConsumedRefreshTokenRecord {
+  token: string;
+  clientId: string;
+  /** The family the token's replay revokes. */
+  familyId: string;
+  expiresAt: number;
+}
+
+/** What {@link Storage.rotateRefreshToken} writes when it spends a refresh token. */
+export interface RefreshTokenRotation {
+  /** Family the spent token's tombstone points at (that of the new tokens). */
+  familyId: string;
+  /** When the spent token's tombstone expires. */
+  consumedUntil: number;
+  /** The token pair issued in its place. */
+  accessToken: AccessTokenRecord;
+  refreshToken: RefreshTokenRecord;
 }
 
 /** Bridges the MCP `/authorize` leg to the YNAB `/oauth/ynab/callback` leg. */
@@ -142,4 +178,19 @@ export interface Storage {
   getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined>;
   takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined>;
   deleteRefreshToken(token: string): Promise<void>;
+  /**
+   * The atomic one-time use as a rotation: take `token` and, only if it was
+   * live, record its tombstone (with the taken row's client id) and save the new
+   * token pair, all in one atomic step. So whoever finds the token gone after a
+   * rotation also finds its tombstone and the tokens issued in its place. Also
+   * prunes expired tombstones. Returns the taken row, or undefined (nothing
+   * written) when the token was not live.
+   */
+  rotateRefreshToken(token: string, rotation: RefreshTokenRotation): Promise<RefreshTokenRecord | undefined>;
+
+  // Consumed refresh tokens (reuse detection). Undefined once expired.
+  getConsumedRefreshToken(token: string): Promise<ConsumedRefreshTokenRecord | undefined>;
+
+  /** Delete every access and refresh token of a grant family, atomically. */
+  deleteTokenFamily(familyId: string): Promise<void>;
 }

@@ -4,10 +4,11 @@
  * The `runStorageConformance` function is parameterized by a Storage factory and
  * run against every durable and in-memory adapter, so all drivers are held to
  * identical semantics: user CRUD, client persistence, one-time take semantics for
- * pending-auth / auth-codes / refresh-tokens, and access-token expiry.
+ * pending-auth / auth-codes / refresh-tokens, access-token expiry, and
+ * refresh-token rotation with tombstones and family revocation.
  */
 
-import { describe, it, expect, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +21,7 @@ import type {
   AuthCodeRecord,
   AccessTokenRecord,
   RefreshTokenRecord,
+  RefreshTokenRotation,
   PendingAuthRecord,
 } from '../../../src/storage/types.js';
 import { MemoryStorage } from '../../../src/storage/memory.js';
@@ -88,6 +90,17 @@ function makeRefreshToken(overrides: Partial<RefreshTokenRecord> = {}): RefreshT
     clientId: 'client-1',
     userId: 'user-1',
     scopes: ['read', 'write'],
+    ...overrides,
+  };
+}
+
+/** A rotation into a fresh pair of `familyId`, its tombstone kept for a day. */
+function makeRotation(familyId: string, overrides: Partial<RefreshTokenRotation> = {}): RefreshTokenRotation {
+  return {
+    familyId,
+    consumedUntil: Date.now() + 86_400_000,
+    accessToken: makeAccessToken({ familyId }),
+    refreshToken: makeRefreshToken({ familyId }),
     ...overrides,
   };
 }
@@ -362,6 +375,142 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
         const got = await storage.getRefreshToken(rec.token);
         expect(got?.resource).toBeUndefined();
         expect(got?.grantedScope).toBeUndefined();
+        expect(got?.familyId).toBeUndefined();
+      });
+    });
+
+    describe('token families and rotation tombstones (RFC 9700)', () => {
+      // Postgres runs every conformance test against the same tables, so each
+      // test uses its own random family ids.
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('round-trips familyId on access and refresh tokens', async () => {
+        const familyId = randomUUID();
+        const at = makeAccessToken({ familyId });
+        await storage.saveAccessToken(at);
+        expect(await storage.getAccessToken(at.token)).toEqual(at);
+        const rt = makeRefreshToken({ familyId });
+        await storage.saveRefreshToken(rt);
+        expect(await storage.getRefreshToken(rt.token)).toEqual(rt);
+        expect(await storage.takeRefreshToken(rt.token)).toEqual(rt);
+        const legacy = makeAccessToken();
+        await storage.saveAccessToken(legacy);
+        expect((await storage.getAccessToken(legacy.token))?.familyId).toBeUndefined();
+      });
+
+      it('rotates: spends the token, records its tombstone and saves the new pair', async () => {
+        const familyId = randomUUID();
+        const old = makeRefreshToken({ clientId: 'client-a', familyId });
+        await storage.saveRefreshToken(old);
+        const rotation = makeRotation(familyId);
+
+        expect(await storage.rotateRefreshToken(old.token, rotation)).toEqual(old);
+        expect(await storage.getRefreshToken(old.token)).toBeUndefined();
+        expect(await storage.getConsumedRefreshToken(old.token)).toEqual({
+          token: old.token,
+          clientId: 'client-a',
+          familyId,
+          expiresAt: rotation.consumedUntil,
+        });
+        expect(await storage.getAccessToken(rotation.accessToken.token)).toEqual(rotation.accessToken);
+        expect(await storage.getRefreshToken(rotation.refreshToken.token)).toEqual(rotation.refreshToken);
+      });
+
+      it('a legacy token (no family) is tombstoned with the family it is rotated into', async () => {
+        const old = makeRefreshToken();
+        await storage.saveRefreshToken(old);
+        const familyId = randomUUID();
+        expect(await storage.rotateRefreshToken(old.token, makeRotation(familyId))).toEqual(old);
+        expect((await storage.getConsumedRefreshToken(old.token))?.familyId).toBe(familyId);
+      });
+
+      it('writes nothing when the token is not live', async () => {
+        const rotation = makeRotation(randomUUID());
+        const unknown = `rt-${randomUUID()}`;
+        expect(await storage.rotateRefreshToken(unknown, rotation)).toBeUndefined();
+        expect(await storage.getConsumedRefreshToken(unknown)).toBeUndefined();
+        expect(await storage.getAccessToken(rotation.accessToken.token)).toBeUndefined();
+        expect(await storage.getRefreshToken(rotation.refreshToken.token)).toBeUndefined();
+
+        // A second rotation of a spent token neither re-saves nor overwrites.
+        const familyId = randomUUID();
+        const old = makeRefreshToken({ familyId });
+        await storage.saveRefreshToken(old);
+        const first = makeRotation(familyId);
+        await storage.rotateRefreshToken(old.token, first);
+        const second = makeRotation(randomUUID());
+        expect(await storage.rotateRefreshToken(old.token, second)).toBeUndefined();
+        expect((await storage.getConsumedRefreshToken(old.token))?.familyId).toBe(familyId);
+        expect(await storage.getRefreshToken(second.refreshToken.token)).toBeUndefined();
+      });
+
+      it('lets exactly one of several concurrent rotations succeed', async () => {
+        const familyId = randomUUID();
+        const old = makeRefreshToken({ familyId });
+        await storage.saveRefreshToken(old);
+        const rotations = Array.from({ length: 5 }, () => makeRotation(familyId));
+
+        const results = await Promise.all(rotations.map((r) => storage.rotateRefreshToken(old.token, r)));
+
+        expect(results.filter((r) => r !== undefined)).toEqual([old]);
+        const saved = await Promise.all(rotations.map((r) => storage.getRefreshToken(r.refreshToken.token)));
+        expect(saved.filter((r) => r !== undefined)).toHaveLength(1);
+        expect(await storage.getConsumedRefreshToken(old.token)).toBeDefined();
+      });
+
+      it('reads an expired tombstone as absent', async () => {
+        const old = makeRefreshToken();
+        await storage.saveRefreshToken(old);
+        await storage.rotateRefreshToken(old.token, makeRotation(randomUUID(), { consumedUntil: Date.now() - 1 }));
+        expect(await storage.getConsumedRefreshToken(old.token)).toBeUndefined();
+      });
+
+      it('prunes expired tombstones when it records a new one', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        const t0 = Date.now();
+        const stale = makeRefreshToken();
+        const kept = makeRefreshToken();
+        await storage.saveRefreshToken(stale);
+        await storage.saveRefreshToken(kept);
+        await storage.rotateRefreshToken(stale.token, makeRotation(randomUUID(), { consumedUntil: t0 + 1000 }));
+        await storage.rotateRefreshToken(kept.token, makeRotation(randomUUID(), { consumedUntil: t0 + 10_000 }));
+
+        // Later, another rotation prunes the expired tombstone and keeps the live one...
+        vi.setSystemTime(t0 + 5000);
+        const next = makeRefreshToken();
+        await storage.saveRefreshToken(next);
+        await storage.rotateRefreshToken(next.token, makeRotation(randomUUID()));
+
+        // ...which shows once the clock is back before its expiry: it is gone.
+        vi.setSystemTime(t0);
+        expect(await storage.getConsumedRefreshToken(stale.token)).toBeUndefined();
+        expect(await storage.getConsumedRefreshToken(kept.token)).toBeDefined();
+      });
+
+      it('deletes every access and refresh token of a family, and nothing else', async () => {
+        const familyId = randomUUID();
+        const other = randomUUID();
+        const members = [makeAccessToken({ familyId }), makeAccessToken({ familyId })];
+        const memberRefresh = makeRefreshToken({ familyId });
+        const otherAt = makeAccessToken({ familyId: other });
+        const otherRt = makeRefreshToken({ familyId: other });
+        const legacyAt = makeAccessToken();
+        const legacyRt = makeRefreshToken();
+        for (const at of [...members, otherAt, legacyAt]) await storage.saveAccessToken(at);
+        for (const rt of [memberRefresh, otherRt, legacyRt]) await storage.saveRefreshToken(rt);
+
+        await storage.deleteTokenFamily(familyId);
+
+        for (const at of members) expect(await storage.getAccessToken(at.token)).toBeUndefined();
+        expect(await storage.getRefreshToken(memberRefresh.token)).toBeUndefined();
+        expect(await storage.getAccessToken(otherAt.token)).toEqual(otherAt);
+        expect(await storage.getRefreshToken(otherRt.token)).toEqual(otherRt);
+        expect(await storage.getAccessToken(legacyAt.token)).toEqual(legacyAt);
+        expect(await storage.getRefreshToken(legacyRt.token)).toEqual(legacyRt);
+        // An unknown family is a no-op.
+        await expect(storage.deleteTokenFamily(randomUUID())).resolves.toBeUndefined();
       });
     });
   });
@@ -405,6 +554,7 @@ function legacyRows(expiresAt: number): string {
     INSERT INTO auth_codes VALUES ('legacy-code', 'c1', 'legacy-user', 'https://client/cb', 'chal', '["read-only"]', ${expiresAt});
     INSERT INTO access_tokens VALUES ('legacy-at', 'c1', 'legacy-user', '["read-only"]', ${expiresAt});
     INSERT INTO refresh_tokens VALUES ('legacy-rt', 'c1', 'legacy-user', '["read-only"]');
+    INSERT INTO refresh_tokens VALUES ('legacy-rt-2', 'c1', 'legacy-user', '["read-only"]');
   `;
 }
 
@@ -413,14 +563,15 @@ const RESOURCE_TABLES = ['pending_auth', 'auth_codes', 'access_tokens', 'refresh
 const ADDED: Record<(typeof RESOURCE_TABLES)[number], string[]> = {
   pending_auth: ['resource', 'browser_binding'],
   auth_codes: ['resource', 'granted_scope'],
-  access_tokens: ['resource', 'granted_scope'],
-  refresh_tokens: ['resource', 'granted_scope'],
+  access_tokens: ['resource', 'granted_scope', 'family_id'],
+  refresh_tokens: ['resource', 'granted_scope', 'family_id'],
 };
 
 /**
  * Open a 0.3.x database with the current driver twice and check that legacy rows
- * still read (with no resource), new rows carry one, and re-running init() is a
- * no-op that adds each new column exactly once.
+ * still read (with no resource or family), new rows carry them, a legacy refresh
+ * token rotates into a family (so the tombstone table exists), and re-running
+ * init() is a no-op that adds each new column exactly once.
  */
 async function checkLegacyUpgrade(
   open: () => Promise<Storage>,
@@ -450,10 +601,20 @@ async function checkLegacyUpgrade(
     expect(legacyRefresh?.userId).toBe('legacy-user');
     expect(legacyRefresh?.resource).toBeUndefined();
     expect(legacyRefresh?.grantedScope).toBeUndefined();
+    expect(legacyRefresh?.familyId).toBeUndefined();
+    expect((await first.getAccessToken('legacy-at'))?.familyId).toBeUndefined();
 
     await first.saveAccessToken(
       makeAccessToken({ token: 'new-at', resource: 'https://r.example/mcp', grantedScope: 'read-write' })
     );
+    const rotated = await first.rotateRefreshToken(
+      'legacy-rt-2',
+      makeRotation('legacy-family', {
+        accessToken: makeAccessToken({ token: 'family-at', familyId: 'legacy-family' }),
+        refreshToken: makeRefreshToken({ token: 'family-rt', familyId: 'legacy-family' }),
+      })
+    );
+    expect(rotated).toMatchObject({ token: 'legacy-rt-2', clientId: 'c1', familyId: undefined });
   } finally {
     await first.close();
   }
@@ -463,6 +624,15 @@ async function checkLegacyUpgrade(
     expect((await second.getAccessToken('new-at'))?.resource).toBe('https://r.example/mcp');
     expect((await second.getAccessToken('new-at'))?.grantedScope).toBe('read-write');
     expect((await second.getAccessToken('legacy-at'))?.resource).toBeUndefined();
+    expect(await second.getConsumedRefreshToken('legacy-rt-2')).toMatchObject({
+      clientId: 'c1',
+      familyId: 'legacy-family',
+    });
+    expect((await second.getRefreshToken('family-rt'))?.familyId).toBe('legacy-family');
+    await second.deleteTokenFamily('legacy-family');
+    expect(await second.getAccessToken('family-at')).toBeUndefined();
+    expect(await second.getRefreshToken('family-rt')).toBeUndefined();
+    expect((await second.getAccessToken('legacy-at'))?.token).toBe('legacy-at');
   } finally {
     await second.close();
   }

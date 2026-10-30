@@ -4,7 +4,9 @@
  * Backed by `better-sqlite3`, which is imported lazily so the dependency is only
  * required when this driver is actually selected. Scopes arrays and full client
  * objects are stored as JSON TEXT. One-time records (auth codes, refresh tokens,
- * pending auth) are deleted-and-returned atomically inside a transaction.
+ * pending auth) are deleted-and-returned atomically inside a transaction; a
+ * refresh-token rotation writes its tombstone and new tokens in that same
+ * transaction.
  */
 
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
@@ -15,10 +17,12 @@ import type {
   AuthCodeRecord,
   AccessTokenRecord,
   RefreshTokenRecord,
+  RefreshTokenRotation,
+  ConsumedRefreshTokenRecord,
   PendingAuthRecord,
   GrantedScope,
 } from './types.js';
-import { ADDED_COLUMNS } from './migrations.js';
+import { ADDED_COLUMNS, ADDED_INDEXES } from './migrations.js';
 
 export interface SqliteStorageOptions {
   path: string;
@@ -69,6 +73,7 @@ interface AccessTokenRow {
   expires_at: number;
   resource: string | null;
   granted_scope: string | null;
+  family_id: string | null;
 }
 
 interface RefreshTokenRow {
@@ -78,6 +83,14 @@ interface RefreshTokenRow {
   scopes: string;
   resource: string | null;
   granted_scope: string | null;
+  family_id: string | null;
+}
+
+interface ConsumedRefreshTokenRow {
+  token: string;
+  client_id: string;
+  family_id: string;
+  expires_at: number;
 }
 
 function parseScopes(json: string): string[] {
@@ -99,13 +112,15 @@ function refreshTokenFromRow(row: RefreshTokenRow): RefreshTokenRecord {
     scopes: parseScopes(row.scopes),
     resource: row.resource ?? undefined,
     grantedScope: parseGrantedScope(row.granted_scope),
+    familyId: row.family_id ?? undefined,
   };
 }
 
 /**
- * Apply {@link ADDED_COLUMNS} that are not present yet, in one IMMEDIATE
- * transaction (write lock taken up front, so two processes opening the same file
- * can't both decide a column is missing).
+ * Apply {@link ADDED_COLUMNS} that are not present yet and create
+ * {@link ADDED_INDEXES}, in one IMMEDIATE transaction (write lock taken up
+ * front, so two processes opening the same file can't both decide a column is
+ * missing).
  */
 function migrate(db: BetterSqlite3.Database): void {
   db.transaction(() => {
@@ -114,6 +129,9 @@ function migrate(db: BetterSqlite3.Database): void {
       if (!columns.some((c) => c.name === column)) {
         db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
       }
+    }
+    for (const { name, table, column } of ADDED_INDEXES) {
+      db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON ${table} (${column})`);
     }
   }).immediate();
 }
@@ -182,6 +200,13 @@ export class SqliteStorage implements Storage {
         client_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         scopes TEXT NOT NULL
+      );
+      -- 0.4.0
+      CREATE TABLE IF NOT EXISTS consumed_refresh_tokens (
+        token TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        family_id TEXT NOT NULL,
+        expires_at INTEGER NOT NULL
       );
     `);
     migrate(db);
@@ -348,10 +373,14 @@ export class SqliteStorage implements Storage {
   // MCP access tokens
 
   async saveAccessToken(rec: AccessTokenRecord): Promise<void> {
+    this.insertAccessToken(rec);
+  }
+
+  private insertAccessToken(rec: AccessTokenRecord): void {
     this.database
       .prepare(
-        `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, resource, granted_scope)
-         VALUES (@token, @clientId, @userId, @scopes, @expiresAt, @resource, @grantedScope)`
+        `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, resource, granted_scope, family_id)
+         VALUES (@token, @clientId, @userId, @scopes, @expiresAt, @resource, @grantedScope, @familyId)`
       )
       .run({
         token: rec.token,
@@ -361,6 +390,7 @@ export class SqliteStorage implements Storage {
         expiresAt: rec.expiresAt,
         resource: rec.resource ?? null,
         grantedScope: rec.grantedScope ?? null,
+        familyId: rec.familyId ?? null,
       });
   }
 
@@ -381,6 +411,7 @@ export class SqliteStorage implements Storage {
       expiresAt: row.expires_at,
       resource: row.resource ?? undefined,
       grantedScope: parseGrantedScope(row.granted_scope),
+      familyId: row.family_id ?? undefined,
     };
   }
 
@@ -391,10 +422,14 @@ export class SqliteStorage implements Storage {
   // MCP refresh tokens (one-time, rotated on use)
 
   async saveRefreshToken(rec: RefreshTokenRecord): Promise<void> {
+    this.insertRefreshToken(rec);
+  }
+
+  private insertRefreshToken(rec: RefreshTokenRecord): void {
     this.database
       .prepare(
-        `INSERT INTO refresh_tokens (token, client_id, user_id, scopes, resource, granted_scope)
-         VALUES (@token, @clientId, @userId, @scopes, @resource, @grantedScope)`
+        `INSERT INTO refresh_tokens (token, client_id, user_id, scopes, resource, granted_scope, family_id)
+         VALUES (@token, @clientId, @userId, @scopes, @resource, @grantedScope, @familyId)`
       )
       .run({
         token: rec.token,
@@ -403,6 +438,7 @@ export class SqliteStorage implements Storage {
         scopes: JSON.stringify(rec.scopes),
         resource: rec.resource ?? null,
         grantedScope: rec.grantedScope ?? null,
+        familyId: rec.familyId ?? null,
       });
   }
 
@@ -427,5 +463,57 @@ export class SqliteStorage implements Storage {
 
   async deleteRefreshToken(token: string): Promise<void> {
     this.database.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(token);
+  }
+
+  async rotateRefreshToken(
+    token: string,
+    rotation: RefreshTokenRotation
+  ): Promise<RefreshTokenRecord | undefined> {
+    const rotate = this.database.transaction((t: string): RefreshTokenRow | undefined => {
+      const row = this.database.prepare('SELECT * FROM refresh_tokens WHERE token = ?').get(t) as
+        | RefreshTokenRow
+        | undefined;
+      if (!row) return undefined;
+      this.database.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(t);
+      this.database.prepare('DELETE FROM consumed_refresh_tokens WHERE expires_at < ?').run(Date.now());
+      this.database
+        .prepare(
+          `INSERT OR REPLACE INTO consumed_refresh_tokens (token, client_id, family_id, expires_at)
+           VALUES (@token, @clientId, @familyId, @expiresAt)`
+        )
+        .run({
+          token: t,
+          clientId: row.client_id,
+          familyId: rotation.familyId,
+          expiresAt: rotation.consumedUntil,
+        });
+      this.insertAccessToken(rotation.accessToken);
+      this.insertRefreshToken(rotation.refreshToken);
+      return row;
+    });
+    const row = rotate(token);
+    return row ? refreshTokenFromRow(row) : undefined;
+  }
+
+  // Consumed refresh tokens (reuse detection)
+
+  async getConsumedRefreshToken(token: string): Promise<ConsumedRefreshTokenRecord | undefined> {
+    const row = this.database
+      .prepare('SELECT * FROM consumed_refresh_tokens WHERE token = ?')
+      .get(token) as ConsumedRefreshTokenRow | undefined;
+    if (!row || row.expires_at < Date.now()) return undefined;
+    return {
+      token: row.token,
+      clientId: row.client_id,
+      familyId: row.family_id,
+      expiresAt: row.expires_at,
+    };
+  }
+
+  async deleteTokenFamily(familyId: string): Promise<void> {
+    this.database.transaction((f: string) => {
+      this.database.prepare('DELETE FROM access_tokens WHERE family_id = ?').run(f);
+      this.database.prepare('DELETE FROM refresh_tokens WHERE family_id = ?').run(f);
+    })(familyId);
   }
 }

@@ -13,6 +13,8 @@ import type {
   AuthCodeRecord,
   AccessTokenRecord,
   RefreshTokenRecord,
+  RefreshTokenRotation,
+  ConsumedRefreshTokenRecord,
   PendingAuthRecord,
 } from './types.js';
 
@@ -23,6 +25,7 @@ export class MemoryStorage implements Storage {
   private authCodes = new Map<string, AuthCodeRecord>();
   private accessTokens = new Map<string, AccessTokenRecord>();
   private refreshTokens = new Map<string, RefreshTokenRecord>();
+  private consumedRefreshTokens = new Map<string, ConsumedRefreshTokenRecord>();
 
   async init(): Promise<void> {
     // no-op
@@ -34,6 +37,7 @@ export class MemoryStorage implements Storage {
     this.authCodes.clear();
     this.accessTokens.clear();
     this.refreshTokens.clear();
+    this.consumedRefreshTokens.clear();
   }
 
   async upsertUser(rec: UserRecord): Promise<void> {
@@ -101,5 +105,41 @@ export class MemoryStorage implements Storage {
   }
   async deleteRefreshToken(token: string): Promise<void> {
     this.refreshTokens.delete(token);
+  }
+  async rotateRefreshToken(
+    token: string,
+    rotation: RefreshTokenRotation
+  ): Promise<RefreshTokenRecord | undefined> {
+    const rec = this.refreshTokens.get(token);
+    if (!rec) return undefined;
+    this.refreshTokens.delete(token);
+    const now = Date.now();
+    for (const [key, consumed] of this.consumedRefreshTokens) {
+      if (consumed.expiresAt < now) this.consumedRefreshTokens.delete(key);
+    }
+    this.consumedRefreshTokens.set(token, {
+      token,
+      clientId: rec.clientId,
+      familyId: rotation.familyId,
+      expiresAt: rotation.consumedUntil,
+    });
+    this.accessTokens.set(rotation.accessToken.token, rotation.accessToken);
+    this.refreshTokens.set(rotation.refreshToken.token, rotation.refreshToken);
+    return rec;
+  }
+
+  async getConsumedRefreshToken(token: string): Promise<ConsumedRefreshTokenRecord | undefined> {
+    const rec = this.consumedRefreshTokens.get(token);
+    if (!rec || rec.expiresAt < Date.now()) return undefined;
+    return rec;
+  }
+
+  async deleteTokenFamily(familyId: string): Promise<void> {
+    for (const [key, rec] of this.accessTokens) {
+      if (rec.familyId === familyId) this.accessTokens.delete(key);
+    }
+    for (const [key, rec] of this.refreshTokens) {
+      if (rec.familyId === familyId) this.refreshTokens.delete(key);
+    }
   }
 }
