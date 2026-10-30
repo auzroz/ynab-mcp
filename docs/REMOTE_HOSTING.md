@@ -180,10 +180,13 @@ the proxy. A lower `MCP_SESSION_IDLE_TIMEOUT_MS` shortens the lockout on
 exposed instances.
 
 All sessions of one user (in OAuth mode the YNAB user, in header mode the YNAB
-token) share one rate limit, one cache and one audit log, so several clients or
-a reconnecting client can't exceed the per-user YNAB budget
-(`RATE_LIMIT_PER_HOUR`), and `ynab_audit_log` shows the user's writes from every
-session. This state is kept for an hour after the user's last session closes,
+token) share one rate limit, one cache (including the delta-sync snapshots, see
+README "Caching") and one audit log, so several clients or a reconnecting client
+can't exceed the per-user YNAB budget (`RATE_LIMIT_PER_HOUR`), a snapshot one
+session built saves the others a full fetch, and `ynab_audit_log` shows the
+user's writes from every session. Users never share any of it. Snapshots are
+bounded per user (32 snapshots, 20,000 entities, dropped after 30 minutes
+unused), so budget roughly that much memory per active user. This state is kept for an hour after the user's last session closes,
 so reconnecting doesn't reset the rate limit. In OAuth mode a session looks up
 the user's YNAB access token on every request, refreshing it when it expires,
 so long sessions keep working; once the user's YNAB grant is gone (or the token
