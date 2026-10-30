@@ -44,8 +44,11 @@ Set these environment variables (see `.env.example`):
 | `STORAGE_DRIVER` | no | `memory` (default, **non-durable**), `sqlite`, or `postgres` |
 | `SQLITE_PATH` | if sqlite | e.g. `/data/ynab-mcp.db` |
 | `DATABASE_URL` | if postgres | `postgres://user:pass@host:5432/db` |
-| `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | recommended | Allowlists for DNS-rebinding/Origin checks |
-| `ENABLE_DNS_REBINDING_PROTECTION` | recommended | `true` (needs an allowlist above) |
+| `MCP_RESOURCE_URL` | no | Absolute URL of the MCP endpoint (the OAuth resource/audience). Default `PUBLIC_URL` + `/mcp`. Must be https (http only for `localhost`, `127.0.0.1`, `[::1]`), no fragment |
+| `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | no | Comma-separated Host / Origin allowlists. Explicit values **replace** the derived defaults. Defaults: host and origin of `PUBLIC_URL`, plus `localhost`, `127.0.0.1`, `[::1]` (bare and with `:PORT`) when `PUBLIC_URL` is unset or loopback |
+| `ENABLE_DNS_REBINDING_PROTECTION` | no | **On by default** (previously off). Set `false` to opt out |
+| `MCP_MAX_SESSIONS` | no | Max concurrent MCP sessions (integer >= 1, default `100`) |
+| `MCP_SESSION_IDLE_TIMEOUT_MS` | no | Idle time before a session is closed (integer >= 1, default `1800000`) |
 | `TRUST_PROXY` | if behind a reverse proxy | Hop count to trust for `X-Forwarded-*` (e.g. `1` behind a single Traefik/Caddy/nginx) — needed for accurate per-client rate limiting |
 
 OAuth mode activates automatically once `YNAB_OAUTH_CLIENT_ID`,

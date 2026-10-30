@@ -30,33 +30,20 @@ vi.mock('../../src/auth/ynab-oauth.js', async () => {
 });
 
 import { createHttpApp } from '../../src/http.js';
+import { makeHttpConfig } from './helpers/http-config.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
 function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
-  return {
-    port: 0,
+  return makeHttpConfig({
     publicUrl: 'https://mcp.example.com',
-    allowedHosts: undefined,
-    allowedOrigins: undefined,
-    enableDnsRebindingProtection: false,
-    trustProxy: 0,
-    fallbackAccessToken: undefined,
-    defaultBudgetId: undefined,
+    resourceUrl: 'https://mcp.example.com/mcp',
     readOnly: false,
-    cacheTtlMs: 300000,
-    rateLimitPerHour: 180,
     authMode: 'oauth',
     oauthClientId: 'cid',
     oauthClientSecret: 'sec',
     encryptionKey: randomBytes(32).toString('base64'),
-    allowWrite: true,
-    accessTokenTtlSec: 3600,
-    authCodeTtlSec: 600,
-    storageDriver: 'memory',
-    sqlitePath: undefined,
-    databaseUrl: undefined,
     ...overrides,
-  };
+  });
 }
 
 const initializeBody = {
