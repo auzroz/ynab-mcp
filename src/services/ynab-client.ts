@@ -757,6 +757,8 @@ export class YnabClient {
       (n, t) => n + (t?.subtransactions?.length ?? 0),
       0
     );
+    // A bulk create logs only the first row's details, so record how many rows it carried.
+    const requestedCount = data.transactions?.length ?? 1;
     try {
       const response = await this.api.transactions.createTransaction(budgetId, data);
       this.invalidateTransactionHistory(budgetId);
@@ -772,6 +774,7 @@ export class YnabClient {
           has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
           account_id: txn?.account_id,
           ...(splitCount > 0 ? { split_count: splitCount } : {}),
+          ...(requestedCount > 1 ? { requested_count: requestedCount } : {}),
         },
         success: true,
       };
@@ -791,6 +794,7 @@ export class YnabClient {
           has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
           account_id: txn?.account_id,
           ...(splitCount > 0 ? { split_count: splitCount } : {}),
+          ...(requestedCount > 1 ? { requested_count: requestedCount } : {}),
         },
         success: false,
         error: sanitizeErrorMessage(error),
