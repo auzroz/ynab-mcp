@@ -301,7 +301,8 @@ export async function handleGoalProgress(
   let overallStatus: 'healthy' | 'attention_needed' | 'critical';
   let overallMessage: string;
 
-  const activeGoalCount = goalsInfo.length - statusCounts.snoozed;
+  // Every snoozed goal is paused, whatever status it kept (complete, on track).
+  const activeGoalCount = goalsInfo.filter((g) => !g.snoozed).length;
 
   if (goalsInfo.length === 0) {
     overallStatus = 'healthy';

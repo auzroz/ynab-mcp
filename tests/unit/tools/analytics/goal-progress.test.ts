@@ -546,6 +546,40 @@ describe('handleGoalProgress', () => {
       expect(result.summary.on_track).toBe(1);
     });
 
+    it('leaves snoozed goals that kept their status out of the active-goal count', async () => {
+      const base = {
+        goal_type: 'NEED', goal_target: 1200000, balance: 100000, budgeted: 0, activity: 0,
+        hidden: false, category_group_id: 'group-1',
+      };
+      mockClient.getBudgetMonth.mockResolvedValue({
+        data: {
+          month: {
+            month: '2026-01-01',
+            categories: [
+              { ...base, id: 'cat-1', name: 'Insurance', goal_under_funded: 50000 },
+              // Snoozed with nothing owed: keeps on_track, but is still paused.
+              { ...base, id: 'cat-2', name: 'Gifts', goal_under_funded: 0, goal_snoozed_at: '2026-01-10T00:00:00Z' },
+            ],
+          },
+        },
+      });
+      mockClient.getCategories.mockResolvedValue({
+        data: {
+          category_groups: [{
+            id: 'group-1', name: 'Bills', hidden: false, deleted: false,
+            categories: [
+              { id: 'cat-1', name: 'Insurance', hidden: false, deleted: false },
+              { id: 'cat-2', name: 'Gifts', hidden: false, deleted: false },
+            ],
+          }],
+        },
+      });
+      const result = JSON.parse(await handleGoalProgress({}, mockClient as any));
+      expect(result.goals.find((g: { category: string }) => g.category === 'Gifts')?.status).toBe('on_track');
+      // The only active goal is underfunded, so more than half of the active goals are.
+      expect(result.status).toBe('critical');
+    });
+
     it('can filter to snoozed goals and leaves unsnoozed goals unmarked', async () => {
       const active = await run({ goal_under_funded: 50000, goal_snoozed_at: null });
       expect(active.goals[0].snoozed).toBe(false);

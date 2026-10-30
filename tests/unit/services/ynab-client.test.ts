@@ -438,7 +438,7 @@ describe('read methods', () => {
     expect(client.getServerKnowledge(BUDGET, 'budget')).toBeUndefined();
   });
 
-  it('a transactions call does not change the cursor get_budget sends', async () => {
+  it('get_budget requests the full budget every time, whatever cursors are stored', async () => {
     setResolve(mockApi.plans.getPlanById, { data: { plan: {}, server_knowledge: 100 } });
     setResolve(mockApi.transactions.getTransactions, {
       data: { transactions: [], server_knowledge: 5000 },
@@ -449,12 +449,12 @@ describe('read methods', () => {
     await client.getTransactions(BUDGET, { sinceDate: '2026-01-01' });
     await handleGetBudget({ budget_id: BUDGET }, client as never).catch(() => undefined);
 
-    // First call: full budget. Second call: delta from the budget's own cursor (100),
-    // never the transactions cursor (5000).
+    // Neither the budget's own cursor (100) nor the transactions cursor (5000):
+    // a delta would leave the summary totals computed from changed entities only.
     const calls = asMock(mockApi.plans.getPlanById).mock.calls;
     expect(calls).toHaveLength(2);
     expect(calls[0]).toEqual([BUDGET, undefined]);
-    expect(calls[1]).toEqual([BUDGET, 100]);
+    expect(calls[1]).toEqual([BUDGET, undefined]);
   });
 
   it('a transactions call alone leaves get_budget requesting the full budget', async () => {
