@@ -342,6 +342,19 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
         expect(await storage.takeRefreshToken(rec.token)).toBeUndefined();
       });
 
+      it('lets exactly one of several concurrent takes succeed', async () => {
+        // exchangeRefreshToken validates with getRefreshToken and then relies on
+        // takeRefreshToken as the single atomic spend; overlapping takes must not
+        // both win (Postgres runs them on separate pool connections).
+        const rec = makeRefreshToken();
+        await storage.saveRefreshToken(rec);
+
+        const results = await Promise.all(Array.from({ length: 5 }, () => storage.takeRefreshToken(rec.token)));
+
+        expect(results.filter((r) => r !== undefined)).toEqual([rec]);
+        expect(await storage.getRefreshToken(rec.token)).toBeUndefined();
+      });
+
       it('lookup returns undefined for an unknown token, and undefined optional fields', async () => {
         expect(await storage.getRefreshToken(`rt-${randomUUID()}`)).toBeUndefined();
         const rec = makeRefreshToken();

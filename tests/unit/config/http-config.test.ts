@@ -9,7 +9,7 @@ const KEYS = [
   // ambient value can't make a test that expects success throw.
   'TRUST_PROXY', 'YNAB_OAUTH_ALLOW_WRITE', 'MCP_ACCESS_TOKEN_TTL_SEC', 'MCP_AUTH_CODE_TTL_SEC',
   'STORAGE_DRIVER', 'SQLITE_PATH', 'DATABASE_URL',
-  'YNAB_ACCESS_TOKEN', 'YNAB_BUDGET_ID', 'YNAB_READ_ONLY', 'CACHE_TTL_MS', 'RATE_LIMIT_PER_HOUR',
+  'YNAB_ACCESS_TOKEN', 'YNAB_BUDGET_ID', 'YNAB_READ_ONLY', 'CACHE_TTL_MS', 'RATE_LIMIT_PER_HOUR', 'LOG_LEVEL',
 ];
 
 describe('loadHttpConfig', () => {
