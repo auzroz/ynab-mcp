@@ -146,7 +146,8 @@ describe('loadConfig', () => {
     });
 
     it('never quotes the rejected value, so a misplaced secret stays out of the log', () => {
-      const secret = 'pasted-secret-0123456789abcdef';
+      // A fake, low-entropy stand-in for a secret pasted into the wrong variable.
+      const secret = `FAKE_PASTED_${'x'.repeat(16)}`;
       process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
       for (const name of ['YNAB_READ_ONLY', 'CACHE_TTL_MS', 'RATE_LIMIT_PER_HOUR']) {
         process.env[name] = secret;

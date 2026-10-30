@@ -2,11 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { redactSecretEnvValues, sanitizeErrorMessage } from '../../../src/utils/sanitize.js';
 
 describe('redactSecretEnvValues', () => {
+  // Obviously fake, low-entropy stand-ins, built at runtime so secret scanners
+  // don't mistake them for real credentials.
+  const fake = (label: string) => `FAKE_${label}_${'x'.repeat(12)}`;
   const env = {
-    YNAB_ACCESS_TOKEN: 'tok-0123456789abcdef',
-    YNAB_OAUTH_CLIENT_SECRET: 'client-secret-xyz123',
-    ENCRYPTION_KEY: 'a2V5LWJ5dGVzLWJhc2U2NA==',
-    DATABASE_URL: 'postgres://ynab:hunter22@db:5432/ynab',
+    YNAB_ACCESS_TOKEN: fake('TOKEN'),
+    YNAB_OAUTH_CLIENT_SECRET: fake('CLIENT'),
+    ENCRYPTION_KEY: fake('KEY'),
+    DATABASE_URL: `postgres://ynab:${fake('PW')}@db:5432/ynab`,
   };
 
   it('removes each secret value wherever it appears, even without a prefix', () => {
