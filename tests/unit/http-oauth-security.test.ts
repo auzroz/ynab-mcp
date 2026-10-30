@@ -4,11 +4,13 @@
  *  - the federation legs only run in the browser that saw the consent page
  *    (no consent bypass by sending a victim a /oauth/ynab/start link);
  *  - write access comes from the token's own grant, not the user's latest consent;
- *  - an MCP session can only be used by the client and user that created it.
+ *  - an MCP session can only be used by the client and user that created it;
+ *  - a session resolves the user's YNAB token per request (refreshed tokens are
+ *    used; a lost grant fails calls with a generic error).
  * Only the YNAB network calls are mocked; createServerForUser is spied on.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHash, randomBytes } from 'node:crypto';
 import request from 'supertest';
 import type { Express } from 'express';
@@ -412,6 +414,100 @@ describe('MCP sessions are bound to their access level', () => {
     });
     expect(call.status).toBe(200);
     expect(call.text).toContain('read_only_mode');
+  });
+});
+
+describe('per-user state is keyed by YNAB user', () => {
+  it("one user's sessions from two clients share a rate limiter; another user's do not", async () => {
+    const app = await createHttpApp(makeConfig());
+    const first = await connect(app, 'read-only');
+    const second = await connect(app, 'read-only');
+    getYnabUserIdMock.mockResolvedValue('ynab-user-2');
+    const bob = await connect(app, 'read-only');
+
+    await initSession(app, first.access);
+    const a = createServerMock.mock.calls.at(-1)?.[1];
+    await initSession(app, second.access);
+    const b = createServerMock.mock.calls.at(-1)?.[1];
+    await initSession(app, bob.access);
+    const c = createServerMock.mock.calls.at(-1)?.[1];
+
+    expect(a?.rateLimiter).toBeDefined();
+    expect(b?.rateLimiter).toBe(a?.rateLimiter);
+    expect(b?.auditLog).toBe(a?.auditLog);
+    expect(c?.rateLimiter).not.toBe(a?.rateLimiter);
+    expect(c?.cache).not.toBe(a?.cache);
+    expect(c?.auditLog).not.toBe(a?.auditLog);
+  });
+});
+
+describe('the YNAB token is resolved per request', () => {
+  // Every refresh returns a token inside the resolver's refresh skew, so each
+  // resolve refreshes again and the token in use is observable per call.
+  function rotateOnEveryResolve(): void {
+    let n = 0;
+    refreshAccessTokenMock.mockImplementation(async () => {
+      n++;
+      return { accessToken: `ya-${n}`, refreshToken: `yr-${n}`, expiresAt: Date.now() + 30_000 };
+    });
+  }
+
+  const getUserCall = (id: number): Record<string, unknown> => ({
+    jsonrpc: '2.0',
+    id,
+    method: 'tools/call',
+    params: { name: 'ynab_get_user', arguments: {} },
+  });
+
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ data: { user: { id: 'ynab-user-1' } } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('uses the current (refreshed) YNAB token on each call, not the one from initialize', async () => {
+    const app = await createHttpApp(makeConfig());
+    const alice = await connect(app, 'read-only');
+    rotateOnEveryResolve();
+    const sid = await initSession(app, alice.access); // resolves ya-1
+
+    expect((await mcp(app, 'post', alice.access, sid).send(getUserCall(3))).status).toBe(200);
+    expect((await mcp(app, 'post', alice.access, sid).send(getUserCall(4))).status).toBe(200);
+
+    const bearers = fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get('authorization'));
+    expect(bearers).toEqual(['Bearer ya-2', 'Bearer ya-3']);
+  });
+
+  it('fails tool calls with a generic auth error once YNAB refuses the refresh', async () => {
+    const app = await createHttpApp(makeConfig());
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const alice = await connect(app, 'read-only');
+    rotateOnEveryResolve();
+    const sid = await initSession(app, alice.access);
+    // The user revoked the app at YNAB: the stored refresh token no longer works.
+    refreshAccessTokenMock.mockRejectedValue(new Error('YNAB token request failed with status 400 (invalid_grant)'));
+
+    const call = await mcp(app, 'post', alice.access, sid).send(getUserCall(3));
+    expect(call.status).toBe(200);
+    expect(call.text).toContain('auth_error');
+    expect(call.text).toContain('Could not get YNAB authorization for this request');
+    expect(call.text).not.toContain('invalid_grant');
+    expect(call.text).not.toContain('status 400');
+    expect(fetchMock).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 });
 

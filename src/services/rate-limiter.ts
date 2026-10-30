@@ -11,15 +11,19 @@ export class RateLimiter {
   private readonly maxTokens: number;
   private readonly refillRate: number; // tokens per millisecond
   private acquireLock: Promise<void> = Promise.resolve();
+  private readonly now: () => number;
 
-  constructor(requestsPerHour: number = 180) {
+  // `now` is injectable so callers that reason about refill time (the HTTP
+  // user registry's eviction check) can be tested on a fake clock.
+  constructor(requestsPerHour: number = 180, now: () => number = Date.now) {
     // Validate requestsPerHour to prevent rate-limit bypass
     if (!Number.isFinite(requestsPerHour) || requestsPerHour <= 0) {
       throw new Error(`Invalid requestsPerHour: must be a positive finite number, got ${requestsPerHour}`);
     }
     this.maxTokens = requestsPerHour;
+    this.now = now;
     this.tokens = requestsPerHour;
-    this.lastRefill = Date.now();
+    this.lastRefill = now();
     // Convert requests/hour to requests/millisecond
     this.refillRate = requestsPerHour / (60 * 60 * 1000);
   }
@@ -115,7 +119,7 @@ export class RateLimiter {
   }
 
   private refill(): void {
-    const now = Date.now();
+    const now = this.now();
     const elapsed = now - this.lastRefill;
     const newTokens = elapsed * this.refillRate;
     

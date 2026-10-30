@@ -18,6 +18,7 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 import { MemoryStorage } from '../../../src/storage/memory.js';
 import { Encryptor } from '../../../src/crypto.js';
 import { YnabTokenResolver } from '../../../src/auth/user-session.js';
+import { YnabAuthError } from '../../../src/utils/errors.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
 
 const refreshAccessTokenMock = vi.mocked(ynabOauth.refreshAccessToken);
@@ -96,6 +97,73 @@ describe('YnabTokenResolver.resolve', () => {
     const { resolver } = setup();
     await expect(resolver.resolve('nobody')).rejects.toThrow(/Unknown user/);
     expect(refreshAccessTokenMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('YnabTokenResolver concurrent refresh', () => {
+  it('runs one refresh for concurrent resolves (the refresh token rotates)', async () => {
+    const { storage, encryptor, resolver } = setup();
+    await seedUser(storage, encryptor);
+
+    const results = await Promise.all([resolver.resolve('u1'), resolver.resolve('u1'), resolver.resolve('u1')]);
+    expect(results.map((r) => r.accessToken)).toEqual(['access-fresh', 'access-fresh', 'access-fresh']);
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not keep a failed refresh: the next resolve tries again', async () => {
+    const { storage, encryptor, resolver } = setup();
+    await seedUser(storage, encryptor);
+    refreshAccessTokenMock.mockRejectedValueOnce(new Error('YNAB token request failed with status 400'));
+
+    await expect(resolver.resolve('u1')).rejects.toThrow('status 400');
+    await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-fresh' });
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('YnabTokenResolver.accessTokenFor', () => {
+  it("resolves the user's current token on every call", async () => {
+    const { storage, encryptor, resolver } = setup();
+    await seedUser(storage, encryptor);
+    const getToken = resolver.accessTokenFor('u1');
+
+    await expect(getToken()).resolves.toBe('access-fresh');
+    resolver.invalidate('u1');
+    refreshAccessTokenMock.mockResolvedValueOnce({
+      accessToken: 'access-next',
+      refreshToken: 'rt-next',
+      expiresAt: Date.now() + 3600_000,
+    });
+    await expect(getToken()).resolves.toBe('access-next');
+  });
+
+  it('fails with a generic YnabAuthError once the grant is gone, logging only a sanitized cause', async () => {
+    const { storage, encryptor, resolver } = setup();
+    await seedUser(storage, encryptor);
+    const getToken = resolver.accessTokenFor('u1');
+    await getToken();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Still cached, but the user record is gone: refused without a refresh.
+    await storage.deleteUser('u1');
+    const err = await getToken().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(YnabAuthError);
+    expect((err as Error).message).toBe('YNAB authorization unavailable');
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls.flat().join(' ')).toContain('[YnabToken]');
+    errorSpy.mockRestore();
+  });
+
+  it('maps a failed refresh to the same generic error', async () => {
+    const { storage, encryptor, resolver } = setup();
+    await seedUser(storage, encryptor);
+    refreshAccessTokenMock.mockRejectedValueOnce(new Error('YNAB token request failed with status 401'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const err = await resolver.accessTokenFor('u1')().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(YnabAuthError);
+    expect((err as Error).message).not.toContain('401');
+    errorSpy.mockRestore();
   });
 });
 

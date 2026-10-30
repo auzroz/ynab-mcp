@@ -144,7 +144,19 @@ Each MCP session (`mcp-session-id`) belongs to the client and user whose token
 created it. A request that presents a session id with a token for a different
 user or client gets the same `400` as an unknown session id, so a leaked
 session id (from proxy or access logs) can't be used to drive someone else's
-session. Header-auth mode has no per-request identity and doesn't bind sessions.
+session. In header-auth mode a session belongs to the YNAB token that opened it
+(`X-YNAB-Token`, or the `YNAB_ACCESS_TOKEN` fallback): a request presenting a
+different token, or none when there is no fallback, gets the same `400`.
+
+All sessions of one user (in OAuth mode the YNAB user, in header mode the YNAB
+token) share one rate limit, one cache and one audit log, so several clients or
+a reconnecting client can't exceed the per-user YNAB budget
+(`RATE_LIMIT_PER_HOUR`), and `ynab_audit_log` shows the user's writes from every
+session. This state is kept for an hour after the user's last session closes,
+so reconnecting doesn't reset the rate limit. In OAuth mode a session looks up
+the user's YNAB access token on every request, refreshing it when it expires,
+so long sessions keep working; once the user's YNAB grant is gone (or the token
+can't be refreshed), tool calls fail with an `auth_error`.
 
 ### Discovery (RFC 9728 / RFC 8414)
 

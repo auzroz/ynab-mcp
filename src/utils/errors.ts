@@ -35,6 +35,18 @@ export class YnabApiError extends Error {
 }
 
 /**
+ * Error thrown when the user's YNAB access token can't be resolved for a
+ * request (grant removed, refresh failed). The message is fixed; the cause is
+ * logged server-side only.
+ */
+export class YnabAuthError extends Error {
+  constructor() {
+    super('YNAB authorization unavailable');
+    this.name = 'YnabAuthError';
+  }
+}
+
+/**
  * Error thrown when input validation fails.
  */
 export class ValidationError extends Error {
@@ -120,6 +132,16 @@ export function formatErrorResponse(error: unknown): string {
       type: 'read_only_mode',
       message: 'Write operation not allowed in read-only mode',
       suggestion: 'Set YNAB_READ_ONLY=false in your environment to enable write operations.',
+    }, null, 2);
+  }
+
+  if (error instanceof YnabAuthError) {
+    return JSON.stringify({
+      error: true,
+      type: 'auth_error',
+      message: 'Could not get YNAB authorization for this request',
+      // The cause may be a removed grant or a transient YNAB outage; both read the same here.
+      suggestion: 'Try again shortly. If it keeps failing, reconnect this server to YNAB (re-authorize).',
     }, null, 2);
   }
 

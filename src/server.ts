@@ -19,10 +19,8 @@ import type { Config } from './config/environment.js';
 // the project root in both dev (src/) and the compiled build (dist/).
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version: string };
-import { YnabClient } from './services/ynab-client.js';
-import { RateLimiter } from './services/rate-limiter.js';
-import { Cache } from './services/cache.js';
-import { AuditLog } from './services/audit-log.js';
+import { YnabClient, type AccessTokenSource } from './services/ynab-client.js';
+import { createUserComponents, type UserComponents } from './services/user-registry.js';
 import { tools, handleToolCall } from './tools/index.js';
 import {
   prompts,
@@ -36,12 +34,13 @@ import { formatErrorResponse, ReadOnlyModeError } from './utils/errors.js';
 import { assertSafeToolInput } from './utils/input-guard.js';
 
 /**
- * Per-user context for building an isolated server instance. In multi-tenant
- * (HTTP) mode one of these is built per authenticated user so each gets its own
- * YNAB client, cache, rate limiter, and audit log — no cross-user leakage.
+ * Per-session context for building a server instance. In multi-tenant (HTTP)
+ * mode one is built per MCP session; the session's user supplies the shared
+ * components (see UserRegistry), so nothing is shared between users.
  */
 export interface UserContext {
-  accessToken: string;
+  /** A fixed token (stdio, header mode) or a per-request resolver (oauth mode). */
+  accessToken: AccessTokenSource;
   defaultBudgetId?: string | undefined;
   readOnly: boolean;
   rateLimitPerHour: number;
@@ -49,19 +48,20 @@ export interface UserContext {
 }
 
 /**
- * Build a fully-isolated YnabClient (own rate limiter, cache, and audit log).
+ * Build a session's YnabClient on the given per-user components (rate limiter,
+ * cache, audit log). Without them it gets its own set (stdio, tests).
  */
-export function buildYnabClient(ctx: UserContext): YnabClient {
-  const rateLimiter = new RateLimiter(ctx.rateLimitPerHour);
-  const cache = new Cache(ctx.cacheTtlMs);
-  const auditLog = new AuditLog();
+export function buildYnabClient(
+  ctx: UserContext,
+  components: UserComponents = createUserComponents(ctx)
+): YnabClient {
   return new YnabClient(
     ctx.accessToken,
     ctx.defaultBudgetId,
-    rateLimiter,
-    cache,
+    components.rateLimiter,
+    components.cache,
     ctx.readOnly,
-    auditLog
+    components.auditLog
   );
 }
 
@@ -151,10 +151,11 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
 }
 
 /**
- * Build a per-user MCP server (multi-tenant / HTTP mode).
+ * Build a per-session MCP server (multi-tenant / HTTP mode), on the user's
+ * shared components when given.
  */
-export function createServerForUser(ctx: UserContext): Server {
-  return createServerFromClient(buildYnabClient(ctx));
+export function createServerForUser(ctx: UserContext, components?: UserComponents): Server {
+  return createServerFromClient(buildYnabClient(ctx, components));
 }
 
 /**
