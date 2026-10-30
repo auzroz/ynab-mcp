@@ -49,8 +49,8 @@ export function accountDetailFields(
     closed: account.closed,
     note: sanitizeMemo(account.note),
     last_reconciled_at: account.last_reconciled_at ?? null,
-    direct_import_linked: account.direct_import_linked ?? false,
-    direct_import_in_error: account.direct_import_in_error ?? false,
+    direct_import_linked: account.direct_import_linked ?? null,
+    direct_import_in_error: account.direct_import_in_error ?? null,
     transfer_payee_id: account.transfer_payee_id ?? null,
     debt_original_balance:
       account.debt_original_balance != null
