@@ -18,6 +18,13 @@ reviews:
   collapse_walkthrough: false
   sequence_diagrams: true
 
+  # Reviews are counted per run against an hourly allowance, so skip files that
+  # only produce noise: the lockfile is generated, and the CHANGELOG is checked
+  # when a release PR is written.
+  path_filters:
+    - "!package-lock.json"
+    - "!CHANGELOG.md"
+
   # Path-specific security instructions
   path_instructions:
     - path: "src/**/*.ts"
@@ -69,6 +76,10 @@ reviews:
     ignore_title_keywords:
       - "WIP"
       - "DO NOT MERGE"
+      # Release PRs into main and main-into-release merges carry only code that
+      # was already reviewed in its own PR.
+      - "Release 0."
+      - "Merge main"
     drafts: false
 
   # Pre-merge security checks
@@ -109,18 +120,20 @@ reviews:
           - Database/API internal IDs
 
   # Enable security-focused tools
+  # ESLint (in CI) covers TypeScript, so Biome only duplicated it; the repo has
+  # no Python and no shell scripts to check.
   tools:
     shellcheck:
-      enabled: true
+      enabled: false
     ruff:
-      enabled: true
+      enabled: false
     markdownlint:
       enabled: true
     github-checks:
       enabled: true
       timeout_ms: 90000
     biome:
-      enabled: true
+      enabled: false
     ast-grep:
       essential_rules: true
 
