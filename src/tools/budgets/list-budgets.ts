@@ -29,7 +29,7 @@ Use when the user asks:
 - "List my budgets"
 - "Which budget should I use?"
 
-Returns budget names, IDs, and last modified dates. Optionally includes account summaries.`,
+Returns budget names, IDs, last modified dates, first and last month, and date format. Optionally includes account summaries.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -75,12 +75,18 @@ export async function handleListBudgets(
       name: sanitizeName(budget.name),
       last_modified: budget.last_modified_on,
       currency_format: sanitizedCurrencyFormat,
+      first_month: budget.first_month ?? null,
+      last_month: budget.last_month ?? null,
+      date_format: budget.date_format
+        ? { format: sanitizeString(budget.date_format.format) ?? '' }
+        : null,
     };
 
     if (budget.accounts != null && budget.accounts.length > 0) {
       // Use budget's currency format if available, otherwise fall back to default formatting
       const currencyFormat = budget.currency_format;
       budgetInfo['accounts'] = budget.accounts.map((acc) => ({
+        id: acc.id,
         name: sanitizeName(acc.name),
         type: acc.type,
         balance: currencyFormat

@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, formatCurrencyWithFormat } from '../../utils/milliunits.js';
-import { sanitizeName } from '../../utils/sanitize.js';
+import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { isInternalGroup } from '../../utils/categories.js';
 
@@ -89,7 +89,7 @@ export async function handleGetBudget(
       : formatCurrency(milliunits);
 
   // Summarize accounts by type
-  const accountsByType: Record<string, Array<{ name: string; balance: string }>> = {};
+  const accountsByType: Record<string, Array<{ id: string; name: string; balance: string }>> = {};
   for (const account of budget.accounts ?? []) {
     if (account.closed) continue;
     const type = account.type;
@@ -97,6 +97,7 @@ export async function handleGetBudget(
       accountsByType[type] = [];
     }
     accountsByType[type].push({
+      id: account.id,
       name: sanitizeName(account.name),
       balance: fmt(account.balance),
     });
@@ -144,6 +145,11 @@ export async function handleGetBudget(
       budget_id: budget.id,
       name: sanitizeName(budget.name),
       last_modified: budget.last_modified_on,
+      first_month: budget.first_month ?? null,
+      last_month: budget.last_month ?? null,
+      date_format: budget.date_format
+        ? { format: sanitizeString(budget.date_format.format) ?? '' }
+        : null,
       summary: {
         total_assets: fmt(totalAssets),
         total_liabilities: fmt(totalLiabilities),

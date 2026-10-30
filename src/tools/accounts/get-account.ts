@@ -9,7 +9,8 @@ import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
-import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { sanitizeName } from '../../utils/sanitize.js';
+import { accountDetailFields } from './account-fields.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -29,6 +30,8 @@ Use when the user asks:
 - "What's the balance of [account name]?"
 - "Tell me about my savings account"
 - "Get info on a specific account"
+
+Also returns transfer_payee_id: set it as payee_id on ynab_create_transaction to record a transfer into this account.
 
 Requires an account_id. Use ynab_list_accounts first to find the account ID.`,
   inputSchema: {
@@ -69,25 +72,10 @@ export async function handleGetAccount(
         id: account.id,
         name: sanitizeName(account.name),
         type: account.type,
-        on_budget: account.on_budget,
-        closed: account.closed,
-        note: sanitizeMemo(account.note),
         balance: formatCurrency(account.balance),
         cleared_balance: formatCurrency(account.cleared_balance),
         uncleared_balance: formatCurrency(account.uncleared_balance),
-        direct_import_linked: account.direct_import_linked,
-        direct_import_in_error: account.direct_import_in_error,
-        last_reconciled_at: account.last_reconciled_at,
-        debt_original_balance:
-          account.debt_original_balance != null
-            ? formatCurrency(account.debt_original_balance)
-            : null,
-        // Debt maps: Keys are month strings (YYYY-MM-DD format) from YNAB API,
-        // not user-controlled input. Values are numeric (milliunits for payments/escrow,
-        // basis points for rates). No sanitization needed as these contain no user strings.
-        debt_interest_rates: account.debt_interest_rates,
-        debt_minimum_payments: account.debt_minimum_payments,
-        debt_escrow_amounts: account.debt_escrow_amounts,
+        ...accountDetailFields(account, { includeEmptyMaps: true }),
       },
     },
     null,
