@@ -46,7 +46,7 @@ Set these environment variables (see `.env.example`):
 | `DATABASE_URL` | if postgres | `postgres://user:pass@host:5432/db` |
 | `MCP_RESOURCE_URL` | no | Absolute URL of the MCP endpoint (the OAuth resource/audience). Default `PUBLIC_URL` + `/mcp`. Must be https (http only for `localhost`, `127.0.0.1`, `[::1]`), no fragment |
 | `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | no | Comma-separated Host / Origin allowlists. Explicit values **replace** the derived defaults. Defaults: host and origin of `PUBLIC_URL`, plus `localhost`, `127.0.0.1`, `[::1]` (bare and with `:PORT`) when `PUBLIC_URL` is unset or loopback |
-| `ENABLE_DNS_REBINDING_PROTECTION` | no | **On by default** (previously off). Set `false` to opt out |
+| `ENABLE_DNS_REBINDING_PROTECTION` | no | Host/Origin validation, **on by default** (previously off; a breaking default in 0.4.0). `false` disables it entirely. **Unsafe**: see "Host and Origin validation" |
 | `MCP_MAX_SESSIONS` | no | Max concurrent MCP sessions (integer >= 1, default `100`) |
 | `MCP_SESSION_IDLE_TIMEOUT_MS` | no | Idle time before a session is closed (integer >= 1, default `1800000`) |
 | `TRUST_PROXY` | if behind a reverse proxy | Hop count to trust for `X-Forwarded-*` (e.g. `1` behind a single Traefik/Caddy/nginx) — needed for accurate per-client rate limiting |
@@ -146,6 +146,41 @@ mix-up attacks. The redirect to YNAB's own authorize page carries no `iss`.
 Error descriptions are fixed text; nothing from YNAB is forwarded. If you put
 the server behind a proxy, set `PUBLIC_URL` to the exact URL clients use: it
 is both the issuer and the `iss` value. No new environment variables.
+
+## Host and Origin validation
+
+On by default. One middleware (`src/middleware/origin-validation.ts`) runs before
+everything else and is the only place these checks happen (the MCP SDK
+transport's own DNS-rebinding option is not used, so the two can't disagree).
+
+- **Host** must be in `ALLOWED_HOSTS` or the request gets `403` with a generic
+  JSON-RPC error. Comparison is case-insensitive, IPv6 literals are
+  canonicalised, and an entry without a port also matches the default port
+  (`mcp.example.com` matches `mcp.example.com:443`). It applies to every route
+  (MCP, OAuth endpoints, well-known metadata) except `/health`, so orchestrator
+  probes by pod IP keep working.
+- **Origin**, when present, must match `ALLOWED_ORIGINS` exactly on scheme, host
+  and port, else `403`. Requests with no `Origin` (CLI and server-side clients)
+  are allowed. `Origin: null` is rejected. It applies to `/mcp` only: the OAuth
+  endpoints carry no cookies or ambient credentials (PKCE and client
+  authentication) and are deliberately CORS-open, and the well-known metadata
+  must stay readable from any origin.
+- With no `ALLOWED_ORIGINS` and no `PUBLIC_URL`, origins are derived from the
+  allowed hosts (`https://` for each, plus `http://` for loopback hosts).
+- A malformed `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` entry (a scheme in a host, a
+  path in an origin) stops the server at startup.
+
+**Reverse proxies:** set `PUBLIC_URL` to the exact public URL; its host and origin
+are allowed automatically. The proxy must forward the original `Host` header
+(nginx: `proxy_set_header Host $host;`, Traefik and Caddy do by default). If it
+rewrites `Host` to an internal name, either stop it from doing so or add that
+name to `ALLOWED_HOSTS` (an explicit list replaces the defaults, so include the
+public host too). Symptom of getting this wrong: every request returns `403`.
+
+**Opt-out (unsafe):** `ENABLE_DNS_REBINDING_PROTECTION=false` turns both checks
+off, and the server logs a warning at startup. Without them, any web page can
+reach a server on a private network through DNS rebinding. Prefer fixing
+`ALLOWED_HOSTS`.
 
 ## Upgrading
 

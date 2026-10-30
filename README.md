@@ -91,7 +91,7 @@ client/cache/rate-limiter/audit-log.
 | `MCP_TRANSPORT` | `stdio` (default) or `http` |
 | `PORT` | HTTP port (default `3000`) |
 | `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | Comma-separated allowlists for DNS-rebinding protection (default: derived from `PUBLIC_URL`, plus localhost) |
-| `ENABLE_DNS_REBINDING_PROTECTION` | Origin/Host checks, on by default; `false` to disable |
+| `ENABLE_DNS_REBINDING_PROTECTION` | Origin/Host checks, on by default (0.4.0 breaking default; behind a proxy forward `Host` or set `ALLOWED_HOSTS`); `false` disables them (unsafe). See docs/REMOTE_HOSTING.md |
 | `MCP_RESOURCE_URL` / `MCP_MAX_SESSIONS` / `MCP_SESSION_IDLE_TIMEOUT_MS` | Resource URL (default `PUBLIC_URL`/mcp), session cap (100), idle timeout (30 min); see docs/REMOTE_HOSTING.md |
 
 **Multi-user (YNAB OAuth).** Configure a YNAB OAuth app + `ENCRYPTION_KEY` +

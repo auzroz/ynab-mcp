@@ -34,6 +34,7 @@ import { createStorage } from './storage/index.js';
 import { McpOAuthProvider } from './auth/mcp-provider.js';
 import { YnabTokenResolver } from './auth/user-session.js';
 import { issOnAuthorizationRedirects } from './middleware/iss-redirect.js';
+import { deriveOriginsFromHosts, hostValidation, originValidation } from './middleware/origin-validation.js';
 
 function jsonRpcError(code: number, message: string): unknown {
   return { jsonrpc: '2.0', error: { code, message }, id: null };
@@ -75,6 +76,21 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
   // can't have its rate limit bypassed by a spoofed header; set TRUST_PROXY to the
   // hop count when running behind a known ingress (e.g. 1 behind a single Traefik).
   app.set('trust proxy', config.trustProxy);
+
+  // Host/Origin validation (DNS rebinding + cross-site requests), the single
+  // source of truth for these checks (the SDK transport's own is left off).
+  //  - Host is checked on every route except /health (probed by orchestrators
+  //    by pod IP). That includes the OAuth endpoints and well-known metadata.
+  //  - Origin is checked on /mcp only. The OAuth endpoints carry no ambient
+  //    credentials (PKCE / client authentication, no cookies) and the SDK serves
+  //    them, and the well-known metadata, with permissive CORS on purpose so
+  //    browser-based MCP clients can discover and register; /mcp is the
+  //    credentialed, state-changing surface.
+  if (config.enableDnsRebindingProtection) {
+    const hosts = config.allowedHosts ?? [];
+    app.use(hostValidation(hosts, { skipPaths: ['/health'] }));
+    app.use('/mcp', originValidation(config.allowedOrigins ?? deriveOriginsFromHosts(hosts)));
+  }
   app.use(express.json({ limit: MAX_JSON_BODY }));
 
   const transports = new Map<string, StreamableHTTPServerTransport>();
@@ -287,9 +303,6 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
 
       const newTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
-        enableDnsRebindingProtection: config.enableDnsRebindingProtection,
-        ...(config.allowedHosts ? { allowedHosts: config.allowedHosts } : {}),
-        ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
         onsessioninitialized: (sid: string) => {
           transports.set(sid, newTransport);
         },
@@ -360,6 +373,11 @@ export async function startHttpServer(
     console.error(
       config.readOnly ? 'READ-ONLY mode (write operations disabled)' : 'WRITE operations ENABLED'
     );
+    if (!config.enableDnsRebindingProtection) {
+      console.error(
+        'WARNING: Host/Origin validation is DISABLED (ENABLE_DNS_REBINDING_PROTECTION=false). This is unsafe: any website can reach this server via DNS rebinding.'
+      );
+    }
     if (config.authMode === 'header') {
       console.error(
         'Interim auth: YNAB token via X-YNAB-Token header (TLS required; set the YNAB OAuth env vars to enable OAuth)'
