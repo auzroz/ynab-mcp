@@ -85,7 +85,7 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
 
     try {
       // Reject oversized/deeply nested arguments before any zod parsing
-      // (mitigation for zod 3 GHSA-mrhx-c7xc-m3w5).
+      // (defense in depth against resource exhaustion).
       assertSafeToolInput(args ?? {});
       const result = await handleToolCall(name, args ?? {}, ynabClient);
       return {
