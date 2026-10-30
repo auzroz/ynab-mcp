@@ -48,7 +48,7 @@ Set these environment variables (see `.env.example`):
 | `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | no | Comma-separated Host / Origin allowlists. Explicit values **replace** the derived defaults. Defaults: host and origin of `PUBLIC_URL`, plus `localhost`, `127.0.0.1`, `[::1]` (bare and with `:PORT`) when `PUBLIC_URL` is unset or loopback |
 | `ENABLE_DNS_REBINDING_PROTECTION` | no | Host/Origin validation, **on by default** (previously off; a breaking default in 0.4.0). `false` disables it entirely. **Unsafe**: see "Host and Origin validation" |
 | `MCP_MAX_SESSIONS` | no | Global cap on concurrent MCP sessions (integer >= 1, default `100`). At the cap an `initialize` is refused with `503` and `Retry-After`. See "Sessions" |
-| `MCP_MAX_SESSIONS_PER_USER` | no | Cap on one user's concurrent sessions (integer >= 1 and at most `MCP_MAX_SESSIONS`, default `10` or `MCP_MAX_SESSIONS` if smaller). Past it the user's least recently used session is closed to make room, so one user can't use up the global cap. See "Sessions" |
+| `MCP_MAX_SESSIONS_PER_USER` | no | Cap on one user's concurrent sessions (integer >= 1 and at most `MCP_MAX_SESSIONS`, default `10` or `MCP_MAX_SESSIONS` if smaller). Past it the user's least recently used session is closed to make room. Set it below `MCP_MAX_SESSIONS` so one user can't take every slot. See "Sessions" |
 | `MCP_SESSION_IDLE_TIMEOUT_MS` | no | Idle time before a session is closed (integer >= 1, default `1800000`, 30 min). See "Sessions" |
 | `TRUST_PROXY` | if behind a reverse proxy | Hop count to trust for `X-Forwarded-*` (e.g. `1` behind a single Traefik/Caddy/nginx) — needed for accurate per-client rate limiting |
 
@@ -162,9 +162,10 @@ Session limits:
 - `MCP_MAX_SESSIONS_PER_USER` caps each user (in OAuth mode the YNAB user, in
   header mode the YNAB token). A new session beyond it closes that user's least
   recently used session instead of being refused, so a client that leaks
-  sessions doesn't lock itself out, and one family member can't exhaust the
-  global cap. It must not exceed `MCP_MAX_SESSIONS` (startup fails otherwise); left
-  unset, it defaults to 10 or `MCP_MAX_SESSIONS`, whichever is smaller.
+  sessions doesn't lock itself out. It must not exceed `MCP_MAX_SESSIONS`
+  (startup fails otherwise); left unset, it defaults to 10 or
+  `MCP_MAX_SESSIONS`, whichever is smaller. Only a per-user cap below the
+  global one stops one family member from taking every slot.
 - `MCP_SESSION_IDLE_TIMEOUT_MS` closes a session with no request for that long.
   A session with an open request, including the standalone `GET` stream clients
   hold open for server notifications, counts as active and is not closed; the

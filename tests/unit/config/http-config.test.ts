@@ -156,6 +156,12 @@ describe('loadHttpConfig', () => {
       expect(c.maxSessionsPerUser).toBe(2);
       expect(c.sessionIdleTimeoutMs).toBe(60000);
     });
+    it('rejects integers too large to be exact', () => {
+      for (const v of ['9'.repeat(309), String(Number.MAX_SAFE_INTEGER + 2)]) {
+        process.env['MCP_MAX_SESSIONS'] = v;
+        expect(() => loadHttpConfig(), v.slice(0, 20)).toThrow(/MCP_MAX_SESSIONS/);
+      }
+    });
     it('rejects a per-user cap above the global cap', () => {
       process.env['MCP_MAX_SESSIONS'] = '5';
       process.env['MCP_MAX_SESSIONS_PER_USER'] = '6';

@@ -59,7 +59,14 @@ function parseInteger(value: string | undefined, defaultValue: number, varName?:
     );
   }
 
-  return Number(value);
+  // Digits alone still allow values past 2^53 (or Infinity for very long
+  // strings), which would not be the limit the operator wrote.
+  const n = Number(value);
+  if (!Number.isSafeInteger(n)) {
+    const nameHint = varName ? ` for ${varName}` : '';
+    throw new Error(`Invalid integer value "${value}"${nameHint}. Expected an integer no larger than ${Number.MAX_SAFE_INTEGER}.`);
+  }
+  return n;
 }
 
 /** Split a comma/space-separated env list into a trimmed string array (or undefined). */
