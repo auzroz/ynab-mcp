@@ -109,5 +109,8 @@ export {
   createUserResponse,
   mockMoneyMovements,
   createMoneyMovementsResponse,
+  mockMoneyMovementGroups,
+  createMoneyMovementGroupsResponse,
+  type MockMoneyMovementGroup,
   type MockMoneyMovement,
 } from './mock-misc.js';

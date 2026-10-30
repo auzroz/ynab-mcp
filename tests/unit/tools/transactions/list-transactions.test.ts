@@ -135,3 +135,46 @@ describe('handleListTransactions', () => {
     expect(parsed.summary.date_range_note).toBeUndefined();
   });
 });
+
+describe('handleListTransactions month scope', () => {
+  it('uses the month endpoint and omits the 12-month note', async () => {
+    const mockClient = createMockClient();
+    mockClient.getTransactionsByMonth.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
+
+    const parsed = JSON.parse(
+      await handleListTransactions({ month: '2024-01-01', type: 'unapproved' }, mockClient as never)
+    );
+
+    expect(mockClient.getTransactions).not.toHaveBeenCalled();
+    expect(mockClient.getTransactionsByMonth).toHaveBeenCalledWith(
+      expect.any(String),
+      '2024-01-01',
+      { type: 'unapproved' }
+    );
+    expect(parsed.filters_applied.month).toBe('2024-01-01');
+    expect(parsed.summary.date_range_note).toBeUndefined();
+  });
+
+  it('allows narrowing within the month and accepts "current"', async () => {
+    const mockClient = createMockClient();
+    mockClient.getTransactionsByMonth.mockResolvedValue(createTransactionsResponse([]));
+
+    await handleListTransactions(
+      { month: 'current', since_date: '2024-01-05', until_date: '2024-01-10' },
+      mockClient as never
+    );
+
+    expect(mockClient.getTransactionsByMonth).toHaveBeenCalledWith(expect.any(String), 'current', {
+      sinceDate: '2024-01-05',
+      untilDate: '2024-01-10',
+    });
+  });
+
+  it('rejects a month that is not first-of-month', async () => {
+    const mockClient = createMockClient();
+    await expect(
+      handleListTransactions({ month: '2024-01-15' }, mockClient as never)
+    ).rejects.toThrow();
+    expect(mockClient.getTransactionsByMonth).not.toHaveBeenCalled();
+  });
+});

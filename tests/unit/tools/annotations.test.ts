@@ -15,9 +15,9 @@ const WRITE_NAME = /_(create|update|delete|import)_/;
 const DELETE_TOOLS = ['ynab_delete_scheduled_transaction', 'ynab_delete_transaction'];
 
 describe('tool titles and annotations', () => {
-  it('registers 66 tools with unique names', () => {
+  it('registers 68 tools with unique names', () => {
     const names = tools.map((t) => t.name);
-    expect(names).toHaveLength(67);
+    expect(names).toHaveLength(68);
     expect(new Set(names).size).toBe(names.length);
   });
 

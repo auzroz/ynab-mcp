@@ -196,6 +196,10 @@ import {
   listMoneyMovementsTool,
   handleListMoneyMovements,
 } from './money-movements/list-money-movements.js';
+import {
+  listMoneyMovementGroupsTool,
+  handleListMoneyMovementGroups,
+} from './money-movements/list-money-movement-groups.js';
 
 // System tools
 import {
@@ -283,6 +287,7 @@ const toolDefinitions: Tool[] = [
   previewScheduledTransactionTool,
   // Money Movements
   listMoneyMovementsTool,
+  listMoneyMovementGroupsTool,
   // System
   rateLimitStatusTool,
   auditLogTool,
@@ -367,6 +372,7 @@ const handlers = {
   ynab_preview_scheduled_transaction: handlePreviewScheduledTransaction,
   // Money Movements
   ynab_list_money_movements: handleListMoneyMovements,
+  ynab_list_money_movement_groups: handleListMoneyMovementGroups,
   // System
   ynab_rate_limit_status: handleRateLimitStatus,
   ynab_audit_log: handleAuditLog,

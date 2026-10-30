@@ -55,3 +55,16 @@ export const NAME_MAX_LENGTH = 200;
 export const NOTE_MAX_LENGTH = 500;
 /** Our cap: since/until dates, which also accept natural language ("past 30 days"). */
 export const DATE_TEXT_MAX_LENGTH = 100;
+
+/**
+ * Month selector for month-scoped endpoints: "current" (UTC calendar month)
+ * or an ISO date that is the first of a month (YYYY-MM-01).
+ */
+export const MONTH_MAX_LENGTH = 10;
+export const monthParam = () =>
+  z
+    .string()
+    .max(MONTH_MAX_LENGTH)
+    .refine((val) => val === 'current' || (/^\d{4}-(0[1-9]|1[0-2])-01$/.test(val) && !Number.isNaN(Date.parse(val))), {
+      message: 'month must be "current" or the first day of a month in YYYY-MM-01 format',
+    });

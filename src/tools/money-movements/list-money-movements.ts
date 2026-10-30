@@ -10,13 +10,16 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
-import { budgetId } from '../../utils/schemas.js';
+import { budgetId, monthParam } from '../../utils/schemas.js';
 
 // Input schema
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+  month: monthParam()
+    .optional()
+    .describe('Only return movements for this budget month: YYYY-MM-01 (first of month) or "current"'),
 });
 
 // Tool definition
@@ -28,8 +31,9 @@ Use when the user asks:
 - "Show me my money moves between categories"
 - "When did I move money out of [category]?"
 - "List my category fund transfers"
+- "What money did I move in [month]?"
 
-Returns each movement's amount, the categories it moved between, and when it happened.`,
+Returns each movement's amount, the categories it moved between, and when it happened. Pass month (YYYY-MM-01 or "current") to limit to a single budget month.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -37,6 +41,11 @@ Returns each movement's amount, the categories it moved between, and when it hap
         type: 'string',
         maxLength: 64,
         description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
+      },
+      month: {
+        type: 'string',
+        maxLength: 10,
+        description: 'Only return movements for this budget month: YYYY-MM-01 (first of month) or "current"',
       },
     },
   },
@@ -53,7 +62,10 @@ export async function handleListMoneyMovements(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
-  const response = await client.getMoneyMovements(budgetId);
+  const response =
+    validated.month === undefined
+      ? await client.getMoneyMovements(budgetId)
+      : await client.getMoneyMovementsByMonth(budgetId, validated.month);
   const movements = response.data.money_movements;
 
   const formatted = movements.map((m) => ({
@@ -71,6 +83,7 @@ export async function handleListMoneyMovements(
     {
       money_movements: formatted,
       count: formatted.length,
+      month: validated.month ?? null,
     },
     null,
     2

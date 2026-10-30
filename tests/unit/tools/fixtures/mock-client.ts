@@ -49,6 +49,7 @@ export function createMockClient() {
 
     // Transaction endpoints
     getTransactions: vi.fn(),
+    getTransactionsByMonth: vi.fn(),
     getTransactionById: vi.fn(),
     createTransaction: vi.fn(),
     updateTransaction: vi.fn(),
@@ -81,6 +82,9 @@ export function createMockClient() {
 
     // Money movements
     getMoneyMovements: vi.fn(),
+    getMoneyMovementsByMonth: vi.fn(),
+    getMoneyMovementGroups: vi.fn(),
+    getMoneyMovementGroupsByMonth: vi.fn(),
   };
 }
 

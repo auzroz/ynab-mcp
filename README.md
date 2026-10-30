@@ -16,13 +16,13 @@ Traditional YNAB integrations require manual API calls or custom scripting. This
 - **Talk to your budget naturally** — Ask Claude "Am I overspending on dining out?" and get instant insights
 - **Get AI-powered financial analysis** — Subscription detection, spending trends, savings recommendations, and budget health scores
 - **Stay safe by default** — Read-only mode protects against accidental changes
-- **Access everything** — 67 tools total: comprehensive YNAB API coverage (41 tools), 23 custom analytics tools, and 3 system tools
+- **Access everything** — 68 tools total: comprehensive YNAB API coverage (42 tools), 23 custom analytics tools, and 3 system tools
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Broad API Coverage** | 67 MCP tools spanning the YNAB API endpoints |
+| **Broad API Coverage** | 68 MCP tools spanning the YNAB API endpoints |
 | **Advanced Analytics** | 23 tools for spending analysis, trend detection, and financial insights |
 | **Read-Only by Default** | Write operations require explicit opt-in (`YNAB_READ_ONLY=false`) |
 | **Smart Rate Limiting** | Token bucket algorithm with 180 req/hour budget (10% safety margin) |
@@ -183,7 +183,7 @@ Once connected, try asking Claude:
 | "Am I on track this month?" | `ynab_spending_pace` |
 | "Compare this month to last month" | `ynab_monthly_comparison` |
 
-## Available Tools (67 Total)
+## Available Tools (68 Total)
 
 ### Analytics Tools (23)
 
@@ -215,7 +215,7 @@ These tools provide AI-powered financial insights beyond basic YNAB functionalit
 | `ynab_age_of_money` | Age of money metric with explanation |
 | `ynab_preview_scheduled_transaction` | Preview the budget impact of a scheduled transaction |
 
-### Core YNAB API Tools (41)
+### Core YNAB API Tools (42)
 
 Coverage of the YNAB API endpoints:
 
@@ -300,9 +300,10 @@ Coverage of the YNAB API endpoints:
 </details>
 
 <details>
-<summary><strong>Money Movement Tools (1)</strong></summary>
+<summary><strong>Money Movement Tools (2)</strong></summary>
 
-- `ynab_list_money_movements` — List moves of funds between categories
+- `ynab_list_money_movements` — List moves of funds between categories (optional `month`)
+- `ynab_list_money_movement_groups` — List groups of money moves (optional `month`)
 </details>
 
 <details>

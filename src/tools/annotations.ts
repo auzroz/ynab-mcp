@@ -175,6 +175,7 @@ export const TOOL_METADATA = {
   },
   // Money Movements
   ynab_list_money_movements: { title: 'List Money Movements', annotations: READ },
+  ynab_list_money_movement_groups: { title: 'List Money Movement Groups', annotations: READ },
   // System (local server state plus one getUser probe in the health check)
   ynab_rate_limit_status: { title: 'Rate Limit Status', annotations: READ },
   ynab_audit_log: { title: 'View Audit Log', annotations: READ },

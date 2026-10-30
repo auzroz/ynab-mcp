@@ -561,6 +561,34 @@ export class YnabClient {
     return response;
   }
 
+  /** Transactions for one plan month (YYYY-MM-01 or "current"). Not cached, like getTransactions. */
+  async getTransactionsByMonth(
+    budgetId: string,
+    month: string,
+    options?: {
+      sinceDate?: string;
+      untilDate?: string;
+      type?: 'uncategorized' | 'unapproved';
+      lastKnowledgeOfServer?: number;
+    }
+  ): Promise<ynab.TransactionsResponse> {
+    await this.rateLimiter.acquire();
+    const response = await this.api.transactions.getTransactionsByMonth(
+      budgetId,
+      month,
+      options?.sinceDate,
+      options?.untilDate,
+      options?.type,
+      options?.lastKnowledgeOfServer
+    );
+
+    if (response.data.server_knowledge !== undefined) {
+      this.updateServerKnowledge(budgetId, response.data.server_knowledge);
+    }
+
+    return response;
+  }
+
   async getTransactionById(
     budgetId: string,
     transactionId: string
@@ -1119,5 +1147,26 @@ export class YnabClient {
   async getMoneyMovements(budgetId: string): Promise<ynab.MoneyMovementsResponse> {
     await this.rateLimiter.acquire();
     return this.api.money_movements.getMoneyMovements(budgetId);
+  }
+
+  async getMoneyMovementsByMonth(
+    budgetId: string,
+    month: string
+  ): Promise<ynab.MoneyMovementsResponse> {
+    await this.rateLimiter.acquire();
+    return this.api.money_movements.getMoneyMovementsByMonth(budgetId, month);
+  }
+
+  async getMoneyMovementGroups(budgetId: string): Promise<ynab.MoneyMovementGroupsResponse> {
+    await this.rateLimiter.acquire();
+    return this.api.money_movements.getMoneyMovementGroups(budgetId);
+  }
+
+  async getMoneyMovementGroupsByMonth(
+    budgetId: string,
+    month: string
+  ): Promise<ynab.MoneyMovementGroupsResponse> {
+    await this.rateLimiter.acquire();
+    return this.api.money_movements.getMoneyMovementGroupsByMonth(budgetId, month);
   }
 }
