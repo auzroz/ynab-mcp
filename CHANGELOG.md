@@ -70,6 +70,24 @@ breaking changes.
 - `CONTRIBUTING.md`, `SECURITY.md` (private vulnerability reporting) and a
   pull request template.
 
+### Security
+
+- The YNAB OAuth routes (`/oauth/ynab/start`, `/oauth/ynab/callback`,
+  `/oauth/cancel`) are rate-limited to 100 requests per 15 minutes per client
+  IP, the same as the SDK's `/authorize`. Before, they had no limit, though the
+  callback reads storage and can call YNAB's token endpoint.
+  - **Behind a reverse proxy, set `TRUST_PROXY`** to the proxy hop count (for
+    example `1` behind Caddy). Otherwise every client appears to come from the
+    proxy and shares one limit, so one client could lock everyone out of
+    signing in for up to 15 minutes. The same applies to the SDK's own OAuth
+    endpoints. The Docker Compose example in `docs/REMOTE_HOSTING.md` now sets
+    it.
+- Configuration errors no longer quote the rejected value, so a secret pasted
+  into the wrong variable can't reach the startup log. Startup and shutdown
+  logs also remove the values of `YNAB_ACCESS_TOKEN`,
+  `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY` and `DATABASE_URL` if they
+  appear in an error message.
+
 ### Changed
 
 - When YNAB answers 429, the local rate limiter pauses requests until YNAB's

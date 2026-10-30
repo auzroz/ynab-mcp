@@ -142,7 +142,24 @@ describe('loadConfig', () => {
     it('throws on a typo like "ture" rather than silently enabling writes', () => {
       process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
       process.env['YNAB_READ_ONLY'] = 'ture';
-      expect(() => loadConfig()).toThrow(/Invalid boolean value "ture" for YNAB_READ_ONLY/);
+      expect(() => loadConfig()).toThrow(/Invalid boolean value for YNAB_READ_ONLY/);
+    });
+
+    it('never quotes the rejected value, so a misplaced secret stays out of the log', () => {
+      const secret = 'pasted-secret-0123456789abcdef';
+      process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
+      for (const name of ['YNAB_READ_ONLY', 'CACHE_TTL_MS', 'RATE_LIMIT_PER_HOUR']) {
+        process.env[name] = secret;
+        let message = '';
+        try {
+          loadConfig();
+        } catch (e) {
+          message = (e as Error).message;
+        }
+        expect(message, name).toContain(name);
+        expect(message, name).not.toContain(secret);
+        delete process.env[name];
+      }
     });
 
     it('throws on an arbitrary unrecognized value', () => {
@@ -167,13 +184,13 @@ describe('loadConfig', () => {
     it('rejects a partial parse like "10ms"', () => {
       process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
       process.env['CACHE_TTL_MS'] = '10ms';
-      expect(() => loadConfig()).toThrow(/Invalid integer value "10ms" for CACHE_TTL_MS/);
+      expect(() => loadConfig()).toThrow(/Invalid integer value for CACHE_TTL_MS/);
     });
 
     it('rejects a negative value (non-digit characters)', () => {
       process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
       process.env['CACHE_TTL_MS'] = '-5';
-      expect(() => loadConfig()).toThrow(/Invalid integer value "-5"/);
+      expect(() => loadConfig()).toThrow(/Invalid integer value/);
     });
 
     it('rejects zero via schema (must be positive)', () => {
@@ -210,7 +227,7 @@ describe('loadConfig', () => {
     it('rejects a non-integer string', () => {
       process.env['YNAB_ACCESS_TOKEN'] = VALID_TOKEN;
       process.env['RATE_LIMIT_PER_HOUR'] = '12.5';
-      expect(() => loadConfig()).toThrow(/Invalid integer value "12.5"/);
+      expect(() => loadConfig()).toThrow(/Invalid integer value/);
     });
   });
 });
