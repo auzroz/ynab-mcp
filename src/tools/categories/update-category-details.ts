@@ -13,7 +13,8 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { isInternalGroup } from '../../utils/categories.js';
-import { ValidationError } from '../../utils/errors.js';
+import { ValidationError, ReadOnlyModeError } from '../../utils/errors.js';
+import { formatCurrency } from '../../utils/milliunits.js';
 import {
   categoryTargetUpdateShape,
   categoryTargetUpdateJsonProperties,
@@ -57,7 +58,7 @@ Use when the user asks:
 - "Move [category] to the [group] group"
 - "Set a $200 monthly target on [category]" or "Remove the target from [category]"
 
-Provide at least one of name, note, category_group_id, goal_target, goal_target_date, goal_needs_whole_amount. Target fields accept null to remove the existing value; note accepts null or "" to clear it. Moving into YNAB's internal category group is rejected.
+Provide at least one of name, note, category_group_id, goal_target (in dollars, e.g. 200 for $200), goal_target_date, goal_needs_whole_amount. Target fields accept null to remove the existing value; note accepts null or "" to clear it. Moving into YNAB's internal category group is rejected.
 
 Requires a category_id (and a category_group_id when moving). Use ynab_list_categories first to find the IDs.
 
@@ -109,6 +110,11 @@ export async function handleUpdateCategoryDetails(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
+  // Fail fast in read-only sessions before any API read is spent.
+  if (client.isReadOnly()) {
+    throw new ReadOnlyModeError('updateCategory');
+  }
+
   // Reject moves into YNAB-internal groups. getCategories is cached, so this
   // usually costs no API request.
   if (validated.category_group_id !== undefined) {
@@ -145,6 +151,8 @@ export async function handleUpdateCategoryDetails(
         category_group_id: category.category_group_id,
         note: sanitizeMemo(category.note),
         goal_target: category.goal_target ?? null,
+        goal_target_display:
+          category.goal_target != null ? formatCurrency(category.goal_target) : null,
         goal_target_date: category.goal_target_date ?? null,
         goal_needs_whole_amount: category.goal_needs_whole_amount ?? null,
       },

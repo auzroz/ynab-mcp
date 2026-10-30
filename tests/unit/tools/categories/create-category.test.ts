@@ -9,13 +9,14 @@ import type { MockClient } from '../fixtures/index.js';
 
 const GROUP_ID = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
 
-function createdCategoryResponse() {
+function createdCategoryResponse(extra: Record<string, unknown> = {}) {
   return {
     data: {
       category: {
         id: 'new-cat-001',
         name: 'Pet Supplies',
         category_group_id: GROUP_ID,
+        ...extra,
       },
     },
   };
@@ -76,7 +77,7 @@ describe('handleCreateCategory', () => {
       mockClient.createCategory.mockResolvedValue(createdCategoryResponse());
 
       await handleCreateCategory(
-        { ...base, goal_target: 250000, goal_target_date: '2027-06-01', goal_needs_whole_amount: false },
+        { ...base, goal_target: 250, goal_target_date: '2027-06-01', goal_needs_whole_amount: false },
         mockClient as never
       );
 
@@ -91,6 +92,17 @@ describe('handleCreateCategory', () => {
       });
     });
 
+    it('echoes the stored target with a formatted display value', async () => {
+      mockClient.createCategory.mockResolvedValue(
+        createdCategoryResponse({ goal_target: 250000 })
+      );
+      const result = JSON.parse(
+        await handleCreateCategory({ ...base, goal_target: 250 }, mockClient as never)
+      );
+      expect(result.category.goal_target).toBe(250000);
+      expect(result.category.goal_target_display).toBe('$250.00');
+    });
+
     it('accepts a zero target', async () => {
       mockClient.createCategory.mockResolvedValue(createdCategoryResponse());
       await handleCreateCategory({ ...base, goal_target: 0 }, mockClient as never);
@@ -101,7 +113,7 @@ describe('handleCreateCategory', () => {
 
     it.each([
       ['negative amount', { goal_target: -1 }],
-      ['float milliunits', { goal_target: 10.5 }],
+      ['non-finite amount', { goal_target: Infinity }],
       ['non-numeric amount', { goal_target: '100' }],
       ['bad date format', { goal_target_date: '06/01/2027' }],
       ['impossible date', { goal_target_date: '2027-02-31' }],

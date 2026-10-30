@@ -9,6 +9,7 @@ import { NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId, ynabId } from '../../utils/
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { formatCurrency } from '../../utils/milliunits.js';
 import {
   categoryTargetCreateShape,
   categoryTargetCreateJsonProperties,
@@ -38,7 +39,7 @@ Use when the user asks:
 
 Requires a category_group_id. Use ynab_list_categories first to find the group ID.
 
-Optionally set a target (goal) at creation: goal_target (milliunits), goal_target_date (YYYY-MM-DD) and goal_needs_whole_amount. Supplying goal_target creates a monthly spending target.
+Optionally set a target (goal) at creation: goal_target (in dollars, e.g. 200 for $200), goal_target_date (YYYY-MM-DD) and goal_needs_whole_amount. Supplying goal_target creates a monthly spending target.
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
   inputSchema: {
@@ -100,6 +101,9 @@ export async function handleCreateCategory(
         id: category.id,
         name: sanitizeName(category.name),
         category_group_id: category.category_group_id,
+        goal_target: category.goal_target ?? null,
+        goal_target_display:
+          category.goal_target != null ? formatCurrency(category.goal_target) : null,
       },
     },
     null,

@@ -15,9 +15,10 @@
  */
 
 import { z } from "zod";
+import { toMilliunits } from "../../utils/milliunits.js";
 
 const GOAL_TARGET_DESCRIPTION =
-  "Target amount in milliunits (integer >= 0; $50.00 = 50000). Creates a monthly goal if none exists";
+  "Target amount in dollars (e.g. 200 for $200.00; >= 0). Creates a monthly goal if none exists";
 const GOAL_TARGET_DATE_DESCRIPTION =
   "Target date in YYYY-MM-DD format. Not supported for categories paired to a loan account";
 const GOAL_NEEDS_WHOLE_AMOUNT_DESCRIPTION =
@@ -28,7 +29,7 @@ const CLEAR_SUFFIX = " Pass null to remove the existing value.";
 export const categoryTargetCreateShape = {
   goal_target: z
     .number()
-    .int()
+    .finite()
     .min(0)
     .describe(GOAL_TARGET_DESCRIPTION)
     .optional(),
@@ -46,7 +47,7 @@ export const categoryTargetCreateShape = {
 export const categoryTargetUpdateShape = {
   goal_target: z
     .number()
-    .int()
+    .finite()
     .min(0)
     .nullable()
     .describe(GOAL_TARGET_DESCRIPTION + CLEAR_SUFFIX)
@@ -66,7 +67,7 @@ export const categoryTargetUpdateShape = {
 /** JSON-schema properties matching categoryTargetCreateShape. */
 export const categoryTargetCreateJsonProperties = {
   goal_target: {
-    type: "integer",
+    type: "number",
     minimum: 0,
     description: GOAL_TARGET_DESCRIPTION,
   },
@@ -85,7 +86,7 @@ export const categoryTargetCreateJsonProperties = {
 /** JSON-schema properties matching categoryTargetUpdateShape. */
 export const categoryTargetUpdateJsonProperties = {
   goal_target: {
-    type: ["integer", "null"],
+    type: ["number", "null"],
     minimum: 0,
     description: GOAL_TARGET_DESCRIPTION + CLEAR_SUFFIX,
   },
@@ -111,6 +112,7 @@ export type CategoryTargetField = (typeof CATEGORY_TARGET_FIELDS)[number];
 
 /**
  * Pick the target fields that were provided (undefined omitted, null kept).
+ * goal_target is accepted in dollars and converted to milliunits here.
  * The return type drops `undefined` from each property so it satisfies the
  * SDK models under exactOptionalPropertyTypes.
  */
@@ -119,7 +121,12 @@ export function pickCategoryTargets<
 >(input: T): { [K in CategoryTargetField]?: Exclude<T[K], undefined> } {
   const out: Record<string, unknown> = {};
   for (const key of CATEGORY_TARGET_FIELDS) {
-    if (input[key] !== undefined) out[key] = input[key];
+    const value = input[key];
+    if (value === undefined) continue;
+    out[key] =
+      key === "goal_target" && typeof value === "number"
+        ? toMilliunits(value)
+        : value;
   }
   return out as { [K in CategoryTargetField]?: Exclude<T[K], undefined> };
 }

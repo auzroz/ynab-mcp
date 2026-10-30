@@ -249,7 +249,7 @@ Coverage of the YNAB API endpoints:
 - `ynab_get_month_category` — Get category budget for specific month
 - `ynab_update_category` — Update category budgeted amount *(write mode)*
 - `ynab_update_category_details` — Rename a category, change its note, move it to another group, or set/clear its target *(write mode)*
-- `ynab_create_category` — Create a new category in a group, optionally with a target (goal_target, goal_target_date, goal_needs_whole_amount) *(write mode)*
+- `ynab_create_category` — Create a new category in a group, optionally with a target (goal_target in dollars, goal_target_date, goal_needs_whole_amount) *(write mode)*
 - `ynab_create_category_group` — Create a new category group *(write mode)*
 - `ynab_update_category_group` — Rename a category group *(write mode)*
 </details>

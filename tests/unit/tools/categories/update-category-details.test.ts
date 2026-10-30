@@ -36,6 +36,7 @@ describe('handleUpdateCategoryDetails', () => {
 
   beforeEach(() => {
     mockClient = createMockClient();
+    mockClient.isReadOnly.mockReturnValue(false);
     mockClient.updateCategory.mockResolvedValue(updatedResponse());
     mockClient.getCategories.mockResolvedValue({
       data: {
@@ -100,7 +101,7 @@ describe('handleUpdateCategoryDetails', () => {
     await handleUpdateCategoryDetails(
       {
         category_id: CAT_ID,
-        goal_target: 20000,
+        goal_target: 20,
         goal_target_date: '2027-01-01',
         goal_needs_whole_amount: true,
       },
@@ -116,6 +117,37 @@ describe('handleUpdateCategoryDetails', () => {
     expect(mockClient.updateCategory).toHaveBeenLastCalledWith('test-budget-id', CAT_ID, {
       category: { goal_target: null, goal_target_date: null },
     });
+  });
+
+  it('converts a dollar goal_target to milliunits and echoes a display value', async () => {
+    mockClient.updateCategory.mockResolvedValue(updatedResponse({ goal_target: 200000 }));
+    const result = JSON.parse(
+      await handleUpdateCategoryDetails({ category_id: CAT_ID, goal_target: 200 }, mockClient as never)
+    );
+    expect(mockClient.updateCategory).toHaveBeenCalledWith('test-budget-id', CAT_ID, {
+      category: { goal_target: 200000 },
+    });
+    expect(result.category.goal_target_display).toBe('$200.00');
+  });
+
+  it('returns null display when the target is cleared', async () => {
+    mockClient.updateCategory.mockResolvedValue(updatedResponse({ goal_target: null }));
+    const result = JSON.parse(
+      await handleUpdateCategoryDetails({ category_id: CAT_ID, goal_target: null }, mockClient as never)
+    );
+    expect(result.category.goal_target_display).toBeNull();
+  });
+
+  it('rejects in read-only mode before reading categories', async () => {
+    mockClient.isReadOnly.mockReturnValue(true);
+    await expect(
+      handleUpdateCategoryDetails(
+        { category_id: CAT_ID, name: 'X', category_group_id: GROUP_ID },
+        mockClient as never
+      )
+    ).rejects.toThrow(/READ_ONLY/);
+    expect(mockClient.getCategories).not.toHaveBeenCalled();
+    expect(mockClient.updateCategory).not.toHaveBeenCalled();
   });
 
   it('respects budget_id', async () => {

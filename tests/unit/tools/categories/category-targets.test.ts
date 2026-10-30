@@ -30,7 +30,8 @@ describe("category target fragments", () => {
 
   it("update shape still rejects negative, float and bad dates", () => {
     expect(() => update.parse({ goal_target: -5 })).toThrow();
-    expect(() => update.parse({ goal_target: 1.5 })).toThrow();
+    expect(update.parse({ goal_target: 1.5 }).goal_target).toBe(1.5);
+    expect(() => update.parse({ goal_target: Infinity })).toThrow();
     expect(() => update.parse({ goal_target_date: "next month" })).toThrow();
   });
 
@@ -44,7 +45,16 @@ describe("category target fragments", () => {
     expect(categoryTargetUpdateJsonProperties.goal_target.type).toContain(
       "null",
     );
-    expect(categoryTargetCreateJsonProperties.goal_target.type).toBe("integer");
+    expect(categoryTargetCreateJsonProperties.goal_target.type).toBe("number");
+  });
+
+  it("pickCategoryTargets converts dollar goal_target to milliunits", () => {
+    expect(pickCategoryTargets({ goal_target: 200 })).toEqual({
+      goal_target: 200000,
+    });
+    expect(pickCategoryTargets({ goal_target: 12.34 })).toEqual({
+      goal_target: 12340,
+    });
   });
 
   it("pickCategoryTargets keeps null, drops undefined and unrelated keys", () => {
