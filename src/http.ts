@@ -16,6 +16,7 @@
 
 import { randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import {
@@ -48,6 +49,9 @@ function jsonRpcError(code: number, message: string): unknown {
  * is on the order of 100KB, so 512kb leaves headroom without accepting multi-MB bodies.
  */
 export const MAX_JSON_BODY = '512kb';
+
+/** Requests per client IP per 15 minutes on the YNAB OAuth legs, matching the SDK's /authorize. */
+export const OAUTH_LEG_RATE_LIMIT = 100;
 
 /** Select and initialize the configured storage driver. */
 async function buildStorage(config: HttpConfig): ReturnType<typeof createStorage> {
@@ -145,6 +149,25 @@ export async function buildHttpApp(config: HttpConfig): Promise<HttpApp> {
     const hosts = config.allowedHosts ?? [];
     app.use(hostValidation(hosts, { skipPaths: ['/health'] }));
     app.use('/mcp', originValidation(config.allowedOrigins ?? deriveOriginsFromHosts(hosts)));
+  }
+  // The YNAB OAuth legs get the limit the SDK puts on /authorize (100 per 15
+  // minutes), the step right before them in the same browser flow, so a login
+  // that gets past /authorize isn't then refused here. The callback reads
+  // storage and can call YNAB's token endpoint, so it must not be unlimited.
+  // Mounted before body parsing so a limited request costs no parsing. The
+  // client IP comes from req.ip, so TRUST_PROXY must match the proxy hops, or
+  // every client behind the proxy shares one budget.
+  if (config.authMode === 'oauth') {
+    app.use(
+      '/oauth',
+      rateLimit({
+        windowMs: 15 * 60 * 1000,
+        limit: OAUTH_LEG_RATE_LIMIT,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: 'Too many authorization requests. Please wait and try again.',
+      })
+    );
   }
   app.use(express.json({ limit: MAX_JSON_BODY }));
 

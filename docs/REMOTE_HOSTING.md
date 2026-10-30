@@ -50,7 +50,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_MAX_SESSIONS` | no | Global cap on concurrent MCP sessions (integer >= 1, default `100`). At the cap an `initialize` is refused with `503` and `Retry-After`. See "Sessions" |
 | `MCP_MAX_SESSIONS_PER_USER` | no | Cap on one user's concurrent sessions (integer >= 1 and at most `MCP_MAX_SESSIONS`, default `10` or `MCP_MAX_SESSIONS` if smaller). Past it the user's least recently used session is closed to make room. Set it below `MCP_MAX_SESSIONS` so one user can't take every slot. See "Sessions" |
 | `MCP_SESSION_IDLE_TIMEOUT_MS` | no | Idle time before a session is closed (integer >= 1, default `1800000`, 30 min). See "Sessions" |
-| `TRUST_PROXY` | if behind a reverse proxy | Hop count to trust for `X-Forwarded-*` (e.g. `1` behind a single Traefik/Caddy/nginx) — needed for accurate per-client rate limiting |
+| `TRUST_PROXY` | if behind a reverse proxy | Hop count to trust for `X-Forwarded-*` (e.g. `1` behind a single Traefik/Caddy/nginx). Without it, every client behind the proxy shares one rate limit on the OAuth endpoints, so one client can lock out the others. Set it only when the app is reachable solely through the proxy, or clients can spoof `X-Forwarded-For` |
 
 OAuth mode activates automatically once `YNAB_OAUTH_CLIENT_ID`,
 `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL` are all set. Use a
@@ -84,6 +84,12 @@ services:
       SQLITE_PATH: /data/ynab-mcp.db
       ENABLE_DNS_REBINDING_PROTECTION: "true"
       ALLOWED_HOSTS: ynab-mcp.example.com
+      # One proxy hop (Caddy). Without it every client appears to come from
+      # Caddy's address and shares one rate limit, so one client could lock
+      # everyone out of the OAuth endpoints.
+      TRUST_PROXY: "1"
+    # No published ports: only Caddy can reach the app, so X-Forwarded-For
+    # can't be spoofed by connecting to it directly.
     volumes: [ "ynab-data:/data" ]
   caddy:
     image: caddy:2
