@@ -67,7 +67,9 @@ Requires a category_id (and a category_group_id when moving). Use ynab_list_cate
 
 To change how much is budgeted for a category in a given month, use ynab_update_category instead; this tool never changes budgeted amounts.
 
-**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
+**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
+
+Not possible through the YNAB API (do it in the YNAB app): target cadences other than monthly/weekly/yearly, due days, choosing the target type, snoozing, and hiding, unhiding, deleting or reordering categories.`,
   inputSchema: {
     type: 'object',
     properties: {

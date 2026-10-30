@@ -33,6 +33,26 @@ describe('handleListCategories', () => {
     expect(mockClient.getCategories).toHaveBeenCalledWith('test-budget-id');
   });
 
+  it('includes a decoded goal object only for categories with a target', async () => {
+    mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
+
+    const result = await handleListCategories({}, mockClient as never);
+    const parsed = JSON.parse(result);
+
+    const cats = parsed.category_groups.flatMap(
+      (g: { categories: { name: string; goal_type: string | null; goal: Record<string, unknown> | null }[] }) =>
+        g.categories
+    );
+    const vacation = cats.find((c: { name: string }) => c.name === 'Vacation');
+    expect(vacation.goal_type).toBe('TBD');
+    expect(vacation.goal.type_label).toBe('Target Balance by Date');
+    expect(vacation.goal.target_milliunits).toBe(3000000);
+    expect(vacation.goal.under_funded_milliunits).toBe(300000);
+    for (const c of cats) {
+      expect(c.goal === null).toBe(c.goal_type === null);
+    }
+  });
+
   it('reports summary totals and overspent/underfunded alerts', async () => {
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 

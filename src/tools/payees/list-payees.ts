@@ -28,7 +28,9 @@ Use when the user asks:
 - "Who have I paid?"
 - "Find a payee"
 
-Returns payee names and IDs. Payees are merchants, people, or places you transact with.`,
+Returns payee names and IDs. Payees are merchants, people, or places you transact with.
+
+Not possible through the YNAB API (do it in the YNAB app): deleting or merging payees, and editing payee locations.`,
   inputSchema: {
     type: 'object',
     properties: {

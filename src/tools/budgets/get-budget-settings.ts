@@ -28,7 +28,9 @@ Use when the user asks:
 - "What's my budget date format?"
 - "What are my YNAB preferences?"
 
-Returns currency format, date format, and currency ISO code.`,
+Returns currency format, date format, and currency ISO code.
+
+Not possible through the YNAB API (do it in the YNAB app): creating, renaming or deleting plans (budgets), and changing plan settings such as currency or date format.`,
   inputSchema: {
     type: 'object',
     properties: {

@@ -28,7 +28,9 @@ Use when the user asks:
 - "Map of where I spend"
 - "Payee geographic data"
 
-Returns payee locations with latitude/longitude for mapping purposes.`,
+Returns payee locations with latitude/longitude for mapping purposes.
+
+Not possible through the YNAB API (do it in the YNAB app): adding, editing or deleting payee locations.`,
   inputSchema: {
     type: 'object',
     properties: {

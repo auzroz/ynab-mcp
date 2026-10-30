@@ -30,7 +30,9 @@ Use when the user asks:
 - "Tell me about my savings account"
 - "Get info on a specific account"
 
-Requires an account_id. Use ynab_list_accounts first to find the account ID.`,
+Requires an account_id. Use ynab_list_accounts first to find the account ID.
+
+Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening an account, setting up loan accounts, and changing interest rates.`,
   inputSchema: {
     type: 'object',
     properties: {
