@@ -16,13 +16,13 @@ Traditional YNAB integrations require manual API calls or custom scripting. This
 - **Talk to your budget naturally** — Ask Claude "Am I overspending on dining out?" and get instant insights
 - **Get AI-powered financial analysis** — Subscription detection, spending trends, savings recommendations, and budget health scores
 - **Stay safe by default** — Read-only mode protects against accidental changes
-- **Access everything** — 68 tools total: comprehensive YNAB API coverage (42 tools), 23 custom analytics tools, and 3 system tools
+- **Access everything** — 69 tools total: comprehensive YNAB API coverage (43 tools), 23 custom analytics tools, and 3 system tools
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Broad API Coverage** | 68 MCP tools spanning the YNAB API endpoints |
+| **Broad API Coverage** | 69 MCP tools spanning the YNAB API endpoints |
 | **Advanced Analytics** | 23 tools for spending analysis, trend detection, and financial insights |
 | **Read-Only by Default** | Write operations require explicit opt-in (`YNAB_READ_ONLY=false`) |
 | **Smart Rate Limiting** | Token bucket algorithm with 180 req/hour budget (10% safety margin) |
@@ -189,7 +189,7 @@ Once connected, try asking Claude:
 | "Am I on track this month?" | `ynab_spending_pace` |
 | "Compare this month to last month" | `ynab_monthly_comparison` |
 
-## Available Tools (68 Total)
+## Available Tools (69 Total)
 
 ### Analytics Tools (23)
 
@@ -221,7 +221,7 @@ These tools provide AI-powered financial insights beyond basic YNAB functionalit
 | `ynab_age_of_money` | Age of money metric with explanation |
 | `ynab_preview_scheduled_transaction` | Preview the budget impact of a scheduled transaction |
 
-### Core YNAB API Tools (42)
+### Core YNAB API Tools (43)
 
 Coverage of the YNAB API endpoints:
 
@@ -242,18 +242,19 @@ Coverage of the YNAB API endpoints:
 <details>
 <summary><strong>Account Tools (3)</strong></summary>
 
-- `ynab_list_accounts` — List all accounts with balances
+- `ynab_list_accounts` — List all accounts with balances, on-budget/closed status, notes, direct-import status, transfer payee ids, and debt details
 - `ynab_get_account` — Get specific account details
 - `ynab_create_account` — Create a new account *(write mode)*
 </details>
 
 <details>
-<summary><strong>Category Tools (8)</strong></summary>
+<summary><strong>Category Tools (9)</strong></summary>
 
 - `ynab_list_categories` — List all category groups and categories
 - `ynab_get_category` — Get category details
 - `ynab_get_month_category` — Get category budget for specific month
-- `ynab_update_category` — Update category budgeted amount *(write mode)*
+- `ynab_update_category` — Set a category's budgeted amount for one month *(write mode)*
+- `ynab_move_money` — Move budgeted money between two categories in one month (changes budgeted amounts; creates no YNAB money-movement record) *(write mode)*
 - `ynab_update_category_details` — Rename a category, change its note, move it to another group, or set/clear its target (including recurring targets via goal_frequency) *(write mode)*
 - `ynab_create_category` — Create a new category in a group, optionally with a target (goal_target in dollars, goal_target_date, goal_needs_whole_amount, goal_frequency for recurring targets like $50 weekly) *(write mode)*
 - `ynab_create_category_group` — Create a new category group *(write mode)*
@@ -319,6 +320,21 @@ Coverage of the YNAB API endpoints:
 - `ynab_audit_log` — View write operation audit log
 - `ynab_health_check` — Test API connectivity
 </details>
+
+### Tips and Common Recipes
+
+**Recording a transfer between accounts.** A transfer is a transaction whose payee is the *other* account's transfer payee. Look up the target account's `transfer_payee_id` (returned by `ynab_list_accounts` and `ynab_get_account`, or find the payee named "Transfer : <account>" in `ynab_list_payees` under `transfer_payees`), then call `ynab_create_transaction` on the source account with that value as `payee_id`. Leave `category_id` empty for transfers between on-budget accounts; YNAB creates the matching transaction in the other account itself.
+
+**Budgeting amounts vs. category details.** Two tools update a category, and they do different things:
+
+| Tool | Changes |
+|------|---------|
+| `ynab_update_category` | The *budgeted amount* for one category in one month (e.g. "budget $500 for Groceries in January") |
+| `ynab_update_category_details` | The category itself: name, note, category group, and target (goal) |
+
+To shift money between categories in one step, use `ynab_move_money`. It subtracts from one category's budgeted amount and adds to another's for the same month. It edits budgeted amounts only: YNAB's API has no money-movement write, so the move does not appear in `ynab_list_money_movements`, which lists moves made in YNAB's own apps. The two updates are not atomic; if the second fails the server tries to restore the first and reports whether that worked.
+
+**Budgets are "plans" in YNAB's API.** YNAB has renamed budgets to "plans" in its API and SDK. This server keeps the familiar `budget` naming for tools and parameters (`ynab_list_budgets`, `budget_id`), and it maps to YNAB's plan endpoints internally. Wherever YNAB documentation says "plan" or `plan_id`, read it as budget and `budget_id`.
 
 ## Available Prompts
 
