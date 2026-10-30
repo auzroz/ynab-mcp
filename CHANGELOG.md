@@ -5,6 +5,88 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-10-30
+
+Closes the API coverage gaps left after 0.4.0: split transactions, clearing
+fields, decoded target details, a move-money tool, YNAB 429 handling and delta
+sync for list reads. All output changes only add fields, so there are no
+breaking changes.
+
+### Added
+
+- Transactions:
+  - **Split transactions on create.** `subtransactions[]` on
+    `ynab_create_transaction` and on each item of `ynab_create_transactions`.
+    The split amounts must sum exactly to the parent, and the parent can't also
+    set a category.
+  - **Clearing fields on update.** `category_id`, `payee_id` and `memo` accept
+    `null` on the single and bulk updates, which is different from leaving them
+    out.
+  - **`import_id`.** Create accepts it, and a repeat returns
+    `duplicate_import_ids` instead of failing. Bulk update items can be
+    addressed by `id` or `import_id`.
+  - **`type` filter** (`unapproved`, `uncategorized`) on the account, category
+    and payee transaction lists.
+  - **IDs for chaining calls** on every transaction list and get, and on
+    scheduled transactions: account, payee, category, transfer and matched IDs,
+    `import_id` and `debt_transaction_type`, with IDs on splits.
+  - `flag_name` next to `flag_color`, and `total_count` / `truncated` on capped
+    lists.
+- Categories:
+  - **A decoded `goal` object** on `ynab_get_category`,
+    `ynab_get_month_category` and `ynab_list_categories`. It covers type,
+    target, period (from `goal_cadence` and `goal_cadence_frequency`), due day,
+    snoozed, created month, and the funded, left and under-funded amounts.
+  - **`ynab_move_money`** (69 tools in total). It moves budgeted money between
+    two categories in one month, using two month-category updates. It checks
+    the result of each update by re-reading the category. If the second update
+    fails, it restores the first only when that category is unchanged since the
+    move; otherwise it reports what needs a manual check. It creates no YNAB
+    money-movement record, because the API has no money-movement write.
+- Accounts and budgets:
+  - Accounts: `on_budget`, `closed`, `note`, `last_reconciled_at`, direct-import
+    status, `transfer_payee_id` and debt details. Interest rates come with
+    percent strings, because YNAB reports 18990 for 18.99%.
+  - Budgets: `first_month`, `last_month` and `date_format`.
+- Money movements: raw milliunit amounts, a masked `performed_by_user_id`, and
+  an optional `group_by_group` on `ynab_list_money_movements`.
+- **Delta sync for list reads** (accounts, categories, months, payees, scheduled
+  transactions and every transaction list).
+  - **How it works:** each read keeps a merged full copy per budget, endpoint
+    and query. After the cache expires, the next read fetches only YNAB's
+    changes (`last_knowledge_of_server`) and merges them in, so tools still
+    receive complete data. Anything inconsistent falls back to a full fetch.
+  - **Limits:** 32 copies and 20,000 entities per user.
+  - **Cursor:** every list tool returns `server_knowledge` and accepts an
+    optional `since_server_knowledge`, which returns only the changes, marked
+    `delta: true`, with deleted ids and no totals.
+  - **What it saves:** payload size rather than request count.
+  - **Not covered:** budget aliases (`last-used`, `default`), so set
+    `YNAB_BUDGET_ID` to benefit, and `ynab_get_budget`, which still always
+    fetches in full.
+- Tool descriptions say what YNAB only allows in its app: some target settings,
+  hiding or reordering categories, editing or closing accounts, merging
+  payees, and managing plans.
+- `CONTRIBUTING.md`, `SECURITY.md` (private vulnerability reporting) and a
+  pull request template.
+
+### Changed
+
+- When YNAB answers 429, the local rate limiter pauses requests until YNAB's
+  window resets (from `Retry-After`, or the rolling hour), instead of sending
+  requests it knows will fail. The error includes `retry_after_seconds`, and
+  `ynab_rate_limit_status` reports the pause.
+- `npm run dev` loads `.env` when the file exists.
+
+### Fixed
+
+- The money-movement group cache is cleared after a budget assignment, also
+  through `last-used` or `default`, and a read in flight during the assignment
+  can't cache stale groups.
+- `import_id` values in output are sanitized, and an empty `import_id` is
+  rejected.
+- The bulk-create audit entry records how many transactions it created.
+
 ## [0.4.0] - 2026-10-30
 
 Platform release: a Node 22.14+ toolchain (zod 4, TypeScript 6, ESLint 10,
