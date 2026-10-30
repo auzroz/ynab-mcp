@@ -14,7 +14,7 @@ import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 // Input schema
 const inputSchema = z.object({
   budget_id: z
-    .string()
+    .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   query: z
@@ -37,11 +37,15 @@ const inputSchema = z.object({
   since_date: z
     .string()
     .optional()
-    .describe('Start date (YYYY-MM-DD or natural language like "last month")'),
+    .describe(
+      'Start date (YYYY-MM-DD or natural language like "last month"). If omitted, YNAB returns only the last 12 months, unless until_date is given'
+    ),
   until_date: z
     .string()
     .optional()
-    .describe('End date (YYYY-MM-DD or natural language)'),
+    .describe(
+      'End date, inclusive (YYYY-MM-DD or natural language). Prefer ISO dates: period names such as "last month" resolve to the START of that period, so they would exclude most of it. Without since_date, searches from the budget first month'
+    ),
   type: z
     .enum(['all', 'inflow', 'outflow'])
     .optional()
@@ -68,7 +72,9 @@ Use when the user asks:
 - "Find large purchases"
 - "Search my expenses"
 
-Supports filtering by payee, category, amount range, date range, and text search.`,
+Supports filtering by payee, category, amount range, date range, and text search.
+
+NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). If only until_date is given, the search starts at the budget's first month so older ranges work (may fetch many transactions; still one request).`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -101,11 +107,13 @@ Supports filtering by payee, category, amount range, date range, and text search
       },
       since_date: {
         type: 'string',
-        description: 'Start date (YYYY-MM-DD or natural language)',
+        description:
+          'Start date (YYYY-MM-DD or natural language). If omitted, YNAB returns only the last 12 months, unless until_date is given (then the search starts at the budget\'s first month).',
       },
       until_date: {
         type: 'string',
-        description: 'End date (YYYY-MM-DD or natural language)',
+        description:
+          'End date, inclusive (YYYY-MM-DD or natural language). Prefer ISO dates: period names such as "last month" resolve to the START of that period, so they would exclude most of it. Applied server-side. Without since_date this searches from the budget\'s first month, which can fetch a lot of data.',
       },
       type: {
         type: 'string',
@@ -148,17 +156,30 @@ export async function handleTransactionSearch(
   const type = validated.type ?? 'all';
 
   // Parse dates
-  const sinceDate = validated.since_date
+  const explicitSinceDate = validated.since_date
     ? parseNaturalDate(validated.since_date)
     : undefined;
   const untilDate = validated.until_date
     ? parseNaturalDate(validated.until_date)
     : undefined;
 
-  // Fetch data
-  const transactionOptions: { sinceDate?: string } = {};
+  // YNAB API 1.85+ defaults since_date to one year ago. When only until_date is
+  // given, derive since_date from the budget's first month (cached, normally no
+  // extra request) so ranges older than a year are not silently empty.
+  let sinceDate = explicitSinceDate;
+  let sinceDateDerived = false;
+  if (sinceDate === undefined && untilDate !== undefined) {
+    sinceDate = await client.getBudgetFirstMonth(budgetId);
+    sinceDateDerived = sinceDate !== undefined;
+  }
+
+  // Fetch data (until_date is applied server-side; the client-side filter below is a safety net)
+  const transactionOptions: { sinceDate?: string; untilDate?: string } = {};
   if (sinceDate) {
     transactionOptions.sinceDate = sinceDate;
+  }
+  if (untilDate) {
+    transactionOptions.untilDate = untilDate;
   }
 
   const [transactionsResponse, categoriesResponse, accountsResponse] = await Promise.all([
@@ -274,7 +295,7 @@ export async function handleTransactionSearch(
   if (validated.category) searchCriteria.push(`category: "${sanitizeName(validated.category)}"`);
   if (validated.min_amount) searchCriteria.push(`min: $${validated.min_amount}`);
   if (validated.max_amount) searchCriteria.push(`max: $${validated.max_amount}`);
-  if (sinceDate) searchCriteria.push(`from: ${sinceDate}`);
+  if (explicitSinceDate) searchCriteria.push(`from: ${explicitSinceDate}`);
   if (untilDate) searchCriteria.push(`to: ${untilDate}`);
   if (type !== 'all') searchCriteria.push(`type: ${type}`);
 
@@ -283,9 +304,16 @@ export async function handleTransactionSearch(
       search: {
         criteria: searchCriteria.length > 0 ? searchCriteria.join(', ') : 'all transactions',
         date_range: {
-          from: sinceDate ?? 'beginning',
+          from: sinceDate ?? 'last 12 months (YNAB default)',
           to: untilDate ?? 'now',
         },
+        ...(sinceDate === undefined
+          ? {
+              note: 'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass since_date to search older history.',
+            }
+          : sinceDateDerived
+            ? { note: "since_date was derived from the budget's first month because only until_date was given." }
+            : {}),
       },
       summary: {
         total_matches: transactions.length,

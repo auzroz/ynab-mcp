@@ -26,6 +26,7 @@ import { AuditLog } from './services/audit-log.js';
 import { tools, handleToolCall } from './tools/index.js';
 import { prompts, getPromptMessages, sanitizePromptName } from './prompts/index.js';
 import { formatErrorResponse } from './utils/errors.js';
+import { assertSafeToolInput } from './utils/input-guard.js';
 
 /**
  * Per-user context for building an isolated server instance. In multi-tenant
@@ -83,6 +84,9 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
     const { name, arguments: args } = request.params;
 
     try {
+      // Reject oversized/deeply nested arguments before any zod parsing
+      // (mitigation for zod 3 GHSA-mrhx-c7xc-m3w5).
+      assertSafeToolInput(args ?? {});
       const result = await handleToolCall(name, args ?? {}, ynabClient);
       return {
         content: [{ type: 'text', text: result }],

@@ -80,4 +80,37 @@ describe('handleGetMonthCategory', () => {
 
     expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
   });
+
+  describe('goal target date', () => {
+    async function goalFor(overrides: Record<string, unknown>) {
+      const base = { ...mockSavingsCategories[1], goal_target_month: null, goal_target_date: undefined };
+      mockClient.getMonthCategoryById.mockResolvedValue(
+        createCategoryResponse({ ...base, ...overrides } as never)
+      );
+      const result = await handleGetMonthCategory({ month: MONTH, category_id: CATEGORY_ID }, mockClient as never);
+      return JSON.parse(result).category.goal;
+    }
+
+    it('exposes goal_target_date as target_date', async () => {
+      const goal = await goalFor({ goal_target_date: '2025-06-15' });
+      expect(goal.target_date).toBe('2025-06-15');
+      expect(goal.target_month).toBe('2025-06-15');
+    });
+
+    it('falls back to goal_target_month', async () => {
+      const goal = await goalFor({ goal_target_month: '2025-06-01' });
+      expect(goal.target_date).toBe('2025-06-01');
+      expect(goal.target_month).toBe('2025-06-01');
+    });
+
+    it('prefers goal_target_date when both are set', async () => {
+      const goal = await goalFor({ goal_target_date: '2025-06-15', goal_target_month: '2025-06-01' });
+      expect(goal.target_date).toBe('2025-06-15');
+    });
+
+    it('returns null when neither is set', async () => {
+      const goal = await goalFor({});
+      expect(goal.target_date).toBeNull();
+    });
+  });
 });

@@ -14,7 +14,7 @@ import { sanitizeName } from '../../utils/sanitize.js';
 // Input schema
 const inputSchema = z.object({
   budget_id: z
-    .string()
+    .string().max(64)
     .optional()
     .describe('Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   filter: z
@@ -124,7 +124,7 @@ export async function handleGoalProgress(
 
     const goalType = category.goal_type;
     const targetAmount = category.goal_target ?? null;
-    const targetDate = category.goal_target_month ?? null;
+    const targetDate = category.goal_target_date ?? category.goal_target_month ?? null;
     const monthlyFunding = category.goal_cadence_frequency === 1 ? category.goal_target : null;
     const underfunded = category.goal_under_funded ?? 0;
     const balance = category.balance;

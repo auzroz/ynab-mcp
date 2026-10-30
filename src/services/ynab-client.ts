@@ -22,6 +22,11 @@ export class YnabClient {
   // Track server knowledge for delta sync
   private serverKnowledge: Map<string, number> = new Map();
 
+  // Bumped on every transaction-history invalidation. Reads that started before a
+  // bump don't cache their (possibly stale) result, so an in-flight request can't
+  // restore what the invalidation just dropped.
+  private historyGeneration = 0;
+
   constructor(
     accessToken: string,
     defaultBudgetId: string | undefined,
@@ -121,9 +126,10 @@ export class YnabClient {
     const cached = this.cache.get<ynab.PlanSummaryResponse>(cacheKey);
     if (cached !== undefined) return cached;
 
+    const generation = this.historyGeneration;
     await this.rateLimiter.acquire();
     const response = await this.api.plans.getPlans(includeAccounts);
-    this.cache.set(cacheKey, response);
+    if (generation === this.historyGeneration) this.cache.set(cacheKey, response);
     return response;
   }
 
@@ -150,6 +156,60 @@ export class YnabClient {
     const response = await this.api.plans.getPlanSettingsById(budgetId);
     this.cache.set(cacheKey, response);
     return response;
+  }
+
+  /**
+   * Returns the budget's first month (YYYY-MM-01), used to derive an explicit
+   * since_date because YNAB API 1.85+ defaults since_date to one year ago.
+   * Resolved from the cached budget list when possible (no extra request);
+   * otherwise falls back to the earliest budget month. Cached per explicit budget
+   * ID and invalidated by transaction writes, which can extend a budget's history.
+   */
+  async getBudgetFirstMonth(budgetId: string): Promise<string | undefined> {
+    // "last-used" and "default" can point at a different budget over time, so
+    // results for them are never cached under the alias.
+    const isAlias = budgetId === 'last-used' || budgetId === 'default';
+    const cacheKey = `first-month:${budgetId}`;
+    if (!isAlias) {
+      const cached = this.cache.get<string>(cacheKey);
+      if (cached !== undefined) return cached;
+    }
+
+    const generation = this.historyGeneration;
+    let firstMonth: string | undefined;
+    // Match the cached budget list by exact ID only. Aliases (and IDs missing from
+    // the list) never borrow another budget's first month; they use the month list.
+    const budgets = (await this.getBudgets()).data.plans;
+    firstMonth = budgets.find((b) => b.id === budgetId)?.first_month;
+
+    if (firstMonth === undefined) {
+      // Aliases and unlisted IDs: derive from the (uncached) month list
+      const months = (await this.getBudgetMonths(budgetId)).data.months;
+      for (const m of months) {
+        if (firstMonth === undefined || m.month < firstMonth) firstMonth = m.month;
+      }
+    }
+
+    if (firstMonth !== undefined && !isAlias && generation === this.historyGeneration) {
+      this.cache.set(cacheKey, firstMonth);
+    }
+    return firstMonth;
+  }
+
+  /**
+   * Drop cached data derived from transaction history (the budget's first month
+   * and the budget list that carries it) after a successful transaction write.
+   */
+  private invalidateTransactionHistory(budgetId: string): void {
+    this.historyGeneration++;
+    if (budgetId === 'last-used' || budgetId === 'default') {
+      // An alias write could have touched any budget, so drop every cached first month.
+      this.cache.deleteByPrefix('first-month:');
+    } else {
+      this.cache.delete(`first-month:${budgetId}`);
+    }
+    this.cache.delete('budgets:false');
+    this.cache.delete('budgets:true');
   }
 
   // ==================== Accounts ====================
@@ -396,6 +456,8 @@ export class YnabClient {
     budgetId: string,
     options?: {
       sinceDate?: string;
+      /** Inclusive upper bound (ynab SDK 4.5+); undefined means no upper bound. */
+      untilDate?: string;
       type?: 'uncategorized' | 'unapproved';
       lastKnowledgeOfServer?: number;
     }
@@ -404,6 +466,7 @@ export class YnabClient {
     const response = await this.api.transactions.getTransactions(
       budgetId,
       options?.sinceDate,
+      options?.untilDate,
       options?.type,
       options?.lastKnowledgeOfServer
     );
@@ -434,6 +497,7 @@ export class YnabClient {
     const txn = data.transaction;
     try {
       const response = await this.api.transactions.createTransaction(budgetId, data);
+      this.invalidateTransactionHistory(budgetId);
       // Redact PII from audit logs - payee_name may contain personal information
       const logEntry: Parameters<typeof auditLog.log>[0] = {
         operation: 'create',
@@ -483,6 +547,7 @@ export class YnabClient {
     const txn = data.transaction;
     try {
       const response = await this.api.transactions.updateTransaction(budgetId, transactionId, data);
+      this.invalidateTransactionHistory(budgetId);
       // Redact memo from audit logs - may contain sensitive user data
       auditLog.log({
         operation: 'update',
@@ -529,6 +594,7 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.transactions.updateTransactions(budgetId, data);
+      this.invalidateTransactionHistory(budgetId);
       auditLog.log({
         operation: 'update',
         tool: 'ynab_update_transactions',
@@ -566,6 +632,7 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.transactions.deleteTransaction(budgetId, transactionId);
+      this.invalidateTransactionHistory(budgetId);
       // Redact PII from audit logs - payee_name may contain personal information
       auditLog.log({
         operation: 'delete',
@@ -628,28 +695,46 @@ export class YnabClient {
   async getAccountTransactions(
     budgetId: string,
     accountId: string,
-    sinceDate?: string
+    sinceDate?: string,
+    untilDate?: string
   ): Promise<ynab.TransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByAccount(budgetId, accountId, sinceDate);
+    return this.api.transactions.getTransactionsByAccount(
+      budgetId,
+      accountId,
+      sinceDate,
+      untilDate
+    );
   }
 
   async getCategoryTransactions(
     budgetId: string,
     categoryId: string,
-    sinceDate?: string
+    sinceDate?: string,
+    untilDate?: string
   ): Promise<ynab.HybridTransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByCategory(budgetId, categoryId, sinceDate);
+    return this.api.transactions.getTransactionsByCategory(
+      budgetId,
+      categoryId,
+      sinceDate,
+      untilDate
+    );
   }
 
   async getPayeeTransactions(
     budgetId: string,
     payeeId: string,
-    sinceDate?: string
+    sinceDate?: string,
+    untilDate?: string
   ): Promise<ynab.HybridTransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByPayee(budgetId, payeeId, sinceDate);
+    return this.api.transactions.getTransactionsByPayee(
+      budgetId,
+      payeeId,
+      sinceDate,
+      untilDate
+    );
   }
 
   // ==================== Scheduled Transactions ====================

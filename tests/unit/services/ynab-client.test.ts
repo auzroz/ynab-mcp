@@ -78,7 +78,10 @@ const mockApi = vi.hoisted(() => {
 });
 
 vi.mock('ynab', () => ({
-  API: vi.fn(() => mockApi),
+  // Vitest 4: a mock invoked with `new` needs a function/class implementation, not an arrow.
+  API: vi.fn(function () {
+    return mockApi;
+  }),
 }));
 
 const BUDGET = 'budget-123';
@@ -176,6 +179,120 @@ describe('read methods', () => {
     expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledWith(true);
   });
 
+  it('getBudgetFirstMonth reads first_month from the budget list and caches it', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2019-03-01' }, { id: 'other', first_month: '2021-01-01' }] },
+    });
+    const client = makeClient(true);
+
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2019-03-01');
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2019-03-01');
+    expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledTimes(1);
+    expect(asMock(mockApi.months.getPlanMonths)).not.toHaveBeenCalled();
+  });
+
+  it('getBudgetFirstMonth falls back to the earliest budget month for unmatched ids', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: 'a', first_month: '2019-03-01' }, { id: 'b', first_month: '2021-01-01' }] },
+    });
+    setResolve(mockApi.months.getPlanMonths, {
+      data: { months: [{ month: '2024-02-01' }, { month: '2022-07-01' }, { month: '2023-01-01' }] },
+    });
+
+    expect(await makeClient(true).getBudgetFirstMonth('last-used')).toBe('2022-07-01');
+  });
+
+  it('getBudgetFirstMonth does not cache results under the last-used alias', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: 'a', first_month: '2019-03-01' }, { id: 'b', first_month: '2021-01-01' }] },
+    });
+    setResolve(mockApi.months.getPlanMonths, { data: { months: [{ month: '2022-07-01' }] } });
+    const client = makeClient(true);
+
+    expect(await client.getBudgetFirstMonth('last-used')).toBe('2022-07-01');
+    // The user switches budgets: last-used now resolves to a different month list
+    setResolve(mockApi.months.getPlanMonths, { data: { months: [{ month: '2018-01-01' }] } });
+    expect(await client.getBudgetFirstMonth('last-used')).toBe('2018-01-01');
+    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledTimes(2);
+  });
+
+  it('getBudgetFirstMonth resolves the last-used alias from the month list, not the budget list', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: 'a', first_month: '2019-03-01' }] },
+    });
+    setResolve(mockApi.months.getPlanMonths, { data: { months: [{ month: '2020-04-01' }] } });
+
+    expect(await makeClient(true).getBudgetFirstMonth('last-used')).toBe('2020-04-01');
+    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledWith('last-used');
+  });
+
+  it('getBudgetFirstMonth is recomputed after a transaction write', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2019-03-01' }] },
+    });
+    setResolve(mockApi.transactions.createTransaction, { data: { transaction: { id: 't1' } } });
+    const client = makeClient(false);
+
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2019-03-01');
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2018-11-01' }] },
+    });
+    await client.createTransaction(BUDGET, { transaction: { date: '2018-11-15' } } as never);
+
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2018-11-01');
+    expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledTimes(2);
+  });
+
+  it('a transaction write through the last-used alias invalidates explicit first-month entries', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2019-03-01' }] },
+    });
+    setResolve(mockApi.transactions.createTransaction, { data: { transaction: { id: 't1' } } });
+    const client = makeClient(false);
+
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2019-03-01');
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2018-11-01' }] },
+    });
+    await client.createTransaction('last-used', { transaction: { date: '2018-11-15' } } as never);
+
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2018-11-01');
+  });
+
+  it('a budget list read in flight during a transaction write does not re-cache stale data', async () => {
+    let releaseStaleRead: (value: unknown) => void = () => {};
+    asMock(mockApi.plans.getPlans).mockImplementationOnce(
+      () => new Promise((resolve) => (releaseStaleRead = resolve))
+    );
+    setResolve(mockApi.transactions.createTransaction, { data: { transaction: { id: 't1' } } });
+    const client = makeClient(false);
+
+    // The read starts before the write and returns the pre-write first month after it
+    const staleLookup = client.getBudgetFirstMonth(BUDGET);
+    await vi.waitFor(() => expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledTimes(1));
+    await client.createTransaction(BUDGET, { transaction: { date: '2018-11-15' } } as never);
+    releaseStaleRead({ data: { plans: [{ id: BUDGET, first_month: '2019-03-01' }] } });
+    expect(await staleLookup).toBe('2019-03-01');
+
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: BUDGET, first_month: '2018-11-01' }] },
+    });
+    expect(await client.getBudgetFirstMonth(BUDGET)).toBe('2018-11-01');
+    expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledTimes(2);
+  });
+
+  it('getBudgetFirstMonth does not borrow the sole budget for an unmatched explicit id', async () => {
+    setResolve(mockApi.plans.getPlans, {
+      data: { plans: [{ id: 'other', first_month: '2019-03-01' }] },
+    });
+    setResolve(mockApi.months.getPlanMonths, {
+      data: { months: [{ month: '2024-02-01' }, { month: '2022-07-01' }] },
+    });
+
+    expect(await makeClient(true).getBudgetFirstMonth(BUDGET)).toBe('2022-07-01');
+    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledWith(BUDGET);
+  });
+
   it('getBudgets caches separately by includeAccounts flag', async () => {
     setResolve(mockApi.plans.getPlans, { data: { budgets: [] } });
     const client = makeClient(true);
@@ -269,13 +386,16 @@ describe('read methods', () => {
 
     await client.getTransactions(BUDGET, {
       sinceDate: '2026-01-01',
+      untilDate: '2026-01-31',
       type: 'unapproved',
       lastKnowledgeOfServer: 3,
     });
 
+    // Positional: (budget, since, until, type, knowledge)
     expect(asMock(mockApi.transactions.getTransactions)).toHaveBeenCalledWith(
       BUDGET,
       '2026-01-01',
+      '2026-01-31',
       'unapproved',
       3
     );
@@ -288,6 +408,7 @@ describe('read methods', () => {
     await client.getTransactions(BUDGET);
     expect(asMock(mockApi.transactions.getTransactions)).toHaveBeenCalledWith(
       BUDGET,
+      undefined,
       undefined,
       undefined,
       undefined
@@ -307,7 +428,8 @@ describe('read methods', () => {
     expect(asMock(mockApi.transactions.getTransactionsByAccount)).toHaveBeenCalledWith(
       BUDGET,
       'acc-1',
-      '2026-01-01'
+      '2026-01-01',
+      undefined
     );
   });
 
@@ -317,17 +439,19 @@ describe('read methods', () => {
     expect(asMock(mockApi.transactions.getTransactionsByCategory)).toHaveBeenCalledWith(
       BUDGET,
       'cat-1',
+      undefined,
       undefined
     );
   });
 
   it('getPayeeTransactions maps to getTransactionsByPayee', async () => {
     setResolve(mockApi.transactions.getTransactionsByPayee, { data: { transactions: [] } });
-    await makeClient(true).getPayeeTransactions(BUDGET, 'payee-1', '2026-02-02');
+    await makeClient(true).getPayeeTransactions(BUDGET, 'payee-1', '2026-02-02', '2026-03-01');
     expect(asMock(mockApi.transactions.getTransactionsByPayee)).toHaveBeenCalledWith(
       BUDGET,
       'payee-1',
-      '2026-02-02'
+      '2026-02-02',
+      '2026-03-01'
     );
   });
 

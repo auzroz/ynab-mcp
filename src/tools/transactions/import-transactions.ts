@@ -1,17 +1,26 @@
 /**
- * Import Transactions Tool
+ * Import Transactions Tool (DEPRECATED)
  *
- * Triggers the import of transactions from linked bank accounts.
+ * YNAB API 1.88 deprecated POST /plans/{id}/transactions/import, which imported
+ * transactions from linked accounts. The endpoint no longer does anything and
+ * always returns an empty transaction_ids list, because YNAB now imports linked
+ * accounts automatically. The tool stays registered for backward compatibility
+ * and returns that empty result without calling the API, so it also works in
+ * read-only mode. Removal is planned for a later release.
  */
 
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 
+export const IMPORT_DEPRECATION_MESSAGE =
+  'This tool is deprecated. YNAB API 1.88 retired the linked-account import endpoint ' +
+  'because YNAB now imports linked accounts automatically. No action was taken.';
+
 // Input schema
 const inputSchema = z.object({
   budget_id: z
-    .string()
+    .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   include_ids: z
@@ -24,19 +33,11 @@ const inputSchema = z.object({
 // Tool definition
 export const importTransactionsTool: Tool = {
   name: 'ynab_import_transactions',
-  description: `Trigger import of transactions from linked bank accounts.
+  description: `DEPRECATED: This tool no longer imports anything. YNAB API 1.88 deprecated the transaction import endpoint; it does nothing and always returns an empty result. YNAB imports linked bank accounts automatically.
 
-Use when the user asks:
-- "Import my bank transactions"
-- "Sync my accounts"
-- "Get latest transactions from my bank"
-- "Refresh bank connections"
-- "Pull in new transactions"
+Do NOT use this tool to sync, refresh, or pull in bank transactions. It will not fetch new transactions. To review recent transactions, use ynab_list_transactions instead.
 
-Initiates a file-based import for accounts that have direct import enabled.
-Returns the count of transactions that were imported.
-
-Note: This is a WRITE operation that requires write mode to be enabled.`,
+Kept registered for backward compatibility only. Makes no API call and returns deprecated: true with an explanatory message and an imported_count of 0.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -55,28 +56,26 @@ Note: This is a WRITE operation that requires write mode to be enabled.`,
 
 // Handler function
 /**
- * Handler for the ynab_import_transactions tool.
+ * Handler for the ynab_import_transactions tool (deprecated).
  */
 export async function handleImportTransactions(
   args: Record<string, unknown>,
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
-
-  const response = await client.importTransactions(budgetId);
-  const importedIds = response.data.transaction_ids ?? [];
+  // Validate budget_id the same way as other tools; the API is not called because
+  // the endpoint is a no-op since YNAB API 1.88.
+  client.resolveBudgetId(validated.budget_id);
+  const importedIds: string[] = [];
 
   return JSON.stringify(
     {
       success: true,
-      message:
-        importedIds.length > 0
-          ? `Successfully imported ${importedIds.length} transaction(s)`
-          : 'No new transactions to import',
+      deprecated: true,
+      message: IMPORT_DEPRECATION_MESSAGE,
       imported_count: importedIds.length,
       ...(validated.include_ids ? { transaction_ids: importedIds } : {}),
-      note: 'Imported transactions may need to be categorized',
+      note: 'Use ynab_list_transactions to review recent transactions. Linked accounts sync automatically in YNAB.',
     },
     null,
     2

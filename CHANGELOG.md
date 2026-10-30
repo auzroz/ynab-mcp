@@ -5,7 +5,91 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.3]
+## [0.3.4] - 2026-10-29
+
+Hotfix release. It keeps Node 20 support (`engines` stays `>=20.0.0`) and stays
+on zod 3.x and MCP SDK 1.x. Upgrading from 0.2.0-0.3.3 is recommended: fresh
+installs of those versions resolve `ynab` 4.5.0, which breaks the type filter in
+`ynab_list_transactions`.
+
+### Security
+
+- Upgraded `@modelcontextprotocol/sdk` to `^1.32.2`, which fixes six advisories
+  in the SDK. They include bearer auth accepting tokens issued for another
+  service, missing body-size and batch limits on the HTTP transport, and memory
+  exhaustion from a single request.
+- Upgraded `express` to `^5.3.0` and refreshed transitive dependencies with a
+  non-force `npm audit fix`. This fixes `proxy-addr` (critical, IP spoofing on
+  the `trust proxy` path), `ip-address`, `hono`, `qs`, `body-parser` and
+  `fast-uri`.
+- Moving to vitest 4 clears every advisory in the dev-dependency chain.
+- One advisory remains: zod GHSA-mrhx-c7xc-m3w5, which has no 3.x fix. zod 4
+  arrives in 0.4.0. Until then, a guard on `tools/call` rejects arguments over
+  1 MiB, nested deeper than 8 levels, or holding an array of more than 1000
+  items, before zod parses them.
+- HTTP transport: the JSON body limit drops from 4 MB to 512 KB. JSON-RPC batch
+  arrays are rejected with 400 and code -32600, since MCP 2025-06-18 removed
+  batching. Oversized bodies return 413, and malformed JSON returns 400 with
+  code -32700. Error responses carry no internal details.
+- Added length caps to free-text inputs that had none: `payee_name` 200,
+  `import_id` 36, `budget_id` 64, and `memo` 500 on `ynab_update_transactions`.
+  Existing memo caps of 200 are unchanged.
+- GitHub Actions are pinned by commit SHA to their latest major versions, moving
+  off the removed `node20` action runtime. Checkout steps set
+  `persist-credentials: false`.
+- Added Dependabot for npm, GitHub Actions and Docker, and a non-blocking
+  `npm audit --omit=dev --audit-level=high` CI step. The audit step becomes
+  blocking in 0.4.0.
+
+### Fixed
+
+- `ynab_list_transactions` with a `type` filter (`unapproved` or
+  `uncategorized`) works again with `ynab` 4.5.0, which inserted a new
+  `untilDate` argument. `ynab` is now pinned to `~4.5.0`.
+- `ynab_transaction_search` with only `until_date` takes `since_date` from the
+  budget's first month, instead of searching only the last 12 months (the
+  default since YNAB API 1.85).
+- Category goal output reads `goal_target_date` first and falls back to the
+  deprecated `goal_target_month`. This affects `ynab_goal_progress`,
+  `ynab_get_category` and `ynab_get_month_category`.
+- Install docs and the GitHub release notes template now use the published
+  package name, `ynab-mcp` (`npx -y ynab-mcp`). They used to point at
+  `ynab-mcp-server`, an unrelated npm package.
+- The Docker image moves off the frozen `node:20-alpine3.21` base (Alpine 3.21
+  reaches end of life on 2026-11-01) to `node:20-alpine3.23`, pinned by digest,
+  and prunes with `npm prune --omit=dev`.
+
+### Changed
+
+- The transaction listing tools say that YNAB returns only the last 12 months
+  when `since_date` is omitted.
+- `server.json` follows the MCP Registry 2025-12-11 schema.
+- Dev tooling: `vitest` and `@vitest/coverage-v8` are on `^4.1.12`. The branch
+  coverage threshold drops to 75% (from 80%), because vitest 4's AST-aware
+  remapping counts branches differently on the same tests.
+
+### Deprecated
+
+- `ynab_import_transactions`. Since API 1.88, YNAB imports linked-account
+  transactions automatically and this endpoint imports nothing. The tool stays
+  registered and returns `deprecated: true` without calling the API, so it also
+  works in read-only mode.
+- `goal.target_month` in the output of `ynab_get_category` and
+  `ynab_get_month_category`. Use `goal.target_date`; `target_month` remains as
+  an alias with the same value.
+
+### Added
+
+- `until_date` input (inclusive) on `ynab_list_transactions`,
+  `ynab_list_account_transactions`, `ynab_list_category_transactions` and
+  `ynab_list_payee_transactions`.
+- `goal.target_date` in the output of `ynab_get_category` and
+  `ynab_get_month_category`.
+- A release workflow check that fails when `server.json` doesn't match the
+  pushed tag, a unit test that keeps `server.json` in sync with `package.json`,
+  and the Docker label `io.modelcontextprotocol.server.name`.
+
+## [0.3.3] - 2026-07-03
 
 ### Added
 
@@ -28,11 +112,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `gitleaks` as a required CI check on every PR, scanning for
   accidentally-committed secrets.
 
-## [0.3.2]
+## [0.3.2] - 2026-07-02
 
-> Note: `0.3.1` was published to npm from a commit that bypassed code review and
-> was subsequently reverted from `main`; `0.3.2` reintroduces the same fix through
-> the normal review process. There is no `0.3.1` git tag/GitHub release.
+> Note: `0.3.1` was tagged and published to npm from a commit that skipped code
+> review and was later reverted from `main`. `0.3.2` ships the same fix through
+> normal review and supersedes it.
 
 ### Fixed
 
@@ -43,7 +127,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   none) to set Express's `trust proxy` explicitly, so rate limiting keys correctly
   off the real client IP when deployed behind a known number of proxy hops.
 
-## [0.3.0]
+## [0.3.1] - 2026-07-02
+
+Superseded by 0.3.2; use 0.3.2 or later. Tagged and published from a commit that
+skipped review and was later reverted. The code is identical to 0.3.2.
+
+## [0.3.0] - 2026-07-01
 
 ### Added
 
@@ -71,7 +160,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (per-user context); the audit log is now an injected instance (per user) rather
   than a process-global singleton.
 
-## [0.2.0]
+## [0.2.0] - 2026-06-30
 
 ### Added
 

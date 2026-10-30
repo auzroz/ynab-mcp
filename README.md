@@ -43,8 +43,10 @@ Traditional YNAB integrations require manual API calls or custom scripting. This
 No installation required—run directly:
 
 ```bash
-npx ynab-mcp
+npx -y ynab-mcp
 ```
+
+> **Note:** The npm package `ynab-mcp-server` is an unrelated project. This server is published as `ynab-mcp`.
 
 #### Option 2: Docker
 
@@ -122,7 +124,7 @@ Add to your Claude Desktop configuration:
   "mcpServers": {
     "ynab": {
       "command": "npx",
-      "args": ["ynab-mcp"],
+      "args": ["-y", "ynab-mcp"],
       "env": {
         "YNAB_ACCESS_TOKEN": "your_token_here"
       }
@@ -283,7 +285,7 @@ Coverage of the YNAB API endpoints:
 - `ynab_list_account_transactions` — List transactions for a specific account
 - `ynab_list_category_transactions` — List transactions for a specific category
 - `ynab_list_payee_transactions` — List transactions for a specific payee
-- `ynab_import_transactions` — Trigger import from linked banks *(write mode)*
+- `ynab_import_transactions` — **Deprecated** (YNAB API 1.88): no longer imports anything; linked accounts sync automatically *(write mode)*
 </details>
 
 <details>
