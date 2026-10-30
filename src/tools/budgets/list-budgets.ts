@@ -29,7 +29,9 @@ Use when the user asks:
 - "List my budgets"
 - "Which budget should I use?"
 
-Returns budget names, IDs, last modified dates, first and last month, and date format. Optionally includes account summaries.`,
+Returns budget names, IDs, last modified dates, first and last month, and date format. Optionally includes account summaries.
+
+Not possible through the YNAB API (do it in the YNAB app): creating, renaming or deleting plans (budgets), and changing plan settings.`,
   inputSchema: {
     type: 'object',
     properties: {

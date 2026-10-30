@@ -12,6 +12,7 @@ import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
+import { GOAL_TYPE_LABELS, getGoalPeriod } from '../../utils/goals.js';
 import DecimalJS from 'decimal.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
@@ -77,72 +78,10 @@ interface GoalInfo {
   days_until_target: number | null;
 }
 
-// Goal type labels
-const goalTypeLabels: Record<string, string> = {
-  TB: 'Target Balance',
-  TBD: 'Target Balance by Date',
-  MF: 'Monthly Funding',
-  NEED: 'Spending Target',
-  DEBT: 'Debt Payoff',
-};
+const goalTypeLabels = GOAL_TYPE_LABELS;
 
-// YNAB goal_cadence values with a repeat interval of goal_cadence * goal_cadence_frequency
-const CADENCE_MONTHLY = 1;
-const CADENCE_WEEKLY = 2;
-const CADENCE_YEARLY = 13;
-// goal_cadence 14 (every 2 years) ignores goal_cadence_frequency
-const CADENCE_EVERY_2_YEARS = 14;
-
-interface GoalPeriod {
-  label: string;
-  /** Length of one repeat period in months (weeks are normalised as 12/52 months). */
-  monthsPerPeriod: InstanceType<typeof Decimal>;
-}
-
-/**
- * Derive a goal's repeat period from goal_cadence and goal_cadence_frequency.
- * Returns null when the goal does not repeat (cadence 0/undefined) or the
- * cadence is not a recognised value.
- */
-export function getGoalPeriod(
-  cadence: number | null | undefined,
-  frequency: number | null | undefined
-): GoalPeriod | null {
-  if (cadence === null || cadence === undefined || !Number.isInteger(cadence)) return null;
-
-  // Frequency only applies to cadences 1, 2 and 13; treat missing/invalid as 1
-  const freq = frequency !== null && frequency !== undefined && Number.isInteger(frequency) && frequency >= 1
-    ? frequency
-    : 1;
-
-  if (cadence === CADENCE_MONTHLY) {
-    return {
-      label: freq === 1 ? 'monthly' : `every ${freq} months`,
-      monthsPerPeriod: new Decimal(freq),
-    };
-  }
-  if (cadence === CADENCE_WEEKLY) {
-    return {
-      label: freq === 1 ? 'weekly' : `every ${freq} weeks`,
-      monthsPerPeriod: new Decimal(freq).times(12).dividedBy(52),
-    };
-  }
-  if (cadence === CADENCE_YEARLY) {
-    return {
-      label: freq === 1 ? 'yearly' : `every ${freq} years`,
-      monthsPerPeriod: new Decimal(freq).times(12),
-    };
-  }
-  if (cadence >= 3 && cadence <= 12) {
-    // 3 = every 2 months ... 12 = every 11 months
-    const months = cadence - 1;
-    return { label: `every ${months} months`, monthsPerPeriod: new Decimal(months) };
-  }
-  if (cadence === CADENCE_EVERY_2_YEARS) {
-    return { label: 'every 2 years', monthsPerPeriod: new Decimal(24) };
-  }
-  return null;
-}
+// Re-exported for existing importers; the implementation lives in utils/goals.ts
+export { getGoalPeriod };
 
 // Goal types whose goal_target is an amount per repeat period
 const PER_PERIOD_GOAL_TYPES = new Set(['MF', 'NEED', 'DEBT']);

@@ -79,7 +79,9 @@ const mockApi = vi.hoisted(() => {
   };
 });
 
-vi.mock('ynab', () => ({
+vi.mock('ynab', async (importOriginal) => ({
+  // Keep the real Configuration/BASE_PATH (the client builds its API from them).
+  ...(await importOriginal<typeof import('ynab')>()),
   // Vitest 4: a mock invoked with `new` needs a function/class implementation, not an arrow.
   API: vi.fn(function () {
     return mockApi;
@@ -492,11 +494,13 @@ describe('read methods', () => {
 
   it('getAccountTransactions maps to getTransactionsByAccount', async () => {
     setResolve(mockApi.transactions.getTransactionsByAccount, { data: { transactions: [] } });
-    await makeClient(true).getAccountTransactions(BUDGET, 'acc-1', '2026-01-01');
+    await makeClient(true).getAccountTransactions(BUDGET, 'acc-1', { sinceDate: '2026-01-01' });
     expect(asMock(mockApi.transactions.getTransactionsByAccount)).toHaveBeenCalledWith(
       BUDGET,
       'acc-1',
       '2026-01-01',
+      undefined,
+      undefined,
       undefined
     );
   });
@@ -508,19 +512,45 @@ describe('read methods', () => {
       BUDGET,
       'cat-1',
       undefined,
+      undefined,
+      undefined,
       undefined
     );
   });
 
   it('getPayeeTransactions maps to getTransactionsByPayee', async () => {
     setResolve(mockApi.transactions.getTransactionsByPayee, { data: { transactions: [] } });
-    await makeClient(true).getPayeeTransactions(BUDGET, 'payee-1', '2026-02-02', '2026-03-01');
+    await makeClient(true).getPayeeTransactions(BUDGET, 'payee-1', {
+      sinceDate: '2026-02-02',
+      untilDate: '2026-03-01',
+    });
     expect(asMock(mockApi.transactions.getTransactionsByPayee)).toHaveBeenCalledWith(
       BUDGET,
       'payee-1',
       '2026-02-02',
-      '2026-03-01'
+      '2026-03-01',
+      undefined,
+      undefined
     );
+  });
+
+  it.each([
+    ['getAccountTransactions', 'getTransactionsByAccount', 'account-transactions'],
+    ['getCategoryTransactions', 'getTransactionsByCategory', 'category-transactions'],
+    ['getPayeeTransactions', 'getTransactionsByPayee', 'payee-transactions'],
+  ] as const)('%s passes the type filter and keys server_knowledge by it', async (method, sdk, resource) => {
+    const sdkFn = mockApi.transactions[sdk];
+    setResolve(sdkFn, { data: { transactions: [], server_knowledge: 7 } });
+    const client = makeClient(true);
+
+    await client[method](BUDGET, 'scope-1', { sinceDate: '2026-01-01', type: 'unapproved' });
+
+    expect(asMock(sdkFn)).toHaveBeenCalledWith(BUDGET, 'scope-1', '2026-01-01', undefined, 'unapproved', undefined);
+    const key = { id: 'scope-1', sinceDate: '2026-01-01' };
+    expect(client.getServerKnowledge(BUDGET, resource, { ...key, type: 'unapproved' })).toBe(7);
+    // A cursor from the filtered query is not reused for the unfiltered or other-type query.
+    expect(client.getServerKnowledge(BUDGET, resource, key)).toBeUndefined();
+    expect(client.getServerKnowledge(BUDGET, resource, { ...key, type: 'uncategorized' })).toBeUndefined();
   });
 
   it('getScheduledTransactions maps correctly', async () => {
@@ -959,6 +989,19 @@ describe('updateTransaction (write)', () => {
 });
 
 describe('updateTransactions (bulk write)', () => {
+  it('records the row count of a bulk create in the audit entry', async () => {
+    const client = makeClient(false);
+    setResolve(mockApi.transactions.createTransaction, {
+      data: { transactions: [{ id: 't1' }, { id: 't2' }, { id: 't3' }] },
+    });
+    await client.createTransaction(BUDGET, {
+      transactions: [{ date: '2026-01-01' }, { date: '2026-01-02' }, { date: '2026-01-03' }],
+    } as never);
+    const entry = getAuditLog().getAll()[0];
+    expect(entry).toMatchObject({ tool: 'ynab_create_transaction', success: true });
+    expect(entry?.details).toMatchObject({ requested_count: 3 });
+  });
+
   it('succeeds and logs counts', async () => {
     const client = makeClient(false);
     setResolve(mockApi.transactions.updateTransactions, {

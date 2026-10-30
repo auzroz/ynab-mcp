@@ -98,6 +98,56 @@ describe('handleRateLimitStatus', () => {
     expect(parsed.status).toBe('critical');
   });
 
+  it('reports null ynab_exhausted when YNAB has not rate-limited us', async () => {
+    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    expect(parsed.ynab_exhausted).toBeNull();
+  });
+
+  it('reports an active YNAB 429 exhaustion as critical with timing', async () => {
+    mockClient.getRateLimitStatus.mockReturnValue({
+      available: 150,
+      limit: 180,
+      used: 30,
+      percentUsed: 17,
+      canMakeRequest: false,
+      waitTimeMs: 90000,
+      resetTimeMs: 90000,
+      ynabExhausted: { active: true, exhaustedAtMs: Date.UTC(2026, 9, 30, 12, 0, 0), untilMs: Date.UTC(2026, 9, 30, 12, 1, 30), retryAfterMs: 90000 },
+    });
+
+    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+
+    expect(parsed.status).toBe('critical');
+    expect(parsed.message).toContain('429');
+    expect(parsed.ynab_exhausted).toEqual({
+      active: true,
+      exhausted_at: '2026-10-30T12:00:00.000Z',
+      resets_at: '2026-10-30T12:01:30.000Z',
+      retry_after_seconds: 90,
+    });
+    expect(parsed.timing.can_make_request_now).toBe(false);
+    expect(parsed.timing.wait_time_seconds).toBe(90);
+  });
+
+  it('keeps the past exhaustion visible, inactive, once the window has passed', async () => {
+    mockClient.getRateLimitStatus.mockReturnValue({
+      available: 150,
+      limit: 180,
+      used: 30,
+      percentUsed: 17,
+      canMakeRequest: true,
+      waitTimeMs: 0,
+      resetTimeMs: 0,
+      ynabExhausted: { active: false, exhaustedAtMs: 1000, untilMs: 61000, retryAfterMs: 0 },
+    });
+
+    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+
+    expect(parsed.status).toBe('healthy');
+    expect(parsed.ynab_exhausted.active).toBe(false);
+    expect(parsed.ynab_exhausted.retry_after_seconds).toBe(0);
+  });
+
   it('rejects unexpected properties (strict schema)', async () => {
     await expect(
       handleRateLimitStatus({ unexpected: true }, mockClient as never)

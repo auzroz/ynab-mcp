@@ -69,12 +69,11 @@ describe('handleListPayeeTransactions', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed.transactions.length).toBe(3);
-    expect(mockClient.getPayeeTransactions).toHaveBeenCalledWith(
-      'test-budget-id',
-      PAYEE_ID,
-      '2024-01-01',
-      undefined
-    );
+    expect(mockClient.getPayeeTransactions).toHaveBeenCalledWith('test-budget-id', PAYEE_ID, {
+      sinceDate: '2024-01-01',
+      untilDate: undefined,
+      type: undefined,
+    });
   });
 
   it('handles empty results', async () => {
@@ -111,12 +110,11 @@ describe('handleListPayeeTransactions', () => {
       )
     );
 
-    expect(mockClient.getPayeeTransactions).toHaveBeenCalledWith(
-      'test-budget-id',
-      PAYEE_ID,
-      '2023-01-01',
-      '2023-12-31'
-    );
+    expect(mockClient.getPayeeTransactions).toHaveBeenCalledWith('test-budget-id', PAYEE_ID, {
+      sinceDate: '2023-01-01',
+      untilDate: '2023-12-31',
+      type: undefined,
+    });
     expect(parsed.summary.date_range_note).toBeUndefined();
   });
 
@@ -128,5 +126,26 @@ describe('handleListPayeeTransactions', () => {
     );
 
     expect(parsed.summary.date_range_note).toContain('last 12 months');
+  });
+
+  it('passes the type filter through to the client', async () => {
+    mockClient.getPayeeTransactions.mockResolvedValue(createTransactionsResponse([]));
+
+    await handleListPayeeTransactions(
+      { payee_id: PAYEE_ID, type: 'unapproved' },
+      mockClient as never
+    );
+
+    expect(mockClient.getPayeeTransactions).toHaveBeenCalledWith('test-budget-id', PAYEE_ID, {
+      sinceDate: undefined,
+      untilDate: undefined,
+      type: 'unapproved',
+    });
+  });
+
+  it('rejects an unknown type filter', async () => {
+    await expect(
+      handleListPayeeTransactions({ payee_id: PAYEE_ID, type: 'cleared' }, mockClient as never)
+    ).rejects.toThrow();
   });
 });

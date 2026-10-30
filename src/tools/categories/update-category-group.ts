@@ -30,7 +30,9 @@ Use when the user asks:
 
 Requires a category_group_id. Use ynab_list_categories first to find the group ID.
 
-**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
+**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
+
+Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering category groups.`,
   inputSchema: {
     type: 'object',
     properties: {

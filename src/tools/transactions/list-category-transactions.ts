@@ -11,6 +11,12 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import {
+  transactionChainFields,
+  transactionTypeJsonSchema,
+  transactionTypeSchema,
+  truncationSummary,
+} from './format.js';
 
 const DEFAULT_RANGE_NOTE =
   'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.';
@@ -35,6 +41,7 @@ const inputSchema = z.object({
     .describe(
       'Only return transactions on or before this date (inclusive). Accepts ISO dates (YYYY-MM-DD) or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it'
     ),
+  type: transactionTypeSchema.optional(),
   limit: z
     .number()
     .int()
@@ -53,7 +60,9 @@ Use when the user asks:
 - "Show my grocery transactions"
 - "What did I spend on dining out?"
 - "List transactions in [category name]"
+- "Show unapproved transactions in the [category] category"
 
+Pass type ("unapproved" or "uncategorized") to narrow to transactions that need attention.
 Requires a category_id. Use ynab_list_categories first to find the category ID.
 
 NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). Pass an earlier since_date to see older history. until_date sets an inclusive upper bound.`,
@@ -82,6 +91,7 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
         description:
           'Only return transactions on or before this date (inclusive). Accepts YYYY-MM-DD or "today" or "yesterday". Prefer ISO dates for an end bound: period names such as "last month" or "this year" resolve to the START of that period, so they would exclude most of it',
       },
+      type: transactionTypeJsonSchema,
       limit: {
         type: 'integer',
         description: 'Maximum number of transactions to return (default 100, max 500)',
@@ -109,14 +119,14 @@ export async function handleListCategoryTransactions(
   const sinceDate = validated.since_date ? parseNaturalDate(validated.since_date) : undefined;
   const untilDate = validated.until_date ? parseNaturalDate(validated.until_date) : undefined;
 
-  const response = await client.getCategoryTransactions(
-    budgetId,
-    validated.category_id,
+  const response = await client.getCategoryTransactions(budgetId, validated.category_id, {
     sinceDate,
-    untilDate
-  );
+    untilDate,
+    type: validated.type,
+  });
 
   // Sort by date descending and apply limit (avoid mutating response)
+  const totalCount = response.data.transactions.length;
   const transactions = [...response.data.transactions]
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
     .slice(0, limit);
@@ -146,6 +156,12 @@ export async function handleListCategoryTransactions(
     payee_name: sanitizeName(txn.payee_name),
     account_name: sanitizeName(txn.account_name),
     cleared: txn.cleared,
+    approved: txn.approved,
+    flag_color: txn.flag_color,
+    ...transactionChainFields(txn),
+    // 'subtransaction' rows are splits of parent_transaction_id
+    type: txn.type,
+    parent_transaction_id: txn.parent_transaction_id ?? null,
   }));
 
   return JSON.stringify(
@@ -154,6 +170,7 @@ export async function handleListCategoryTransactions(
       transactions: formattedTransactions,
       summary: {
         count: formattedTransactions.length,
+        ...truncationSummary(totalCount, formattedTransactions.length),
         ...(validated.since_date === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {}),
         total_spent: formatCurrency(totalSpent),
         top_payees: topPayees,

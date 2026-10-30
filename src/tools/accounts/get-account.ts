@@ -33,7 +33,9 @@ Use when the user asks:
 
 Also returns transfer_payee_id: set it as payee_id on ynab_create_transaction to record a transfer into this account.
 
-Requires an account_id. Use ynab_list_accounts first to find the account ID.`,
+Requires an account_id. Use ynab_list_accounts first to find the account ID.
+
+Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening an account, setting up loan accounts, and changing interest rates.`,
   inputSchema: {
     type: 'object',
     properties: {

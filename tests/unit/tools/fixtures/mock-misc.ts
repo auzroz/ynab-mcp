@@ -19,6 +19,7 @@ export interface MockMoneyMovement {
   from_category_id?: string;
   to_category_id?: string;
   amount: number;
+  performed_by_user_id?: string | null;
   amount_formatted?: string;
   amount_currency?: number;
 }
@@ -33,6 +34,7 @@ export const mockMoneyMovements: MockMoneyMovement[] = [
     from_category_id: 'cat-groceries',
     to_category_id: 'cat-dining',
     amount: -50000,
+    performed_by_user_id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
   },
   {
     id: 'mm-2',
@@ -65,7 +67,7 @@ export const mockMoneyMovementGroups: MockMoneyMovementGroup[] = [
     group_created_at: '2024-01-15T10:00:00Z',
     month: '2024-01-01',
     note: 'January rebalancing',
-    performed_by_user_id: 'user-1',
+    performed_by_user_id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
   },
 ];
 

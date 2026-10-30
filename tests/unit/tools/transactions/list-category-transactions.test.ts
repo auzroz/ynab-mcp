@@ -37,12 +37,11 @@ describe('handleListCategoryTransactions', () => {
     expect(parsed.summary.top_payees).toBeInstanceOf(Array);
     // Kroger appears 3 times, should be top payee
     expect(parsed.summary.top_payees[0].name).toBe('Kroger');
-    expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith(
-      'test-budget-id',
-      CATEGORY_ID,
-      undefined,
-      undefined
-    );
+    expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith('test-budget-id', CATEGORY_ID, {
+      sinceDate: undefined,
+      untilDate: undefined,
+      type: undefined,
+    });
   });
 
   it('does not mutate the response and applies limit', async () => {
@@ -67,12 +66,11 @@ describe('handleListCategoryTransactions', () => {
       mockClient as never
     );
 
-    expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith(
-      'test-budget-id',
-      CATEGORY_ID,
-      '2024-01-01',
-      undefined
-    );
+    expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith('test-budget-id', CATEGORY_ID, {
+      sinceDate: '2024-01-01',
+      untilDate: undefined,
+      type: undefined,
+    });
   });
 
   it('handles empty results', async () => {
@@ -109,12 +107,11 @@ describe('handleListCategoryTransactions', () => {
       )
     );
 
-    expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith(
-      'test-budget-id',
-      CATEGORY_ID,
-      '2023-01-01',
-      '2023-12-31'
-    );
+    expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith('test-budget-id', CATEGORY_ID, {
+      sinceDate: '2023-01-01',
+      untilDate: '2023-12-31',
+      type: undefined,
+    });
     expect(parsed.summary.date_range_note).toBeUndefined();
   });
 
@@ -126,5 +123,26 @@ describe('handleListCategoryTransactions', () => {
     );
 
     expect(parsed.summary.date_range_note).toContain('last 12 months');
+  });
+
+  it('passes the type filter through to the client', async () => {
+    mockClient.getCategoryTransactions.mockResolvedValue(createTransactionsResponse([]));
+
+    await handleListCategoryTransactions(
+      { category_id: CATEGORY_ID, type: 'unapproved' },
+      mockClient as never
+    );
+
+    expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith('test-budget-id', CATEGORY_ID, {
+      sinceDate: undefined,
+      untilDate: undefined,
+      type: 'unapproved',
+    });
+  });
+
+  it('rejects an unknown type filter', async () => {
+    await expect(
+      handleListCategoryTransactions({ category_id: CATEGORY_ID, type: 'cleared' }, mockClient as never)
+    ).rejects.toThrow();
   });
 });

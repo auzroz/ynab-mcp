@@ -66,7 +66,8 @@ Use when the user asks:
 - "Change billing frequency"
 
 Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
-Only provided fields will be updated.`,
+Only provided fields will be updated.
+Split limitation: YNAB scheduled transactions cannot have splits, and the splits of an existing split scheduled transaction cannot be edited through the API.`,
   inputSchema: {
     type: 'object',
     properties: {
