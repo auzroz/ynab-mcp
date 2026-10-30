@@ -30,15 +30,13 @@ type GoalFrequency = 'monthly' | 'weekly' | 'yearly';
 export type AccessTokenSource = string | (() => Promise<string>);
 
 /**
- * ynab.API that resolves its bearer token per request. The SDK's runtime
- * Configuration accepts a token function, but ynab.API's constructor is typed
- * for a string, so this swaps in such a Configuration before any endpoint
- * accessor (which builds its API class lazily from it) has been used.
+ * ynab.API built from a ready Configuration, so SDK middleware (the 429 hook)
+ * can be attached for both fixed and per-request tokens.
  */
-class TokenProviderApi extends ynab.API {
-  constructor(getAccessToken: () => Promise<string>) {
+class ConfiguredApi extends ynab.API {
+  constructor(configuration: ynab.Configuration) {
     super('');
-    this._configuration = new ynab.Configuration({ accessToken: getAccessToken, basePath: ynab.BASE_PATH });
+    this._configuration = configuration;
   }
 }
 
@@ -110,8 +108,19 @@ export class YnabClient {
     // per-user instance so one user's write history never leaks to another.
     auditLog: AuditLog = getAuditLog()
   ) {
+    // Every YNAB response passes this hook; a 429 marks the limiter exhausted.
+    const middleware: ynab.Middleware[] = [
+      {
+        post: async ({ response }) => {
+          if (response.status === 429) throw this.noteYnabRateLimited(response);
+          return undefined;
+        },
+      },
+    ];
     if (typeof accessToken === 'string') {
-      this.api = new ynab.API(accessToken);
+      this.api = new ConfiguredApi(
+        new ynab.Configuration({ accessToken, basePath: ynab.BASE_PATH, middleware })
+      );
       this.getAccessToken = () => Promise.resolve(accessToken);
     } else {
       // Every request takes a rate-limit token before resolving its access
@@ -124,7 +133,9 @@ export class YnabClient {
           throw error;
         }
       };
-      this.api = new TokenProviderApi(this.getAccessToken);
+      this.api = new ConfiguredApi(
+        new ynab.Configuration({ accessToken: this.getAccessToken, basePath: ynab.BASE_PATH, middleware })
+      );
     }
     this.rateLimiter = rateLimiter;
     this.cache = cache;
@@ -508,6 +519,16 @@ export class YnabClient {
   }
 
   /**
+   * YNAB answered 429: stop the limiter sending requests until YNAB's window
+   * resets (Retry-After when sent) and return the mapped error to throw. Only
+   * the status and the Retry-After header are read; no response text.
+   */
+  private noteYnabRateLimited(response: Response): YnabApiError {
+    const windowMs = this.rateLimiter.markExhaustedByYnab(response.headers.get('retry-after'));
+    return new YnabApiError('YNAB API request failed', '429', undefined, Math.ceil(windowMs / 1000));
+  }
+
+  /**
    * Send a category write straight to the YNAB API (see the workaround note at
    * the top of this file). Non-2xx responses throw a YnabApiError carrying only
    * the HTTP status, so formatErrorResponse returns its mapped generic message;
@@ -533,6 +554,7 @@ export class YnabClient {
     if (!response.ok) {
       // Release the connection without reading upstream text into the error.
       await response.body?.cancel().catch(() => {});
+      if (response.status === 429) throw this.noteYnabRateLimited(response);
       throw new YnabApiError('YNAB API request failed', String(response.status));
     }
     return (await response.json()) as ynab.SaveCategoryResponse;
