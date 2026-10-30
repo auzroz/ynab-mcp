@@ -742,6 +742,11 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     const txn = data.transaction;
+    // Count of split parts across the request (counts only; split memos/payees are never logged).
+    const splitCount = [txn, ...(data.transactions ?? [])].reduce(
+      (n, t) => n + (t?.subtransactions?.length ?? 0),
+      0
+    );
     try {
       const response = await this.api.transactions.createTransaction(budgetId, data);
       this.invalidateTransactionHistory(budgetId);
@@ -756,6 +761,7 @@ export class YnabClient {
           date: txn?.date,
           has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
           account_id: txn?.account_id,
+          ...(splitCount > 0 ? { split_count: splitCount } : {}),
         },
         success: true,
       };
@@ -774,6 +780,7 @@ export class YnabClient {
           date: txn?.date,
           has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
           account_id: txn?.account_id,
+          ...(splitCount > 0 ? { split_count: splitCount } : {}),
         },
         success: false,
         error: sanitizeErrorMessage(error),

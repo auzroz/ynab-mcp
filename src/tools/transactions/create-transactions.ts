@@ -11,26 +11,36 @@ import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
+import {
+  checkSplitRules,
+  formatSubtransactions,
+  subtransactionsJsonSchema,
+  subtransactionsSchema,
+  toSaveSubTransactions,
+} from './subtransactions.js';
 
 // Transaction schema for bulk creation
-const transactionSchema = z.object({
-  account_id: ynabId().describe('The account UUID for this transaction'),
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .describe('Transaction date in YYYY-MM-DD format'),
-  amount: z
-    .number()
-    .describe('Amount in dollars (negative for outflow, positive for inflow)'),
-  payee_id: ynabId().optional().describe('Payee UUID'),
-  payee_name: z.string().max(TXN_PAYEE_NAME_MAX_LENGTH).optional().describe('Payee name'),
-  category_id: ynabId().optional().describe('Category UUID'),
-  memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('Transaction memo'),
-  cleared: z.enum(['cleared', 'uncleared', 'reconciled']).optional(),
-  approved: z.boolean().optional(),
-  flag_color: z.enum(['red', 'orange', 'yellow', 'green', 'blue', 'purple']).optional(),
-  import_id: z.string().max(IMPORT_ID_MAX_LENGTH).optional().describe('Unique ID for import deduplication'),
-});
+const transactionSchema = z
+  .object({
+    account_id: ynabId().describe('The account UUID for this transaction'),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .describe('Transaction date in YYYY-MM-DD format'),
+    amount: z
+      .number()
+      .describe('Amount in dollars (negative for outflow, positive for inflow)'),
+    payee_id: ynabId().optional().describe('Payee UUID'),
+    payee_name: z.string().max(TXN_PAYEE_NAME_MAX_LENGTH).optional().describe('Payee name'),
+    category_id: ynabId().optional().describe('Category UUID'),
+    memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('Transaction memo'),
+    cleared: z.enum(['cleared', 'uncleared', 'reconciled']).optional(),
+    approved: z.boolean().optional(),
+    flag_color: z.enum(['red', 'orange', 'yellow', 'green', 'blue', 'purple']).optional(),
+    import_id: z.string().max(IMPORT_ID_MAX_LENGTH).optional().describe('Unique ID for import deduplication'),
+    subtransactions: subtransactionsSchema.optional(),
+  })
+  .superRefine(checkSplitRules);
 
 // Input schema
 const inputSchema = z.object({
@@ -53,10 +63,12 @@ Use when the user asks:
 - "Import these transactions"
 - "Add multiple transactions"
 - "Bulk create transactions"
+- "Import these transactions, one of them split across categories"
 
 Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
 Maximum 100 transactions per request.
-Use import_id to prevent duplicate imports.`,
+Use import_id to prevent duplicate imports.
+Any item may carry subtransactions (at least 2, amounts in dollars) to create a split transaction: split amounts must sum exactly to that item's amount, and the item must not set category_id. YNAB cannot edit the splits of an existing transaction afterwards.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -85,6 +97,7 @@ Use import_id to prevent duplicate imports.`,
               enum: ['red', 'orange', 'yellow', 'green', 'blue', 'purple'],
             },
             import_id: { type: 'string', maxLength: 36, description: 'Unique ID for deduplication' },
+            subtransactions: subtransactionsJsonSchema,
           },
           required: ['account_id', 'date', 'amount'],
         },
@@ -131,6 +144,7 @@ export async function handleCreateTransactions(
     if (t.flag_color !== undefined)
       txn.flag_color = t.flag_color as ynab.TransactionFlagColor;
     if (t.import_id !== undefined) txn.import_id = t.import_id;
+    if (t.subtransactions !== undefined) txn.subtransactions = toSaveSubTransactions(t.subtransactions);
 
     return txn;
   });
@@ -161,6 +175,7 @@ export async function handleCreateTransactions(
         amount: formatCurrency(t.amount),
         payee_name: sanitizeName(t.payee_name),
         category_name: sanitizeName(t.category_name),
+        subtransactions: formatSubtransactions(t.subtransactions),
       })),
       duplicate_import_ids:
         duplicates.length > 0

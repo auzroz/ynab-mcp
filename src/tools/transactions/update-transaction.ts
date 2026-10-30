@@ -74,7 +74,8 @@ Use when the user asks:
 - "Recategorize a transaction"
 
 Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
-Only provide the fields you want to change.`,
+Only provide the fields you want to change.
+Split limitation: YNAB cannot edit the splits of an existing transaction, so you cannot change, add or remove splits here. To restructure splits, delete the transaction and create a new one with subtransactions via ynab_create_transaction.`,
   inputSchema: {
     type: 'object',
     properties: {
