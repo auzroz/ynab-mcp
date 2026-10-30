@@ -218,11 +218,7 @@ export async function handleGoalProgress(
     let status: GoalInfo['status'];
     let statusMessage: string;
 
-    if (snoozed) {
-      // Snoozed targets are paused for this month: never underfunded or at risk
-      status = 'snoozed';
-      statusMessage = 'Snoozed, not counted toward underfunded totals';
-    } else if (percentComplete !== null && percentComplete >= 100) {
+    if (percentComplete !== null && percentComplete >= 100) {
       status = 'complete';
       statusMessage = 'Goal fully funded';
     } else if (targetDate && daysUntilTarget !== null && daysUntilTarget <= 0) {
@@ -243,6 +239,13 @@ export async function handleGoalProgress(
     } else {
       status = 'on_track';
       statusMessage = 'On track';
+    }
+
+    // Snoozed targets are paused for this month: never underfunded or at risk.
+    // Complete and on-track goals keep their status (the snoozed flag still shows).
+    if (snoozed && (status === 'underfunded' || status === 'behind')) {
+      status = 'snoozed';
+      statusMessage = 'Snoozed, not counted toward underfunded totals';
     }
 
     const goalTypeStr = String(goalType);

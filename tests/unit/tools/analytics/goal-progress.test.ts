@@ -524,6 +524,28 @@ describe('handleGoalProgress', () => {
       expect(result.summary.behind).toBe(0);
     });
 
+    it('keeps a fully funded snoozed target as complete', async () => {
+      const result = await run({
+        goal_target: 100000,
+        balance: 100000,
+        goal_snoozed_at: '2026-01-10T00:00:00Z',
+      });
+      expect(result.goals[0].snoozed).toBe(true);
+      expect(result.goals[0].status).toBe('complete');
+      expect(result.summary.complete).toBe(1);
+      expect(result.summary.snoozed).toBe(0);
+
+      const filtered = JSON.parse(await handleGoalProgress({ filter: 'complete' }, mockClient as any));
+      expect(filtered.goals).toHaveLength(1);
+    });
+
+    it('keeps a snoozed target with nothing owed as on_track', async () => {
+      const result = await run({ goal_snoozed_at: '2026-01-10T00:00:00Z' });
+      expect(result.goals[0].snoozed).toBe(true);
+      expect(result.goals[0].status).toBe('on_track');
+      expect(result.summary.on_track).toBe(1);
+    });
+
     it('can filter to snoozed goals and leaves unsnoozed goals unmarked', async () => {
       const active = await run({ goal_under_funded: 50000, goal_snoozed_at: null });
       expect(active.goals[0].snoozed).toBe(false);
