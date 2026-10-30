@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
+import { budgetId } from '../../utils/schemas.js';
 
 export const IMPORT_DEPRECATION_MESSAGE =
   'This tool is deprecated. YNAB API 1.88 retired the linked-account import endpoint ' +
@@ -19,10 +20,9 @@ export const IMPORT_DEPRECATION_MESSAGE =
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   include_ids: z
     .boolean()
     .optional()
@@ -43,7 +43,8 @@ Kept registered for backward compatibility only. Makes no API call and returns d
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       include_ids: {
         type: 'boolean',

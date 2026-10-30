@@ -7,12 +7,67 @@
 import * as ynab from 'ynab';
 import type { RateLimiter } from './rate-limiter.js';
 import type { Cache } from './cache.js';
-import { ReadOnlyModeError } from '../utils/errors.js';
+import { ReadOnlyModeError, YnabApiError } from '../utils/errors.js';
 import { getAuditLog, type AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
+import { isBudgetIdSentinel } from '../utils/schemas.js';
+
+// TEMPORARY WORKAROUND: the ynab SDK (4.5.0) drops `goal_frequency` when it
+// serializes SaveCategory/NewCategory/ExistingCategory, so requests carrying it
+// are sent straight to the API. Tracked in auzroz/ynab-mcp#22 and
+// ynab/ynab-sdk-js#308. Delete the direct-call path (sendCategoryDirect and the
+// goal_frequency branches below) once a regenerated SDK is released.
+const YNAB_API_BASE_URL = 'https://api.ynab.com/v1'; // same as the SDK's BASE_PATH
+const DIRECT_REQUEST_TIMEOUT_MS = 30_000;
+
+type GoalFrequency = 'monthly' | 'weekly' | 'yearly';
+
+/** Create body: the SDK's NewCategory plus the field the SDK cannot send. */
+export interface CreateCategoryBody {
+  category: ynab.NewCategory & { goal_frequency?: GoalFrequency };
+}
+
+/** Audit details for category creation: presence flags only, no amounts or names. */
+function createCategoryAuditDetails(data: CreateCategoryBody): Record<string, unknown> {
+  const c = data.category;
+  return {
+    has_name: !!c.name,
+    category_group_id: c.category_group_id,
+    ...(c.goal_target !== undefined ? { has_goal_target: true } : {}),
+    ...(c.goal_target_date !== undefined ? { has_goal_target_date: true } : {}),
+    ...(c.goal_needs_whole_amount !== undefined ? { has_goal_needs_whole_amount: true } : {}),
+    ...(c.goal_frequency !== undefined ? { has_goal_frequency: true } : {}),
+  };
+}
+
+/**
+ * Request body for updateCategory. The API (SaveCategory) accepts null to clear
+ * name/note/target values, but the SDK's ExistingCategory type only declares the
+ * non-null forms, so the body is typed with SaveCategory and cast at the SDK call.
+ * The SDK serializer passes values (including null) through unchanged.
+ */
+export interface UpdateCategoryBody {
+  category: ynab.SaveCategory & { goal_frequency?: GoalFrequency };
+}
+
+/** Audit details for category detail updates: presence flags only, no names, notes or amounts. */
+function updateCategoryDetailsAuditDetails(data: UpdateCategoryBody): Record<string, unknown> {
+  const c = data.category;
+  return {
+    ...(c.name !== undefined ? { has_name: true } : {}),
+    ...(c.note !== undefined ? { has_note: true } : {}),
+    ...(c.category_group_id !== undefined ? { category_group_id: c.category_group_id } : {}),
+    ...(c.goal_target !== undefined ? { has_goal_target: true } : {}),
+    ...(c.goal_target_date !== undefined ? { has_goal_target_date: true } : {}),
+    ...(c.goal_needs_whole_amount !== undefined ? { has_goal_needs_whole_amount: true } : {}),
+    ...(c.goal_frequency !== undefined ? { has_goal_frequency: true } : {}),
+  };
+}
 
 export class YnabClient {
   private readonly api: ynab.API;
+  // Only used by the goal_frequency direct-call workaround; never logged.
+  private readonly accessToken: string;
   private readonly rateLimiter: RateLimiter;
   private readonly cache: Cache;
   private readonly defaultBudgetId: string;
@@ -39,6 +94,7 @@ export class YnabClient {
     auditLog: AuditLog = getAuditLog()
   ) {
     this.api = new ynab.API(accessToken);
+    this.accessToken = accessToken;
     this.rateLimiter = rateLimiter;
     this.cache = cache;
     this.defaultBudgetId = defaultBudgetId ?? 'last-used';
@@ -168,7 +224,7 @@ export class YnabClient {
   async getBudgetFirstMonth(budgetId: string): Promise<string | undefined> {
     // "last-used" and "default" can point at a different budget over time, so
     // results for them are never cached under the alias.
-    const isAlias = budgetId === 'last-used' || budgetId === 'default';
+    const isAlias = isBudgetIdSentinel(budgetId);
     const cacheKey = `first-month:${budgetId}`;
     if (!isAlias) {
       const cached = this.cache.get<string>(cacheKey);
@@ -202,7 +258,7 @@ export class YnabClient {
    */
   private invalidateTransactionHistory(budgetId: string): void {
     this.historyGeneration++;
-    if (budgetId === 'last-used' || budgetId === 'default') {
+    if (isBudgetIdSentinel(budgetId)) {
       // An alias write could have touched any budget, so drop every cached first month.
       this.cache.deleteByPrefix('first-month:');
     } else {
@@ -335,9 +391,92 @@ export class YnabClient {
     }
   }
 
+  /**
+   * Update a category's details (name, note, group, target) via PATCH
+   * /plans/{plan_id}/categories/{category_id}. Distinct from updateMonthCategory,
+   * which only changes a month's budgeted amount.
+   */
+  async updateCategory(
+    budgetId: string,
+    categoryId: string,
+    data: UpdateCategoryBody
+  ): Promise<ynab.SaveCategoryResponse> {
+    this.assertWriteAllowed('updateCategory');
+    await this.rateLimiter.acquire();
+    // Invalidate categories cache after updating (names, groups and targets all change)
+    this.cache.delete(`categories:${budgetId}`);
+
+    const auditLog = this.auditLog;
+    try {
+      const response =
+        data.category.goal_frequency !== undefined
+          ? await this.sendCategoryDirect(
+              'PATCH',
+              `/plans/${encodeURIComponent(budgetId)}/categories/${encodeURIComponent(categoryId)}`,
+              data
+            )
+          : await this.api.categories.updateCategory(
+              budgetId,
+              categoryId,
+              data as ynab.PatchCategoryWrapper
+            );
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_category_details',
+        budgetId,
+        resourceType: 'category',
+        resourceId: categoryId,
+        details: updateCategoryDetailsAuditDetails(data),
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_category_details',
+        budgetId,
+        resourceType: 'category',
+        resourceId: categoryId,
+        details: updateCategoryDetailsAuditDetails(data),
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Send a category write straight to the YNAB API (see the workaround note at
+   * the top of this file). Non-2xx responses throw a YnabApiError carrying only
+   * the HTTP status, so formatErrorResponse returns its mapped generic message;
+   * upstream response text is never read into an error.
+   */
+  private async sendCategoryDirect(
+    method: 'POST' | 'PATCH',
+    path: string,
+    body: unknown
+  ): Promise<ynab.SaveCategoryResponse> {
+    const response = await fetch(`${YNAB_API_BASE_URL}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${this.accessToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(DIRECT_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      // Release the connection without reading upstream text into the error.
+      await response.body?.cancel().catch(() => {});
+      throw new YnabApiError('YNAB API request failed', String(response.status));
+    }
+    return (await response.json()) as ynab.SaveCategoryResponse;
+  }
+
   async createCategory(
     budgetId: string,
-    data: ynab.PostCategoryWrapper
+    data: CreateCategoryBody
   ): Promise<ynab.SaveCategoryResponse> {
     this.assertWriteAllowed('createCategory');
     await this.rateLimiter.acquire();
@@ -346,7 +485,14 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     try {
-      const response = await this.api.categories.createCategory(budgetId, data);
+      const response =
+        data.category.goal_frequency !== undefined
+          ? await this.sendCategoryDirect(
+              'POST',
+              `/plans/${encodeURIComponent(budgetId)}/categories`,
+              data
+            )
+          : await this.api.categories.createCategory(budgetId, data);
       auditLog.log({
         operation: 'create',
         tool: 'ynab_create_category',
@@ -354,7 +500,7 @@ export class YnabClient {
         resourceType: 'category',
         resourceId: response.data.category.id,
         // Category names may be sensitive; log only presence and grouping.
-        details: { has_name: !!data.category.name, category_group_id: data.category.category_group_id },
+        details: createCategoryAuditDetails(data),
         success: true,
       });
       return response;
@@ -364,7 +510,7 @@ export class YnabClient {
         tool: 'ynab_create_category',
         budgetId,
         resourceType: 'category',
-        details: { has_name: !!data.category.name, category_group_id: data.category.category_group_id },
+        details: createCategoryAuditDetails(data),
         success: false,
         error: sanitizeErrorMessage(error),
       });
@@ -475,6 +621,34 @@ export class YnabClient {
       this.updateServerKnowledge(budgetId, response.data.server_knowledge);
     }
     
+    return response;
+  }
+
+  /** Transactions for one plan month (YYYY-MM-01 or "current"). Not cached, like getTransactions. */
+  async getTransactionsByMonth(
+    budgetId: string,
+    month: string,
+    options?: {
+      sinceDate?: string;
+      untilDate?: string;
+      type?: 'uncategorized' | 'unapproved';
+      lastKnowledgeOfServer?: number;
+    }
+  ): Promise<ynab.TransactionsResponse> {
+    await this.rateLimiter.acquire();
+    const response = await this.api.transactions.getTransactionsByMonth(
+      budgetId,
+      month,
+      options?.sinceDate,
+      options?.untilDate,
+      options?.type,
+      options?.lastKnowledgeOfServer
+    );
+
+    if (response.data.server_knowledge !== undefined) {
+      this.updateServerKnowledge(budgetId, response.data.server_knowledge);
+    }
+
     return response;
   }
 
@@ -1036,5 +1210,26 @@ export class YnabClient {
   async getMoneyMovements(budgetId: string): Promise<ynab.MoneyMovementsResponse> {
     await this.rateLimiter.acquire();
     return this.api.money_movements.getMoneyMovements(budgetId);
+  }
+
+  async getMoneyMovementsByMonth(
+    budgetId: string,
+    month: string
+  ): Promise<ynab.MoneyMovementsResponse> {
+    await this.rateLimiter.acquire();
+    return this.api.money_movements.getMoneyMovementsByMonth(budgetId, month);
+  }
+
+  async getMoneyMovementGroups(budgetId: string): Promise<ynab.MoneyMovementGroupsResponse> {
+    await this.rateLimiter.acquire();
+    return this.api.money_movements.getMoneyMovementGroups(budgetId);
+  }
+
+  async getMoneyMovementGroupsByMonth(
+    budgetId: string,
+    month: string
+  ): Promise<ynab.MoneyMovementGroupsResponse> {
+    await this.rateLimiter.acquire();
+    return this.api.money_movements.getMoneyMovementGroupsByMonth(budgetId, month);
   }
 }

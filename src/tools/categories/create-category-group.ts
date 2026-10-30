@@ -8,14 +8,14 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { CATEGORY_GROUP_NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  name: z.string().min(1).max(500).describe('The name of the new category group'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+  name: z.string().min(1).max(CATEGORY_GROUP_NAME_MAX_LENGTH).describe('The name of the new category group'),
 });
 
 // Tool definition
@@ -36,10 +36,12 @@ After creating a group, use ynab_create_category to add categories to it.
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       name: {
         type: 'string',
+        maxLength: 50,
         description: 'The name of the new category group',
       },
     },

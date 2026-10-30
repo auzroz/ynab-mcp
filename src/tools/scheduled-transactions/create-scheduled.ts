@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import { ynabId } from '../../utils/schemas.js';
+import { MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -16,10 +16,9 @@ import { frequencies, flagColors } from '../../utils/scheduled-constants.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   account_id: ynabId().describe('The account UUID for this scheduled transaction'),
   date: z
     .string()
@@ -39,13 +38,13 @@ const inputSchema = z.object({
   payee_id: ynabId().optional().describe('Payee UUID (use ynab_list_payees to find)'),
   payee_name: z
     .string()
-    .max(200)
+    .max(TXN_PAYEE_NAME_MAX_LENGTH)
     .optional()
     .describe('Payee name (creates new payee if payee_id not provided)'),
   category_id: ynabId()
     .optional()
     .describe('Category UUID (use ynab_list_categories to find). Credit Card Payment categories NOT allowed.'),
-  memo: z.string().max(200).optional().describe('Transaction memo/note'),
+  memo: z.string().max(MEMO_MAX_LENGTH).optional().describe('Transaction memo/note'),
   flag_color: z.enum(flagColors).optional().describe('Flag color for the scheduled transaction'),
 }).refine((data) => data.payee_id || data.payee_name, {
   message: 'Either payee_id or payee_name must be provided',
@@ -72,14 +71,17 @@ Amount should be negative for expenses/outflows and positive for income/inflows.
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       account_id: {
         type: 'string',
+        maxLength: 36,
         description: 'The account UUID for this scheduled transaction',
       },
       date: {
         type: 'string',
+        maxLength: 10,
         description: 'Start date in YYYY-MM-DD format (must be future, max 5 years ahead)',
       },
       amount: {
@@ -93,18 +95,22 @@ Amount should be negative for expenses/outflows and positive for income/inflows.
       },
       payee_id: {
         type: 'string',
+        maxLength: 36,
         description: 'Payee UUID',
       },
       payee_name: {
         type: 'string',
+        maxLength: 200,
         description: 'Payee name (creates new payee if payee_id not provided)',
       },
       category_id: {
         type: 'string',
+        maxLength: 36,
         description: 'Category UUID (Credit Card Payment categories NOT allowed)',
       },
       memo: {
         type: 'string',
+        maxLength: 500,
         description: 'Transaction memo/note',
       },
       flag_color: {

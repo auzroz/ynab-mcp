@@ -8,6 +8,7 @@ import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
 
 export const pulseCheckPrompt: Prompt = {
   name: 'ynab-pulse-check',
+  title: 'Pulse Check',
   description:
     'Fast daily-style status check: Ready to Assign, overspending flags, spending pace, and an overall health score. Use for "how am I doing this month", "how\'s my budget looking", "quick check on my finances", or "am I on track". Not for a full monthly review (use ynab-monthly-review) or fixing overspending (use ynab-overspending-triage).',
 };

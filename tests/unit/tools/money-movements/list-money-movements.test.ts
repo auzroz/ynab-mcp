@@ -68,4 +68,28 @@ describe('handleListMoneyMovements', () => {
     expect(parsed.count).toBe(0);
     expect(parsed.money_movements).toEqual([]);
   });
+
+  it('uses the month endpoint when month is provided', async () => {
+    mockClient.getMoneyMovementsByMonth.mockResolvedValue(createMoneyMovementsResponse());
+
+    const parsed = JSON.parse(
+      await handleListMoneyMovements({ month: '2024-01-01' }, mockClient as never)
+    );
+
+    expect(mockClient.getMoneyMovementsByMonth).toHaveBeenCalledWith(expect.any(String), '2024-01-01');
+    expect(mockClient.getMoneyMovements).not.toHaveBeenCalled();
+    expect(parsed.month).toBe('2024-01-01');
+  });
+
+  it('accepts "current" and rejects non-first-of-month values', async () => {
+    mockClient.getMoneyMovementsByMonth.mockResolvedValue(createMoneyMovementsResponse([]));
+    await handleListMoneyMovements({ month: 'current' }, mockClient as never);
+    expect(mockClient.getMoneyMovementsByMonth).toHaveBeenCalledWith(expect.any(String), 'current');
+
+    for (const bad of ['2024-01-15', '2024-13-01', 'January', '2024-02-30']) {
+      await expect(
+        handleListMoneyMovements({ month: bad }, mockClient as never)
+      ).rejects.toThrow();
+    }
+  });
 });

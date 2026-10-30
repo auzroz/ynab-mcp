@@ -7,6 +7,11 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      # vitest and its coverage provider must stay on the same version.
+      vitest:
+        patterns:
+          - vitest
+          - '@vitest/*'
       npm-minor-patch:
         update-types:
           - minor
@@ -20,7 +25,9 @@ updates:
       - dependency-name: typescript
         versions: ['>=6.1.0']
       - dependency-name: vitest
-        versions: ['>=5.0.0']
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@vitest/*'
+        update-types: ['version-update:semver-major']
       - dependency-name: eslint
         update-types: ['version-update:semver-major']
       - dependency-name: '@eslint/js'

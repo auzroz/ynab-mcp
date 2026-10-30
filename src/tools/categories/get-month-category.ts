@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import { ynabId } from '../../utils/schemas.js';
+import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
@@ -13,10 +13,9 @@ import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
 // Input schema
 const inputSchema = z.object({
-  budget_id: z
-    .string().max(64)
+  budget_id: budgetId()
     .optional()
-    .describe('Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   month: z
     .string()
     .regex(/^\d{4}-\d{2}-01$/, 'Month must be first-of-month format (YYYY-MM-01)')
@@ -42,15 +41,18 @@ Requires a category_id. Use ynab_list_categories first to find the category ID.`
     properties: {
       budget_id: {
         type: 'string',
-        description: 'Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        maxLength: 64,
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       month: {
         type: 'string',
+        maxLength: 10,
         pattern: '^\\d{4}-\\d{2}-01$',
         description: 'The budget month in YYYY-MM-01 format (first of month)',
       },
       category_id: {
         type: 'string',
+        maxLength: 36,
         description: 'The category UUID to retrieve',
       },
     },
