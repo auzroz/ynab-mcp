@@ -71,4 +71,18 @@ describe('tools/list in read-only mode', () => {
     expect(text.toLowerCase()).toContain('read-only');
     expect(text.toLowerCase()).not.toContain('unknown tool');
   });
+
+  it('rejects the hidden no-op import tool by name with the read-only error', async () => {
+    const client = await connect(true);
+    const result = await client.callTool({ name: 'ynab_import_transactions', arguments: {} });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0]!.text;
+    expect(JSON.parse(text).type).toBe('read_only_mode');
+  });
+
+  it('still runs the no-op import tool in read-write mode', async () => {
+    const client = await connect(false);
+    const result = await client.callTool({ name: 'ynab_import_transactions', arguments: {} });
+    expect(result.isError).toBeFalsy();
+  });
 });

@@ -32,7 +32,7 @@ import {
   InvalidPromptArgumentsError,
 } from './prompts/index.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
-import { formatErrorResponse } from './utils/errors.js';
+import { formatErrorResponse, ReadOnlyModeError } from './utils/errors.js';
 import { assertSafeToolInput } from './utils/input-guard.js';
 
 /**
@@ -83,6 +83,8 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
     }
   );
 
+  const writeToolNames = new Set(tools.filter((t) => t.annotations?.readOnlyHint !== true).map((t) => t.name));
+
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     // Hide write tools from read-only sessions. This is a UX nicety only: the
     // YnabClient write guard still rejects writes server-side. Uses the
@@ -100,6 +102,12 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
       // Reject oversized/deeply nested arguments before any zod parsing
       // (defense in depth against resource exhaustion).
       assertSafeToolInput(args ?? {});
+      // A tool hidden from a read-only session's list is rejected here too, so
+      // calling it by name gets the same read-only error even when its handler
+      // would not reach the client's write guard (the deprecated no-op import).
+      if (ynabClient.isReadOnly() && writeToolNames.has(name)) {
+        throw new ReadOnlyModeError(name);
+      }
       const result = await handleToolCall(name, args ?? {}, ynabClient);
       return {
         content: [{ type: 'text', text: result }],

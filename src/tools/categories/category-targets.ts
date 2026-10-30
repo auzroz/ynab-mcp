@@ -25,12 +25,18 @@ const GOAL_NEEDS_WHOLE_AMOUNT_DESCRIPTION =
   'Only for spending-target (NEED) goals. true = "Set aside another..." each period, false = "Refill up to..."';
 const CLEAR_SUFFIX = " Pass null to remove the existing value.";
 
+// Largest dollar amount whose milliunit value is still a safe integer. Larger
+// inputs would lose precision or overflow to Infinity, which JSON sends as null
+// and the update endpoint treats as "remove the target".
+export const GOAL_TARGET_MAX_DOLLARS = Math.floor(Number.MAX_SAFE_INTEGER / 1000);
+
 /** Zod fields for create requests (values only). */
 export const categoryTargetCreateShape = {
   goal_target: z
     .number()
     .finite()
     .min(0)
+    .max(GOAL_TARGET_MAX_DOLLARS)
     .describe(GOAL_TARGET_DESCRIPTION)
     .optional(),
   goal_target_date: z.iso
@@ -49,6 +55,7 @@ export const categoryTargetUpdateShape = {
     .number()
     .finite()
     .min(0)
+    .max(GOAL_TARGET_MAX_DOLLARS)
     .nullable()
     .describe(GOAL_TARGET_DESCRIPTION + CLEAR_SUFFIX)
     .optional(),
@@ -69,6 +76,7 @@ export const categoryTargetCreateJsonProperties = {
   goal_target: {
     type: "number",
     minimum: 0,
+    maximum: GOAL_TARGET_MAX_DOLLARS,
     description: GOAL_TARGET_DESCRIPTION,
   },
   goal_target_date: {
@@ -88,6 +96,7 @@ export const categoryTargetUpdateJsonProperties = {
   goal_target: {
     type: ["number", "null"],
     minimum: 0,
+    maximum: GOAL_TARGET_MAX_DOLLARS,
     description: GOAL_TARGET_DESCRIPTION + CLEAR_SUFFIX,
   },
   goal_target_date: {

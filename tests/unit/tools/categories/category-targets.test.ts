@@ -10,6 +10,7 @@ import {
   categoryTargetCreateJsonProperties,
   categoryTargetUpdateJsonProperties,
   pickCategoryTargets,
+  GOAL_TARGET_MAX_DOLLARS,
 } from "../../../../src/tools/categories/category-targets.js";
 
 describe("category target fragments", () => {
@@ -33,6 +34,18 @@ describe("category target fragments", () => {
     expect(update.parse({ goal_target: 1.5 }).goal_target).toBe(1.5);
     expect(() => update.parse({ goal_target: Infinity })).toThrow();
     expect(() => update.parse({ goal_target_date: "next month" })).toThrow();
+  });
+
+  it("caps goal_target so its milliunit value stays a safe integer", () => {
+    for (const shape of [create, update]) {
+      expect(shape.parse({ goal_target: GOAL_TARGET_MAX_DOLLARS }).goal_target).toBe(GOAL_TARGET_MAX_DOLLARS);
+      expect(() => shape.parse({ goal_target: GOAL_TARGET_MAX_DOLLARS + 1 })).toThrow();
+      // Would overflow to Infinity in milliunits, which JSON sends as null (= clear the target)
+      expect(() => shape.parse({ goal_target: 1e300 })).toThrow();
+    }
+    expect(Number.isSafeInteger(GOAL_TARGET_MAX_DOLLARS * 1000)).toBe(true);
+    expect(categoryTargetCreateJsonProperties.goal_target.maximum).toBe(GOAL_TARGET_MAX_DOLLARS);
+    expect(categoryTargetUpdateJsonProperties.goal_target.maximum).toBe(GOAL_TARGET_MAX_DOLLARS);
   });
 
   it("JSON properties cover the same keys as the zod shapes", () => {

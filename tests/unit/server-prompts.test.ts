@@ -95,6 +95,9 @@ describe('prompts/get error mapping', () => {
     expect((err as McpError).message).not.toContain('abc123');
     // The detail is still logged server-side, sanitized.
     expect(consoleError).toHaveBeenCalledWith('[PromptError]', expect.any(String));
+    const logged = String(consoleError.mock.calls.at(-1)?.[1]);
+    expect(logged).not.toContain('abc123');
+    expect(logged).not.toContain('/var/db');
 
     await client.close();
     await server.close();

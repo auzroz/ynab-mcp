@@ -6,11 +6,15 @@
  */
 
 import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import { InvalidPromptArgumentsError } from './errors.js';
 
 // Matches the YYYY-MM-01 format the underlying ynab_budget_vs_actuals tool expects
 // (same pattern used in src/tools/analytics/budget-vs-actuals.ts).
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-01$/;
+
+// Empty or missing means "current month".
+const monthArgSchema = z.union([z.literal(''), z.string().regex(MONTH_PATTERN)]).optional();
 
 export const monthlyReviewPrompt: Prompt = {
   name: 'ynab-monthly-review',
@@ -33,11 +37,11 @@ export function buildMonthlyReviewMessages(args: Record<string, string>): {
   // A malformed month (wrong format, or an attempt to inject extra text into the
   // prompt) is rejected as a client error rather than interpolated raw. An empty
   // or missing month means "current month".
-  const rawMonth = args['month'];
-  if (rawMonth !== undefined && rawMonth !== '' && (typeof rawMonth !== 'string' || !MONTH_PATTERN.test(rawMonth))) {
+  const parsed = monthArgSchema.safeParse(args['month']);
+  if (!parsed.success) {
     throw new InvalidPromptArgumentsError('month must be YYYY-MM-01 (first of month)');
   }
-  const month = rawMonth ? rawMonth : undefined;
+  const month = parsed.data ? parsed.data : undefined;
   const monthClause = month ? ` for ${month}` : '';
 
   return {
