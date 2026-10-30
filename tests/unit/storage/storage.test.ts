@@ -799,6 +799,106 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
     }
   });
 
+  describe('token family lock (rotation vs. revocation in flight)', () => {
+    /** Resolves after `ms`, to let a query reach (and block on) its lock. */
+    const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /** Tracks whether a promise has settled yet. */
+    function track<T>(p: Promise<T>): { promise: Promise<T>; settled: () => boolean } {
+      let done = false;
+      const promise = p.finally(() => {
+        done = true;
+      });
+      return { promise, settled: () => done };
+    }
+
+    async function setup() {
+      const { PostgresStorage, LOCK_FAMILY } = await import('../../../src/storage/postgres.js');
+      const pg = (await import('pg')).default;
+      const connectionString = process.env.DATABASE_URL;
+      if (!connectionString) throw new Error('DATABASE_URL not set');
+      const storage = new PostgresStorage({ connectionString });
+      await storage.init();
+      const raw = new pg.Pool({ connectionString });
+      return { storage, raw, LOCK_FAMILY };
+    }
+
+    it('revoking a family waits for a rotation in flight and removes the pair it saved', async () => {
+      const { storage, raw, LOCK_FAMILY } = await setup();
+      const tx = await raw.connect();
+      try {
+        const familyId = randomUUID();
+        const spent = makeRefreshToken({ familyId });
+        await storage.saveRefreshToken(spent);
+        const next = makeRotation(familyId);
+
+        // A rotation by hand, left uncommitted: spend the token, save the new pair.
+        await tx.query('BEGIN');
+        await tx.query(LOCK_FAMILY, [familyId]);
+        await tx.query('DELETE FROM refresh_tokens WHERE token = $1', [spent.token]);
+        await tx.query(
+          `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, family_id)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [next.accessToken.token, 'client-1', 'user-1', '["read"]', Date.now() + 60_000, familyId]
+        );
+        await tx.query(
+          `INSERT INTO refresh_tokens (token, client_id, user_id, scopes, family_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [next.refreshToken.token, 'client-1', 'user-1', '["read"]', familyId]
+        );
+
+        const revoke = track(storage.deleteTokenFamily(familyId));
+        await pause(200);
+        expect(revoke.settled()).toBe(false);
+        await tx.query('COMMIT');
+        await revoke.promise;
+
+        expect(await storage.getAccessToken(next.accessToken.token)).toBeUndefined();
+        expect(await storage.getRefreshToken(next.refreshToken.token)).toBeUndefined();
+      } finally {
+        await tx.query('ROLLBACK').catch(() => undefined);
+        tx.release();
+        await raw.end();
+        await storage.close();
+      }
+    });
+
+    it('a rotation waits while its family is being revoked', async () => {
+      const { storage, raw, LOCK_FAMILY } = await setup();
+      const tx = await raw.connect();
+      try {
+        const familyId = randomUUID();
+        const old = makeRefreshToken({ familyId });
+        await storage.saveRefreshToken(old);
+
+        await tx.query('BEGIN');
+        await tx.query(LOCK_FAMILY, [familyId]);
+        const rotation = makeRotation(familyId);
+        const rotate = track(storage.rotateRefreshToken(old.token, rotation));
+        await pause(200);
+        expect(rotate.settled()).toBe(false);
+        expect(await storage.getRefreshToken(old.token)).toEqual(old);
+        await tx.query('COMMIT');
+
+        expect(await rotate.promise).toEqual(old);
+        expect(await storage.getRefreshToken(rotation.refreshToken.token)).toEqual(rotation.refreshToken);
+        // Another family is not held up by the lock.
+        const otherFamily = randomUUID();
+        const other = makeRefreshToken({ familyId: otherFamily });
+        await storage.saveRefreshToken(other);
+        await tx.query('BEGIN');
+        await tx.query(LOCK_FAMILY, [familyId]);
+        expect(await storage.rotateRefreshToken(other.token, makeRotation(otherFamily))).toEqual(other);
+        await tx.query('COMMIT');
+      } finally {
+        await tx.query('ROLLBACK').catch(() => undefined);
+        tx.release();
+        await raw.end();
+        await storage.close();
+      }
+    });
+  });
+
   runStorageConformance('PostgresStorage', async () => {
     const { PostgresStorage } = await import('../../../src/storage/postgres.js');
     const connectionString = process.env.DATABASE_URL;

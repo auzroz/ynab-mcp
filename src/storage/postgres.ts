@@ -156,6 +156,17 @@ function toMillis(value: string | number): number {
 const SCHEMA_LOCK_KEY = 0x796e6162; // "ynab"
 
 /**
+ * First key of the two-key advisory lock that serializes a token family's
+ * rotations and its revocation (the second is the family id's hash). The
+ * two-key form never collides with the one-key {@link SCHEMA_LOCK_KEY}; two
+ * families whose ids hash alike just serialize with each other.
+ */
+const FAMILY_LOCK_SPACE = 0x666d6c79; // "fmly"
+
+/** Takes the family lock (`$1` = family id) until the transaction ends. */
+export const LOCK_FAMILY = `SELECT pg_advisory_xact_lock(${FAMILY_LOCK_SPACE}, hashtext($1))`;
+
+/**
  * Create the base (0.3.x) tables and the tables added since, apply
  * {@link ADDED_COLUMNS} and create {@link ADDED_INDEXES}, in one transaction
  * under an advisory lock so concurrent replicas don't race. Postgres DDL is
@@ -480,12 +491,15 @@ export class PostgresStorage implements Storage {
     // Pruned on its own, before the rotation, so the rotation's transaction holds
     // no tombstone locks and a pruning failure spends nothing.
     await this.db.query('DELETE FROM consumed_refresh_tokens WHERE expires_at < $1', [Date.now()]);
-    // A concurrent rotation of the same token blocks on the DELETE's row lock
-    // until this transaction commits, then finds the row gone; by then the
-    // tombstone and the new tokens are visible to it.
+    // A concurrent rotation of the same token blocks on the family lock (or the
+    // DELETE's row lock) until this transaction commits, then finds the row
+    // gone; by then the tombstone and the new tokens are visible to it. The
+    // family lock also keeps deleteTokenFamily from running while the new pair
+    // is uncommitted. A 0.3.x token's family is new, so nothing contends.
     const client = await this.db.connect();
     try {
       await client.query('BEGIN');
+      await client.query(LOCK_FAMILY, [rotation.familyId]);
       const res = await client.query<RefreshTokenRow>(
         'DELETE FROM refresh_tokens WHERE token = $1 RETURNING *',
         [token]
@@ -531,11 +545,25 @@ export class PostgresStorage implements Storage {
   }
 
   async deleteTokenFamily(familyId: string): Promise<void> {
-    // Both deletes in one statement (one implicit transaction).
-    await this.db.query(
-      `WITH access AS (DELETE FROM access_tokens WHERE family_id = $1)
-       DELETE FROM refresh_tokens WHERE family_id = $1`,
-      [familyId]
-    );
+    // Under the family lock, so a rotation in flight commits first: the DELETE's
+    // snapshot is taken after the lock is granted and sees the pair it saved.
+    // (Without it, READ COMMITTED would only re-check the rows it blocked on,
+    // the spent token, and miss that pair.) Both deletes in one statement.
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(LOCK_FAMILY, [familyId]);
+      await client.query(
+        `WITH access AS (DELETE FROM access_tokens WHERE family_id = $1)
+         DELETE FROM refresh_tokens WHERE family_id = $1`,
+        [familyId]
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 }
