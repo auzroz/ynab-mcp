@@ -819,6 +819,124 @@ describe('McpOAuthProvider refresh scope (never widened)', () => {
   });
 });
 
+describe('McpOAuthProvider refresh downscoping (read-write implies read-only)', () => {
+  it('narrows a read-write-only grant to a read-only access token; the refresh token keeps the grant', async () => {
+    const { provider, storage } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider, { scopes: ['read-write'] });
+    expect((await provider.verifyAccessToken(tokens.access_token)).extra?.['grantedScope']).toBe('read-write');
+
+    const narrowed = await provider.exchangeRefreshToken(client, refreshOf(tokens), ['read-only']);
+    expect(narrowed.scope).toBe('read-only');
+    // The stored access level is read-only, not just the reported one.
+    expect((await storage.getAccessToken(narrowed.access_token))?.grantedScope).toBe('read-only');
+    const info = await provider.verifyAccessToken(narrowed.access_token);
+    expect(info.scopes).toEqual(['read-only']);
+    expect(info.extra?.['grantedScope']).toBe('read-only');
+    // RFC 6749 section 6: the rotated refresh token carries the original grant.
+    expect(await storage.getRefreshToken(refreshOf(narrowed))).toMatchObject({
+      scopes: ['read-write'],
+      grantedScope: 'read-write',
+    });
+
+    const restored = await provider.exchangeRefreshToken(client, refreshOf(narrowed));
+    expect(restored.scope).toBe('read-write');
+    expect((await provider.verifyAccessToken(restored.access_token)).extra?.['grantedScope']).toBe('read-write');
+  });
+
+  it('still rejects an unknown scope alongside read-only', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider, { scopes: ['read-write'] });
+    await expect(
+      provider.exchangeRefreshToken(client, refreshOf(tokens), ['read-only', 'admin'])
+    ).rejects.toBeInstanceOf(InvalidScopeError);
+  });
+
+  it('does not widen a read-only grant', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider, { scopes: ['read-only'] });
+    await expect(
+      provider.exchangeRefreshToken(client, refreshOf(tokens), ['read-write'])
+    ).rejects.toBeInstanceOf(InvalidScopeError);
+  });
+});
+
+describe('McpOAuthProvider refresh validation (before the token is spent)', () => {
+  it('rejects an unknown refresh token with invalid_grant', async () => {
+    const { provider } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await expect(provider.exchangeRefreshToken(client, 'no-such-token')).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+  });
+
+  it('an invalid scope leaves the refresh token usable', async () => {
+    const { provider, storage } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider, { scopes: ['read-only'] });
+    const err = await errorOf(provider.exchangeRefreshToken(client, refreshOf(tokens), ['read-write']));
+    expect(err).toBeInstanceOf(InvalidScopeError);
+    expect(await storage.getRefreshToken(refreshOf(tokens))).toBeDefined();
+    await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).resolves.toHaveProperty(
+      'access_token'
+    );
+  });
+
+  it('a stale resource binding is rejected without spending the refresh token', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await storage.saveRefreshToken({
+      token: 'stale-rt',
+      clientId: client.client_id,
+      userId: 'ynab-user-1',
+      scopes: [],
+      resource: 'https://old.example.com/mcp',
+    });
+    const take = vi.spyOn(storage, 'takeRefreshToken');
+    await expect(provider.exchangeRefreshToken(client, 'stale-rt')).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+    expect(take).not.toHaveBeenCalled();
+    expect(await storage.getRefreshToken('stale-rt')).toBeDefined();
+  });
+
+  it('a refresh token presented by another client is revoked', async () => {
+    const { provider, storage } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    const other = await provider.clientsStore.registerClient(clientMetadata);
+    const err = await errorOf(provider.exchangeRefreshToken(other, refreshOf(tokens)));
+    expect(err).toBeInstanceOf(InvalidGrantError);
+    // Generic: does not confirm the token is valid for some other client.
+    expect((err as InvalidGrantError).message).toBe('Invalid refresh token');
+    expect(await storage.getRefreshToken(refreshOf(tokens))).toBeUndefined();
+    // Not even its own client can use it any more.
+    await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+  });
+
+  it('issues nothing when a concurrent request spent the token between lookup and take', async () => {
+    const { provider, storage } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    vi.spyOn(storage, 'takeRefreshToken').mockResolvedValueOnce(undefined);
+    const save = vi.spyOn(storage, 'saveAccessToken');
+    await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('two concurrent refreshes with one token: exactly one succeeds', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await driveToTokens(provider);
+    const results = await Promise.allSettled([
+      provider.exchangeRefreshToken(client, refreshOf(tokens)),
+      provider.exchangeRefreshToken(client, refreshOf(tokens)),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((r) => r.status === 'rejected');
+    expect(rejected?.status === 'rejected' && rejected.reason).toBeInstanceOf(InvalidGrantError);
+  });
+});
+
 describe('McpOAuthProvider.verifyAccessToken resource checks', () => {
   it('accepts a 0.3.x access token (no stored resource) and reports this resource', async () => {
     const { provider, storage } = makeProvider();

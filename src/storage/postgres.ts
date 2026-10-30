@@ -91,6 +91,17 @@ function parseGrantedScope(value: string | null): GrantedScope | undefined {
   return value === 'read-only' || value === 'read-write' ? value : undefined;
 }
 
+function refreshTokenFromRow(row: RefreshTokenRow): RefreshTokenRecord {
+  return {
+    token: row.token,
+    clientId: row.client_id,
+    userId: row.user_id,
+    scopes: parseScopes(row.scopes),
+    resource: row.resource ?? undefined,
+    grantedScope: parseGrantedScope(row.granted_scope),
+  };
+}
+
 function toMillis(value: string | number): number {
   return typeof value === 'number' ? value : Number(value);
 }
@@ -405,21 +416,22 @@ export class PostgresStorage implements Storage {
     );
   }
 
+  async getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
+    const res = await this.db.query<RefreshTokenRow>(
+      'SELECT * FROM refresh_tokens WHERE token = $1',
+      [token]
+    );
+    const row = res.rows[0];
+    return row ? refreshTokenFromRow(row) : undefined;
+  }
+
   async takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
     const res = await this.db.query<RefreshTokenRow>(
       'DELETE FROM refresh_tokens WHERE token = $1 RETURNING *',
       [token]
     );
     const row = res.rows[0];
-    if (!row) return undefined;
-    return {
-      token: row.token,
-      clientId: row.client_id,
-      userId: row.user_id,
-      scopes: parseScopes(row.scopes),
-      resource: row.resource ?? undefined,
-      grantedScope: parseGrantedScope(row.granted_scope),
-    };
+    return row ? refreshTokenFromRow(row) : undefined;
   }
 
   async deleteRefreshToken(token: string): Promise<void> {

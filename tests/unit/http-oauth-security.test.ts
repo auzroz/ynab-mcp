@@ -85,7 +85,8 @@ async function register(app: Express, redirectUri = CALLBACK): Promise<string> {
 async function consent(
   app: Express,
   clientId: string,
-  redirectUri = CALLBACK
+  redirectUri = CALLBACK,
+  scope?: string
 ): Promise<{ state: string; cookie: string; res: request.Response }> {
   const res = await request(app).get('/authorize').query({
     response_type: 'code',
@@ -94,6 +95,7 @@ async function consent(
     code_challenge: challenge,
     code_challenge_method: 'S256',
     state: 'client-state',
+    ...(scope !== undefined ? { scope } : {}),
   });
   expect(res.status).toBe(200);
   const m = /state=([^&"]+)&amp;scope=read-only/.exec(res.text);
@@ -101,10 +103,14 @@ async function consent(
   return { state: decodeURIComponent(m[1]), cookie: cookieHeaderFrom(res), res };
 }
 
-/** Full, legitimate flow in one browser: returns the client id and its access token. */
-async function connect(app: Express, choice: 'read-only' | 'read-write'): Promise<{ clientId: string; access: string }> {
+/** Full, legitimate flow in one browser: returns the client id and its access and refresh tokens. */
+async function connect(
+  app: Express,
+  choice: 'read-only' | 'read-write',
+  scope?: string
+): Promise<{ clientId: string; access: string; refresh: string }> {
   const clientId = await register(app);
-  const { state, cookie } = await consent(app, clientId);
+  const { state, cookie } = await consent(app, clientId, CALLBACK, scope);
   const start = await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: choice });
   expect(start.status).toBe(302);
   const cb = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
@@ -119,7 +125,31 @@ async function connect(app: Express, choice: 'read-only' | 'read-write'): Promis
     redirect_uri: CALLBACK,
   });
   expect(tok.status).toBe(200);
-  return { clientId, access: tok.body.access_token as string };
+  return { clientId, access: tok.body.access_token as string, refresh: tok.body.refresh_token as string };
+}
+
+/** POST /token with a refresh token (and an optional narrower scope). */
+async function refresh(
+  app: Express,
+  clientId: string,
+  refreshToken: string,
+  scope?: string
+): Promise<{ access: string; refresh: string; scope: string }> {
+  const tok = await request(app)
+    .post('/token')
+    .type('form')
+    .send({
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      refresh_token: refreshToken,
+      ...(scope !== undefined ? { scope } : {}),
+    });
+  expect(tok.status).toBe(200);
+  return {
+    access: tok.body.access_token as string,
+    refresh: tok.body.refresh_token as string,
+    scope: tok.body.scope as string,
+  };
 }
 
 function mcp(app: Express, method: 'post' | 'get' | 'delete', access: string, sessionId?: string): request.Test {
@@ -328,6 +358,60 @@ describe('MCP sessions are bound to their creator', () => {
     const res = await mcp(app, 'post', second.access, sid).send(toolsList);
     expect(res.status).toBe(400);
     vi.mocked(console.error).mockRestore();
+  });
+});
+
+describe('MCP sessions are bound to their access level', () => {
+  it('a read-only token of the same client and user cannot use a session a read-write token initialized', async () => {
+    const app = await createHttpApp(makeConfig());
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rw = await connect(app, 'read-write', 'read-write');
+    const sid = await initSession(app, rw.access);
+    expect(createServerMock.mock.calls.at(-1)?.[0].readOnly).toBe(false);
+
+    // Same client, same user, narrower token.
+    const ro = await refresh(app, rw.clientId, rw.refresh, 'read-only');
+    expect(ro.scope).toBe('read-only');
+
+    const post = await mcp(app, 'post', ro.access, sid).send(toolsList);
+    expect(post.status).toBe(400);
+    expect(post.body.error.message).toBe('Bad Request: no valid session for this request');
+    const unknown = await mcp(app, 'post', ro.access, 'no-such-session').send(toolsList);
+    expect(post.body).toEqual(unknown.body);
+    const get = await mcp(app, 'get', ro.access, sid);
+    expect(get.status).toBe(400);
+    expect(get.body.error.message).toBe('Bad Request: unknown or missing session id');
+    const del = await mcp(app, 'delete', ro.access, sid);
+    expect(del.status).toBe(400);
+
+    // A read-write token from a later, same-level refresh keeps using the session.
+    const rw2 = await refresh(app, rw.clientId, ro.refresh);
+    expect(rw2.scope).toBe('read-write');
+    const own = await mcp(app, 'post', rw2.access, sid).send(toolsList);
+    expect(own.status).toBe(200);
+    expect(own.text).toContain('ynab_');
+    expect(errorSpy.mock.calls.flat().join(' ')).not.toContain(ro.access);
+    errorSpy.mockRestore();
+  });
+
+  it('a token downscoped on refresh initializes a read-only session that refuses writes', async () => {
+    const app = await createHttpApp(makeConfig());
+    const rw = await connect(app, 'read-write', 'read-write');
+    const ro = await refresh(app, rw.clientId, rw.refresh, 'read-only');
+    const sid = await initSession(app, ro.access);
+    expect(createServerMock.mock.calls.at(-1)?.[0].readOnly).toBe(true);
+
+    const call = await mcp(app, 'post', ro.access, sid).send({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: {
+        name: 'ynab_delete_transaction',
+        arguments: { budget_id: 'last-used', transaction_id: '00000000-0000-4000-8000-000000000000' },
+      },
+    });
+    expect(call.status).toBe(200);
+    expect(call.text).toContain('read_only_mode');
   });
 });
 

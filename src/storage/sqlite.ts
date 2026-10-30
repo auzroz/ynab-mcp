@@ -91,6 +91,17 @@ function parseGrantedScope(value: string | null): GrantedScope | undefined {
   return value === 'read-only' || value === 'read-write' ? value : undefined;
 }
 
+function refreshTokenFromRow(row: RefreshTokenRow): RefreshTokenRecord {
+  return {
+    token: row.token,
+    clientId: row.client_id,
+    userId: row.user_id,
+    scopes: parseScopes(row.scopes),
+    resource: row.resource ?? undefined,
+    grantedScope: parseGrantedScope(row.granted_scope),
+  };
+}
+
 /**
  * Apply {@link ADDED_COLUMNS} that are not present yet, in one IMMEDIATE
  * transaction (write lock taken up front, so two processes opening the same file
@@ -395,6 +406,13 @@ export class SqliteStorage implements Storage {
       });
   }
 
+  async getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
+    const row = this.database
+      .prepare('SELECT * FROM refresh_tokens WHERE token = ?')
+      .get(token) as RefreshTokenRow | undefined;
+    return row ? refreshTokenFromRow(row) : undefined;
+  }
+
   async takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
     const take = this.database.transaction((t: string): RefreshTokenRow | undefined => {
       const row = this.database.prepare('SELECT * FROM refresh_tokens WHERE token = ?').get(t) as
@@ -404,15 +422,7 @@ export class SqliteStorage implements Storage {
       return row;
     });
     const row = take(token);
-    if (!row) return undefined;
-    return {
-      token: row.token,
-      clientId: row.client_id,
-      userId: row.user_id,
-      scopes: parseScopes(row.scopes),
-      resource: row.resource ?? undefined,
-      grantedScope: parseGrantedScope(row.granted_scope),
-    };
+    return row ? refreshTokenFromRow(row) : undefined;
   }
 
   async deleteRefreshToken(token: string): Promise<void> {

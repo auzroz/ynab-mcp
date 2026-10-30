@@ -135,8 +135,11 @@ export interface Storage {
   getAccessToken(token: string): Promise<AccessTokenRecord | undefined>;
   deleteAccessToken(token: string): Promise<void>;
 
-  // MCP refresh tokens, one-time (rotated on use)
+  // MCP refresh tokens, one-time (rotated on use). getRefreshToken only looks
+  // a token up (to validate a request before spending it); takeRefreshToken is
+  // the atomic one-time use.
   saveRefreshToken(rec: RefreshTokenRecord): Promise<void>;
+  getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined>;
   takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined>;
   deleteRefreshToken(token: string): Promise<void>;
 }

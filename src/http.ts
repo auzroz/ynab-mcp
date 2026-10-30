@@ -31,6 +31,7 @@ import { createServerForUser, type UserContext } from './server.js';
 import type { HttpConfig } from './config/environment.js';
 import { Encryptor } from './crypto.js';
 import { createStorage } from './storage/index.js';
+import type { GrantedScope } from './storage/types.js';
 import { McpOAuthProvider } from './auth/mcp-provider.js';
 import { YnabTokenResolver } from './auth/user-session.js';
 import { issOnAuthorizationRedirects } from './middleware/iss-redirect.js';
@@ -61,14 +62,30 @@ async function buildStorage(config: HttpConfig): ReturnType<typeof createStorage
 }
 
 /**
- * Who a session belongs to: the authenticated MCP client and YNAB user (oauth
- * mode), or nobody (header mode, which has no per-request identity).
+ * The access level the request's MCP access token carries (oauth mode), as
+ * verifyAccessToken reported it. Anything but `read-write` is read-only.
+ */
+function tokenAccessLevel(auth: AuthInfo): GrantedScope {
+  return auth.extra?.['grantedScope'] === 'read-write' ? 'read-write' : 'read-only';
+}
+
+/**
+ * Who a session belongs to: the authenticated MCP client and YNAB user, and the
+ * access level of the token it was initialized with (oauth mode); or nobody
+ * (header mode, which has no per-request identity). Binding the level means a
+ * read-only token of the same client and user can't drive a session that a
+ * read-write token initialized; a refreshed token of the same level still can.
+ *
+ * The level is the token's own (from AuthInfo, no extra storage read per
+ * request). The other inputs to a session's read-only flag (YNAB_READ_ONLY,
+ * the user's YNAB grant) can only make a session stricter than its token, so
+ * a request never gets more access through a session than its token grants.
  */
 function sessionOwner(req: Request): string | undefined {
   const auth = (req as unknown as { auth?: AuthInfo }).auth;
   const userId = auth?.extra?.['userId'];
   if (auth === undefined || typeof userId !== 'string') return undefined;
-  return JSON.stringify([auth.clientId, userId]);
+  return JSON.stringify([auth.clientId, userId, tokenAccessLevel(auth)]);
 }
 
 /** A live MCP session and the identity it was created for. */
@@ -117,8 +134,9 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
   /**
    * The session named by `mcp-session-id`, only if the request is from the
    * identity that created it. A session id presented with another user's (or
-   * client's) token is treated exactly like an unknown id, so ids leaked from
-   * logs can't be used to drive someone else's session, nor probed.
+   * client's, or a token of another access level) is treated exactly like an
+   * unknown id, so ids leaked from logs can't be used to drive someone else's
+   * session, nor probed.
    */
   const findSession = (req: Request): StreamableHTTPServerTransport | undefined => {
     const sessionId = req.header('mcp-session-id');
@@ -281,13 +299,14 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
         // Write access needs all of: writes enabled globally, a read-write grant
         // on this token (per client grant, not the user's latest consent), and
         // a read-write YNAB token for the user (YNAB enforces that one anyway).
-        const tokenScope = auth?.extra?.['grantedScope'];
+        // The token's level is also part of the session owner (sessionOwner).
+        const tokenScope = auth === undefined ? 'read-only' : tokenAccessLevel(auth);
         return {
           ok: true,
           ctx: {
             accessToken,
             defaultBudgetId: config.defaultBudgetId,
-            readOnly: config.readOnly || tokenScope !== 'read-write' || grantedScope === 'read-only',
+            readOnly: config.readOnly || tokenScope === 'read-only' || grantedScope === 'read-only',
             rateLimitPerHour: config.rateLimitPerHour,
             cacheTtlMs: config.cacheTtlMs,
           },

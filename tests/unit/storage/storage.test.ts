@@ -327,6 +327,28 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
         await storage.saveRefreshToken(rec);
         await storage.deleteRefreshToken(rec.token);
         expect(await storage.takeRefreshToken(rec.token)).toBeUndefined();
+        expect(await storage.getRefreshToken(rec.token)).toBeUndefined();
+      });
+
+      it('looks a refresh token up without consuming it', async () => {
+        const rec = makeRefreshToken({ resource: 'https://mcp.example.com/mcp', grantedScope: 'read-write' });
+        await storage.saveRefreshToken(rec);
+
+        expect(await storage.getRefreshToken(rec.token)).toEqual(rec);
+        expect(await storage.getRefreshToken(rec.token)).toEqual(rec);
+        expect(await storage.takeRefreshToken(rec.token)).toEqual(rec);
+        // Once taken, it is gone for both.
+        expect(await storage.getRefreshToken(rec.token)).toBeUndefined();
+        expect(await storage.takeRefreshToken(rec.token)).toBeUndefined();
+      });
+
+      it('lookup returns undefined for an unknown token, and undefined optional fields', async () => {
+        expect(await storage.getRefreshToken(`rt-${randomUUID()}`)).toBeUndefined();
+        const rec = makeRefreshToken();
+        await storage.saveRefreshToken(rec);
+        const got = await storage.getRefreshToken(rec.token);
+        expect(got?.resource).toBeUndefined();
+        expect(got?.grantedScope).toBeUndefined();
       });
     });
   });

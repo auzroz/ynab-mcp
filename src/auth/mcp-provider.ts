@@ -28,9 +28,11 @@
  *
  * Access level: the read-only / read-write choice is recorded per grant, on the
  * code and on the tokens issued from it (and kept through refresh), and reported
- * in `AuthInfo.extra.grantedScope`. Codes and tokens written before 0.4.0 carry
- * none and are treated as read-only. A client that requests only the
- * `read-only` scope is never offered or granted write access.
+ * in `AuthInfo.extra.grantedScope`. A refresh may narrow a read-write grant to a
+ * read-only access token; the rotated refresh token keeps the grant. Codes and
+ * tokens written before 0.4.0 carry none and are treated as read-only. A client
+ * that requests only the `read-only` scope is never offered or granted write
+ * access.
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -112,6 +114,14 @@ export function scopeCeiling(scopes: readonly string[]): GrantedScope {
 
 function minScope(a: GrantedScope, b: GrantedScope): GrantedScope {
   return a === 'read-only' || b === 'read-only' ? 'read-only' : 'read-write';
+}
+
+/**
+ * Scopes a refresh may request from a grant: its own, plus `read-only` when it
+ * holds `read-write` (read-only is a narrower request, not a new scope).
+ */
+function impliedScopes(granted: readonly string[]): string[] {
+  return granted.includes('read-write') ? [...granted, 'read-only'] : [...granted];
 }
 
 /** Scopes recorded on a grant: a requested `read-write` becomes `read-only` when that is what was granted. */
@@ -435,22 +445,36 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     scopes?: string[],
     resource?: URL
   ): Promise<OAuthTokens> {
-    // Checked before the one-time refresh token is consumed, so a client that
-    // names the wrong resource keeps its (still valid) refresh token.
+    // The request is validated against a non-destructive lookup and the one-time
+    // refresh token is only spent once it has passed, so a client that names the
+    // wrong resource or scope keeps its (still valid) refresh token.
     if (resource !== undefined && !isSameResource(resource, this.resource)) {
       throw new InvalidTargetError(FOREIGN_RESOURCE);
     }
-    const rec = await this.opts.storage.takeRefreshToken(refreshToken);
+    const storage = this.opts.storage;
+    const rec = await storage.getRefreshToken(refreshToken);
     if (!rec) throw new InvalidGrantError('Invalid refresh token');
-    if (rec.clientId !== client.client_id) throw new InvalidGrantError('Client mismatch');
-    const bound = this.bindResource(rec.resource, resource);
+    if (rec.clientId !== client.client_id) {
+      // A refresh token presented by a client it was not issued to has likely
+      // leaked: revoke it (OAuth 2.1 section 4.3.1, RFC 9700 section 4.14).
+      await storage.deleteRefreshToken(refreshToken);
+      throw new InvalidGrantError('Invalid refresh token');
+    }
 
     // RFC 6749 section 6: the requested scope must not include any scope not
     // originally granted; omitted means the original scope. The new refresh
     // token keeps the original grant, so a narrowed refresh is not permanent.
     const requested = normalizeScopes(scopes);
-    if (requested.some((s) => !rec.scopes.includes(s))) {
+    const allowed = impliedScopes(rec.scopes);
+    if (requested.some((s) => !allowed.includes(s))) {
       throw new InvalidScopeError('Requested scope exceeds the original grant');
+    }
+    const bound = this.bindResource(rec.resource, resource);
+
+    // The atomic one-time use. Nothing taken means a concurrent request spent it
+    // first. Refresh-token rows are never updated, so `rec` is the row taken.
+    if (!(await storage.takeRefreshToken(refreshToken))) {
+      throw new InvalidGrantError('Invalid refresh token');
     }
     const accessScopes = requested.length > 0 ? requested : rec.scopes;
     // The access level travels with the grant and is never widened by a refresh;
@@ -465,6 +489,12 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     );
   }
 
+  /**
+   * Save a new access / refresh token pair for a grant. The refresh token keeps
+   * the grant's scopes and access level; the access token's level is lowered to
+   * read-only when its own scopes say so (a refresh narrowed to `read-only`), so
+   * the stored level never claims more than the token's scope.
+   */
   private async issueTokens(
     clientId: string,
     userId: string,
@@ -483,7 +513,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       scopes: accessScopes,
       expiresAt,
       resource,
-      grantedScope,
+      grantedScope: minScope(grantedScope, scopeCeiling(accessScopes)),
     });
     await this.opts.storage.saveRefreshToken({
       token: refreshToken,
