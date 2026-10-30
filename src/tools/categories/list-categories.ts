@@ -10,6 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { buildGoalDetail } from '../../utils/goals.js';
 import { isInternalGroup } from '../../utils/categories.js';
 
 // Input schema
@@ -92,6 +93,7 @@ export async function handleListCategories(
         balance: formatCurrency(cat.balance),
         balance_raw: cat.balance,
         goal_type: cat.goal_type ?? null,
+        goal: buildGoalDetail(cat),
         goal_percentage_complete: cat.goal_percentage_complete ?? null,
         goal_under_funded:
           cat.goal_under_funded != null ? formatCurrency(cat.goal_under_funded) : null,

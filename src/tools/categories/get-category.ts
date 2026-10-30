@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
+import { buildGoalDetail } from '../../utils/goals.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
@@ -74,30 +75,7 @@ export async function handleGetCategory(
         budgeted: formatCurrency(category.budgeted),
         activity: formatCurrency(category.activity),
         balance: formatCurrency(category.balance),
-        goal: category.goal_type
-          ? {
-              type: category.goal_type,
-              // goal_target_month is deprecated (YNAB API 1.78); prefer goal_target_date
-              target_date: category.goal_target_date ?? category.goal_target_month ?? null,
-              // Backward-compatible alias of target_date
-              target_month: category.goal_target_date ?? category.goal_target_month ?? null,
-              target: category.goal_target != null ? formatCurrency(category.goal_target) : null,
-              percentage_complete: category.goal_percentage_complete,
-              months_to_budget: category.goal_months_to_budget,
-              under_funded:
-                category.goal_under_funded != null
-                  ? formatCurrency(category.goal_under_funded)
-                  : null,
-              overall_funded:
-                category.goal_overall_funded != null
-                  ? formatCurrency(category.goal_overall_funded)
-                  : null,
-              overall_left:
-                category.goal_overall_left != null
-                  ? formatCurrency(category.goal_overall_left)
-                  : null,
-            }
-          : null,
+        goal: buildGoalDetail(category),
         original_category_group_id: category.original_category_group_id,
         deleted: category.deleted,
       },
