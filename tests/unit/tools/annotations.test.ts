@@ -17,7 +17,7 @@ const DELETE_TOOLS = ['ynab_delete_scheduled_transaction', 'ynab_delete_transact
 describe('tool titles and annotations', () => {
   it('registers 66 tools with unique names', () => {
     const names = tools.map((t) => t.name);
-    expect(names).toHaveLength(66);
+    expect(names).toHaveLength(67);
     expect(new Set(names).size).toBe(names.length);
   });
 

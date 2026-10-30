@@ -24,6 +24,29 @@ function createCategoryAuditDetails(data: ynab.PostCategoryWrapper): Record<stri
   };
 }
 
+/**
+ * Request body for updateCategory. The API (SaveCategory) accepts null to clear
+ * name/note/target values, but the SDK's ExistingCategory type only declares the
+ * non-null forms, so the body is typed with SaveCategory and cast at the SDK call.
+ * The SDK serializer passes values (including null) through unchanged.
+ */
+export interface UpdateCategoryBody {
+  category: ynab.SaveCategory;
+}
+
+/** Audit details for category detail updates: presence flags only, no names, notes or amounts. */
+function updateCategoryDetailsAuditDetails(data: UpdateCategoryBody): Record<string, unknown> {
+  const c = data.category;
+  return {
+    ...(c.name !== undefined ? { has_name: true } : {}),
+    ...(c.note !== undefined ? { has_note: true } : {}),
+    ...(c.category_group_id !== undefined ? { category_group_id: c.category_group_id } : {}),
+    ...(c.goal_target !== undefined ? { has_goal_target: true } : {}),
+    ...(c.goal_target_date !== undefined ? { has_goal_target_date: true } : {}),
+    ...(c.goal_needs_whole_amount !== undefined ? { has_goal_needs_whole_amount: true } : {}),
+  };
+}
+
 export class YnabClient {
   private readonly api: ynab.API;
   private readonly rateLimiter: RateLimiter;
@@ -341,6 +364,53 @@ export class YnabClient {
         resourceType: 'category',
         resourceId: categoryId,
         details: { month, budgeted: data.category.budgeted },
+        success: false,
+        error: sanitizeErrorMessage(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Update a category's details (name, note, group, target) via PATCH
+   * /plans/{plan_id}/categories/{category_id}. Distinct from updateMonthCategory,
+   * which only changes a month's budgeted amount.
+   */
+  async updateCategory(
+    budgetId: string,
+    categoryId: string,
+    data: UpdateCategoryBody
+  ): Promise<ynab.SaveCategoryResponse> {
+    this.assertWriteAllowed('updateCategory');
+    await this.rateLimiter.acquire();
+    // Invalidate categories cache after updating (names, groups and targets all change)
+    this.cache.delete(`categories:${budgetId}`);
+
+    const auditLog = this.auditLog;
+    try {
+      const response = await this.api.categories.updateCategory(
+        budgetId,
+        categoryId,
+        data as ynab.PatchCategoryWrapper
+      );
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_category_details',
+        budgetId,
+        resourceType: 'category',
+        resourceId: categoryId,
+        details: updateCategoryDetailsAuditDetails(data),
+        success: true,
+      });
+      return response;
+    } catch (error) {
+      auditLog.log({
+        operation: 'update',
+        tool: 'ynab_update_category_details',
+        budgetId,
+        resourceType: 'category',
+        resourceId: categoryId,
+        details: updateCategoryDetailsAuditDetails(data),
         success: false,
         error: sanitizeErrorMessage(error),
       });

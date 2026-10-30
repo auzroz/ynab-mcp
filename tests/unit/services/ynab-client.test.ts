@@ -33,6 +33,7 @@ const mockApi = vi.hoisted(() => {
       getCategoryById: fn(),
       getMonthCategoryById: fn(),
       updateMonthCategory: fn(),
+      updateCategory: fn(),
       createCategory: fn(),
       createCategoryGroup: fn(),
       updateCategoryGroup: fn(),
@@ -548,6 +549,9 @@ describe('write methods - read-only mode rejection', () => {
       client.createCategory(BUDGET, { category: { name: 'C' } } as never)
     ).rejects.toThrow(ReadOnlyModeError);
     await expect(
+      client.updateCategory(BUDGET, 'cat-1', { category: { name: 'C' } } as never)
+    ).rejects.toThrow(ReadOnlyModeError);
+    await expect(
       client.createCategoryGroup(BUDGET, { category_group: { name: 'G' } } as never)
     ).rejects.toThrow(ReadOnlyModeError);
     await expect(
@@ -679,6 +683,48 @@ describe('updateMonthCategory (write)', () => {
       } as never)
     ).rejects.toThrow('nope');
     expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+  });
+});
+
+describe('updateCategory (write)', () => {
+  it('invalidates the categories cache and audits presence flags only', async () => {
+    const client = makeClient(false);
+    setResolve(mockApi.categories.getCategories, { data: { category_groups: [] } });
+    await client.getCategories(BUDGET);
+    await client.getCategories(BUDGET);
+    expect(asMock(mockApi.categories.getCategories)).toHaveBeenCalledTimes(1);
+
+    setResolve(mockApi.categories.updateCategory, { data: { category: { id: 'cat-1' } } });
+    await client.updateCategory(BUDGET, 'cat-1', {
+      category: { name: 'Secret Name', note: null, goal_target: 5000, category_group_id: 'g-2' },
+    } as never);
+    expect(asMock(mockApi.categories.updateCategory)).toHaveBeenCalledWith(BUDGET, 'cat-1', {
+      category: { name: 'Secret Name', note: null, goal_target: 5000, category_group_id: 'g-2' },
+    });
+
+    await client.getCategories(BUDGET);
+    expect(asMock(mockApi.categories.getCategories)).toHaveBeenCalledTimes(2);
+
+    const entry = getAuditLog().getAll()[0];
+    expect(entry).toMatchObject({
+      tool: 'ynab_update_category_details',
+      resourceId: 'cat-1',
+      success: true,
+      details: { has_name: true, has_note: true, has_goal_target: true, category_group_id: 'g-2' },
+    });
+    expect(JSON.stringify(entry)).not.toContain('Secret Name');
+  });
+
+  it('logs failure and rethrows', async () => {
+    const client = makeClient(false);
+    asMock(mockApi.categories.updateCategory).mockRejectedValue(new Error('boom'));
+    await expect(
+      client.updateCategory(BUDGET, 'cat-1', { category: { name: 'X' } } as never)
+    ).rejects.toThrow();
+    expect(getAuditLog().getAll()[0]).toMatchObject({
+      tool: 'ynab_update_category_details',
+      success: false,
+    });
   });
 });
 

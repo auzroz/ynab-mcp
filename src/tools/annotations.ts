@@ -96,6 +96,7 @@ export const TOOL_METADATA = {
   ynab_get_month_category: { title: 'Get Month Category', annotations: READ },
   // Sets an absolute budgeted amount for one month, so repeats are no-ops.
   ynab_update_category: { title: 'Update Category Budget', annotations: UPDATE },
+  ynab_update_category_details: { title: 'Update Category Details', annotations: UPDATE },
   ynab_create_category: { title: 'Create Category', annotations: CREATE },
   ynab_create_category_group: { title: 'Create Category Group', annotations: CREATE },
   ynab_update_category_group: { title: 'Rename Category Group', annotations: UPDATE },

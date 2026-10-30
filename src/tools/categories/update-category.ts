@@ -38,6 +38,8 @@ Use when the user asks:
 - "Increase my entertainment budget"
 - "Change the budget for [category] to [amount]"
 
+To rename a category, change its note, move it to another group, or set/clear its target, use ynab_update_category_details instead (this tool only changes a month's budgeted amount).
+
 Use first-of-month format for the month parameter (e.g., 2024-01-01 for January 2024).
 The budgeted amount is in dollars (e.g., 500.00 for $500).
 Requires a category_id. Use ynab_list_categories first to find the category ID.
