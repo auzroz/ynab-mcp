@@ -54,16 +54,11 @@ export async function handleGetBudget(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
   
-  // Use delta sync if we have prior knowledge
-  const lastKnowledge = client.getServerKnowledge(budgetId);
-  const response = await client.getBudgetById(budgetId, lastKnowledge);
+  // Always a full fetch: with last_knowledge_of_server YNAB returns only the
+  // entities changed since then, and the totals below need the whole budget.
+  const response = await client.getBudgetById(budgetId);
   // ynab v4 renamed the API response's "budget" object to "plan".
   const budget = response.data.plan;
-
-  // Persist server_knowledge for subsequent delta sync calls
-  if (response.data.server_knowledge !== undefined) {
-    client.updateServerKnowledge(budgetId, response.data.server_knowledge);
-  }
 
   // Helper to format currency using budget's format if available
   // Sanitize currency_format fields with defensive defaults

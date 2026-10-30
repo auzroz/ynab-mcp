@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { YnabClient } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
+import { handleGetBudget } from '../../../src/tools/budgets/get-budget.js';
 import { Cache } from '../../../src/services/cache.js';
 import { ReadOnlyModeError, formatErrorResponse } from '../../../src/utils/errors.js';
 import { getAuditLog, _resetAuditLogForTesting } from '../../../src/services/audit-log.js';
@@ -40,12 +41,12 @@ const mockApi = vi.hoisted(() => {
     },
     transactions: {
       getTransactions: fn(),
+      getTransactionsByMonth: fn(),
       getTransactionById: fn(),
       createTransaction: fn(),
       updateTransaction: fn(),
       updateTransactions: fn(),
       deleteTransaction: fn(),
-      importTransactions: fn(),
       getTransactionsByAccount: fn(),
       getTransactionsByCategory: fn(),
       getTransactionsByPayee: fn(),
@@ -152,9 +153,20 @@ describe('YnabClient construction & simple accessors', () => {
 
   it('server knowledge get/update round-trips', () => {
     const client = makeClient(true);
-    expect(client.getServerKnowledge(BUDGET)).toBeUndefined();
-    client.updateServerKnowledge(BUDGET, 42);
-    expect(client.getServerKnowledge(BUDGET)).toBe(42);
+    expect(client.getServerKnowledge(BUDGET, 'budget')).toBeUndefined();
+    client.updateServerKnowledge(BUDGET, 42, 'budget');
+    expect(client.getServerKnowledge(BUDGET, 'budget')).toBe(42);
+  });
+
+  it('server knowledge is isolated by budget, resource and params', () => {
+    const client = makeClient(true);
+    client.updateServerKnowledge(BUDGET, 42, 'transactions', { sinceDate: '2026-01-01' });
+
+    expect(client.getServerKnowledge(BUDGET, 'transactions', { sinceDate: '2026-01-01' })).toBe(42);
+    expect(client.getServerKnowledge(BUDGET, 'budget')).toBeUndefined();
+    expect(client.getServerKnowledge(BUDGET, 'transactions')).toBeUndefined();
+    expect(client.getServerKnowledge(BUDGET, 'transactions', { sinceDate: '2026-02-01' })).toBeUndefined();
+    expect(client.getServerKnowledge('other-budget', 'transactions', { sinceDate: '2026-01-01' })).toBeUndefined();
   });
 });
 
@@ -312,7 +324,7 @@ describe('read methods', () => {
 
     expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledWith(BUDGET, 5);
     expect(result.data.server_knowledge).toBe(99);
-    expect(client.getServerKnowledge(BUDGET)).toBe(99);
+    expect(client.getServerKnowledge(BUDGET, 'budget')).toBe(99);
   });
 
   it('getBudgetById does not track server_knowledge when absent', async () => {
@@ -320,7 +332,7 @@ describe('read methods', () => {
     const client = makeClient(true);
 
     await client.getBudgetById(BUDGET);
-    expect(client.getServerKnowledge(BUDGET)).toBeUndefined();
+    expect(client.getServerKnowledge(BUDGET, 'budget')).toBeUndefined();
   });
 
   it('getBudgetSettingsById maps to plans.getPlanSettingsById and caches', async () => {
@@ -400,7 +412,62 @@ describe('read methods', () => {
       'unapproved',
       3
     );
-    expect(client.getServerKnowledge(BUDGET)).toBe(7);
+    expect(client.getServerKnowledge(BUDGET, 'transactions', {
+      sinceDate: '2026-01-01',
+      untilDate: '2026-01-31',
+      type: 'unapproved',
+    })).toBe(7);
+    // Not visible to the budget endpoint or to a differently-filtered query
+    expect(client.getServerKnowledge(BUDGET, 'budget')).toBeUndefined();
+    expect(client.getServerKnowledge(BUDGET, 'transactions')).toBeUndefined();
+  });
+
+  it('getTransactionsByMonth tracks server_knowledge per month and filter', async () => {
+    setResolve(mockApi.transactions.getTransactionsByMonth, {
+      data: { transactions: [], server_knowledge: 11 },
+    });
+    const client = makeClient(true);
+
+    await client.getTransactionsByMonth(BUDGET, '2026-01-01', { type: 'uncategorized' });
+
+    expect(client.getServerKnowledge(BUDGET, 'transactions-by-month', {
+      month: '2026-01-01',
+      type: 'uncategorized',
+    })).toBe(11);
+    expect(client.getServerKnowledge(BUDGET, 'transactions-by-month', { month: '2026-02-01' })).toBeUndefined();
+    expect(client.getServerKnowledge(BUDGET, 'budget')).toBeUndefined();
+  });
+
+  it('get_budget requests the full budget every time, whatever cursors are stored', async () => {
+    setResolve(mockApi.plans.getPlanById, { data: { plan: {}, server_knowledge: 100 } });
+    setResolve(mockApi.transactions.getTransactions, {
+      data: { transactions: [], server_knowledge: 5000 },
+    });
+    const client = makeClient(true);
+
+    await handleGetBudget({ budget_id: BUDGET }, client as never).catch(() => undefined);
+    await client.getTransactions(BUDGET, { sinceDate: '2026-01-01' });
+    await handleGetBudget({ budget_id: BUDGET }, client as never).catch(() => undefined);
+
+    // Neither the budget's own cursor (100) nor the transactions cursor (5000):
+    // a delta would leave the summary totals computed from changed entities only.
+    const calls = asMock(mockApi.plans.getPlanById).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual([BUDGET, undefined]);
+    expect(calls[1]).toEqual([BUDGET, undefined]);
+  });
+
+  it('a transactions call alone leaves get_budget requesting the full budget', async () => {
+    setResolve(mockApi.plans.getPlanById, { data: { plan: {}, server_knowledge: 100 } });
+    setResolve(mockApi.transactions.getTransactions, {
+      data: { transactions: [], server_knowledge: 5000 },
+    });
+    const client = makeClient(true);
+
+    await client.getTransactions(BUDGET);
+    await handleGetBudget({ budget_id: BUDGET }, client as never).catch(() => undefined);
+
+    expect(asMock(mockApi.plans.getPlanById).mock.calls[0]).toEqual([BUDGET, undefined]);
   });
 
   it('getTransactions handles undefined options', async () => {
@@ -414,7 +481,7 @@ describe('read methods', () => {
       undefined,
       undefined
     );
-    expect(client.getServerKnowledge(BUDGET)).toBeUndefined();
+    expect(client.getServerKnowledge(BUDGET, 'transactions')).toBeUndefined();
   });
 
   it('getTransactionById maps correctly', async () => {
@@ -567,7 +634,6 @@ describe('write methods - read-only mode rejection', () => {
       client.updateTransactions(BUDGET, { transactions: [] } as never)
     ).rejects.toThrow(ReadOnlyModeError);
     await expect(client.deleteTransaction(BUDGET, 'txn-1')).rejects.toThrow(ReadOnlyModeError);
-    await expect(client.importTransactions(BUDGET)).rejects.toThrow(ReadOnlyModeError);
     await expect(
       client.createPayee(BUDGET, { payee: { name: 'P' } } as never)
     ).rejects.toThrow(ReadOnlyModeError);
@@ -935,26 +1001,6 @@ describe('deleteTransaction (write)', () => {
     const client = makeClient(false);
     setReject(mockApi.transactions.deleteTransaction, new Error('fail'));
     await expect(client.deleteTransaction(BUDGET, 'txn-1')).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
-  });
-});
-
-describe('importTransactions (write)', () => {
-  it('succeeds and logs imported_count', async () => {
-    const client = makeClient(false);
-    setResolve(mockApi.transactions.importTransactions, {
-      data: { transaction_ids: ['a', 'b', 'c'] },
-    });
-    await client.importTransactions(BUDGET);
-    const entry = getAuditLog().getAll()[0];
-    expect(entry).toMatchObject({ tool: 'ynab_import_transactions', success: true });
-    expect(entry?.details).toMatchObject({ imported_count: 3 });
-  });
-
-  it('logs failure and rethrows', async () => {
-    const client = makeClient(false);
-    setReject(mockApi.transactions.importTransactions, new Error('fail'));
-    await expect(client.importTransactions(BUDGET)).rejects.toThrow('fail');
     expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
   });
 });

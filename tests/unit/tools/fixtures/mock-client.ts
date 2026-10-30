@@ -58,7 +58,6 @@ export function createMockClient() {
     getAccountTransactions: vi.fn(),
     getCategoryTransactions: vi.fn(),
     getPayeeTransactions: vi.fn(),
-    importTransactions: vi.fn(),
 
     // Scheduled transaction endpoints
     getScheduledTransactions: vi.fn(),
