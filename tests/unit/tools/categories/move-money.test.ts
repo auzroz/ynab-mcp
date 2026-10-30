@@ -149,6 +149,76 @@ describe('handleMoveMoney', () => {
     expect(auditLog.getAll()[0]?.success).toBe(false);
   });
 
+  it('rejects the same UUID in different case without writing', async () => {
+    await expect(
+      handleMoveMoney({ ...args, from_category_id: FROM, to_category_id: FROM.toUpperCase() }, mockClient as never)
+    ).rejects.toThrow();
+    expect(mockClient.updateMonthCategory).not.toHaveBeenCalled();
+  });
+
+  it('refuses before any write when both reads resolve to the same category', async () => {
+    mockClient.getMonthCategoryById.mockImplementation(async () =>
+      category(FROM, 'Dining Out', 200000, 150000)
+    );
+
+    await expect(handleMoveMoney(args, mockClient as never)).rejects.toThrow('must be different');
+    expect(mockClient.updateMonthCategory).not.toHaveBeenCalled();
+  });
+
+  it('refuses internal categories (flag or Internal Master Category group) without writing', async () => {
+    for (const [side, extra] of [
+      ['from', { internal: true }],
+      ['to', { category_group_name: 'Internal Master Category' }],
+    ] as const) {
+      mockClient.getMonthCategoryById.mockImplementation(async (_b: string, _m: string, id: string) => {
+        const base = id === FROM ? category(FROM, 'A', 1000, 1000) : category(TO, 'B', 1000, 1000);
+        const isTarget = (side === 'from' && id === FROM) || (side === 'to' && id === TO);
+        return isTarget ? { data: { category: { ...base.data.category, ...extra } } } : base;
+      });
+      await expect(handleMoveMoney(args, mockClient as never)).rejects.toThrow('ynab_update_category');
+    }
+    expect(mockClient.updateMonthCategory).not.toHaveBeenCalled();
+    expect(moveMoneyTool.description).toContain('Ready to Assign');
+  });
+
+  it('treats a leg-2 error as success when the re-read shows the write landed', async () => {
+    mockClient.getMonthCategoryById
+      .mockResolvedValueOnce(category(FROM, 'Dining Out', 200000, 150000))
+      .mockResolvedValueOnce(category(TO, 'Groceries', 300000, 100000))
+      .mockResolvedValueOnce(category(TO, 'Groceries', 350000, 150000));
+    mockClient.updateMonthCategory
+      .mockResolvedValueOnce(category(FROM, 'Dining Out', 150000, 100000))
+      .mockRejectedValueOnce(new Error('socket hang up'));
+
+    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.to.budgeted_after).toBe('$350.00');
+    expect(parsed.warnings[0]).toContain('confirmed applied');
+    expect(mockClient.updateMonthCategory).toHaveBeenCalledTimes(2);
+    expect(auditLog.getAll()[0]?.success).toBe(true);
+  });
+
+  it('reports an uncertain outcome and does not roll back when the re-read fails', async () => {
+    mockClient.getMonthCategoryById
+      .mockResolvedValueOnce(category(FROM, 'Dining Out', 200000, 150000))
+      .mockResolvedValueOnce(category(TO, 'Groceries', 300000, 100000))
+      .mockRejectedValueOnce(new Error('offline'));
+    mockClient.updateMonthCategory
+      .mockResolvedValueOnce(category(FROM, 'Dining Out', 150000, 100000))
+      .mockRejectedValueOnce(new Error('timeout'));
+
+    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.type).toBe('move_outcome_uncertain');
+    expect(parsed.rolled_back).toBe(false);
+    expect(parsed.from.original_budgeted_milliunits).toBe(200000);
+    expect(parsed.to.original_budgeted_milliunits).toBe(300000);
+    expect(parsed.message).toContain('Could not confirm');
+    expect(mockClient.updateMonthCategory).toHaveBeenCalledTimes(2);
+  });
+
   it('throws without a second update when the first update fails', async () => {
     mockClient.updateMonthCategory.mockRejectedValueOnce(new Error('nope'));
 
