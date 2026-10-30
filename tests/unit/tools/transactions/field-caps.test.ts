@@ -113,6 +113,8 @@ describe('inputSchema maxLength parity', () => {
     ['create_transaction', 'payee_name', 200],
     ['create_transactions', 'payee_name', 200],
     ['create_transactions', 'import_id', 36],
+    ['create_transaction', 'import_id', 36],
+    ['update_transactions', 'import_id', 36],
     ['create_account', 'name', 200],
     ['create_category', 'name', 200],
     ['create_category', 'note', 500],

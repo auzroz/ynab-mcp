@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleUpdateTransaction } from '../../../../src/tools/transactions/update-transaction.js';
+import { ZodError } from 'zod';
+import { handleUpdateTransaction, updateTransactionTool } from '../../../../src/tools/transactions/update-transaction.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
 
@@ -120,5 +121,54 @@ describe('handleUpdateTransaction', () => {
     );
 
     expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
+  });
+
+  describe('clearing fields with null', () => {
+    it('passes category_id, payee_id and memo null through, distinct from omitted', async () => {
+      mockClient.updateTransaction.mockResolvedValue(updatedTxnResponse());
+
+      await handleUpdateTransaction(
+        { transaction_id: TXN_ID, category_id: null, payee_id: null, memo: null },
+        mockClient as never
+      );
+
+      const sent = mockClient.updateTransaction.mock.calls[0]![2] as { transaction: Record<string, unknown> };
+      expect(sent.transaction).toEqual({ category_id: null, payee_id: null, memo: null });
+    });
+
+    it('does not include fields that were omitted', async () => {
+      mockClient.updateTransaction.mockResolvedValue(updatedTxnResponse());
+
+      await handleUpdateTransaction({ transaction_id: TXN_ID, memo: null }, mockClient as never);
+
+      const sent = mockClient.updateTransaction.mock.calls[0]![2] as { transaction: Record<string, unknown> };
+      expect(sent.transaction).toEqual({ memo: null });
+      expect('category_id' in sent.transaction).toBe(false);
+      expect('payee_id' in sent.transaction).toBe(false);
+    });
+
+    it('counts null as a provided field', async () => {
+      mockClient.updateTransaction.mockResolvedValue(updatedTxnResponse());
+      await expect(
+        handleUpdateTransaction({ transaction_id: TXN_ID, category_id: null }, mockClient as never)
+      ).resolves.toBeTypeOf('string');
+    });
+
+    it('rejects clearing payee_id while also setting payee_name', async () => {
+      await expect(
+        handleUpdateTransaction({ transaction_id: TXN_ID, payee_id: null, payee_name: 'Store' }, mockClient as never)
+      ).rejects.toThrow(/not both/i);
+    });
+
+    it('still validates non-null values', async () => {
+      await expect(
+        handleUpdateTransaction({ transaction_id: TXN_ID, category_id: 'nope' }, mockClient as never)
+      ).rejects.toBeInstanceOf(ZodError);
+    });
+
+    it('declares the nullable fields in the JSON schema', () => {
+      const props = (updateTransactionTool.inputSchema as { properties: Record<string, { type: unknown }> }).properties;
+      for (const f of ['category_id', 'payee_id', 'memo']) expect(props[f]!.type).toEqual(['string', 'null']);
+    });
   });
 });

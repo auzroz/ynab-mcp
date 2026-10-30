@@ -84,6 +84,15 @@ function updateCategoryDetailsAuditDetails(data: UpdateCategoryBody): Record<str
   };
 }
 
+/** Query options for the account/category/payee transaction endpoints. */
+export interface ScopedTransactionOptions {
+  sinceDate?: string | undefined;
+  /** Inclusive upper bound (ynab SDK 4.5+); undefined means no upper bound. */
+  untilDate?: string | undefined;
+  type?: 'uncategorized' | 'unapproved' | undefined;
+  lastKnowledgeOfServer?: number | undefined;
+}
+
 export class YnabClient {
   private readonly api: ynab.API;
   // Only used by the goal_frequency direct-call workaround; never logged.
@@ -741,7 +750,15 @@ export class YnabClient {
     await this.rateLimiter.acquire();
 
     const auditLog = this.auditLog;
-    const txn = data.transaction;
+    // Single-body requests use `transaction`; the skip-duplicates form uses a one-item `transactions`.
+    const txn = data.transaction ?? data.transactions?.[0];
+    // Count of split parts across the request (counts only; split memos/payees are never logged).
+    const splitCount = [data.transaction, ...(data.transactions ?? [])].reduce(
+      (n, t) => n + (t?.subtransactions?.length ?? 0),
+      0
+    );
+    // A bulk create logs only the first row's details, so record how many rows it carried.
+    const requestedCount = data.transactions?.length ?? 1;
     try {
       const response = await this.api.transactions.createTransaction(budgetId, data);
       this.invalidateTransactionHistory(budgetId);
@@ -756,10 +773,12 @@ export class YnabClient {
           date: txn?.date,
           has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
           account_id: txn?.account_id,
+          ...(splitCount > 0 ? { split_count: splitCount } : {}),
+          ...(requestedCount > 1 ? { requested_count: requestedCount } : {}),
         },
         success: true,
       };
-      const createdId = response.data.transaction?.id;
+      const createdId = response.data.transaction?.id ?? response.data.transactions?.[0]?.id;
       if (createdId !== undefined) logEntry.resourceId = createdId;
       auditLog.log(logEntry);
       return response;
@@ -774,6 +793,8 @@ export class YnabClient {
           date: txn?.date,
           has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
           account_id: txn?.account_id,
+          ...(splitCount > 0 ? { split_count: splitCount } : {}),
+          ...(requestedCount > 1 ? { requested_count: requestedCount } : {}),
         },
         success: false,
         error: sanitizeErrorMessage(error),
@@ -792,6 +813,10 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     const txn = data.transaction;
+    // Fields explicitly cleared with null (names only, never values).
+    const clearedFields = (['category_id', 'payee_id', 'memo'] as const).filter(
+      (f) => (txn[f] as string | null | undefined) === null
+    );
     try {
       const response = await this.api.transactions.updateTransaction(budgetId, transactionId, data);
       this.invalidateTransactionHistory(budgetId);
@@ -807,6 +832,7 @@ export class YnabClient {
           date: txn.date,
           has_memo: txn.memo !== undefined && txn.memo !== null && txn.memo !== '',
           category_id: txn.category_id,
+          ...(clearedFields.length > 0 ? { cleared_fields: clearedFields } : {}),
         },
         success: true,
       });
@@ -823,6 +849,7 @@ export class YnabClient {
           date: txn.date,
           has_memo: txn.memo !== undefined && txn.memo !== null && txn.memo !== '',
           category_id: txn.category_id,
+          ...(clearedFields.length > 0 ? { cleared_fields: clearedFields } : {}),
         },
         success: false,
         error: sanitizeErrorMessage(error),
@@ -839,6 +866,17 @@ export class YnabClient {
     await this.rateLimiter.acquire();
 
     const auditLog = this.auditLog;
+    // Counts only: how many rows are addressed by import_id and how many fields are cleared with null.
+    const byImportId = data.transactions.filter((t) => t.id === undefined && t.import_id != null).length;
+    const clearedFieldCount = data.transactions.reduce(
+      (n, t) =>
+        n + (['category_id', 'payee_id', 'memo'] as const).filter((f) => (t[f] as string | null | undefined) === null).length,
+      0
+    );
+    const extra = {
+      ...(byImportId > 0 ? { addressed_by_import_id_count: byImportId } : {}),
+      ...(clearedFieldCount > 0 ? { cleared_field_count: clearedFieldCount } : {}),
+    };
     try {
       const response = await this.api.transactions.updateTransactions(budgetId, data);
       this.invalidateTransactionHistory(budgetId);
@@ -851,6 +889,7 @@ export class YnabClient {
         details: {
           requested_count: data.transactions.length,
           updated_count: response.data.transaction_ids.length,
+          ...extra,
         },
         success: true,
       });
@@ -861,7 +900,7 @@ export class YnabClient {
         tool: 'ynab_update_transactions',
         budgetId,
         resourceType: 'transaction',
-        details: { requested_count: data.transactions.length },
+        details: { requested_count: data.transactions.length, ...extra },
         success: false,
         error: sanitizeErrorMessage(error),
       });
@@ -909,49 +948,82 @@ export class YnabClient {
     }
   }
 
+  /** Transactions for one account. `type` filters to unapproved/uncategorized transactions. */
   async getAccountTransactions(
     budgetId: string,
     accountId: string,
-    sinceDate?: string,
-    untilDate?: string
+    options?: ScopedTransactionOptions
   ): Promise<ynab.TransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByAccount(
+    const response = await this.api.transactions.getTransactionsByAccount(
       budgetId,
       accountId,
-      sinceDate,
-      untilDate
+      options?.sinceDate,
+      options?.untilDate,
+      options?.type,
+      options?.lastKnowledgeOfServer
     );
+    this.recordScopedKnowledge(budgetId, 'account-transactions', accountId, response, options);
+    return response;
   }
 
+  /** Transactions for one category. `type` filters to unapproved/uncategorized transactions. */
   async getCategoryTransactions(
     budgetId: string,
     categoryId: string,
-    sinceDate?: string,
-    untilDate?: string
+    options?: ScopedTransactionOptions
   ): Promise<ynab.HybridTransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByCategory(
+    const response = await this.api.transactions.getTransactionsByCategory(
       budgetId,
       categoryId,
-      sinceDate,
-      untilDate
+      options?.sinceDate,
+      options?.untilDate,
+      options?.type,
+      options?.lastKnowledgeOfServer
     );
+    this.recordScopedKnowledge(budgetId, 'category-transactions', categoryId, response, options);
+    return response;
   }
 
+  /** Transactions for one payee. `type` filters to unapproved/uncategorized transactions. */
   async getPayeeTransactions(
     budgetId: string,
     payeeId: string,
-    sinceDate?: string,
-    untilDate?: string
+    options?: ScopedTransactionOptions
   ): Promise<ynab.HybridTransactionsResponse> {
     await this.rateLimiter.acquire();
-    return this.api.transactions.getTransactionsByPayee(
+    const response = await this.api.transactions.getTransactionsByPayee(
       budgetId,
       payeeId,
-      sinceDate,
-      untilDate
+      options?.sinceDate,
+      options?.untilDate,
+      options?.type,
+      options?.lastKnowledgeOfServer
     );
+    this.recordScopedKnowledge(budgetId, 'payee-transactions', payeeId, response, options);
+    return response;
+  }
+
+  /**
+   * Record the delta-sync cursor for an account/category/payee transaction query.
+   * The id and every filter (including type) are part of the key, so a cursor from a
+   * filtered query is never reused for a different one.
+   */
+  private recordScopedKnowledge(
+    budgetId: string,
+    resource: string,
+    scopeId: string,
+    response: { data: { server_knowledge?: number } },
+    options?: ScopedTransactionOptions
+  ): void {
+    if (response.data.server_knowledge === undefined) return;
+    this.updateServerKnowledge(budgetId, response.data.server_knowledge, resource, {
+      id: scopeId,
+      sinceDate: options?.sinceDate,
+      untilDate: options?.untilDate,
+      type: options?.type,
+    });
   }
 
   // ==================== Scheduled Transactions ====================

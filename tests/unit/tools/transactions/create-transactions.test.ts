@@ -66,6 +66,16 @@ describe('handleCreateTransactions', () => {
     expect(parsed.transactions.length).toBe(2);
   });
 
+  it('rejects an empty import_id', async () => {
+    await expect(
+      handleCreateTransactions(
+        { transactions: [{ account_id: ACCOUNT_ID, date: '2024-02-01', amount: -1, import_id: '' }] },
+        mockClient as never
+      )
+    ).rejects.toThrow();
+    expect(mockClient.createTransaction).not.toHaveBeenCalled();
+  });
+
   it('reports duplicate import ids', async () => {
     mockClient.createTransaction.mockResolvedValue(
       bulkResponse({ transactions: [], duplicate_import_ids: ['dup-1', 'dup-2'] })
