@@ -420,15 +420,6 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     expect(refreshed.body.refresh_token).not.toBe(tokens.refresh);
     expect(await listTools(refreshed.body.access_token, sessionId)).toEqual(ALL_TOOLS);
 
-    const replayedRefresh = await tokenRequest({
-      grant_type: 'refresh_token',
-      client_id: tokens.clientId,
-      refresh_token: tokens.refresh,
-    });
-    expect(replayedRefresh.status).toBe(400);
-    expect(replayedRefresh.body.error).toBe('invalid_grant');
-    expect(replayedRefresh.body.access_token).toBeUndefined();
-
     // DELETE ends the session; its id is then unknown (404), so the client re-initializes.
     const del = await mcp('delete', refreshed.body.access_token, sessionId);
     expect(del.status).toBe(200);
@@ -441,6 +432,26 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     });
     expect(after.status).toBe(404);
     expect((await mcp('delete', refreshed.body.access_token, sessionId)).status).toBe(404);
+
+    // Replaying the spent refresh token is reuse (RFC 9700 section 4.14.2): it
+    // fails like an unknown token and revokes the whole family, so the rotated
+    // pair stops working too.
+    const replayedRefresh = await tokenRequest({
+      grant_type: 'refresh_token',
+      client_id: tokens.clientId,
+      refresh_token: tokens.refresh,
+    });
+    expect(replayedRefresh.status).toBe(400);
+    expect(replayedRefresh.body.error).toBe('invalid_grant');
+    expect(replayedRefresh.body.access_token).toBeUndefined();
+    expect((await mcp('delete', refreshed.body.access_token, sessionId)).status).toBe(401);
+    const revokedRefresh = await tokenRequest({
+      grant_type: 'refresh_token',
+      client_id: tokens.clientId,
+      refresh_token: refreshed.body.refresh_token,
+    });
+    expect(revokedRefresh.status).toBe(400);
+    expect(revokedRefresh.body).toEqual(replayedRefresh.body);
   });
 
   it('a read-only grant lists and runs only read tools, and a refresh cannot widen it', async () => {

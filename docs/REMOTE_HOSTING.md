@@ -219,6 +219,22 @@ existing users stay connected. If you change `MCP_RESOURCE_URL` (or `PUBLIC_URL`
 when it supplies the default), tokens issued for the old URL stop working and
 users must reconnect.
 
+### Refresh-token rotation and reuse detection (RFC 9700)
+
+Refresh tokens are single-use: each refresh returns a new pair, and every
+token issued from one authorization (one connection) belongs to the same token
+family. A spent refresh token is remembered for 30 days. If it is presented
+again, the server treats it as stolen: it revokes the whole family (every access
+and refresh token of that connection, effective immediately) and answers
+`invalid_grant`, exactly as for an unknown token, so the user must reconnect
+that client. The same happens when a refresh token is presented by a client it
+wasn't issued to, or revoked at `/revoke`. A client that sends two refreshes
+with the same token at once also trips this: one request wins, the other looks
+like reuse and revokes the family, including the pair the winner just got.
+That is the intended RFC 9700 behaviour; well-behaved clients serialize their
+refreshes. Other connections of the same user are unaffected. 0.3.x refresh
+tokens keep working and join a family at their next refresh.
+
 ### Issuer identification (RFC 9207)
 
 Every redirect back to an MCP client's `redirect_uri` carries
@@ -274,11 +290,13 @@ reach a server on a private network through DNS rebinding. Prefer fixing
 
 **Back up your database before upgrading** (copy the SQLite file while the
 server is stopped, or `pg_dump` the Postgres database). On startup the server
-migrates the schema in place. Migrations only add nullable columns and are safe
-to re-run. 0.4.0 adds a `resource` column to `pending_auth`, `auth_codes`,
-`access_tokens` and `refresh_tokens`, a `granted_scope` column to `auth_codes`,
-`access_tokens` and `refresh_tokens`, and a `browser_binding` column to
-`pending_auth`. Existing read-write users must reconnect once to get write
+migrates the schema in place. Migrations only add nullable columns, tables and
+indexes, and are safe to re-run. 0.4.0 adds a `resource` column to
+`pending_auth`, `auth_codes`, `access_tokens` and `refresh_tokens`, a
+`granted_scope` column to `auth_codes`, `access_tokens` and `refresh_tokens`, a
+`browser_binding` column to `pending_auth`, a `family_id` column (indexed) to
+`access_tokens` and `refresh_tokens`, and a `consumed_refresh_tokens` table
+(spent refresh tokens, pruned after 30 days). Existing read-write users must reconnect once to get write
 access back (see "Access level per connection"). On Postgres the migration runs in one
 transaction under an advisory lock, so replicas that start together don't race.
 The previous release can still read a migrated database if you need to roll back.
