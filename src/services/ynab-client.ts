@@ -10,6 +10,7 @@ import type { Cache } from './cache.js';
 import { ReadOnlyModeError } from '../utils/errors.js';
 import { getAuditLog, type AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
+import { isBudgetIdSentinel } from '../utils/schemas.js';
 
 export class YnabClient {
   private readonly api: ynab.API;
@@ -168,7 +169,7 @@ export class YnabClient {
   async getBudgetFirstMonth(budgetId: string): Promise<string | undefined> {
     // "last-used" and "default" can point at a different budget over time, so
     // results for them are never cached under the alias.
-    const isAlias = budgetId === 'last-used' || budgetId === 'default';
+    const isAlias = isBudgetIdSentinel(budgetId);
     const cacheKey = `first-month:${budgetId}`;
     if (!isAlias) {
       const cached = this.cache.get<string>(cacheKey);
@@ -202,7 +203,7 @@ export class YnabClient {
    */
   private invalidateTransactionHistory(budgetId: string): void {
     this.historyGeneration++;
-    if (budgetId === 'last-used' || budgetId === 'default') {
+    if (isBudgetIdSentinel(budgetId)) {
       // An alias write could have touched any budget, so drop every cached first month.
       this.cache.deleteByPrefix('first-month:');
     } else {

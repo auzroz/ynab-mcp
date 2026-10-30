@@ -22,7 +22,7 @@ export const IMPORT_DEPRECATION_MESSAGE =
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   include_ids: z
     .boolean()
     .optional()
@@ -44,7 +44,7 @@ Kept registered for backward compatibility only. Makes no API call and returns d
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       include_ids: {
         type: 'boolean',

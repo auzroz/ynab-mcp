@@ -15,7 +15,7 @@ import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   category_id: ynabId().describe('The category UUID to retrieve'),
 });
 
@@ -37,7 +37,7 @@ Requires a category_id. Use ynab_list_categories first to find the category ID.`
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       category_id: {
         type: 'string',

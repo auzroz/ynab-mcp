@@ -15,7 +15,7 @@ import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   account_id: ynabId().describe('The account UUID to retrieve'),
 });
 
@@ -37,7 +37,7 @@ Requires an account_id. Use ynab_list_accounts first to find the account ID.`,
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       account_id: {
         type: 'string',

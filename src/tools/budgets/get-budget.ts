@@ -16,7 +16,7 @@ import { isInternalGroup } from '../../utils/categories.js';
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
 
 // Tool definition
@@ -37,7 +37,7 @@ Returns comprehensive budget data including all accounts, category groups, categ
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
     },
   },

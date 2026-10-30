@@ -18,7 +18,7 @@ const Decimal = DecimalJS.default ?? DecimalJS;
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   months: z
     .number()
     .int()
@@ -47,7 +47,7 @@ Analyzes spending to identify areas where cuts might be possible.`,
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       months: {
         type: 'number',

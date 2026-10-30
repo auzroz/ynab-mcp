@@ -16,7 +16,7 @@ import { DATE_TEXT_MAX_LENGTH, NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId } from
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   query: z
     .string()
     .max(NOTE_MAX_LENGTH)
@@ -83,7 +83,7 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       query: {
         type: 'string',

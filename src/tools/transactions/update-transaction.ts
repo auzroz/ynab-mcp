@@ -23,7 +23,7 @@ const inputSchema = z
   .object({
     budget_id: budgetId()
       .optional()
-      .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+      .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
     transaction_id: ynabId().describe('The transaction UUID to update'),
     account_id: ynabId().optional().describe('New account UUID'),
     date: z
@@ -81,7 +81,7 @@ Only provide the fields you want to change.`,
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       transaction_id: {
         type: 'string',

@@ -15,7 +15,7 @@ import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
-    .describe('Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   account_id: ynabId()
     .optional()
     .describe('Specific account UUID to check (optional, shows all if not specified)'),
@@ -40,7 +40,7 @@ Returns uncleared transactions organized by account with totals.`,
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       account_id: {
         type: 'string',

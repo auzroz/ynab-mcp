@@ -28,7 +28,7 @@ const accountTypeValues = Object.values(ynab.SaveAccountType).filter(
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   name: z.string().min(1).max(NAME_MAX_LENGTH).describe('The name of the account'),
   type: z
     .enum(ynab.SaveAccountType)
@@ -59,7 +59,7 @@ Balance should be provided in dollars (e.g., 1000.50). For credit cards and liab
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       name: {
         type: 'string',

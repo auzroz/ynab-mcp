@@ -20,6 +20,18 @@ export const ynabId = (message?: string) => z.guid(message);
 export const BUDGET_ID_MAX_LENGTH = 64;
 export const budgetId = () => z.string().max(BUDGET_ID_MAX_LENGTH);
 
+/**
+ * Budget ID sentinels YNAB resolves server-side. "last-used" is the most recently
+ * accessed budget; "default" is the OAuth app's default budget selection.
+ */
+export const BUDGET_ID_SENTINELS = ['last-used', 'default'] as const;
+export type BudgetIdSentinel = (typeof BUDGET_ID_SENTINELS)[number];
+export const budgetIdSentinel = () => z.enum(BUDGET_ID_SENTINELS);
+
+/** True when a budget ID is a YNAB sentinel rather than a concrete budget UUID. */
+export const isBudgetIdSentinel = (id: string): id is BudgetIdSentinel =>
+  (BUDGET_ID_SENTINELS as readonly string[]).includes(id);
+
 /*
  * Free-text length caps. Every free-text string input is capped in both the zod
  * schema and the hand-written JSON inputSchema (maxLength); keep the two in sync.

@@ -14,7 +14,7 @@ import { sanitizeName } from '../../utils/sanitize.js';
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   category_group_id: ynabId()
     .describe('The UUID of the category group to add the category to'),
   name: z.string().min(1).max(NAME_MAX_LENGTH).describe('The name of the new category'),
@@ -39,7 +39,7 @@ Requires a category_group_id. Use ynab_list_categories first to find the group I
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       category_group_id: {
         type: 'string',

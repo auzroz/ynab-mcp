@@ -20,7 +20,7 @@ const MINOR_OVERSPEND_THRESHOLD_MILLIS = 50000;
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
-    .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+    .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   threshold: z
     .number()
     .optional()
@@ -46,7 +46,7 @@ Returns a quick list of all overspent categories with amounts.`,
       budget_id: {
         type: 'string',
         maxLength: 64,
-        description: 'Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"',
+        description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
       threshold: {
         type: 'number',
