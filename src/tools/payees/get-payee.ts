@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
@@ -15,7 +16,7 @@ const inputSchema = z.object({
     .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  payee_id: z.string().uuid().describe('The payee UUID to retrieve'),
+  payee_id: ynabId().describe('The payee UUID to retrieve'),
 });
 
 // Tool definition

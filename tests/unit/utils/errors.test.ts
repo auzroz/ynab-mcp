@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
 import {
   ReadOnlyModeError,
   YnabApiError,
@@ -133,6 +134,29 @@ describe('formatErrorResponse', () => {
     expect(result.type).toBe('validation_error');
     expect(result.issues).toHaveLength(2);
     expect(result.issues[0].field).toBe('budget_id');
+  });
+
+  it('should not echo client-supplied values from real zod errors', () => {
+    const schema = z.object({ id: z.guid(), n: z.number().max(5) }).strict();
+    const secret = 'SECRET-VALUE-123';
+    const parsed = schema.safeParse({ id: secret, n: 99, [secret]: secret });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+
+    const result = JSON.parse(formatErrorResponse(parsed.error));
+    expect(result.type).toBe('validation_error');
+    expect(result.issues.length).toBeGreaterThanOrEqual(3);
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(JSON.stringify(result)).not.toContain('99');
+    expect(result.issues.map((i: { field: string }) => i.field)).toContain('id');
+  });
+
+  it('should keep custom refine messages from our own schemas', () => {
+    const schema = z.string().refine(() => false, { message: 'Month must be YYYY-MM-DD' });
+    const parsed = schema.safeParse('x');
+    if (parsed.success) throw new Error('expected failure');
+    const result = JSON.parse(formatErrorResponse(parsed.error));
+    expect(result.issues[0].message).toBe('Month must be YYYY-MM-DD');
   });
 
   it('should format YNAB SDK errors', () => {

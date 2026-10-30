@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
@@ -20,7 +21,7 @@ const inputSchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-01$/, 'Month must be first-of-month format (YYYY-MM-01)')
     .describe('The budget month in YYYY-MM-01 format (first of month, e.g., 2024-01-01)'),
-  category_id: z.string().uuid().describe('The category UUID to retrieve'),
+  category_id: ynabId().describe('The category UUID to retrieve'),
 });
 
 // Tool definition

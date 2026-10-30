@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
@@ -16,9 +17,7 @@ const inputSchema = z.object({
     .string().max(64)
     .optional()
     .describe('Budget UUID or "last-used". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  account_id: z
-    .string()
-    .uuid()
+  account_id: ynabId()
     .optional()
     .describe('Specific account UUID to check (optional, shows all if not specified)'),
 }).strict();

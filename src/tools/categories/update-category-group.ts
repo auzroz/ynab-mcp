@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
@@ -15,7 +16,7 @@ const inputSchema = z.object({
     .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  category_group_id: z.string().uuid().describe('The category group UUID to update'),
+  category_group_id: ynabId().describe('The category group UUID to update'),
   name: z.string().min(1).max(500).describe('The new name for the category group'),
 });
 

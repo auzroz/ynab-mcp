@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod';
+import { ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -20,7 +21,7 @@ const inputSchema = z.object({
     .string().max(64)
     .optional()
     .describe('Budget UUID. Defaults to YNAB_BUDGET_ID env var or "last-used"'),
-  account_id: z.string().uuid().describe('The account UUID for this scheduled transaction'),
+  account_id: ynabId().describe('The account UUID for this scheduled transaction'),
   amount: z
     .number()
     .finite()
@@ -30,15 +31,13 @@ const inputSchema = z.object({
   frequency: z
     .enum(frequencies)
     .describe('Recurrence frequency'),
-  payee_id: z.string().uuid().optional().describe('Payee UUID'),
+  payee_id: ynabId().optional().describe('Payee UUID'),
   payee_name: z
     .string()
     .max(200)
     .optional()
     .describe('Payee name (one of payee_id or payee_name should be provided)'),
-  category_id: z
-    .string()
-    .uuid()
+  category_id: ynabId()
     .optional()
     .describe('Category UUID'),
   start_date: z

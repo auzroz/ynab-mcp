@@ -46,7 +46,7 @@
     "decimal.js": "^10.4.3",
     "express": "^5.3.0",
     "ynab": "~4.5.0",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "optionalDependencies": {
     "better-sqlite3": "^11.8.1",

@@ -190,13 +190,12 @@ export function formatErrorResponse(error: unknown): string {
 
   // Handle Zod validation errors
   if (isZodError(error)) {
-    const issues = error.issues.map((issue: { path?: unknown; message?: unknown }) => {
+    const issues = error.issues.map((issue: { path?: unknown; code?: unknown; message?: unknown }) => {
       // Defensive checks for malformed issue shapes
-      const path = Array.isArray(issue.path) ? issue.path.join('.') : '';
-      const message = typeof issue.message === 'string'
-        ? sanitizeErrorMessage(issue.message)
-        : 'Validation error';
-      return { field: path, message };
+      const path = Array.isArray(issue.path)
+        ? issue.path.map((segment) => sanitizeErrorMessage(String(segment))).join('.')
+        : '';
+      return { field: path, message: mapZodIssueMessage(issue.code, issue.message) };
     });
     return JSON.stringify({
       error: true,
@@ -232,9 +231,42 @@ function isYnabSdkError(error: unknown): error is { error: { id: string; detail?
 }
 
 /**
+ * Map a Zod issue to a client-safe message. Zod 4 messages can echo
+ * client-supplied values (e.g. unrecognized key names), so only the issue code
+ * is trusted. Messages written in our own schemas surface as code 'custom'
+ * (refine) and are kept.
+ */
+function mapZodIssueMessage(code: unknown, message: unknown): string {
+  switch (code) {
+    case 'invalid_type':
+      return 'Invalid type';
+    case 'invalid_format':
+      return 'Invalid format';
+    case 'invalid_value':
+    case 'not_multiple_of':
+      return 'Invalid value';
+    case 'invalid_union':
+      return 'Invalid input';
+    case 'too_big':
+      return 'Value is too large or too long';
+    case 'too_small':
+      return 'Value is too small or too short';
+    case 'unrecognized_keys':
+      return 'Unrecognized parameter';
+    case 'invalid_key':
+    case 'invalid_element':
+      return 'Invalid entry';
+    case 'custom':
+      return typeof message === 'string' ? sanitizeErrorMessage(message) : 'Validation error';
+    default:
+      return 'Validation error';
+  }
+}
+
+/**
  * Type guard for Zod validation errors.
  */
-function isZodError(error: unknown): error is { issues: { path: (string | number)[]; message: string }[] } {
+function isZodError(error: unknown): error is { issues: { path: (string | number)[]; code?: string; message: string }[] } {
   return (
     typeof error === 'object' &&
     error !== null &&
