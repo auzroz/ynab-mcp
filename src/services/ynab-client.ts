@@ -112,8 +112,17 @@ export class YnabClient {
       this.api = new ynab.API(accessToken);
       this.getAccessToken = () => Promise.resolve(accessToken);
     } else {
-      this.api = new TokenProviderApi(accessToken);
-      this.getAccessToken = accessToken;
+      // Every request takes a rate-limit token before resolving its access
+      // token; when resolution fails nothing reaches YNAB, so give it back.
+      this.getAccessToken = async () => {
+        try {
+          return await accessToken();
+        } catch (error) {
+          this.rateLimiter.release();
+          throw error;
+        }
+      };
+      this.api = new TokenProviderApi(this.getAccessToken);
     }
     this.rateLimiter = rateLimiter;
     this.cache = cache;

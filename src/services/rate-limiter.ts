@@ -61,6 +61,15 @@ export class RateLimiter {
   }
 
   /**
+   * Give back a token taken by acquire() for a request that was never sent
+   * (e.g. its access token could not be resolved). Capped at the bucket size.
+   */
+  release(): void {
+    this.refill();
+    this.tokens = Math.min(this.maxTokens, this.tokens + 1);
+  }
+
+  /**
    * Check if a request can be made immediately.
    */
   canAcquire(): boolean {

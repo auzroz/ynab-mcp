@@ -23,8 +23,8 @@ function bearerTokens(): (string | null)[] {
   return fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get('authorization'));
 }
 
-function makeClient(token: AccessTokenSource): YnabClient {
-  return new YnabClient(token, 'budget-1', new RateLimiter(180), new Cache(300000), false, new AuditLog());
+function makeClient(token: AccessTokenSource, rateLimiter = new RateLimiter(180)): YnabClient {
+  return new YnabClient(token, 'budget-1', rateLimiter, new Cache(300000), false, new AuditLog());
 }
 
 const categoryWithFrequency = {
@@ -98,5 +98,27 @@ describe('YnabClient token provider', () => {
       message: 'Could not get YNAB authorization for this request',
       suggestion: 'Try again shortly. If it keeps failing, reconnect this server to YNAB (re-authorize).',
     });
+  });
+
+  it('gives the rate-limit token back when the access token cannot be resolved', async () => {
+    const rateLimiter = new RateLimiter(180);
+    const client = makeClient(async () => {
+      throw new YnabAuthError();
+    }, rateLimiter);
+
+    await client.getUser().catch(() => undefined);
+    await client.createCategory('budget-1', categoryWithFrequency).catch(() => undefined);
+
+    expect(rateLimiter.getAvailableTokens()).toBe(180);
+  });
+
+  it('keeps the rate-limit token for a request that was sent', async () => {
+    fetchMock.mockImplementation(async () => json({ data: { user: { id: 'u1' } } }));
+    const rateLimiter = new RateLimiter(180);
+    const client = makeClient(async () => 'token', rateLimiter);
+
+    await client.getUser();
+
+    expect(rateLimiter.getAvailableTokens()).toBe(179);
   });
 });
