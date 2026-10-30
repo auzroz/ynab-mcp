@@ -909,36 +909,6 @@ export class YnabClient {
     }
   }
 
-  async importTransactions(budgetId: string): Promise<ynab.TransactionsImportResponse> {
-    this.assertWriteAllowed('importTransactions');
-    await this.rateLimiter.acquire();
-
-    const auditLog = this.auditLog;
-    try {
-      const response = await this.api.transactions.importTransactions(budgetId);
-      auditLog.log({
-        operation: 'create',
-        tool: 'ynab_import_transactions',
-        budgetId,
-        resourceType: 'transaction',
-        details: { imported_count: response.data.transaction_ids.length },
-        success: true,
-      });
-      return response;
-    } catch (error) {
-      auditLog.log({
-        operation: 'create',
-        tool: 'ynab_import_transactions',
-        budgetId,
-        resourceType: 'transaction',
-        details: {},
-        success: false,
-        error: sanitizeErrorMessage(error),
-      });
-      throw error;
-    }
-  }
-
   async getAccountTransactions(
     budgetId: string,
     accountId: string,

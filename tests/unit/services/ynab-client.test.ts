@@ -47,7 +47,6 @@ const mockApi = vi.hoisted(() => {
       updateTransaction: fn(),
       updateTransactions: fn(),
       deleteTransaction: fn(),
-      importTransactions: fn(),
       getTransactionsByAccount: fn(),
       getTransactionsByCategory: fn(),
       getTransactionsByPayee: fn(),
@@ -635,7 +634,6 @@ describe('write methods - read-only mode rejection', () => {
       client.updateTransactions(BUDGET, { transactions: [] } as never)
     ).rejects.toThrow(ReadOnlyModeError);
     await expect(client.deleteTransaction(BUDGET, 'txn-1')).rejects.toThrow(ReadOnlyModeError);
-    await expect(client.importTransactions(BUDGET)).rejects.toThrow(ReadOnlyModeError);
     await expect(
       client.createPayee(BUDGET, { payee: { name: 'P' } } as never)
     ).rejects.toThrow(ReadOnlyModeError);
@@ -1003,26 +1001,6 @@ describe('deleteTransaction (write)', () => {
     const client = makeClient(false);
     setReject(mockApi.transactions.deleteTransaction, new Error('fail'));
     await expect(client.deleteTransaction(BUDGET, 'txn-1')).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
-  });
-});
-
-describe('importTransactions (write)', () => {
-  it('succeeds and logs imported_count', async () => {
-    const client = makeClient(false);
-    setResolve(mockApi.transactions.importTransactions, {
-      data: { transaction_ids: ['a', 'b', 'c'] },
-    });
-    await client.importTransactions(BUDGET);
-    const entry = getAuditLog().getAll()[0];
-    expect(entry).toMatchObject({ tool: 'ynab_import_transactions', success: true });
-    expect(entry?.details).toMatchObject({ imported_count: 3 });
-  });
-
-  it('logs failure and rethrows', async () => {
-    const client = makeClient(false);
-    setReject(mockApi.transactions.importTransactions, new Error('fail'));
-    await expect(client.importTransactions(BUDGET)).rejects.toThrow('fail');
     expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
   });
 });

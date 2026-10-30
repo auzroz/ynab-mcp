@@ -33,10 +33,11 @@ describe('handleImportTransactions', () => {
   });
 
   it('returns the deprecation response without calling the API', async () => {
-    const result = await handleImportTransactions({}, mockClient as never);
+    // A client exposing only budget resolution proves the handler makes no API call
+    const apiFreeClient = { resolveBudgetId: () => 'test-budget-id' };
+    const result = await handleImportTransactions({}, apiFreeClient as never);
     const parsed = JSON.parse(result);
 
-    expect(mockClient.importTransactions).not.toHaveBeenCalled();
     expect(parsed.success).toBe(true);
     expect(parsed.deprecated).toBe(true);
     expect(parsed.message).toBe(IMPORT_DEPRECATION_MESSAGE);
@@ -46,9 +47,10 @@ describe('handleImportTransactions', () => {
   });
 
   it('works in read-only mode, where write calls would throw', async () => {
-    mockClient.importTransactions.mockRejectedValue(new Error('Write operations are disabled'));
+    // No write-guarded client method is available, so any call would throw
+    const readOnlyClient = { resolveBudgetId: () => 'test-budget-id' };
 
-    const parsed = JSON.parse(await handleImportTransactions({}, mockClient as never));
+    const parsed = JSON.parse(await handleImportTransactions({}, readOnlyClient as never));
 
     expect(parsed.deprecated).toBe(true);
     expect(parsed.imported_count).toBe(0);
