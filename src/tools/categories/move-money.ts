@@ -18,7 +18,7 @@ import { addMilliunits, formatCurrency, subtractMilliunits, toMilliunits } from 
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId, monthParam, ynabId, MONTH_MAX_LENGTH } from '../../utils/schemas.js';
 import { getCurrentMonth } from '../../utils/dates.js';
-import { formatErrorResponse, ReadOnlyModeError, ValidationError } from '../../utils/errors.js';
+import { formatErrorResponse, ReadOnlyModeError, ValidationError, YnabAuthError } from '../../utils/errors.js';
 import { isInternalCategory } from '../../utils/categories.js';
 
 // Input schema
@@ -230,8 +230,13 @@ export async function handleMoveMoney(
       category: { budgeted: newFromBudgeted },
     });
   } catch (error) {
-    // Read-only and validation failures happen before any request is sent.
-    if (error instanceof ReadOnlyModeError || error instanceof ValidationError) {
+    // Read-only, validation and access-token resolution failures happen before
+    // any request is sent, so nothing can have been written.
+    if (
+      error instanceof ReadOnlyModeError ||
+      error instanceof ValidationError ||
+      error instanceof YnabAuthError
+    ) {
       audit(false, 'first_update_failed');
       throw error;
     }
@@ -361,9 +366,14 @@ export async function handleMoveMoney(
         });
         rolledBack = true;
       } catch {
+        // A timeout or 5xx can arrive after YNAB applied the restore, so a failed
+        // restore does not prove "from" is still at the reduced value.
         rolledBack = false;
       }
-      audit(false, rolledBack ? 'second_update_failed_rolled_back' : 'second_update_failed_rollback_failed');
+      audit(
+        false,
+        rolledBack ? 'second_update_failed_rolled_back' : 'second_update_failed_rollback_outcome_unknown'
+      );
       return JSON.stringify(
         {
           error: true,
@@ -372,7 +382,7 @@ export async function handleMoveMoney(
           rolled_back: rolledBack,
           message: rolledBack
             ? `Could not add ${formatCurrency(amount)} to "${to.name}". "${from.name}" was restored to ${formatCurrency(from.budgeted)}; no budgeted amounts changed.`
-            : `Could not add ${formatCurrency(amount)} to "${to.name}", and restoring "${from.name}" also failed. "${from.name}" is now budgeted at ${formatCurrency(newFromBudgeted)} (was ${formatCurrency(from.budgeted)}) and "${to.name}" is unchanged at ${formatCurrency(to.budgeted)}. Set "${from.name}" back to ${formatCurrency(from.budgeted)} with ynab_update_category.`,
+            : `Could not add ${formatCurrency(amount)} to "${to.name}", and restoring "${from.name}" also failed. "${from.name}" may still be budgeted at ${formatCurrency(newFromBudgeted)} (was ${formatCurrency(from.budgeted)}; the restore may have been applied despite the error) and "${to.name}" is unchanged at ${formatCurrency(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and, if it is not ${formatCurrency(from.budgeted)}, set it back with ynab_update_category.`,
           month,
           ...sides,
           cause: causeOf(error),

@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { moveMoneyTool, handleMoveMoney } from '../../../../src/tools/categories/move-money.js';
 import { AuditLog } from '../../../../src/services/audit-log.js';
-import { YnabApiError, ReadOnlyModeError, ValidationError } from '../../../../src/utils/errors.js';
+import { YnabApiError, ReadOnlyModeError, ValidationError, YnabAuthError } from '../../../../src/utils/errors.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
 
@@ -165,11 +165,12 @@ describe('handleMoveMoney', () => {
     expect(parsed.rolled_back).toBe(false);
     expect(parsed.type).toBe('move_partially_applied');
     expect(parsed.message).toContain('$150.00');
+    expect(parsed.message).toContain('may still be budgeted');
     expect(parsed.message).toContain('ynab_update_category');
     expect(parsed.from.original_budgeted_milliunits).toBe(200000);
     expect(parsed.cause.error).toBe(true);
     expect(auditLog.getAll()[0]?.success).toBe(false);
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('second_update_failed_rollback_failed');
+    expect(auditLog.getAll()[0]?.details['outcome']).toBe('second_update_failed_rollback_outcome_unknown');
   });
 
   it('skips the rollback when "from" changed since the move', async () => {
@@ -296,6 +297,16 @@ describe('handleMoveMoney', () => {
     mockClient.updateMonthCategory.mockRejectedValueOnce(new ReadOnlyModeError('updateMonthCategory'));
 
     await expect(handleMoveMoney(args, mockClient as never)).rejects.toBeInstanceOf(ReadOnlyModeError);
+
+    expect(updateCalls()).toEqual([[FROM, 150000]]);
+    expect(mockClient.getMonthCategoryById).toHaveBeenCalledTimes(2);
+    expect(auditLog.getAll()[0]?.details['outcome']).toBe('first_update_failed');
+  });
+
+  it('rethrows token-resolution failures from leg 1 without a leg-2 write or an uncertain result', async () => {
+    mockClient.updateMonthCategory.mockRejectedValueOnce(new YnabAuthError());
+
+    await expect(handleMoveMoney(args, mockClient as never)).rejects.toBeInstanceOf(YnabAuthError);
 
     expect(updateCalls()).toEqual([[FROM, 150000]]);
     expect(mockClient.getMonthCategoryById).toHaveBeenCalledTimes(2);
