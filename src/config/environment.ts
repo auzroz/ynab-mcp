@@ -90,6 +90,15 @@ export interface HttpConfig {
   allowedHosts: string[] | undefined;
   allowedOrigins: string[] | undefined;
   enableDnsRebindingProtection: boolean;
+  /**
+   * Absolute URL of the protected MCP resource (RFC 9728 / RFC 8707 audience).
+   * `MCP_RESOURCE_URL`, else `PUBLIC_URL` + `/mcp`; undefined when neither is set.
+   */
+  resourceUrl: string | undefined;
+  /** Maximum concurrent MCP sessions (`MCP_MAX_SESSIONS`). */
+  maxSessions: number;
+  /** Idle time in ms after which a session is closed (`MCP_SESSION_IDLE_TIMEOUT_MS`). */
+  sessionIdleTimeoutMs: number;
   /** Number of reverse-proxy hops to trust for X-Forwarded-* headers (Express `trust proxy`). 0 = none (default). */
   trustProxy: number;
   // Shared knobs, reused per user context.
@@ -121,25 +130,85 @@ function parseStorageDriver(value: string | undefined): StorageDriver {
   throw new Error(`Invalid STORAGE_DRIVER "${value}". Expected: memory, sqlite, or postgres.`);
 }
 
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** Parse a positive integer (>= 1) env var; zero is rejected. */
+function parsePositiveInteger(value: string | undefined, defaultValue: number, varName: string): number {
+  const n = parseInteger(value, defaultValue, varName);
+  if (n < 1) throw new Error(`Invalid value "${value}" for ${varName}. Expected an integer >= 1.`);
+  return n;
+}
+
+/**
+ * Parse and validate an absolute http(s) URL used as a public identifier.
+ * https is required except for loopback hosts; fragments are rejected.
+ */
+function parseAbsoluteUrl(value: string, varName: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Invalid ${varName}: must be an absolute URL.`);
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`Invalid ${varName}: scheme must be https (http is allowed only for localhost).`);
+  }
+  if (url.protocol === 'http:' && !LOOPBACK_HOSTNAMES.has(url.hostname)) {
+    throw new Error(`Invalid ${varName}: https is required (http is allowed only for localhost, 127.0.0.1 or [::1]).`);
+  }
+  if (url.hash !== '' || value.includes('#')) {
+    throw new Error(`Invalid ${varName}: must not contain a fragment.`);
+  }
+  return url;
+}
+
 export function loadHttpConfig(): HttpConfig {
-  const allowedHosts = parseList(process.env['ALLOWED_HOSTS']);
-  const allowedOrigins = parseList(process.env['ALLOWED_ORIGINS']);
   const publicUrl = process.env['PUBLIC_URL'] || undefined;
+  const port = parseInteger(process.env['PORT'], 3000, 'PORT');
+  const publicParsed = publicUrl ? parseAbsoluteUrl(publicUrl, 'PUBLIC_URL') : undefined;
+  const normalizedPublicUrl = publicUrl ? publicUrl.replace(/\/+$/, '') : undefined;
+
+  const explicitResource = process.env['MCP_RESOURCE_URL'] || undefined;
+  if (explicitResource) parseAbsoluteUrl(explicitResource, 'MCP_RESOURCE_URL');
+  const resourceUrl = explicitResource ?? (normalizedPublicUrl ? `${normalizedPublicUrl}/mcp` : undefined);
+
+  // Precedence: an explicit ALLOWED_HOSTS / ALLOWED_ORIGINS fully replaces the
+  // derived defaults. Defaults: PUBLIC_URL's host (and origin), plus localhost
+  // variants (with and without the listen port) when PUBLIC_URL is unset or loopback.
+  const loopbackBound = publicParsed === undefined || LOOPBACK_HOSTNAMES.has(publicParsed.hostname);
+  const derivedHosts: string[] = [];
+  if (publicParsed) derivedHosts.push(publicParsed.host);
+  if (loopbackBound) {
+    for (const h of LOOPBACK_HOSTNAMES) derivedHosts.push(h, `${h}:${port}`);
+  }
+  const allowedHosts = parseList(process.env['ALLOWED_HOSTS']) ?? [...new Set(derivedHosts)];
+  const allowedOrigins = parseList(process.env['ALLOWED_ORIGINS']) ?? (publicParsed ? [publicParsed.origin] : undefined);
   const oauthClientId = process.env['YNAB_OAUTH_CLIENT_ID'] || undefined;
   const oauthClientSecret = process.env['YNAB_OAUTH_CLIENT_SECRET'] || undefined;
   const encryptionKey = process.env['ENCRYPTION_KEY'] || undefined;
 
   const oauthConfigured = Boolean(oauthClientId && oauthClientSecret && encryptionKey && publicUrl);
+  // PUBLIC_URL is the OAuth issuer, and the MCP SDK accepts an http issuer only
+  // for localhost and 127.0.0.1. Fail here with a clear message instead of
+  // letting the SDK throw at startup.
+  if (oauthConfigured && publicParsed?.protocol === 'http:' && publicParsed.hostname === '[::1]') {
+    throw new Error(
+      'Invalid PUBLIC_URL: OAuth mode needs https (http is allowed only for localhost or 127.0.0.1; [::1] is not accepted as an OAuth issuer).'
+    );
+  }
 
   return {
-    port: parseInteger(process.env['PORT'], 3000, 'PORT'),
-    publicUrl: publicUrl ? publicUrl.replace(/\/+$/, '') : undefined,
+    port,
+    publicUrl: normalizedPublicUrl,
     allowedHosts,
     allowedOrigins,
-    // Only meaningful when a host/origin allowlist is configured.
-    enableDnsRebindingProtection:
-      parseBoolean(process.env['ENABLE_DNS_REBINDING_PROTECTION'], false, 'ENABLE_DNS_REBINDING_PROTECTION') &&
-      (allowedHosts !== undefined || allowedOrigins !== undefined),
+    // ON by default; set ENABLE_DNS_REBINDING_PROTECTION=false to opt out.
+    enableDnsRebindingProtection: parseBoolean(
+      process.env['ENABLE_DNS_REBINDING_PROTECTION'], true, 'ENABLE_DNS_REBINDING_PROTECTION'),
+    resourceUrl,
+    maxSessions: parsePositiveInteger(process.env['MCP_MAX_SESSIONS'], 100, 'MCP_MAX_SESSIONS'),
+    sessionIdleTimeoutMs: parsePositiveInteger(
+      process.env['MCP_SESSION_IDLE_TIMEOUT_MS'], 30 * 60 * 1000, 'MCP_SESSION_IDLE_TIMEOUT_MS'),
     trustProxy: parseInteger(process.env['TRUST_PROXY'], 0, 'TRUST_PROXY'),
     fallbackAccessToken: process.env['YNAB_ACCESS_TOKEN'] || undefined,
     defaultBudgetId: process.env['YNAB_BUDGET_ID'] || undefined,

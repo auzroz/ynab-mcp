@@ -31,6 +31,17 @@ export interface AuthCodeRecord {
   codeChallenge: string;
   scopes: string[];
   expiresAt: number;
+  /**
+   * Canonical RFC 8707 resource this record is bound to. Undefined for rows
+   * written by 0.3.x (and, for pending auth / codes, when the client sent no
+   * `resource`); the provider treats those as bound to the configured resource.
+   */
+  resource?: string | undefined;
+  /**
+   * Access level the user chose at consent for this grant. Undefined for rows
+   * written before 0.4.0; the provider treats those as read-only.
+   */
+  grantedScope?: GrantedScope | undefined;
 }
 
 export interface AccessTokenRecord {
@@ -39,6 +50,17 @@ export interface AccessTokenRecord {
   userId: string;
   scopes: string[];
   expiresAt: number;
+  /**
+   * Canonical RFC 8707 resource this record is bound to. Undefined for rows
+   * written by 0.3.x (and, for pending auth / codes, when the client sent no
+   * `resource`); the provider treats those as bound to the configured resource.
+   */
+  resource?: string | undefined;
+  /**
+   * Access level the user chose at consent for this grant. Undefined for rows
+   * written before 0.4.0; the provider treats those as read-only.
+   */
+  grantedScope?: GrantedScope | undefined;
 }
 
 export interface RefreshTokenRecord {
@@ -46,6 +68,17 @@ export interface RefreshTokenRecord {
   clientId: string;
   userId: string;
   scopes: string[];
+  /**
+   * Canonical RFC 8707 resource this record is bound to. Undefined for rows
+   * written by 0.3.x (and, for pending auth / codes, when the client sent no
+   * `resource`); the provider treats those as bound to the configured resource.
+   */
+  resource?: string | undefined;
+  /**
+   * Access level the user chose at consent for this grant. Undefined for rows
+   * written before 0.4.0; the provider treats those as read-only.
+   */
+  grantedScope?: GrantedScope | undefined;
 }
 
 /** Bridges the MCP `/authorize` leg to the YNAB `/oauth/ynab/callback` leg. */
@@ -62,6 +95,18 @@ export interface PendingAuthRecord {
   /** The YNAB scope chosen at consent ("read-only" or full). */
   grantedScope: GrantedScope;
   expiresAt: number;
+  /**
+   * Canonical RFC 8707 resource this record is bound to. Undefined for rows
+   * written by 0.3.x (and, for pending auth / codes, when the client sent no
+   * `resource`); the provider treats those as bound to the configured resource.
+   */
+  resource?: string | undefined;
+  /**
+   * SHA-256 (base64url) of the consent-cookie nonce set when the consent page
+   * was shown; the federation legs require the matching cookie. Undefined for
+   * rows written before 0.4.0, which are therefore never usable.
+   */
+  browserBinding?: string | undefined;
 }
 
 export interface Storage {
@@ -90,8 +135,11 @@ export interface Storage {
   getAccessToken(token: string): Promise<AccessTokenRecord | undefined>;
   deleteAccessToken(token: string): Promise<void>;
 
-  // MCP refresh tokens, one-time (rotated on use)
+  // MCP refresh tokens, one-time (rotated on use). getRefreshToken only looks
+  // a token up (to validate a request before spending it); takeRefreshToken is
+  // the atomic one-time use.
   saveRefreshToken(rec: RefreshTokenRecord): Promise<void>;
+  getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined>;
   takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined>;
   deleteRefreshToken(token: string): Promise<void>;
 }

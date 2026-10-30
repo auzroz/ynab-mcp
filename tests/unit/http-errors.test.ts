@@ -12,22 +12,9 @@ vi.mock('../../src/server.js', () => ({
 }));
 
 import { createHttpApp } from '../../src/http.js';
-import type { HttpConfig } from '../../src/config/environment.js';
+import { makeHttpConfig } from './helpers/http-config.js';
 
-const config = {
-  port: 0,
-  trustProxy: 0,
-  enableDnsRebindingProtection: false,
-  fallbackAccessToken: 'env-token',
-  readOnly: true,
-  cacheTtlMs: 300000,
-  rateLimitPerHour: 180,
-  authMode: 'header',
-  allowWrite: true,
-  accessTokenTtlSec: 3600,
-  authCodeTtlSec: 600,
-  storageDriver: 'memory',
-} as unknown as HttpConfig;
+const config = makeHttpConfig({ fallbackAccessToken: 'env-token' });
 
 describe('HTTP error handler', () => {
   it('logs once to stderr and returns a generic -32603 body on route failure', async () => {

@@ -91,6 +91,9 @@ export class MemoryStorage implements Storage {
   async saveRefreshToken(rec: RefreshTokenRecord): Promise<void> {
     this.refreshTokens.set(rec.token, rec);
   }
+  async getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
+    return this.refreshTokens.get(token);
+  }
   async takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
     const rec = this.refreshTokens.get(token);
     this.refreshTokens.delete(token);

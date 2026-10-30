@@ -18,6 +18,7 @@ import type {
   PendingAuthRecord,
   GrantedScope,
 } from './types.js';
+import { ADDED_COLUMNS } from './migrations.js';
 
 export interface SqliteStorageOptions {
   path: string;
@@ -44,6 +45,8 @@ interface PendingRow {
   scopes: string;
   granted_scope: string;
   expires_at: number;
+  resource: string | null;
+  browser_binding: string | null;
 }
 
 interface AuthCodeRow {
@@ -54,6 +57,8 @@ interface AuthCodeRow {
   code_challenge: string;
   scopes: string;
   expires_at: number;
+  resource: string | null;
+  granted_scope: string | null;
 }
 
 interface AccessTokenRow {
@@ -62,6 +67,8 @@ interface AccessTokenRow {
   user_id: string;
   scopes: string;
   expires_at: number;
+  resource: string | null;
+  granted_scope: string | null;
 }
 
 interface RefreshTokenRow {
@@ -69,12 +76,46 @@ interface RefreshTokenRow {
   client_id: string;
   user_id: string;
   scopes: string;
+  resource: string | null;
+  granted_scope: string | null;
 }
 
 function parseScopes(json: string): string[] {
   const parsed: unknown = JSON.parse(json);
   if (!Array.isArray(parsed)) return [];
   return parsed.filter((s): s is string => typeof s === 'string');
+}
+
+/** A per-grant access level column; NULL (pre-0.4.0) or anything unknown reads as undefined. */
+function parseGrantedScope(value: string | null): GrantedScope | undefined {
+  return value === 'read-only' || value === 'read-write' ? value : undefined;
+}
+
+function refreshTokenFromRow(row: RefreshTokenRow): RefreshTokenRecord {
+  return {
+    token: row.token,
+    clientId: row.client_id,
+    userId: row.user_id,
+    scopes: parseScopes(row.scopes),
+    resource: row.resource ?? undefined,
+    grantedScope: parseGrantedScope(row.granted_scope),
+  };
+}
+
+/**
+ * Apply {@link ADDED_COLUMNS} that are not present yet, in one IMMEDIATE
+ * transaction (write lock taken up front, so two processes opening the same file
+ * can't both decide a column is missing).
+ */
+function migrate(db: BetterSqlite3.Database): void {
+  db.transaction(() => {
+    for (const { table, column, type } of ADDED_COLUMNS) {
+      const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (!columns.some((c) => c.name === column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      }
+    }
+  }).immediate();
 }
 
 export class SqliteStorage implements Storage {
@@ -143,6 +184,7 @@ export class SqliteStorage implements Storage {
         scopes TEXT NOT NULL
       );
     `);
+    migrate(db);
 
     this.db = db;
   }
@@ -217,8 +259,8 @@ export class SqliteStorage implements Storage {
     this.database
       .prepare(
         `INSERT INTO pending_auth
-           (state, client_id, redirect_uri, code_challenge, client_state, scopes, granted_scope, expires_at)
-         VALUES (@state, @clientId, @redirectUri, @codeChallenge, @clientState, @scopes, @grantedScope, @expiresAt)`
+           (state, client_id, redirect_uri, code_challenge, client_state, scopes, granted_scope, expires_at, resource, browser_binding)
+         VALUES (@state, @clientId, @redirectUri, @codeChallenge, @clientState, @scopes, @grantedScope, @expiresAt, @resource, @browserBinding)`
       )
       .run({
         state: rec.state,
@@ -229,6 +271,8 @@ export class SqliteStorage implements Storage {
         scopes: JSON.stringify(rec.scopes),
         grantedScope: rec.grantedScope,
         expiresAt: rec.expiresAt,
+        resource: rec.resource ?? null,
+        browserBinding: rec.browserBinding ?? null,
       });
   }
 
@@ -251,6 +295,8 @@ export class SqliteStorage implements Storage {
       scopes: parseScopes(row.scopes),
       grantedScope: row.granted_scope as GrantedScope,
       expiresAt: row.expires_at,
+      resource: row.resource ?? undefined,
+      browserBinding: row.browser_binding ?? undefined,
     };
   }
 
@@ -260,8 +306,8 @@ export class SqliteStorage implements Storage {
     this.database
       .prepare(
         `INSERT INTO auth_codes
-           (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at)
-         VALUES (@code, @clientId, @userId, @redirectUri, @codeChallenge, @scopes, @expiresAt)`
+           (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at, resource, granted_scope)
+         VALUES (@code, @clientId, @userId, @redirectUri, @codeChallenge, @scopes, @expiresAt, @resource, @grantedScope)`
       )
       .run({
         code: rec.code,
@@ -271,6 +317,8 @@ export class SqliteStorage implements Storage {
         codeChallenge: rec.codeChallenge,
         scopes: JSON.stringify(rec.scopes),
         expiresAt: rec.expiresAt,
+        resource: rec.resource ?? null,
+        grantedScope: rec.grantedScope ?? null,
       });
   }
 
@@ -292,6 +340,8 @@ export class SqliteStorage implements Storage {
       codeChallenge: row.code_challenge,
       scopes: parseScopes(row.scopes),
       expiresAt: row.expires_at,
+      resource: row.resource ?? undefined,
+      grantedScope: parseGrantedScope(row.granted_scope),
     };
   }
 
@@ -300,8 +350,8 @@ export class SqliteStorage implements Storage {
   async saveAccessToken(rec: AccessTokenRecord): Promise<void> {
     this.database
       .prepare(
-        `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at)
-         VALUES (@token, @clientId, @userId, @scopes, @expiresAt)`
+        `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, resource, granted_scope)
+         VALUES (@token, @clientId, @userId, @scopes, @expiresAt, @resource, @grantedScope)`
       )
       .run({
         token: rec.token,
@@ -309,6 +359,8 @@ export class SqliteStorage implements Storage {
         userId: rec.userId,
         scopes: JSON.stringify(rec.scopes),
         expiresAt: rec.expiresAt,
+        resource: rec.resource ?? null,
+        grantedScope: rec.grantedScope ?? null,
       });
   }
 
@@ -327,6 +379,8 @@ export class SqliteStorage implements Storage {
       userId: row.user_id,
       scopes: parseScopes(row.scopes),
       expiresAt: row.expires_at,
+      resource: row.resource ?? undefined,
+      grantedScope: parseGrantedScope(row.granted_scope),
     };
   }
 
@@ -339,15 +393,24 @@ export class SqliteStorage implements Storage {
   async saveRefreshToken(rec: RefreshTokenRecord): Promise<void> {
     this.database
       .prepare(
-        `INSERT INTO refresh_tokens (token, client_id, user_id, scopes)
-         VALUES (@token, @clientId, @userId, @scopes)`
+        `INSERT INTO refresh_tokens (token, client_id, user_id, scopes, resource, granted_scope)
+         VALUES (@token, @clientId, @userId, @scopes, @resource, @grantedScope)`
       )
       .run({
         token: rec.token,
         clientId: rec.clientId,
         userId: rec.userId,
         scopes: JSON.stringify(rec.scopes),
+        resource: rec.resource ?? null,
+        grantedScope: rec.grantedScope ?? null,
       });
+  }
+
+  async getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
+    const row = this.database
+      .prepare('SELECT * FROM refresh_tokens WHERE token = ?')
+      .get(token) as RefreshTokenRow | undefined;
+    return row ? refreshTokenFromRow(row) : undefined;
   }
 
   async takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
@@ -359,13 +422,7 @@ export class SqliteStorage implements Storage {
       return row;
     });
     const row = take(token);
-    if (!row) return undefined;
-    return {
-      token: row.token,
-      clientId: row.client_id,
-      userId: row.user_id,
-      scopes: parseScopes(row.scopes),
-    };
+    return row ? refreshTokenFromRow(row) : undefined;
   }
 
   async deleteRefreshToken(token: string): Promise<void> {

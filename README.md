@@ -90,15 +90,18 @@ client/cache/rate-limiter/audit-log.
 |----------|-------------|
 | `MCP_TRANSPORT` | `stdio` (default) or `http` |
 | `PORT` | HTTP port (default `3000`) |
-| `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | Comma-separated allowlists for DNS-rebinding protection |
-| `ENABLE_DNS_REBINDING_PROTECTION` | Enable Origin/Host checks (needs an allowlist) |
+| `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | Comma-separated allowlists for DNS-rebinding protection (default: derived from `PUBLIC_URL`, plus localhost) |
+| `ENABLE_DNS_REBINDING_PROTECTION` | Origin/Host checks, on by default (0.4.0 breaking default; behind a proxy forward `Host` or set `ALLOWED_HOSTS`); `false` disables them (unsafe). See docs/REMOTE_HOSTING.md |
+| `MCP_RESOURCE_URL` / `MCP_MAX_SESSIONS` / `MCP_SESSION_IDLE_TIMEOUT_MS` | Resource URL (default `PUBLIC_URL`/mcp), session cap (100) and idle timeout (30 min), both not enforced yet; see docs/REMOTE_HOSTING.md |
 
 **Multi-user (YNAB OAuth).** Configure a YNAB OAuth app + `ENCRYPTION_KEY` +
 `PUBLIC_URL` and the server becomes an OAuth 2.1 Authorization Server federated to
 YNAB: many users connect their own YNAB accounts to one instance, each isolated,
-choosing read-only or read-write at consent. See
+choosing read-only or read-write for each connection at consent. See
 **[docs/REMOTE_HOSTING.md](docs/REMOTE_HOSTING.md)** for the full deployer guide
-(registering the YNAB app, storage, TLS).
+(registering the YNAB app, storage, TLS). Tokens are bound to the MCP resource
+URL (RFC 8707). **Back up your SQLite/Postgres database before upgrading**: the
+schema is migrated in place on startup (see the guide's *Upgrading* section).
 
 > **Single-user (header auth).** If the OAuth variables aren't all set, HTTP mode
 > takes the YNAB token per request via the `X-YNAB-Token` header (falling back to
