@@ -1,12 +1,17 @@
 /**
- * tools/list filtering by read-only mode (per server / per HTTP session).
+ * tools/list filtering by read-only mode (per server / per HTTP session), and
+ * the serverInfo the server advertises.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServerForUser, type UserContext } from '../../src/server.js';
 import { tools } from '../../src/tools/index.js';
+
+const pkg = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8')) as { version: string };
 
 const baseCtx: Omit<UserContext, 'readOnly'> = {
   accessToken: 'token',
@@ -84,5 +89,12 @@ describe('tools/list in read-only mode', () => {
     const client = await connect(false);
     const result = await client.callTool({ name: 'ynab_import_transactions', arguments: {} });
     expect(result.isError).toBeFalsy();
+  });
+});
+
+describe('serverInfo', () => {
+  it('advertises the ynab-mcp name and the package version', async () => {
+    const client = await connect(true);
+    expect(client.getServerVersion()).toMatchObject({ name: 'ynab-mcp', version: pkg.version });
   });
 });

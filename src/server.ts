@@ -72,7 +72,7 @@ export function buildYnabClient(ctx: UserContext): YnabClient {
 export function createServerFromClient(ynabClient: YnabClient): Server {
   const server = new Server(
     {
-      name: 'ynab-mcp-server',
+      name: 'ynab-mcp',
       version: pkg.version,
     },
     {
