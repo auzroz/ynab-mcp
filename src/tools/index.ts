@@ -4,10 +4,14 @@
  * Central registry for all MCP tools. Each tool module exports:
  * - A Tool definition object
  * - A handler function
+ *
+ * Titles and annotations live in ./annotations.ts and are merged in here when
+ * the tool list is built.
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../services/ynab-client.js';
+import { TOOL_METADATA } from './annotations.js';
 
 // User tools
 import { getUserTool, handleGetUser } from './user/get-user.js';
@@ -199,8 +203,8 @@ import {
   handleHealthCheck,
 } from './system/index.js';
 
-// Export all tool definitions
-export const tools: Tool[] = [
+// All tool definitions, as declared by the tool modules
+const toolDefinitions: Tool[] = [
   // User
   getUserTool,
   // Budgets
@@ -283,7 +287,7 @@ export const tools: Tool[] = [
 // Tool handler mapping
 type ToolHandler = (args: Record<string, unknown>, client: YnabClient) => Promise<string>;
 
-const handlers: Record<string, ToolHandler> = {
+const handlers = {
   // User
   ynab_get_user: handleGetUser,
   // Budgets
@@ -361,7 +365,33 @@ const handlers: Record<string, ToolHandler> = {
   ynab_rate_limit_status: handleRateLimitStatus,
   ynab_audit_log: handleAuditLog,
   ynab_health_check: handleHealthCheck,
-};
+} satisfies Record<string, ToolHandler>;
+
+/** Names of all registered tools. TOOL_METADATA must have exactly these keys. */
+export type ToolName = keyof typeof handlers;
+
+function isToolName(name: string): name is ToolName {
+  return Object.prototype.hasOwnProperty.call(handlers, name);
+}
+
+/**
+ * Attach the title and annotations from TOOL_METADATA to a tool definition.
+ * Throws for a tool with no handler/metadata entry, so a registration mistake
+ * fails at startup (and in tests) instead of shipping a tool that clients
+ * would treat with the spec's defaults (destructive, open world).
+ */
+function withMetadata(tool: Tool): Tool {
+  if (!isToolName(tool.name)) {
+    throw new Error(`Tool ${tool.name} has no handler or annotation entry`);
+  }
+  const { title, annotations } = TOOL_METADATA[tool.name];
+  // Top-level title is the 2025-06-18 display name; annotations.title is the
+  // 2025-03-26 field older clients read. Both carry the same value.
+  return { ...tool, title, annotations: { title, ...annotations } };
+}
+
+// Export all tool definitions with titles and annotations applied
+export const tools: Tool[] = toolDefinitions.map(withMetadata);
 
 /**
  * Route a tool call to the appropriate handler.
@@ -372,12 +402,12 @@ export async function handleToolCall(
   client: YnabClient
 ): Promise<string> {
   // Guard against prototype pollution - only allow own properties
-  if (!Object.prototype.hasOwnProperty.call(handlers, toolName)) {
+  if (!isToolName(toolName)) {
     const safeName = toolName.slice(0, 100).replace(/[\r\n]/g, '');
     throw new Error(`Unknown tool: ${safeName}`);
   }
 
   // Safe to access after hasOwnProperty check
-  const handler = handlers[toolName] as ToolHandler;
+  const handler: ToolHandler = handlers[toolName];
   return handler(args, client);
 }
