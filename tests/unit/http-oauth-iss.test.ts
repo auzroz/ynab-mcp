@@ -26,6 +26,7 @@ vi.mock('../../src/auth/ynab-oauth.js', async () => {
 import { createHttpApp } from '../../src/http.js';
 import * as ynabOauth from '../../src/auth/ynab-oauth.js';
 import { makeHttpConfig } from './helpers/http-config.js';
+import { cookieHeaderFrom } from './helpers/consent-cookie.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
 const exchangeCodeMock = vi.mocked(ynabOauth.exchangeCode);
@@ -73,18 +74,21 @@ function authorizeQuery(
   };
 }
 
-/** GET /authorize and return our pending-auth state from the consent page. */
+/**
+ * GET /authorize and return our pending-auth state from the consent page, and
+ * the consent cookie (as a Cookie header) the later legs require.
+ */
 async function consentState(
   app: Express,
   clientId: string,
   extra: Record<string, string> = {},
   redirectUri = CALLBACK
-): Promise<{ state: string; html: string }> {
+): Promise<{ state: string; html: string; cookie: string }> {
   const res = await request(app).get('/authorize').query(authorizeQuery(clientId, extra, redirectUri));
   expect(res.status).toBe(200);
   const m = /state=([^&"]+)&amp;scope=read-only/.exec(res.text);
   if (!m?.[1]) throw new Error('no consent link');
-  return { state: decodeURIComponent(m[1]), html: res.text };
+  return { state: decodeURIComponent(m[1]), html: res.text, cookie: cookieHeaderFrom(res) };
 }
 
 async function metadataIssuer(app: Express): Promise<string> {
@@ -128,10 +132,10 @@ describe('successful authorization response', () => {
     const app = await createHttpApp(makeConfig());
     const issuer = await metadataIssuer(app);
     const clientId = await register(app);
-    const { state } = await consentState(app, clientId);
+    const { state, cookie } = await consentState(app, clientId);
 
-    const start = await request(app).get('/oauth/ynab/start').query({ state, scope: 'read-only' });
-    const cb = await request(app).get('/oauth/ynab/callback').query({ code: 'ynab-code', state });
+    const start = await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-only' });
+    const cb = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
     const loc = location(cb);
     expect(loc.origin + loc.pathname).toBe(CALLBACK);
     expect(loc.searchParams.get('iss')).toBe(issuer);
@@ -160,8 +164,9 @@ describe('successful authorization response', () => {
     const consent = await request(app).get('/authorize').query(query);
     const m = /state=([^&"]+)&amp;scope=read-only/.exec(consent.text);
     const state = decodeURIComponent(m?.[1] ?? '');
+    const cookie = cookieHeaderFrom(consent);
 
-    const cb = await request(app).get('/oauth/ynab/callback').query({ code: 'ynab-code', state });
+    const cb = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
     const loc = location(cb);
     expect(loc.searchParams.get('tenant')).toBe('t 1');
     expect(loc.searchParams.get('code')).toBeTruthy();
@@ -176,8 +181,8 @@ describe('successful authorization response', () => {
     const issuer = await metadataIssuer(app);
     expect(issuer).toBe('https://mcp.example.com/ynab');
     const clientId = await register(app);
-    const { state } = await consentState(app, clientId);
-    const cb = await request(app).get('/oauth/ynab/callback').query({ code: 'ynab-code', state });
+    const { state, cookie } = await consentState(app, clientId);
+    const cb = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
     expect(location(cb).searchParams.get('iss')).toBe(issuer);
     const err = await request(app).get('/authorize').query(authorizeQuery(clientId, { code_challenge_method: 'plain' }));
     expect(location(err).searchParams.get('iss')).toBe(issuer);
@@ -235,10 +240,10 @@ describe('error authorization responses', () => {
   it('Cancel on the consent screen returns access_denied with iss and state, once', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state, html } = await consentState(app, clientId);
+    const { state, html, cookie } = await consentState(app, clientId);
     expect(html).toContain(`https://mcp.example.com/oauth/cancel?state=${encodeURIComponent(state)}`);
 
-    const res = await request(app).get('/oauth/cancel').query({ state });
+    const res = await request(app).get('/oauth/cancel').set('Cookie', cookie).query({ state });
     const loc = location(res);
     expect(loc.origin + loc.pathname).toBe(CALLBACK);
     expect(loc.searchParams.get('error')).toBe('access_denied');
@@ -248,10 +253,10 @@ describe('error authorization responses', () => {
     expect(loc.searchParams.has('code')).toBe(false);
 
     // The pending authorization is gone: it can be neither cancelled again nor resumed.
-    const again = await request(app).get('/oauth/cancel').query({ state });
+    const again = await request(app).get('/oauth/cancel').set('Cookie', cookie).query({ state });
     expect(again.status).toBe(400);
     expect(again.headers['location']).toBeUndefined();
-    const start = await request(app).get('/oauth/ynab/start').query({ state, scope: 'read-only' });
+    const start = await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-only' });
     expect(start.status).toBe(400);
   });
 
@@ -268,11 +273,12 @@ describe('error authorization responses', () => {
   it('YNAB denial (error=access_denied) becomes access_denied to the client with iss', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state } = await consentState(app, clientId);
-    await request(app).get('/oauth/ynab/start').query({ state, scope: 'read-only' });
+    const { state, cookie } = await consentState(app, clientId);
+    await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-only' });
 
     const res = await request(app)
       .get('/oauth/ynab/callback')
+      .set('Cookie', cookie)
       .query({ error: 'access_denied', error_description: 'User said no', state });
     const loc = location(res);
     expect(loc.searchParams.get('error')).toBe('access_denied');
@@ -285,9 +291,10 @@ describe('error authorization responses', () => {
   it('other YNAB errors map to server_error and never forward YNAB text', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state } = await consentState(app, clientId);
+    const { state, cookie } = await consentState(app, clientId);
     const res = await request(app)
       .get('/oauth/ynab/callback')
+      .set('Cookie', cookie)
       .query({ error: 'temporarily_unavailable', error_description: 'internal-host-42 down', state });
     const loc = location(res);
     expect(loc.searchParams.get('error')).toBe('server_error');
@@ -307,9 +314,9 @@ describe('error authorization responses', () => {
     exchangeCodeMock.mockRejectedValueOnce(new Error('YNAB token request failed with status 500'));
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state } = await consentState(app, clientId);
+    const { state, cookie } = await consentState(app, clientId);
 
-    const res = await request(app).get('/oauth/ynab/callback').query({ code: 'ynab-code', state });
+    const res = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
     const loc = location(res);
     expect(loc.origin + loc.pathname).toBe(CALLBACK);
     expect(loc.searchParams.get('error')).toBe('server_error');
@@ -325,7 +332,7 @@ describe('error authorization responses', () => {
     errorSpy.mockRestore();
 
     // One-time: the same state cannot be replayed.
-    const replay = await request(app).get('/oauth/ynab/callback').query({ code: 'ynab-code', state });
+    const replay = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
     expect(replay.status).toBe(400);
   });
 });
@@ -334,8 +341,8 @@ describe('redirects that are not authorization responses', () => {
   it('the redirect to YNAB carries no iss and keeps its own parameters', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state } = await consentState(app, clientId);
-    const res = await request(app).get('/oauth/ynab/start').query({ state, scope: 'read-only' });
+    const { state, cookie } = await consentState(app, clientId);
+    const res = await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-only' });
     const loc = location(res);
     expect(loc.origin + loc.pathname).toBe('https://app.ynab.com/oauth/authorize');
     expect(loc.searchParams.has('iss')).toBe(false);

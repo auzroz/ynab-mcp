@@ -36,7 +36,7 @@ Set these environment variables (see `.env.example`):
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `MCP_TRANSPORT` | yes | `http` |
-| `PUBLIC_URL` | yes | Public HTTPS base URL, e.g. `https://ynab-mcp.example.com` |
+| `PUBLIC_URL` | yes | Public HTTPS base URL, e.g. `https://ynab-mcp.example.com`. It is also the OAuth issuer, so for local http testing use `http://localhost` or `http://127.0.0.1`: the server refuses to start with `http://[::1]` in OAuth mode |
 | `YNAB_OAUTH_CLIENT_ID` | yes | From step 1 |
 | `YNAB_OAUTH_CLIENT_SECRET` | yes | From step 1 |
 | `ENCRYPTION_KEY` | yes | 32-byte key for at-rest token encryption — `openssl rand -base64 32` |
@@ -102,6 +102,50 @@ volumes: { ynab-data: {} }
   npx mcp-remote https://YOUR_PUBLIC_URL/mcp
   ```
 
+### Consent screen and browser binding
+
+When a client starts authorization, `/authorize` shows a consent page naming
+the client and the address (`redirect_uri`) the browser will be sent back to,
+and sets a short-lived cookie (`__Host-ynab_mcp_consent_…`; `HttpOnly`,
+`Secure`, `SameSite=Lax`, lifetime `MCP_AUTH_CODE_TTL_SEC`). The next steps
+(`/oauth/ynab/start`, the YNAB callback at `/oauth/ynab/callback`, and
+`/oauth/cancel`) only work in a browser that carries that cookie. Without it,
+anyone could start an authorization for their own client and send a victim the
+`/oauth/ynab/start` link, skipping this server's consent screen. A request
+without the cookie gets a generic `400`, and that authorization can't be
+resumed. Over plain http (loopback only) the cookie has no `__Host-` prefix and
+no `Secure` flag. Your reverse proxy must pass `Cookie` and `Set-Cookie`
+through, which proxies do by default. The consent page can't be framed
+(`X-Frame-Options: DENY`, `frame-ancestors 'none'`). An authorization that was
+in progress during an upgrade to 0.4.0 has no binding, so the user has to
+start it again.
+
+### Access level per connection
+
+The read-only / read-write choice belongs to each connection (each client
+grant), not to the user. It is recorded on the authorization code and the
+tokens issued from it, and a refresh never widens it. So if a user connects
+client A read-only and later connects client B read-write, client A stays
+read-only. A session gets write tools only when all of these hold: write is
+enabled (`YNAB_READ_ONLY=false`), the token's grant is read-write, and the
+user's current YNAB connection is read-write. A client that asks for the
+`read-only` scope (and not `read-write`) is only offered read-only at consent.
+If a read-only grant was requested with `read-write`, the issued `scope` says
+`read-only`.
+
+**Upgrade note:** tokens issued by 0.3.x carry no recorded access level and are
+treated as **read-only**. Users who had read-write access must reconnect once
+(remove and re-add the connector, or re-run `mcp-remote`) to get write access
+back. Read access keeps working without reconnecting.
+
+### Sessions
+
+Each MCP session (`mcp-session-id`) belongs to the client and user whose token
+created it. A request that presents a session id with a token for a different
+user or client gets the same `400` as an unknown session id, so a leaked
+session id (from proxy or access logs) can't be used to drive someone else's
+session. Header-auth mode has no per-request identity and doesn't bind sessions.
+
 ### Discovery (RFC 9728 / RFC 8414)
 
 In OAuth mode the server publishes protected-resource metadata for the MCP
@@ -162,9 +206,10 @@ transport's own DNS-rebinding option is not used, so the two can't disagree).
 - **Origin**, when present, must match `ALLOWED_ORIGINS` exactly on scheme, host
   and port, else `403`. Requests with no `Origin` (CLI and server-side clients)
   are allowed. `Origin: null` is rejected. It applies to `/mcp` only: the OAuth
-  endpoints carry no cookies or ambient credentials (PKCE and client
-  authentication) and are deliberately CORS-open, and the well-known metadata
-  must stay readable from any origin.
+  endpoints carry no ambient credentials (PKCE and client authentication) and
+  are deliberately CORS-open, and the well-known metadata must stay readable
+  from any origin. The only cookie is the `SameSite=Lax` consent cookie, which
+  proves which browser saw the consent page and grants nothing by itself.
 - With no `ALLOWED_ORIGINS` and no `PUBLIC_URL`, origins are derived from the
   allowed hosts (`https://` for each, plus `http://` for loopback hosts).
 - A malformed `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` entry (a scheme in a host, a
@@ -188,7 +233,10 @@ reach a server on a private network through DNS rebinding. Prefer fixing
 server is stopped, or `pg_dump` the Postgres database). On startup the server
 migrates the schema in place. Migrations only add nullable columns and are safe
 to re-run. 0.4.0 adds a `resource` column to `pending_auth`, `auth_codes`,
-`access_tokens` and `refresh_tokens`. On Postgres the migration runs in one
+`access_tokens` and `refresh_tokens`, a `granted_scope` column to `auth_codes`,
+`access_tokens` and `refresh_tokens`, and a `browser_binding` column to
+`pending_auth`. Existing read-write users must reconnect once to get write
+access back (see "Access level per connection"). On Postgres the migration runs in one
 transaction under an advisory lock, so replicas that start together don't race.
 The previous release can still read a migrated database if you need to roll back.
 
@@ -212,8 +260,9 @@ any MCP client that supports the `prompts` capability:
 
 - YNAB refresh tokens are encrypted at rest with AES-256-GCM (`ENCRYPTION_KEY`).
   Keep that key secret and stable; rotating it invalidates stored connections.
-- Access is read-only or read-write **per user**, per their consent choice; the
-  server also honors a global `YNAB_READ_ONLY=true` override.
+- Access is read-only or read-write **per connection**, per the consent choice
+  for that client; the server also honors a global `YNAB_READ_ONLY=true`
+  override.
 - Always run behind TLS; enable DNS-rebinding protection with an allowlist.
 - `memory` storage is for evaluation only — it is not durable and not shared across
   replicas. For multiple replicas, use `postgres` (session/token cache is currently

@@ -46,14 +46,15 @@ const exchangeCodeMock = vi.mocked(ynabOauth.exchangeCode);
 const getYnabUserIdMock = vi.mocked(ynabOauth.getYnabUserId);
 const refreshAccessTokenMock = vi.mocked(ynabOauth.refreshAccessToken);
 
-/** A fake express Response capturing setHeader / send. */
+/** A fake express Response capturing setHeader / append / send. */
 interface FakeRes {
   setHeader: ReturnType<typeof vi.fn>;
+  append: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
 }
 
 function makeRes(): FakeRes {
-  return { setHeader: vi.fn(), send: vi.fn() };
+  return { setHeader: vi.fn(), append: vi.fn(), send: vi.fn() };
 }
 
 function makeProvider(overrides: Partial<McpProviderOptions> = {}): {
@@ -97,6 +98,21 @@ function extractState(html: string): string {
   return decodeURIComponent(m[1]);
 }
 
+/** The Set-Cookie value authorize() appended (the consent cookie). */
+function setCookieOf(res: FakeRes): string {
+  const call = res.append.mock.calls.find((c) => c[0] === 'Set-Cookie');
+  if (!call) throw new Error('no Set-Cookie');
+  return call[1] as string;
+}
+
+/** Pending state, consent-cookie nonce and HTML from an authorize() response. */
+function consentOf(res: FakeRes): { state: string; nonce: string; html: string } {
+  const html = res.send.mock.calls[0]?.[0] as string;
+  const pair = setCookieOf(res).split(';')[0] ?? '';
+  const nonce = pair.slice(pair.indexOf('=') + 1);
+  return { state: extractState(html), nonce, html };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   exchangeCodeMock.mockResolvedValue({
@@ -121,10 +137,9 @@ async function driveToAuthCode(
   const client = await provider.clientsStore.registerClient(clientMetadata);
   const res = makeRes();
   await provider.authorize(client, { ...authParams, ...params }, res as unknown as Response);
-  const html = res.send.mock.calls[0]?.[0] as string;
-  const state = extractState(html);
-  await provider.startYnabAuthorization(state, scope);
-  const redirectUrl = await provider.handleYnabCallback('ynabcode', state);
+  const { state, nonce } = consentOf(res);
+  await provider.startYnabAuthorization(state, scope, nonce);
+  const redirectUrl = await provider.handleYnabCallback('ynabcode', state, nonce);
   const code = new URL(redirectUrl).searchParams.get('code');
   if (code === null) throw new Error('no code in redirect');
   return { client, code, redirectUrl };
@@ -165,11 +180,11 @@ describe('McpOAuthProvider.authorize', () => {
     expect(html).toContain('Read-only');
 
     // A pending auth now exists and is usable (observed via startYnabAuthorization).
-    const state = extractState(html);
+    const { state, nonce } = consentOf(res);
     // Proof the pending auth was persisted: it can be started (and after start,
     // startYnabAuthorization consumed+re-saved it, so a fresh unknown state fails).
-    await expect(provider.startYnabAuthorization(state, 'read-only')).resolves.toBeTypeOf('string');
-    await expect(provider.startYnabAuthorization('never-saved', 'read-only')).rejects.toThrow();
+    await expect(provider.startYnabAuthorization(state, 'read-only', nonce)).resolves.toBeTypeOf('string');
+    await expect(provider.startYnabAuthorization('never-saved', 'read-only', nonce)).rejects.toThrow();
   });
 
   it('omits the read-write link when allowWrite is false', async () => {
@@ -189,9 +204,9 @@ describe('McpOAuthProvider.startYnabAuthorization', () => {
     const client = await provider.clientsStore.registerClient(clientMetadata);
     const res = makeRes();
     await provider.authorize(client, authParams, res as unknown as Response);
-    const state = extractState(res.send.mock.calls[0]?.[0] as string);
+    const { state, nonce } = consentOf(res);
 
-    const url = await provider.startYnabAuthorization(state, 'read-write');
+    const url = await provider.startYnabAuthorization(state, 'read-write', nonce);
     expect(typeof url).toBe('string');
     const parsed = new URL(url);
     expect(parsed.origin + parsed.pathname).toBe('https://app.ynab.com/oauth/authorize');
@@ -206,9 +221,9 @@ describe('McpOAuthProvider.startYnabAuthorization', () => {
     const client = await provider.clientsStore.registerClient(clientMetadata);
     const res = makeRes();
     await provider.authorize(client, authParams, res as unknown as Response);
-    const state = extractState(res.send.mock.calls[0]?.[0] as string);
+    const { state, nonce } = consentOf(res);
 
-    const url = await provider.startYnabAuthorization(state, 'read-write');
+    const url = await provider.startYnabAuthorization(state, 'read-write', nonce);
     expect(new URL(url).searchParams.get('scope')).toBe('read-only');
   });
 
@@ -217,15 +232,15 @@ describe('McpOAuthProvider.startYnabAuthorization', () => {
     const client = await provider.clientsStore.registerClient(clientMetadata);
     const res = makeRes();
     await provider.authorize(client, authParams, res as unknown as Response);
-    const state = extractState(res.send.mock.calls[0]?.[0] as string);
+    const { state, nonce } = consentOf(res);
 
-    const url = await provider.startYnabAuthorization(state, 'read-write');
+    const url = await provider.startYnabAuthorization(state, 'read-write', nonce);
     expect(new URL(url).searchParams.get('scope')).toBe('read-only');
   });
 
   it('throws on a bogus/expired state', async () => {
     const { provider } = makeProvider();
-    await expect(provider.startYnabAuthorization('bogus', 'read-only')).rejects.toThrow();
+    await expect(provider.startYnabAuthorization('bogus', 'read-only', 'nonce')).rejects.toThrow();
   });
 });
 
@@ -263,17 +278,20 @@ describe('McpOAuthProvider.handleYnabCallback', () => {
 
   it('throws on a bogus/expired state', async () => {
     const { provider } = makeProvider();
-    await expect(provider.handleYnabCallback('c', 'bogus')).rejects.toThrow();
+    await expect(provider.handleYnabCallback('c', 'bogus', 'nonce')).rejects.toThrow();
   });
 });
 
 describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
-  /** Run authorize() and return the pending state from the consent page. */
-  async function pendingState(provider: McpOAuthProvider, params: Partial<AuthorizationParams> = {}): Promise<string> {
+  /** Run authorize() and return the pending state and consent nonce. */
+  async function pendingState(
+    provider: McpOAuthProvider,
+    params: Partial<AuthorizationParams> = {}
+  ): Promise<{ state: string; nonce: string }> {
     const client = await provider.clientsStore.registerClient(clientMetadata);
     const res = makeRes();
     await provider.authorize(client, { ...authParams, ...params }, res as unknown as Response);
-    return extractState(res.send.mock.calls[0]?.[0] as string);
+    return consentOf(res);
   }
 
   it('defaults the issuer to the SDK metadata form of publicUrl', () => {
@@ -301,22 +319,22 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
 
   it('denyAuthorization redirects access_denied with state and iss, and consumes the pending auth', async () => {
     const { provider } = makeProvider();
-    const state = await pendingState(provider);
-    const url = new URL(await provider.denyAuthorization(state, 'access_denied'));
+    const { state, nonce } = await pendingState(provider);
+    const url = new URL(await provider.denyAuthorization(state, 'access_denied', nonce));
     expect(url.origin + url.pathname).toBe('https://client/cb');
     expect(url.searchParams.get('error')).toBe('access_denied');
     expect(url.searchParams.get('error_description')).toBe('The user denied the authorization request');
     expect(url.searchParams.get('state')).toBe('clientState');
     expect(url.searchParams.get('iss')).toBe('https://mcp.example.com/');
     expect(url.searchParams.has('code')).toBe(false);
-    await expect(provider.denyAuthorization(state, 'access_denied')).rejects.toBeInstanceOf(InvalidGrantError);
-    await expect(provider.startYnabAuthorization(state, 'read-only')).rejects.toThrow();
+    await expect(provider.denyAuthorization(state, 'access_denied', nonce)).rejects.toBeInstanceOf(InvalidGrantError);
+    await expect(provider.startYnabAuthorization(state, 'read-only', nonce)).rejects.toThrow();
   });
 
   it('denyAuthorization omits state when the client sent none, and supports server_error', async () => {
     const { provider } = makeProvider();
-    const state = await pendingState(provider, { state: undefined });
-    const url = new URL(await provider.denyAuthorization(state, 'server_error'));
+    const { state, nonce } = await pendingState(provider, { state: undefined });
+    const url = new URL(await provider.denyAuthorization(state, 'server_error', nonce));
     expect(url.searchParams.get('error')).toBe('server_error');
     expect(url.searchParams.has('state')).toBe(false);
     expect(url.searchParams.get('iss')).toBe('https://mcp.example.com/');
@@ -324,7 +342,7 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
 
   it('denyAuthorization throws for an unknown state', async () => {
     const { provider } = makeProvider();
-    await expect(provider.denyAuthorization('bogus', 'access_denied')).rejects.toBeInstanceOf(InvalidGrantError);
+    await expect(provider.denyAuthorization('bogus', 'access_denied', 'nonce')).rejects.toBeInstanceOf(InvalidGrantError);
   });
 
   it.each([
@@ -334,8 +352,8 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     arrange();
     const { provider, storage } = makeProvider();
-    const state = await pendingState(provider);
-    const url = new URL(await provider.handleYnabCallback('ynabcode', state));
+    const { state, nonce } = await pendingState(provider);
+    const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
     expect(url.searchParams.get('error')).toBe('server_error');
     expect(url.searchParams.get('error_description')).toBe('Could not complete YNAB authorization');
     expect(url.searchParams.get('state')).toBe('clientState');
@@ -829,5 +847,287 @@ describe('McpOAuthProvider.verifyAccessToken resource checks', () => {
     const err = await errorOf(provider.verifyAccessToken('foreign-at'));
     expect(err).toBeInstanceOf(InvalidTokenError);
     expect((err as Error).message).toBe('Invalid or expired access token');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Browser binding (consent cookie): the confused-deputy defense
+// ---------------------------------------------------------------------------
+
+describe('McpOAuthProvider consent cookie', () => {
+  async function consent(
+    provider: McpOAuthProvider,
+    params: Partial<AuthorizationParams> = {}
+  ): Promise<{ state: string; nonce: string; html: string; res: FakeRes }> {
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    const res = makeRes();
+    await provider.authorize(client, { ...authParams, ...params }, res as unknown as Response);
+    return { ...consentOf(res), res };
+  }
+
+  it('sets a __Host- cookie and stores only the nonce hash on the pending auth', async () => {
+    const { provider, storage } = makeProvider();
+    const save = vi.spyOn(storage, 'savePendingAuth');
+    const { state, nonce, res } = await consent(provider);
+
+    const set = setCookieOf(res);
+    expect(set.startsWith(`${provider.consentCookie.name(state)}=${nonce};`)).toBe(true);
+    expect(set).toMatch(/^__Host-/);
+    expect(set).toContain('HttpOnly');
+    expect(set).toContain('Secure');
+    expect(set).toContain('SameSite=Lax');
+    expect(set).toContain('Max-Age=600');
+
+    const saved = save.mock.calls[0]?.[0];
+    expect(saved?.browserBinding).toBeTruthy();
+    expect(saved?.browserBinding).not.toBe(nonce);
+    expect(JSON.stringify(saved)).not.toContain(nonce);
+  });
+
+  it('shows the redirect URI and forbids framing the consent page', async () => {
+    const { provider } = makeProvider();
+    const client = await provider.clientsStore.registerClient({
+      ...clientMetadata,
+      redirect_uris: ['https://attacker.example/cb?x=<b>'],
+    });
+    const res = makeRes();
+    await provider.authorize(
+      client,
+      { ...authParams, redirectUri: 'https://attacker.example/cb?x=<b>' },
+      res as unknown as Response
+    );
+    const html = res.send.mock.calls[0]?.[0] as string;
+    expect(html).toContain('https://attacker.example/cb?x=&lt;b&gt;');
+    expect(html).not.toContain('<b>');
+    expect(res.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
+    expect(res.setHeader).toHaveBeenCalledWith('Content-Security-Policy', "frame-ancestors 'none'");
+    expect(res.setHeader).toHaveBeenCalledWith('Referrer-Policy', 'no-referrer');
+  });
+
+  it('start without the cookie fails, and the state is then spent', async () => {
+    const { provider } = makeProvider();
+    const { state, nonce } = await consent(provider);
+    await expect(provider.startYnabAuthorization(state, 'read-write', undefined)).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+    await expect(provider.startYnabAuthorization(state, 'read-write', nonce)).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+  });
+
+  it("start with another authorization's cookie fails", async () => {
+    const { provider } = makeProvider();
+    const attacker = await consent(provider);
+    const victim = await consent(provider);
+    await expect(
+      provider.startYnabAuthorization(attacker.state, 'read-write', victim.nonce)
+    ).rejects.toBeInstanceOf(InvalidGrantError);
+    // The victim's own authorization is unaffected.
+    await expect(provider.startYnabAuthorization(victim.state, 'read-only', victim.nonce)).resolves.toContain(
+      'app.ynab.com'
+    );
+  });
+
+  it('two authorizations in one browser each keep their own cookie', async () => {
+    const { provider } = makeProvider();
+    const a = await consent(provider);
+    const b = await consent(provider);
+    expect(provider.consentCookie.name(a.state)).not.toBe(provider.consentCookie.name(b.state));
+    await provider.startYnabAuthorization(a.state, 'read-only', a.nonce);
+    await provider.startYnabAuthorization(b.state, 'read-only', b.nonce);
+    expect(new URL(await provider.handleYnabCallback('c1', a.state, a.nonce)).searchParams.has('code')).toBe(true);
+    expect(new URL(await provider.handleYnabCallback('c2', b.state, b.nonce)).searchParams.has('code')).toBe(true);
+  });
+
+  it('callback without the cookie never exchanges the YNAB code or saves a user', async () => {
+    const { provider, storage } = makeProvider();
+    // Attacker ran consent and start in their own browser, then got the victim
+    // to approve at YNAB: the victim's browser arrives with no consent cookie.
+    const { state, nonce } = await consent(provider);
+    await provider.startYnabAuthorization(state, 'read-write', nonce);
+    await expect(provider.handleYnabCallback('victim-code', state, undefined)).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+    expect(exchangeCodeMock).not.toHaveBeenCalled();
+    expect(await storage.getUser('ynab-user-1')).toBeUndefined();
+    // And the state is spent.
+    await expect(provider.handleYnabCallback('victim-code', state, nonce)).rejects.toThrow();
+  });
+
+  it('callback with a wrong cookie value fails', async () => {
+    const { provider } = makeProvider();
+    const { state, nonce } = await consent(provider);
+    await provider.startYnabAuthorization(state, 'read-only', nonce);
+    await expect(provider.handleYnabCallback('code', state, `${nonce}x`)).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+    expect(exchangeCodeMock).not.toHaveBeenCalled();
+  });
+
+  it('cancel without the cookie fails and returns no redirect', async () => {
+    const { provider } = makeProvider();
+    const { state } = await consent(provider);
+    await expect(provider.denyAuthorization(state, 'access_denied', undefined)).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+  });
+
+  it('a pending auth with no browser binding (pre-0.4.0) is never usable', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await storage.savePendingAuth({
+      state: 'legacy-state',
+      clientId: client.client_id,
+      redirectUri: 'https://client/cb',
+      codeChallenge: 'chal',
+      clientState: undefined,
+      scopes: [],
+      grantedScope: 'read-write',
+      expiresAt: Date.now() + 60_000,
+    });
+    await expect(provider.handleYnabCallback('code', 'legacy-state', 'anything')).rejects.toBeInstanceOf(
+      InvalidGrantError
+    );
+    expect(exchangeCodeMock).not.toHaveBeenCalled();
+  });
+
+  it('over http (loopback) the cookie has no __Host- prefix and no Secure', async () => {
+    const { provider } = makeProvider({ publicUrl: 'http://localhost:3000' });
+    const { res } = await consent(provider);
+    const set = setCookieOf(res);
+    expect(set.startsWith('ynab_mcp_consent_')).toBe(true);
+    expect(set).not.toContain('Secure');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-grant access level (read-only / read-write)
+// ---------------------------------------------------------------------------
+
+describe('McpOAuthProvider per-grant access level', () => {
+  async function tokensFor(
+    provider: McpOAuthProvider,
+    choice: 'read-only' | 'read-write',
+    params: Partial<AuthorizationParams> = {}
+  ): Promise<{ client: OAuthClientInformationFull; tokens: OAuthTokens }> {
+    const { client, code } = await driveToAuthCode(provider, choice, params);
+    await provider.challengeForAuthorizationCode(client, code);
+    return { client, tokens: await provider.exchangeAuthorizationCode(client, code) };
+  }
+
+  async function accessOf(provider: McpOAuthProvider, accessToken: string): Promise<unknown> {
+    return (await provider.verifyAccessToken(accessToken)).extra?.['grantedScope'];
+  }
+
+  it("a later read-write consent by the same user does not widen another client's read-only grant", async () => {
+    const { provider, storage } = makeProvider();
+    const a = await tokensFor(provider, 'read-only');
+    const b = await tokensFor(provider, 'read-write');
+
+    // The user record follows the latest consent...
+    expect((await storage.getUser('ynab-user-1'))?.grantedScope).toBe('read-write');
+    // ...but each token keeps its own grant.
+    expect(await accessOf(provider, a.tokens.access_token)).toBe('read-only');
+    expect(await accessOf(provider, b.tokens.access_token)).toBe('read-write');
+
+    // Refresh keeps A read-only, even with no scope requested.
+    const rotated = await provider.exchangeRefreshToken(a.client, refreshOf(a.tokens));
+    expect(await accessOf(provider, rotated.access_token)).toBe('read-only');
+    expect((await storage.takeRefreshToken(refreshOf(rotated)))?.grantedScope).toBe('read-only');
+  });
+
+  it('records the grant on the code and both tokens', async () => {
+    const { provider, storage } = makeProvider();
+    const save = vi.spyOn(storage, 'saveAuthCode');
+    const { tokens } = await tokensFor(provider, 'read-write');
+    expect(save.mock.calls[0]?.[0].grantedScope).toBe('read-write');
+    expect((await storage.getAccessToken(tokens.access_token))?.grantedScope).toBe('read-write');
+    expect((await storage.takeRefreshToken(refreshOf(tokens)))?.grantedScope).toBe('read-write');
+  });
+
+  it('a read-only grant reports a requested read-write scope as read-only', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await tokensFor(provider, 'read-only', { scopes: ['read-write'] });
+    expect(tokens.scope).toBe('read-only');
+    expect(await accessOf(provider, tokens.access_token)).toBe('read-only');
+    await expect(
+      provider.exchangeRefreshToken(client, refreshOf(tokens), ['read-write'])
+    ).rejects.toBeInstanceOf(InvalidScopeError);
+  });
+
+  it('a client that requests only read-only is not offered, nor granted, write access', async () => {
+    const { provider } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    const res = makeRes();
+    await provider.authorize(client, { ...authParams, scopes: ['read-only'] }, res as unknown as Response);
+    const { state, nonce, html } = consentOf(res);
+    expect(html).not.toContain('scope=read-write');
+    const url = await provider.startYnabAuthorization(state, 'read-write', nonce);
+    expect(new URL(url).searchParams.get('scope')).toBe('read-only');
+    const code = new URL(await provider.handleYnabCallback('c', state, nonce)).searchParams.get('code') ?? '';
+    await provider.challengeForAuthorizationCode(client, code);
+    const tokens = await provider.exchangeAuthorizationCode(client, code);
+    expect(await accessOf(provider, tokens.access_token)).toBe('read-only');
+  });
+
+  it('an access token narrowed to read-only on refresh is read-only', async () => {
+    const { provider } = makeProvider();
+    const { client, tokens } = await tokensFor(provider, 'read-write', {
+      scopes: ['read-only', 'read-write'],
+    });
+    expect(await accessOf(provider, tokens.access_token)).toBe('read-write');
+    const narrowed = await provider.exchangeRefreshToken(client, refreshOf(tokens), ['read-only']);
+    expect(await accessOf(provider, narrowed.access_token)).toBe('read-only');
+  });
+
+  it('a read-write grant with no recognized scopes is read-write', async () => {
+    const { provider } = makeProvider();
+    const { tokens } = await tokensFor(provider, 'read-write', { scopes: ['ynab'] });
+    expect(await accessOf(provider, tokens.access_token)).toBe('read-write');
+  });
+
+  it('treats a pre-0.4.0 access token (no grant recorded) as read-only', async () => {
+    const { provider, storage } = makeProvider();
+    await storage.upsertUser({
+      userId: 'ynab-user-1',
+      grantedScope: 'read-write',
+      encryptedRefreshToken: 'x',
+      updatedAt: Date.now(),
+    });
+    await storage.saveAccessToken({
+      token: 'legacy-at',
+      clientId: 'c1',
+      userId: 'ynab-user-1',
+      scopes: ['read-write'],
+      expiresAt: Date.now() + 60_000,
+    });
+    expect(await accessOf(provider, 'legacy-at')).toBe('read-only');
+  });
+
+  it('a pre-0.4.0 refresh token or code yields read-only tokens', async () => {
+    const { provider, storage } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    await storage.saveRefreshToken({
+      token: 'legacy-rt',
+      clientId: client.client_id,
+      userId: 'ynab-user-1',
+      scopes: [],
+    });
+    const fromRefresh = await provider.exchangeRefreshToken(client, 'legacy-rt');
+    expect(await accessOf(provider, fromRefresh.access_token)).toBe('read-only');
+    expect((await storage.takeRefreshToken(refreshOf(fromRefresh)))?.grantedScope).toBe('read-only');
+
+    await storage.saveAuthCode({
+      code: 'legacy-code',
+      clientId: client.client_id,
+      userId: 'ynab-user-1',
+      redirectUri: 'https://client/cb',
+      codeChallenge: 'chal',
+      scopes: [],
+      expiresAt: Date.now() + 60_000,
+    });
+    await provider.challengeForAuthorizationCode(client, 'legacy-code');
+    const fromCode = await provider.exchangeAuthorizationCode(client, 'legacy-code');
+    expect(await accessOf(provider, fromCode.access_token)).toBe('read-only');
   });
 });

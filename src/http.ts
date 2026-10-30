@@ -60,6 +60,23 @@ async function buildStorage(config: HttpConfig): ReturnType<typeof createStorage
   }
 }
 
+/**
+ * Who a session belongs to: the authenticated MCP client and YNAB user (oauth
+ * mode), or nobody (header mode, which has no per-request identity).
+ */
+function sessionOwner(req: Request): string | undefined {
+  const auth = (req as unknown as { auth?: AuthInfo }).auth;
+  const userId = auth?.extra?.['userId'];
+  if (auth === undefined || typeof userId !== 'string') return undefined;
+  return JSON.stringify([auth.clientId, userId]);
+}
+
+/** A live MCP session and the identity it was created for. */
+interface SessionEntry {
+  transport: StreamableHTTPServerTransport;
+  owner: string | undefined;
+}
+
 /** Result of resolving a session's user context, or an HTTP error to return. */
 type ContextResult =
   | { ok: true; ctx: UserContext }
@@ -82,10 +99,12 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
   //  - Host is checked on every route except /health (probed by orchestrators
   //    by pod IP). That includes the OAuth endpoints and well-known metadata.
   //  - Origin is checked on /mcp only. The OAuth endpoints carry no ambient
-  //    credentials (PKCE / client authentication, no cookies) and the SDK serves
-  //    them, and the well-known metadata, with permissive CORS on purpose so
-  //    browser-based MCP clients can discover and register; /mcp is the
-  //    credentialed, state-changing surface.
+  //    credentials (PKCE / client authentication) and the SDK serves them, and
+  //    the well-known metadata, with permissive CORS on purpose so browser-based
+  //    MCP clients can discover and register; /mcp is the credentialed,
+  //    state-changing surface. The one cookie (the SameSite=Lax consent cookie
+  //    the federation legs require) only proves which browser saw the consent
+  //    page; it grants nothing by itself.
   if (config.enableDnsRebindingProtection) {
     const hosts = config.allowedHosts ?? [];
     app.use(hostValidation(hosts, { skipPaths: ['/health'] }));
@@ -93,7 +112,24 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
   }
   app.use(express.json({ limit: MAX_JSON_BODY }));
 
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  const transports = new Map<string, SessionEntry>();
+
+  /**
+   * The session named by `mcp-session-id`, only if the request is from the
+   * identity that created it. A session id presented with another user's (or
+   * client's) token is treated exactly like an unknown id, so ids leaked from
+   * logs can't be used to drive someone else's session, nor probed.
+   */
+  const findSession = (req: Request): StreamableHTTPServerTransport | undefined => {
+    const sessionId = req.header('mcp-session-id');
+    const entry = sessionId ? transports.get(sessionId) : undefined;
+    if (!entry) return undefined;
+    if (entry.owner !== sessionOwner(req)) {
+      console.error('[Session] rejected a request for a session owned by a different identity');
+      return undefined;
+    }
+    return entry.transport;
+  };
 
   app.get('/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', transport: 'http', authMode: config.authMode, sessions: transports.size });
@@ -170,12 +206,16 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     // OAuth 2.1 AS endpoints (/authorize, /token, /register, /revoke, metadata).
     app.use(mcpAuthRouter(authRouterOptions));
 
-    // YNAB federation legs.
+    // YNAB federation legs. Each requires the consent cookie that /authorize set
+    // for this state (provider.consentCookie), so the legs only run in the
+    // browser that was shown the consent page.
+    const consentNonce = (req: Request, state: string): string | undefined =>
+      provider.consentCookie.read(req.header('cookie'), state);
     app.get('/oauth/ynab/start', async (req: Request, res: Response) => {
       try {
         const state = String(req.query['state'] ?? '');
         const scope = req.query['scope'] === 'read-write' ? 'read-write' : 'read-only';
-        const url = await provider.startYnabAuthorization(state, scope);
+        const url = await provider.startYnabAuthorization(state, scope, consentNonce(req, state));
         res.redirect(url);
       } catch {
         res.status(400).send('Authorization request expired or invalid. Please start over.');
@@ -190,14 +230,17 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
           // YNAB refused (e.g. the user clicked Deny). Tell the MCP client, with a
           // fixed error code; YNAB's own error text is never forwarded.
           const denial = error === 'access_denied' ? 'access_denied' : 'server_error';
-          res.redirect(await provider.denyAuthorization(state, denial));
+          const redirect = await provider.denyAuthorization(state, denial, consentNonce(req, state));
+          res.append('Set-Cookie', provider.consentCookie.clear(state));
+          res.redirect(redirect);
           return;
         }
         if (!code || !state) {
           res.status(400).send('Missing code or state.');
           return;
         }
-        const redirect = await provider.handleYnabCallback(code, state);
+        const redirect = await provider.handleYnabCallback(code, state, consentNonce(req, state));
+        res.append('Set-Cookie', provider.consentCookie.clear(state));
         res.redirect(redirect);
       } catch {
         res.status(400).send('Could not complete YNAB authorization. Please start over.');
@@ -211,7 +254,9 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
           res.status(400).send('Missing state.');
           return;
         }
-        res.redirect(await provider.denyAuthorization(state, 'access_denied'));
+        const redirect = await provider.denyAuthorization(state, 'access_denied', consentNonce(req, state));
+        res.append('Set-Cookie', provider.consentCookie.clear(state));
+        res.redirect(redirect);
       } catch {
         res.status(400).send('Authorization request expired or invalid. Please start over.');
       }
@@ -233,12 +278,16 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
       }
       try {
         const { accessToken, grantedScope } = await resolver.resolve(userId);
+        // Write access needs all of: writes enabled globally, a read-write grant
+        // on this token (per client grant, not the user's latest consent), and
+        // a read-write YNAB token for the user (YNAB enforces that one anyway).
+        const tokenScope = auth?.extra?.['grantedScope'];
         return {
           ok: true,
           ctx: {
             accessToken,
             defaultBudgetId: config.defaultBudgetId,
-            readOnly: config.readOnly || grantedScope === 'read-only',
+            readOnly: config.readOnly || tokenScope !== 'read-write' || grantedScope === 'read-only',
             rateLimitPerHour: config.rateLimitPerHour,
             cacheTtlMs: config.cacheTtlMs,
           },
@@ -281,7 +330,7 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
 
   app.post('/mcp', rejectBatch, async (req: Request, res: Response) => {
     const sessionId = req.header('mcp-session-id');
-    let transport = sessionId ? transports.get(sessionId) : undefined;
+    let transport = findSession(req);
 
     if (!transport) {
       if (sessionId !== undefined || !isInitializeRequest(req.body)) {
@@ -301,10 +350,11 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
         return;
       }
 
+      const owner = sessionOwner(req);
       const newTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid: string) => {
-          transports.set(sid, newTransport);
+          transports.set(sid, { transport: newTransport, owner });
         },
       });
       newTransport.onclose = () => {
@@ -326,8 +376,7 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
 
   // Server -> client stream (GET) and explicit session teardown (DELETE).
   const sessionRequest = async (req: Request, res: Response): Promise<void> => {
-    const sessionId = req.header('mcp-session-id');
-    const transport = sessionId ? transports.get(sessionId) : undefined;
+    const transport = findSession(req);
     if (!transport) {
       res.status(400).json(jsonRpcError(-32000, 'Bad Request: unknown or missing session id'));
       return;

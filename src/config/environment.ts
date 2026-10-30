@@ -188,6 +188,14 @@ export function loadHttpConfig(): HttpConfig {
   const encryptionKey = process.env['ENCRYPTION_KEY'] || undefined;
 
   const oauthConfigured = Boolean(oauthClientId && oauthClientSecret && encryptionKey && publicUrl);
+  // PUBLIC_URL is the OAuth issuer, and the MCP SDK accepts an http issuer only
+  // for localhost and 127.0.0.1. Fail here with a clear message instead of
+  // letting the SDK throw at startup.
+  if (oauthConfigured && publicParsed?.protocol === 'http:' && publicParsed.hostname === '[::1]') {
+    throw new Error(
+      'Invalid PUBLIC_URL: OAuth mode needs https (http is allowed only for localhost or 127.0.0.1; [::1] is not accepted as an OAuth issuer).'
+    );
+  }
 
   return {
     port,

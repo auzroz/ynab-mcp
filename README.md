@@ -97,7 +97,7 @@ client/cache/rate-limiter/audit-log.
 **Multi-user (YNAB OAuth).** Configure a YNAB OAuth app + `ENCRYPTION_KEY` +
 `PUBLIC_URL` and the server becomes an OAuth 2.1 Authorization Server federated to
 YNAB: many users connect their own YNAB accounts to one instance, each isolated,
-choosing read-only or read-write at consent. See
+choosing read-only or read-write for each connection at consent. See
 **[docs/REMOTE_HOSTING.md](docs/REMOTE_HOSTING.md)** for the full deployer guide
 (registering the YNAB app, storage, TLS). Tokens are bound to the MCP resource
 URL (RFC 8707). **Back up your SQLite/Postgres database before upgrading**: the

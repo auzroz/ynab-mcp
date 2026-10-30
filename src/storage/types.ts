@@ -37,6 +37,11 @@ export interface AuthCodeRecord {
    * `resource`); the provider treats those as bound to the configured resource.
    */
   resource?: string | undefined;
+  /**
+   * Access level the user chose at consent for this grant. Undefined for rows
+   * written before 0.4.0; the provider treats those as read-only.
+   */
+  grantedScope?: GrantedScope | undefined;
 }
 
 export interface AccessTokenRecord {
@@ -51,6 +56,11 @@ export interface AccessTokenRecord {
    * `resource`); the provider treats those as bound to the configured resource.
    */
   resource?: string | undefined;
+  /**
+   * Access level the user chose at consent for this grant. Undefined for rows
+   * written before 0.4.0; the provider treats those as read-only.
+   */
+  grantedScope?: GrantedScope | undefined;
 }
 
 export interface RefreshTokenRecord {
@@ -64,6 +74,11 @@ export interface RefreshTokenRecord {
    * `resource`); the provider treats those as bound to the configured resource.
    */
   resource?: string | undefined;
+  /**
+   * Access level the user chose at consent for this grant. Undefined for rows
+   * written before 0.4.0; the provider treats those as read-only.
+   */
+  grantedScope?: GrantedScope | undefined;
 }
 
 /** Bridges the MCP `/authorize` leg to the YNAB `/oauth/ynab/callback` leg. */
@@ -86,6 +101,12 @@ export interface PendingAuthRecord {
    * `resource`); the provider treats those as bound to the configured resource.
    */
   resource?: string | undefined;
+  /**
+   * SHA-256 (base64url) of the consent-cookie nonce set when the consent page
+   * was shown; the federation legs require the matching cookie. Undefined for
+   * rows written before 0.4.0, which are therefore never usable.
+   */
+  browserBinding?: string | undefined;
 }
 
 export interface Storage {

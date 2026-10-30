@@ -255,6 +255,49 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
       });
     });
 
+    describe('per-grant access level and browser binding (0.4.0)', () => {
+      it('round-trips grantedScope on codes, access and refresh tokens', async () => {
+        for (const grantedScope of ['read-only', 'read-write'] as const) {
+          const code = makeAuthCode({ grantedScope });
+          await storage.saveAuthCode(code);
+          expect(await storage.takeAuthCode(code.code)).toEqual(code);
+
+          const at = makeAccessToken({ grantedScope });
+          await storage.saveAccessToken(at);
+          expect(await storage.getAccessToken(at.token)).toEqual(at);
+
+          const rt = makeRefreshToken({ grantedScope });
+          await storage.saveRefreshToken(rt);
+          expect(await storage.takeRefreshToken(rt.token)).toEqual(rt);
+        }
+      });
+
+      it('returns undefined grantedScope / browserBinding for records saved without one', async () => {
+        const code = makeAuthCode();
+        await storage.saveAuthCode(code);
+        expect((await storage.takeAuthCode(code.code))?.grantedScope).toBeUndefined();
+        const at = makeAccessToken();
+        await storage.saveAccessToken(at);
+        expect((await storage.getAccessToken(at.token))?.grantedScope).toBeUndefined();
+        const rt = makeRefreshToken();
+        await storage.saveRefreshToken(rt);
+        expect((await storage.takeRefreshToken(rt.token))?.grantedScope).toBeUndefined();
+        const pending = makePending();
+        await storage.savePendingAuth(pending);
+        expect((await storage.takePendingAuth(pending.state))?.browserBinding).toBeUndefined();
+      });
+
+      it('keeps the browser binding through a pending-auth take and re-save', async () => {
+        const pending = makePending({ browserBinding: 'hash-of-nonce' });
+        await storage.savePendingAuth(pending);
+        const taken = await storage.takePendingAuth(pending.state);
+        expect(taken).toEqual(pending);
+        if (!taken) throw new Error('expected pending record');
+        await storage.savePendingAuth({ ...taken, grantedScope: 'read-only' });
+        expect((await storage.takePendingAuth(pending.state))?.browserBinding).toBe('hash-of-nonce');
+      });
+    });
+
     describe('refresh tokens (one-time / rotation)', () => {
       it('takes a refresh token exactly once', async () => {
         const rec = makeRefreshToken();
@@ -331,6 +374,13 @@ function legacyRows(expiresAt: number): string {
 }
 
 const RESOURCE_TABLES = ['pending_auth', 'auth_codes', 'access_tokens', 'refresh_tokens'] as const;
+/** Every column added since 0.3.x, by table (mirrors ADDED_COLUMNS). */
+const ADDED: Record<(typeof RESOURCE_TABLES)[number], string[]> = {
+  pending_auth: ['resource', 'browser_binding'],
+  auth_codes: ['resource', 'granted_scope'],
+  access_tokens: ['resource', 'granted_scope'],
+  refresh_tokens: ['resource', 'granted_scope'],
+};
 
 /**
  * Open a 0.3.x database with the current driver twice and check that legacy rows
@@ -352,13 +402,21 @@ async function checkLegacyUpgrade(
       expiresAt: expect.any(Number),
       resource: undefined,
     });
-    expect((await first.takeAuthCode('legacy-code'))?.resource).toBeUndefined();
-    expect((await first.takePendingAuth('legacy-state'))?.resource).toBeUndefined();
+    expect((await first.getAccessToken('legacy-at'))?.grantedScope).toBeUndefined();
+    const legacyCode = await first.takeAuthCode('legacy-code');
+    expect(legacyCode?.resource).toBeUndefined();
+    expect(legacyCode?.grantedScope).toBeUndefined();
+    const legacyPending = await first.takePendingAuth('legacy-state');
+    expect(legacyPending?.resource).toBeUndefined();
+    expect(legacyPending?.browserBinding).toBeUndefined();
     const legacyRefresh = await first.takeRefreshToken('legacy-rt');
     expect(legacyRefresh?.userId).toBe('legacy-user');
     expect(legacyRefresh?.resource).toBeUndefined();
+    expect(legacyRefresh?.grantedScope).toBeUndefined();
 
-    await first.saveAccessToken(makeAccessToken({ token: 'new-at', resource: 'https://r.example/mcp' }));
+    await first.saveAccessToken(
+      makeAccessToken({ token: 'new-at', resource: 'https://r.example/mcp', grantedScope: 'read-write' })
+    );
   } finally {
     await first.close();
   }
@@ -366,6 +424,7 @@ async function checkLegacyUpgrade(
   const second = await open();
   try {
     expect((await second.getAccessToken('new-at'))?.resource).toBe('https://r.example/mcp');
+    expect((await second.getAccessToken('new-at'))?.grantedScope).toBe('read-write');
     expect((await second.getAccessToken('legacy-at'))?.resource).toBeUndefined();
   } finally {
     await second.close();
@@ -373,7 +432,9 @@ async function checkLegacyUpgrade(
 
   for (const table of RESOURCE_TABLES) {
     const cols = await columnsOf(table);
-    expect(cols.filter((c) => c === 'resource')).toHaveLength(1);
+    for (const added of ADDED[table]) {
+      expect(cols.filter((c) => c === added), `${table}.${added}`).toHaveLength(1);
+    }
   }
 }
 

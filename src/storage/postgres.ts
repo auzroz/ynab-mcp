@@ -46,6 +46,7 @@ interface PendingRow extends QueryResultRow {
   granted_scope: string;
   expires_at: string | number;
   resource: string | null;
+  browser_binding: string | null;
 }
 
 interface AuthCodeRow extends QueryResultRow {
@@ -57,6 +58,7 @@ interface AuthCodeRow extends QueryResultRow {
   scopes: string;
   expires_at: string | number;
   resource: string | null;
+  granted_scope: string | null;
 }
 
 interface AccessTokenRow extends QueryResultRow {
@@ -66,6 +68,7 @@ interface AccessTokenRow extends QueryResultRow {
   scopes: string;
   expires_at: string | number;
   resource: string | null;
+  granted_scope: string | null;
 }
 
 interface RefreshTokenRow extends QueryResultRow {
@@ -74,12 +77,18 @@ interface RefreshTokenRow extends QueryResultRow {
   user_id: string;
   scopes: string;
   resource: string | null;
+  granted_scope: string | null;
 }
 
 function parseScopes(json: string): string[] {
   const parsed: unknown = JSON.parse(json);
   if (!Array.isArray(parsed)) return [];
   return parsed.filter((s): s is string => typeof s === 'string');
+}
+
+/** A per-grant access level column; NULL (pre-0.4.0) or anything unknown reads as undefined. */
+function parseGrantedScope(value: string | null): GrantedScope | undefined {
+  return value === 'read-only' || value === 'read-write' ? value : undefined;
 }
 
 function toMillis(value: string | number): number {
@@ -251,8 +260,8 @@ export class PostgresStorage implements Storage {
   async savePendingAuth(rec: PendingAuthRecord): Promise<void> {
     await this.db.query(
       `INSERT INTO pending_auth
-         (state, client_id, redirect_uri, code_challenge, client_state, scopes, granted_scope, expires_at, resource)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         (state, client_id, redirect_uri, code_challenge, client_state, scopes, granted_scope, expires_at, resource, browser_binding)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         rec.state,
         rec.clientId,
@@ -263,6 +272,7 @@ export class PostgresStorage implements Storage {
         rec.grantedScope,
         rec.expiresAt,
         rec.resource ?? null,
+        rec.browserBinding ?? null,
       ]
     );
   }
@@ -286,6 +296,7 @@ export class PostgresStorage implements Storage {
       grantedScope: row.granted_scope as GrantedScope,
       expiresAt,
       resource: row.resource ?? undefined,
+      browserBinding: row.browser_binding ?? undefined,
     };
   }
 
@@ -294,8 +305,8 @@ export class PostgresStorage implements Storage {
   async saveAuthCode(rec: AuthCodeRecord): Promise<void> {
     await this.db.query(
       `INSERT INTO auth_codes
-         (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at, resource)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at, resource, granted_scope)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         rec.code,
         rec.clientId,
@@ -305,6 +316,7 @@ export class PostgresStorage implements Storage {
         JSON.stringify(rec.scopes),
         rec.expiresAt,
         rec.resource ?? null,
+        rec.grantedScope ?? null,
       ]
     );
   }
@@ -327,6 +339,7 @@ export class PostgresStorage implements Storage {
       scopes: parseScopes(row.scopes),
       expiresAt,
       resource: row.resource ?? undefined,
+      grantedScope: parseGrantedScope(row.granted_scope),
     };
   }
 
@@ -334,9 +347,17 @@ export class PostgresStorage implements Storage {
 
   async saveAccessToken(rec: AccessTokenRecord): Promise<void> {
     await this.db.query(
-      `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, resource)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [rec.token, rec.clientId, rec.userId, JSON.stringify(rec.scopes), rec.expiresAt, rec.resource ?? null]
+      `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, resource, granted_scope)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        rec.token,
+        rec.clientId,
+        rec.userId,
+        JSON.stringify(rec.scopes),
+        rec.expiresAt,
+        rec.resource ?? null,
+        rec.grantedScope ?? null,
+      ]
     );
   }
 
@@ -359,6 +380,7 @@ export class PostgresStorage implements Storage {
       scopes: parseScopes(row.scopes),
       expiresAt,
       resource: row.resource ?? undefined,
+      grantedScope: parseGrantedScope(row.granted_scope),
     };
   }
 
@@ -370,9 +392,16 @@ export class PostgresStorage implements Storage {
 
   async saveRefreshToken(rec: RefreshTokenRecord): Promise<void> {
     await this.db.query(
-      `INSERT INTO refresh_tokens (token, client_id, user_id, scopes, resource)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [rec.token, rec.clientId, rec.userId, JSON.stringify(rec.scopes), rec.resource ?? null]
+      `INSERT INTO refresh_tokens (token, client_id, user_id, scopes, resource, granted_scope)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        rec.token,
+        rec.clientId,
+        rec.userId,
+        JSON.stringify(rec.scopes),
+        rec.resource ?? null,
+        rec.grantedScope ?? null,
+      ]
     );
   }
 
@@ -389,6 +418,7 @@ export class PostgresStorage implements Storage {
       userId: row.user_id,
       scopes: parseScopes(row.scopes),
       resource: row.resource ?? undefined,
+      grantedScope: parseGrantedScope(row.granted_scope),
     };
   }
 

@@ -20,6 +20,17 @@
  * redirect URI that this provider builds (the code, a denial from the consent
  * screen or from YNAB, a failed YNAB exchange) carries `iss`. The SDK's own
  * `/authorize` error redirects get it from the iss-redirect middleware.
+ *
+ * Browser binding: the consent page sets a per-authorization cookie (see
+ * consent-cookie.ts) and every later leg (start, callback, cancel) requires
+ * it, so a pending authorization can't be completed from a browser that was
+ * never shown this server's consent page.
+ *
+ * Access level: the read-only / read-write choice is recorded per grant, on the
+ * code and on the tokens issued from it (and kept through refresh), and reported
+ * in `AuthInfo.extra.grantedScope`. Codes and tokens written before 0.4.0 carry
+ * none and are treated as read-only. A client that requests only the
+ * `read-only` scope is never offered or granted write access.
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -42,7 +53,7 @@ import {
   InvalidTokenError,
   ServerError,
 } from '@modelcontextprotocol/sdk/server/auth/errors.js';
-import type { Storage, GrantedScope } from '../storage/types.js';
+import type { Storage, GrantedScope, PendingAuthRecord } from '../storage/types.js';
 import type { Encryptor } from '../crypto.js';
 import {
   buildAuthorizeUrl,
@@ -51,6 +62,7 @@ import {
   type YnabOAuthConfig,
 } from './ynab-oauth.js';
 import { canonicalResource, isSameResource } from './resource.js';
+import { ConsentCookie, consentNonceMatches, newConsentNonce } from './consent-cookie.js';
 import { withIssuer } from '../middleware/iss-redirect.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 
@@ -90,6 +102,26 @@ function normalizeScopes(scopes: string[] | undefined): string[] {
 
 const FOREIGN_RESOURCE = 'The requested resource is not served by this server';
 
+/**
+ * The most access a requested scope list allows: read-only when it names
+ * `read-only` without `read-write`. Other scope values don't limit access.
+ */
+export function scopeCeiling(scopes: readonly string[]): GrantedScope {
+  return scopes.includes('read-only') && !scopes.includes('read-write') ? 'read-only' : 'read-write';
+}
+
+function minScope(a: GrantedScope, b: GrantedScope): GrantedScope {
+  return a === 'read-only' || b === 'read-only' ? 'read-only' : 'read-write';
+}
+
+/** Scopes recorded on a grant: a requested `read-write` becomes `read-only` when that is what was granted. */
+function grantScopes(requested: readonly string[], granted: GrantedScope): string[] {
+  if (granted === 'read-write') return [...requested];
+  return [...new Set(requested.map((s) => (s === 'read-write' ? 'read-only' : s)))];
+}
+
+const EXPIRED_OR_INVALID = 'Authorization request expired or invalid';
+
 /** Error codes this provider redirects to the client with (RFC 6749 section 4.1.2.1). */
 export type AuthorizationDenial = 'access_denied' | 'server_error';
 
@@ -118,12 +150,15 @@ export class McpOAuthProvider implements OAuthServerProvider {
       codeChallenge: string;
       scopes: string[];
       resource: string | undefined;
+      grantedScope: GrantedScope;
     }
   >();
   /** Canonical form of the one resource this server issues tokens for. */
   readonly resource: string;
   /** Issuer identifier sent as `iss` on authorization responses (RFC 9207). */
   readonly issuer: string;
+  /** Consent cookie binding each pending authorization to one browser. */
+  readonly consentCookie: ConsentCookie;
 
   constructor(opts: McpProviderOptions) {
     this.opts = opts;
@@ -131,6 +166,23 @@ export class McpOAuthProvider implements OAuthServerProvider {
     if (resource === undefined) throw new Error('Invalid MCP resource URL');
     this.resource = resource;
     this.issuer = opts.issuer ?? new URL(opts.publicUrl).href;
+    this.consentCookie = new ConsentCookie(opts.publicUrl, opts.authCodeTtlSec);
+  }
+
+  /**
+   * Consume the pending authorization for `state` and return it only when
+   * `browserNonce` (the consent cookie) matches its binding. The record is
+   * consumed either way, so a state presented from the wrong browser is dead.
+   */
+  private async takeBoundPendingAuth(
+    state: string,
+    browserNonce: string | undefined
+  ): Promise<PendingAuthRecord> {
+    const rec = await this.opts.storage.takePendingAuth(state);
+    if (!rec || !consentNonceMatches(browserNonce, rec.browserBinding)) {
+      throw new InvalidGrantError(EXPIRED_OR_INVALID);
+    }
+    return rec;
   }
 
   /**
@@ -189,6 +241,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
   /**
    * Begin authorization: render the read-only/read-write consent page. The links
    * carry the pending-auth `state`; the chosen scope is applied at `/oauth/ynab/start`.
+   * Sets the consent cookie that the later legs require.
    */
   async authorize(
     client: OAuthClientInformationFull,
@@ -201,24 +254,33 @@ export class McpOAuthProvider implements OAuthServerProvider {
       throw new InvalidTargetError(FOREIGN_RESOURCE);
     }
     const state = newToken();
+    const { nonce, hash } = newConsentNonce();
+    const scopes = params.scopes ?? [];
     await this.opts.storage.savePendingAuth({
       state,
       clientId: client.client_id,
       redirectUri: params.redirectUri,
       codeChallenge: params.codeChallenge,
       clientState: params.state,
-      scopes: params.scopes ?? [],
+      scopes,
       grantedScope: 'read-only',
       expiresAt: Date.now() + this.opts.authCodeTtlSec * 1000,
       resource: params.resource !== undefined ? this.resource : undefined,
+      browserBinding: hash,
     });
 
     const startBase = `${this.opts.publicUrl}/oauth/ynab/start`;
     const roLink = `${startBase}?state=${encodeURIComponent(state)}&scope=read-only`;
     const rwLink = `${startBase}?state=${encodeURIComponent(state)}&scope=read-write`;
     const cancelLink = `${this.opts.publicUrl}/oauth/cancel?state=${encodeURIComponent(state)}`;
-    const offerWrite = this.opts.allowWrite && !this.opts.globalReadOnly;
+    const offerWrite =
+      this.opts.allowWrite && !this.opts.globalReadOnly && scopeCeiling(scopes) === 'read-write';
 
+    res.append('Set-Cookie', this.consentCookie.serialize(state, nonce));
+    // The consent page must not be framed (clickjacking) or leak its URL onward.
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -229,6 +291,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
 <body>
 <h1>Connect your YNAB budget</h1>
 <p>Client <code>${htmlEscape(client.client_name ?? client.client_id)}</code> is requesting access to your YNAB data. Choose the access level:</p>
+<p class="muted">After you approve, you will be returned to <code>${htmlEscape(params.redirectUri)}</code>. Continue only if you started this connection and recognize that address.</p>
 <a class="btn" href="${htmlEscape(roLink)}"><strong>Read-only</strong><br><span class="muted">View budgets, accounts, and transactions. No changes.</span></a>
 ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; write</strong><br><span class="muted">View and modify (create/update/delete) your budget data.</span></a>` : ''}
 <p class="muted">You'll be sent to YNAB to authorize. You can disconnect at any time.</p>
@@ -238,13 +301,19 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
 
   /**
    * Called by the `/oauth/ynab/start` route: set the chosen scope and return the
-   * YNAB authorize URL to redirect the browser to.
+   * YNAB authorize URL to redirect the browser to. `browserNonce` is the consent
+   * cookie; without the one set for `state` this throws (and `state` is spent).
    */
-  async startYnabAuthorization(state: string, scope: GrantedScope): Promise<string> {
-    const rec = await this.opts.storage.takePendingAuth(state);
-    if (!rec) throw new InvalidGrantError('Authorization request expired or invalid');
+  async startYnabAuthorization(
+    state: string,
+    scope: GrantedScope,
+    browserNonce: string | undefined
+  ): Promise<string> {
+    const rec = await this.takeBoundPendingAuth(state, browserNonce);
     const grantedScope: GrantedScope =
-      this.opts.globalReadOnly || !this.opts.allowWrite ? 'read-only' : scope;
+      this.opts.globalReadOnly || !this.opts.allowWrite
+        ? 'read-only'
+        : minScope(scope, scopeCeiling(rec.scopes));
     await this.opts.storage.savePendingAuth({ ...rec, grantedScope });
     return buildAuthorizeUrl(this.opts.ynab, {
       redirectUri: this.callbackUrl,
@@ -259,11 +328,15 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
    * authorization (so it cannot be resumed) and returns the client redirect URL
    * carrying `error`, a fixed `error_description`, the client's `state` and `iss`.
    * Throws when `state` names no pending authorization (there is then no
-   * validated redirect URI to send the browser to).
+   * validated redirect URI to send the browser to), or when `browserNonce` is
+   * not the consent cookie set for it.
    */
-  async denyAuthorization(state: string, error: AuthorizationDenial): Promise<string> {
-    const rec = await this.opts.storage.takePendingAuth(state);
-    if (!rec) throw new InvalidGrantError('Authorization request expired or invalid');
+  async denyAuthorization(
+    state: string,
+    error: AuthorizationDenial,
+    browserNonce: string | undefined
+  ): Promise<string> {
+    const rec = await this.takeBoundPendingAuth(state, browserNonce);
     return this.authorizationResponse(rec.redirectUri, rec.clientState, {
       error,
       error_description: DENIAL_DESCRIPTIONS[error],
@@ -274,11 +347,11 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
    * Called by the `/oauth/ynab/callback` route once YNAB redirects back with a
    * code. Returns the MCP client redirect URL: our `code`, the client's `state`
    * and `iss` on success, or `error=server_error` (same `state` and `iss`) when
-   * the YNAB exchange or storage fails. Throws only for an unknown `state`.
+   * the YNAB exchange or storage fails. Throws (before the YNAB code is
+   * exchanged) for an unknown `state` or a missing / wrong consent cookie.
    */
-  async handleYnabCallback(code: string, state: string): Promise<string> {
-    const rec = await this.opts.storage.takePendingAuth(state);
-    if (!rec) throw new InvalidGrantError('Authorization request expired or invalid');
+  async handleYnabCallback(code: string, state: string, browserNonce: string | undefined): Promise<string> {
+    const rec = await this.takeBoundPendingAuth(state, browserNonce);
 
     const mcpCode = newToken();
     try {
@@ -301,9 +374,10 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
         userId,
         redirectUri: rec.redirectUri,
         codeChallenge: rec.codeChallenge,
-        scopes: rec.scopes,
+        scopes: grantScopes(rec.scopes, rec.grantedScope),
         expiresAt: Date.now() + this.opts.authCodeTtlSec * 1000,
         resource: rec.resource,
+        grantedScope: rec.grantedScope,
       });
     } catch (err) {
       // Logged sanitized and internally only; the client gets a fixed description.
@@ -330,6 +404,8 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       codeChallenge: rec.codeChallenge,
       scopes: rec.scopes,
       resource: rec.resource,
+      // Codes written before 0.4.0 carry no access level: read-only.
+      grantedScope: rec.grantedScope ?? 'read-only',
     });
     return rec.codeChallenge;
   }
@@ -350,7 +426,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     }
     // RFC 8707 section 2.2: a resource sent here must match the one authorized.
     const bound = this.bindResource(rec.resource, resource);
-    return this.issueTokens(rec.clientId, rec.userId, rec.scopes, rec.scopes, bound);
+    return this.issueTokens(rec.clientId, rec.userId, rec.scopes, rec.scopes, bound, rec.grantedScope);
   }
 
   async exchangeRefreshToken(
@@ -377,7 +453,16 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       throw new InvalidScopeError('Requested scope exceeds the original grant');
     }
     const accessScopes = requested.length > 0 ? requested : rec.scopes;
-    return this.issueTokens(rec.clientId, rec.userId, accessScopes, rec.scopes, bound);
+    // The access level travels with the grant and is never widened by a refresh;
+    // refresh tokens written before 0.4.0 carry none and stay read-only.
+    return this.issueTokens(
+      rec.clientId,
+      rec.userId,
+      accessScopes,
+      rec.scopes,
+      bound,
+      rec.grantedScope ?? 'read-only'
+    );
   }
 
   private async issueTokens(
@@ -385,7 +470,8 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     userId: string,
     accessScopes: string[],
     grantScopes: string[],
-    resource: string
+    resource: string,
+    grantedScope: GrantedScope
   ): Promise<OAuthTokens> {
     const accessToken = newToken();
     const refreshToken = newToken();
@@ -397,6 +483,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       scopes: accessScopes,
       expiresAt,
       resource,
+      grantedScope,
     });
     await this.opts.storage.saveRefreshToken({
       token: refreshToken,
@@ -404,6 +491,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       userId,
       scopes: grantScopes,
       resource,
+      grantedScope,
     });
     return {
       access_token: accessToken,
@@ -419,7 +507,9 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
    * resource, or (for 0.3.x tokens with none stored) this server's resource,
    * the only one it has ever issued tokens for. A token bound to any other
    * resource is rejected here as well as by the bearer middleware's
-   * `expectedResource` check.
+   * `expectedResource` check. `extra.grantedScope` is the access this token
+   * carries: its grant's level, lowered to read-only when its scopes say so,
+   * and read-only for tokens written before 0.4.0.
    */
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const rec = await this.opts.storage.getAccessToken(token);
@@ -432,7 +522,10 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       scopes: rec.scopes,
       expiresAt: Math.floor(rec.expiresAt / 1000),
       resource: new URL(resource),
-      extra: { userId: rec.userId },
+      extra: {
+        userId: rec.userId,
+        grantedScope: minScope(rec.grantedScope ?? 'read-only', scopeCeiling(rec.scopes)),
+      },
     };
   }
 

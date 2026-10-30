@@ -4,6 +4,7 @@ import { loadHttpConfig } from '../../../src/config/environment.js';
 const KEYS = [
   'PUBLIC_URL', 'MCP_RESOURCE_URL', 'ALLOWED_HOSTS', 'ALLOWED_ORIGINS', 'ENABLE_DNS_REBINDING_PROTECTION',
   'MCP_MAX_SESSIONS', 'MCP_SESSION_IDLE_TIMEOUT_MS', 'PORT',
+  'YNAB_OAUTH_CLIENT_ID', 'YNAB_OAUTH_CLIENT_SECRET', 'ENCRYPTION_KEY',
 ];
 
 describe('loadHttpConfig', () => {
@@ -49,6 +50,31 @@ describe('loadHttpConfig', () => {
       expect(() => loadHttpConfig()).toThrow(/PUBLIC_URL/);
       process.env['PUBLIC_URL'] = 'http://localhost:3000';
       expect(loadHttpConfig().resourceUrl).toBe('http://localhost:3000/mcp');
+    });
+  });
+
+  describe('OAuth issuer (PUBLIC_URL)', () => {
+    function enableOAuth(): void {
+      process.env['YNAB_OAUTH_CLIENT_ID'] = 'cid';
+      process.env['YNAB_OAUTH_CLIENT_SECRET'] = 'sec';
+      process.env['ENCRYPTION_KEY'] = 'k'.repeat(44);
+    }
+    it('rejects http://[::1] in OAuth mode with a clear message (the SDK accepts no such issuer)', () => {
+      enableOAuth();
+      process.env['PUBLIC_URL'] = 'http://[::1]:3000';
+      expect(() => loadHttpConfig()).toThrow(/PUBLIC_URL.*localhost or 127\.0\.0\.1.*\[::1\]/);
+    });
+    it.each(['http://localhost:3000', 'http://127.0.0.1:3000', 'https://[::1]:3000'])(
+      'accepts %s in OAuth mode', (u) => {
+        enableOAuth();
+        process.env['PUBLIC_URL'] = u;
+        expect(loadHttpConfig().authMode).toBe('oauth');
+      });
+    it('still accepts http://[::1] in header mode', () => {
+      process.env['PUBLIC_URL'] = 'http://[::1]:3000';
+      const c = loadHttpConfig();
+      expect(c.authMode).toBe('header');
+      expect(c.resourceUrl).toBe('http://[::1]:3000/mcp');
     });
   });
 

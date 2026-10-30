@@ -37,6 +37,7 @@ vi.mock('../../src/auth/ynab-oauth.js', async () => {
 import { createHttpApp } from '../../src/http.js';
 import { McpOAuthProvider } from '../../src/auth/mcp-provider.js';
 import { makeHttpConfig } from './helpers/http-config.js';
+import { cookieHeaderFrom } from './helpers/consent-cookie.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
 const RESOURCE = 'https://mcp.example.com/mcp';
@@ -98,12 +99,21 @@ async function authorizeToCode(
 ): Promise<string> {
   const consent = await request(app).get('/authorize').query(authorizeQuery(clientId, extra));
   expect(consent.status).toBe(200);
-  const m = /state=([^&"]+)&amp;scope=read-write/.exec(consent.text);
+  // The read-only link is always offered; asking for read-write at start is
+  // capped by the server when the client requested only read-only.
+  const m = /state=([^&"]+)&amp;scope=read-only/.exec(consent.text);
   if (!m?.[1]) throw new Error('no consent link');
   const state = decodeURIComponent(m[1]);
-  const start = await request(app).get('/oauth/ynab/start').query({ state, scope: 'read-write' });
+  const cookie = cookieHeaderFrom(consent);
+  const start = await request(app)
+    .get('/oauth/ynab/start')
+    .set('Cookie', cookie)
+    .query({ state, scope: 'read-write' });
   expect(start.status).toBe(302);
-  const cb = await request(app).get('/oauth/ynab/callback').query({ code: 'ynab-code', state });
+  const cb = await request(app)
+    .get('/oauth/ynab/callback')
+    .set('Cookie', cookie)
+    .query({ code: 'ynab-code', state });
   expect(cb.status).toBe(302);
   const code = new URL(cb.headers['location'] as string).searchParams.get('code');
   if (!code) throw new Error('no code');
