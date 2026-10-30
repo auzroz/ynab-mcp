@@ -47,3 +47,36 @@ export function splitDeleted<T extends { deleted?: boolean | undefined }>(
   }
   return { changed, deletedIds };
 }
+
+/**
+ * Caveat for transaction deltas: YNAB filters a delta by the query's current
+ * values, so a transaction that changed out of the query need not be listed.
+ */
+export const TRANSACTION_DELTA_FILTER_NOTE =
+  'A transaction that changed so it no longer matches this query (approved, re-categorized, re-dated, moved to another account or payee, or older than the default 12-month window) may be left out of this delta and is not in deleted_ids. To keep a filtered list exact, re-read it in full (omit since_server_knowledge) from time to time.';
+
+/** Why a truncated transaction delta keeps the caller's cursor. */
+export const TRUNCATED_DELTA_NOTE =
+  'More transactions changed than limit allows, so server_knowledge is your since_server_knowledge unchanged and no change is skipped. Raise limit (max 500), narrow the filters, or re-read in full without since_server_knowledge.';
+
+/**
+ * The delta-specific summary fields and server_knowledge of a transaction list
+ * tool. A delta cut short by `limit` hands back the caller's own cursor
+ * (cursor_withheld: true): the response's server_knowledge would move the
+ * caller past the changes it left out.
+ */
+export function transactionDeltaResult(
+  cursor: number | undefined,
+  serverKnowledge: number | undefined,
+  truncated: boolean
+): { summary: Record<string, unknown>; cursor: Record<string, unknown> } {
+  if (cursor === undefined) return { summary: {}, cursor: { server_knowledge: serverKnowledge } };
+  return {
+    summary: {
+      note: DELTA_SUMMARY_NOTE,
+      filter_note: TRANSACTION_DELTA_FILTER_NOTE,
+      ...(truncated ? { truncation_note: TRUNCATED_DELTA_NOTE } : {}),
+    },
+    cursor: truncated ? { server_knowledge: cursor, cursor_withheld: true } : { server_knowledge: serverKnowledge },
+  };
+}

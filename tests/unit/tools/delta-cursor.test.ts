@@ -237,6 +237,39 @@ describe('transaction list tools', () => {
   });
 });
 
+describe('transaction deltas larger than limit', () => {
+  const rows = mockGroceryTransactions.slice(0, 3).map((t, i) => ({ ...t, id: `t${i}`, date: `2024-01-0${i + 1}` }));
+  const gone = { ...mockGroceryTransactions[0]!, id: 'gone', deleted: true };
+  const big = { data: { transactions: [...rows, gone], server_knowledge: 900 } };
+
+  it.each([
+    ['transactions', handleListTransactions, 'getTransactions', {}],
+    ['account', handleListAccountTransactions, 'getAccountTransactions', { account_id: ACCOUNT }],
+    ['category', handleListCategoryTransactions, 'getCategoryTransactions', { category_id: CATEGORY }],
+    ['payee', handleListPayeeTransactions, 'getPayeeTransactions', { payee_id: PAYEE }],
+  ] as const)('%s: a truncated delta keeps the caller cursor so no change is skipped', async (_n, handler, method, args) => {
+    mockClient[method].mockResolvedValue(big);
+    const out = parse(await handler({ ...args, limit: 2, since_server_knowledge: 800 }, mockClient as never));
+    expect(out.transactions).toHaveLength(2);
+    expect(out).toMatchObject({ delta: true, deleted_ids: ['gone'], server_knowledge: 800, cursor_withheld: true });
+    expect(out.summary).toMatchObject({ truncated: true, total_count: 3 });
+    expect(out.summary.truncation_note).toMatch(/no change is skipped/);
+    expect(out.summary.filter_note).toMatch(/no longer matches/);
+
+    // Within the limit: the new cursor, nothing withheld.
+    const fits = parse(await handler({ ...args, limit: 3, since_server_knowledge: 800 }, mockClient as never));
+    expect(fits).toMatchObject({ server_knowledge: 900, summary: { truncated: false } });
+    expect(fits.cursor_withheld).toBeUndefined();
+    expect(fits.summary.truncation_note).toBeUndefined();
+
+    // A full (non-cursor) response keeps its server_knowledge even when truncated.
+    mockClient[method].mockResolvedValue({ data: { transactions: rows, server_knowledge: 900 } });
+    const full = parse(await handler({ ...args, limit: 2 }, mockClient as never));
+    expect(full).toMatchObject({ server_knowledge: 900, summary: { truncated: true } });
+    expect(full.cursor_withheld).toBeUndefined();
+  });
+});
+
 describe('end to end: the returned server_knowledge is the next cursor', () => {
   it('ynab_list_transactions full, then delta from its server_knowledge', async () => {
     const fake = new FakeYnab();

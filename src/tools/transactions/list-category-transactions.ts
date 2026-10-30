@@ -6,7 +6,13 @@
 
 import { z } from 'zod';
 import { DATE_TEXT_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
-import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
+import {
+  deltaFields,
+  sinceServerKnowledge,
+  sinceServerKnowledgeJsonSchema,
+  splitDeleted,
+  transactionDeltaResult,
+} from '../../utils/delta.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
@@ -68,7 +74,7 @@ Pass type ("unapproved" or "uncategorized") to narrow to transactions that need 
 Requires a category_id. Use ynab_list_categories first to find the category ID.
 
 NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). Pass an earlier since_date to see older history. until_date sets an inclusive upper bound.
-Pass since_server_knowledge (the server_knowledge of an earlier response with the same filters) to get only the transactions changed since then.`,
+Pass since_server_knowledge (the server_knowledge of an earlier response with the same filters) to get only the transactions changed since then. If more changed than limit, the response keeps your cursor (cursor_withheld: true) so nothing is skipped. A delta may leave out a transaction that changed so it no longer matches the filters; re-read in full to keep a filtered list exact.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -175,6 +181,11 @@ export async function handleListCategoryTransactions(
   }));
 
   const rangeNote = validated.since_date === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {};
+  const delta = transactionDeltaResult(
+    cursor,
+    response.data.server_knowledge,
+    totalCount > formattedTransactions.length
+  );
   return JSON.stringify(
     {
       ...(cursor !== undefined ? deltaFields(cursor, deletedIds) : {}),
@@ -187,7 +198,7 @@ export async function handleListCategoryTransactions(
               ...truncationSummary(totalCount, formattedTransactions.length),
               deleted_count: deletedIds.length,
               ...rangeNote,
-              note: DELTA_SUMMARY_NOTE,
+              ...delta.summary,
             }
           : {
               count: formattedTransactions.length,
@@ -196,7 +207,7 @@ export async function handleListCategoryTransactions(
               total_spent: formatCurrency(totalSpent),
               top_payees: topPayees,
             },
-      server_knowledge: response.data.server_knowledge,
+      ...delta.cursor,
     },
     null,
     2

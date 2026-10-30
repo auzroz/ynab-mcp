@@ -11,6 +11,9 @@ import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
+
+const MONTH_DELTA_NOTE =
+  'Budgeted, activity, balance and goal amounts are for the current month (UTC). When a new month begins they change without YNAB reporting a change, so a delta does not show it: re-read in full (omit since_server_knowledge) after a month boundary.';
 import { isInternalGroup } from '../../utils/categories.js';
 
 // Input schema
@@ -38,7 +41,7 @@ Use when the user asks:
 - "List my budget breakdown"
 
 Returns category groups with their categories, including budgeted amounts, activity, and remaining balances.
-Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the groups and categories changed since then.`,
+Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the groups and categories changed since then. Budgeted, activity and balance are for the current month, and a new month changes them without YNAB reporting a change, so re-read in full after a month begins.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -200,6 +203,7 @@ function formatCategoryDelta(groups: CategoryGroups, cursor: number, serverKnowl
         deleted_category_count: deletedCategoryIds.length,
         deleted_group_count: deletedGroupIds.length,
         note: DELTA_SUMMARY_NOTE,
+        month_note: MONTH_DELTA_NOTE,
       },
       server_knowledge: serverKnowledge,
     },
