@@ -5,6 +5,136 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-30
+
+Platform release: a Node 22.14+ toolchain (zod 4, TypeScript 6, ESLint 10,
+vitest 5), MCP tool annotations and read-only tool filtering, recurring
+category targets, and a hardened HTTP/OAuth mode for self-hosted multi-user
+instances. Read **Breaking** and **Upgrading** before you upgrade an HTTP
+deployment.
+
+### Breaking
+
+- **Node 22.14.0 or later is required** (was `>=20.0.0`). `better-sqlite3` 13
+  needs Node-API 10. The Docker image runs Node 24.
+- **The bin and `serverInfo.name` are `ynab-mcp`** (were `ynab-mcp-server`, the
+  name of an unrelated npm package). The `ynab-mcp-server` bin remains as an
+  alias for this release only; `npx -y ynab-mcp` is unchanged.
+- **Read-only servers and sessions list only read tools** in `tools/list`.
+  Write tools called by name still return the `read_only_mode` error.
+- **Update tools are marked destructive** (`destructiveHint: true`), as are the
+  two delete tools. Clients that auto-approve non-destructive writes will now
+  ask before running `ynab_update_*`.
+- **Validation errors are generic per issue code** and never echo input values;
+  messages written in this server's own schemas still come through.
+- **Free-text limits follow YNAB's spec:** memo 500, payee name 200, import ID
+  36, category group name 50; category and account names 200 (category names
+  were 500, account names 100).
+- `ynab-monthly-review` with a malformed `month` returns InvalidParams instead
+  of ignoring it.
+- HTTP mode:
+  - **Host and Origin validation are on by default.** A proxy that rewrites
+    Host, or a hostname other than `PUBLIC_URL`'s, gets 403 until the host is
+    forwarded or added to `ALLOWED_HOSTS`. `ENABLE_DNS_REBINDING_PROTECTION=false`
+    is the documented, unsafe opt-out.
+  - **`PUBLIC_URL` is validated at startup:** an absolute https URL (http only
+    on loopback), with no fragment.
+  - **An unknown, expired or closed `Mcp-Session-Id` gets 404** (was 400), as
+    the MCP spec requires, so clients re-initialize. A request with no session
+    ID that isn't an initialize still gets 400.
+  - **Session limits are enforced:** `MCP_MAX_SESSIONS` (default 100; at the cap
+    `initialize` gets 503 with `Retry-After`), the new
+    `MCP_MAX_SESSIONS_PER_USER` (default 10 or `MCP_MAX_SESSIONS` if smaller;
+    past it the user's least recently used session is closed), and
+    `MCP_SESSION_IDLE_TIMEOUT_MS` (default 30 minutes).
+  - **Protected-resource metadata moved** to the RFC 9728 path
+    `/.well-known/oauth-protected-resource/mcp` (the root path stays as an
+    alias), and 401s from `/mcp` carry `resource_metadata`.
+- OAuth mode:
+  - **Tokens issued before 0.4.0 are treated as read-only** (they have no
+    recorded access level). Users who had read-write access must reconnect once.
+    An authorization in progress during the upgrade has to be restarted.
+  - A `resource` other than this server gets `invalid_target`; a refresh that
+    widens scope gets `invalid_scope`. Changing `MCP_RESOURCE_URL` or
+    `PUBLIC_URL` makes users reconnect.
+
+### Added
+
+- Every tool has a `title` and explicit MCP annotations (`readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, `openWorldHint`); prompts have titles.
+- `ynab_update_category_details`: rename, note, move to another group, and set
+  or clear targets.
+- Recurring targets: `goal_frequency` (monthly, weekly, yearly) on
+  `ynab_create_category` and `ynab_update_category_details`, with
+  `goal_target`, `goal_target_date` and `goal_needs_whole_amount`. The ynab SDK
+  4.5 drops `goal_frequency`, so those calls go to the YNAB API directly until
+  the SDK supports it (ynab/ynab-sdk-js#308).
+- A `month` input (`YYYY-MM-01` or `current`) on `ynab_list_transactions` and
+  `ynab_list_money_movements`, and a new `ynab_list_money_movement_groups`.
+- `"default"` is accepted as a budget ID alongside `"last-used"`.
+- HTTP/OAuth mode:
+  - RFC 8707 resource binding from `/authorize` through `/mcp`, RFC 9207 `iss`
+    on every authorization redirect, RFC 9728 protected-resource metadata.
+  - `MCP_RESOURCE_URL` (default `PUBLIC_URL` + `/mcp`).
+  - Per-user state: all sessions of one user share one rate limiter, cache and
+    audit log (never shared between users), so reconnecting or a second client
+    no longer gets a second 180/h budget.
+  - The YNAB access token is resolved per request, so sessions survive YNAB's
+    ~2h token expiry and a revoked grant takes effect on the next call.
+  - Refresh-token rotation with reuse detection (RFC 9700): every token from
+    one authorization belongs to a family, and replaying a spent refresh token
+    revokes the whole family. Revoking a refresh token through `/revoke` revokes
+    its family too. Two refreshes racing with the same token count as reuse,
+    which is the RFC 9700 behaviour.
+
+### Fixed
+
+- Security: the OAuth consent page could be skipped by a crafted
+  `/oauth/ynab/start` link (confused deputy). Each pending authorization is now
+  bound to the browser that saw the consent page with a `__Host-` cookie.
+- Security: write access came from the user's latest consent rather than the
+  token's own grant; the access level is now stored per code and token.
+- Security: MCP sessions are bound to the client, user and access level that
+  created them (OAuth mode) or to the YNAB token (header mode); any other caller
+  sees an unknown session.
+- Internal category detection uses YNAB's `internal` flag instead of matching
+  the "Internal Master Category" name.
+- The cash-flow forecast reports the correct lowest projected balance and date.
+- `ynab_get_budget` always fetches the full budget. A second call in a session
+  used to send its delta cursor and compute net worth and the account and
+  category summaries from the changed entities only. Delta-sync cursors are
+  also keyed by budget, endpoint and query, so one endpoint's cursor is never
+  sent to another.
+- `ynab_goal_progress` derives each target's period from `goal_cadence` and
+  `goal_cadence_frequency`, so weekly, yearly and every-N-months targets are no
+  longer reported as monthly. Each goal reports `period` and
+  `monthly_equivalent`. Snoozed targets are flagged (`snoozed`), left out of the
+  underfunded totals and the overall status, and can be listed with
+  `filter: "snoozed"`.
+
+### Changed
+
+- zod 4.6, TypeScript 6.0, ESLint 10, vitest 5, `better-sqlite3` 13 (optional),
+  `@types/node` 22. CI tests on Node 24 and 22.14.0, runs the SQLite and
+  Postgres storage suites for real, and the dependency audit is blocking.
+- Docker image: `node:24-alpine3.24`, pinned by digest.
+- The release workflow publishes through npm trusted publishing only (no token)
+  and has an opt-in MCP Registry publish job.
+- Removed the unused `YnabClient.importTransactions` method; the deprecated
+  `ynab_import_transactions` tool is unchanged.
+
+### Upgrading (HTTP mode)
+
+- Back up the SQLite file or `pg_dump` first. Startup adds nullable columns
+  (`resource`, `granted_scope`, `browser_binding`, `family_id`) and a
+  `consumed_refresh_tokens` table.
+- Set `PUBLIC_URL` to the exact public URL; have the proxy forward the original
+  Host header and pass `Cookie`/`Set-Cookie` through on `/authorize` and
+  `/oauth/*`.
+- Ask read-write users to reconnect once.
+- Review `MCP_MAX_SESSIONS`, `MCP_MAX_SESSIONS_PER_USER` and
+  `MCP_SESSION_IDLE_TIMEOUT_MS`; they are now enforced.
+
 ## [0.3.5] - 2026-10-30
 
 Republishes 0.3.4 to npm. The 0.3.4 npm publish failed because the release
