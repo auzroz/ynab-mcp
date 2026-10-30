@@ -10,6 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 import { isInternalGroup } from '../../utils/categories.js';
 
 // Input schema
@@ -21,6 +22,7 @@ const inputSchema = z.object({
     .boolean()
     .optional()
     .describe('Whether to include hidden categories'),
+  since_server_knowledge: sinceServerKnowledge(),
 });
 
 // Tool definition
@@ -35,7 +37,8 @@ Use when the user asks:
 - "What are my spending categories?"
 - "List my budget breakdown"
 
-Returns category groups with their categories, including budgeted amounts, activity, and remaining balances.`,
+Returns category groups with their categories, including budgeted amounts, activity, and remaining balances.
+Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the groups and categories changed since then.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -48,6 +51,7 @@ Returns category groups with their categories, including budgeted amounts, activ
         type: 'boolean',
         description: 'Whether to include hidden categories',
       },
+      since_server_knowledge: sinceServerKnowledgeJsonSchema,
     },
   },
 };
@@ -63,9 +67,15 @@ export async function handleListCategories(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
   const includeHidden = validated.include_hidden ?? false;
+  const cursor = validated.since_server_knowledge;
 
-  const response = await client.getCategories(budgetId);
+  const response =
+    cursor === undefined
+      ? await client.getCategories(budgetId)
+      : await client.getCategories(budgetId, { lastKnowledgeOfServer: cursor });
   let groups = response.data.category_groups;
+
+  if (cursor !== undefined) return formatCategoryDelta(groups, cursor, response.data.server_knowledge);
 
   // Filter out internal category group unless explicitly including hidden
   if (!includeHidden) {
@@ -136,6 +146,62 @@ export async function handleListCategories(
           under_funded: c.goal_under_funded 
         })),
       },
+      server_knowledge: response.data.server_knowledge,
+    },
+    null,
+    2
+  );
+}
+
+type CategoryGroups = Awaited<ReturnType<YnabClient['getCategories']>>['data']['category_groups'];
+
+/**
+ * Delta output: changed groups (with their changed categories, hidden ones
+ * included) and the ids of deleted groups and categories. No totals or alerts,
+ * which would only cover the changes.
+ */
+function formatCategoryDelta(groups: CategoryGroups, cursor: number, serverKnowledge: number): string {
+  const { changed, deletedIds: deletedGroupIds } = splitDeleted(groups, (g) => g.id);
+  const deletedCategoryIds: string[] = [];
+  const categoryGroups = groups
+    .map((group) => {
+      const { changed: categories, deletedIds } = splitDeleted(group.categories, (c) => c.id);
+      deletedCategoryIds.push(...deletedIds);
+      return { group, categories };
+    })
+    .filter(({ group }) => changed.includes(group))
+    .map(({ group, categories }) => ({
+      id: group.id,
+      name: sanitizeName(group.name),
+      hidden: group.hidden,
+      categories: categories.map((cat) => ({
+        id: cat.id,
+        name: sanitizeName(cat.name),
+        budgeted: formatCurrency(cat.budgeted),
+        activity: formatCurrency(cat.activity),
+        balance: formatCurrency(cat.balance),
+        balance_raw: cat.balance,
+        goal_type: cat.goal_type ?? null,
+        goal_percentage_complete: cat.goal_percentage_complete ?? null,
+        goal_under_funded:
+          cat.goal_under_funded != null ? formatCurrency(cat.goal_under_funded) : null,
+        goal_under_funded_raw: cat.goal_under_funded ?? null,
+        hidden: cat.hidden,
+      })),
+    }));
+  return JSON.stringify(
+    {
+      ...deltaFields(cursor, deletedCategoryIds),
+      deleted_group_ids: deletedGroupIds,
+      category_groups: categoryGroups,
+      summary: {
+        changed_group_count: categoryGroups.length,
+        changed_category_count: categoryGroups.reduce((n, g) => n + g.categories.length, 0),
+        deleted_category_count: deletedCategoryIds.length,
+        deleted_group_count: deletedGroupIds.length,
+        note: DELTA_SUMMARY_NOTE,
+      },
+      server_knowledge: serverKnowledge,
     },
     null,
     2

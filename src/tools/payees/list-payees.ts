@@ -9,12 +9,14 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 
 // Input schema
 const inputSchema = z.object({
   budget_id: budgetId()
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
+  since_server_knowledge: sinceServerKnowledge(),
 });
 
 // Tool definition
@@ -28,7 +30,8 @@ Use when the user asks:
 - "Who have I paid?"
 - "Find a payee"
 
-Returns payee names and IDs. Payees are merchants, people, or places you transact with.`,
+Returns payee names and IDs. Payees are merchants, people, or places you transact with.
+Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the payees changed since then.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -37,6 +40,7 @@ Returns payee names and IDs. Payees are merchants, people, or places you transac
         maxLength: 64,
         description: 'Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"',
       },
+      since_server_knowledge: sinceServerKnowledgeJsonSchema,
     },
   },
 };
@@ -52,13 +56,15 @@ export async function handleListPayees(
   const validated = inputSchema.parse(args);
   const budgetId = client.resolveBudgetId(validated.budget_id);
 
-  const response = await client.getPayees(budgetId);
-  const payees = response.data.payees;
+  const cursor = validated.since_server_knowledge;
+  const response =
+    cursor === undefined
+      ? await client.getPayees(budgetId)
+      : await client.getPayees(budgetId, { lastKnowledgeOfServer: cursor });
+  const { changed, deletedIds } = splitDeleted(response.data.payees, (p) => sanitizeString(p.id) ?? '');
 
   // Filter out deleted payees and sort by name
-  const activePayees = payees
-    .filter((p) => !p.deleted)
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const activePayees = changed.sort((a, b) => a.name.localeCompare(b.name));
 
   const formattedPayees = activePayees.map((payee) => ({
     id: sanitizeString(payee.id) ?? '',
@@ -70,6 +76,24 @@ export async function handleListPayees(
   const transferPayees = formattedPayees.filter((p) => p.transfer_account_id != null);
   const regularPayees = formattedPayees.filter((p) => p.transfer_account_id == null);
 
+  if (cursor !== undefined) {
+    return JSON.stringify(
+      {
+        ...deltaFields(cursor, deletedIds),
+        payees: regularPayees,
+        transfer_payees: transferPayees,
+        summary: {
+          changed_count: formattedPayees.length,
+          deleted_count: deletedIds.length,
+          note: DELTA_SUMMARY_NOTE,
+        },
+        server_knowledge: response.data.server_knowledge,
+      },
+      null,
+      2
+    );
+  }
+
   return JSON.stringify(
     {
       payees: regularPayees,
@@ -79,6 +103,7 @@ export async function handleListPayees(
         regular_payees: regularPayees.length,
         transfer_payees: transferPayees.length,
       },
+      server_knowledge: response.data.server_knowledge,
     },
     null,
     2

@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import { DATE_TEXT_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
+import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
@@ -50,6 +51,7 @@ const inputSchema = z.object({
     .max(500)
     .optional()
     .describe('Maximum number of transactions to return (default 100, max 500)'),
+  since_server_knowledge: sinceServerKnowledge(),
 });
 
 // Tool definition
@@ -67,7 +69,8 @@ Use when the user asks:
 Pass type ("unapproved" or "uncategorized") to narrow to transactions that need attention.
 Requires an account_id. Use ynab_list_accounts first to find the account ID.
 
-NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). Pass an earlier since_date to see older history. until_date sets an inclusive upper bound.`,
+NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). Pass an earlier since_date to see older history. until_date sets an inclusive upper bound.
+Pass since_server_knowledge (the server_knowledge of an earlier response with the same filters) to get only the transactions changed since then.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -98,6 +101,7 @@ NOTE: If since_date is omitted, YNAB returns only the last 12 months of transact
         type: 'number',
         description: 'Maximum number of transactions to return (default 100, max 500)',
       },
+      since_server_knowledge: sinceServerKnowledgeJsonSchema,
     },
     required: ['account_id'],
   },
@@ -119,13 +123,19 @@ export async function handleListAccountTransactions(
   const sinceDate = validated.since_date ? parseNaturalDate(validated.since_date) : undefined;
   const untilDate = validated.until_date ? parseNaturalDate(validated.until_date) : undefined;
 
+  const cursor = validated.since_server_knowledge;
   const response = await client.getAccountTransactions(budgetId, validated.account_id, {
     sinceDate,
     untilDate,
     type: validated.type,
+    ...(cursor !== undefined ? { lastKnowledgeOfServer: cursor } : {}),
   });
+  const { changed, deletedIds } =
+    cursor !== undefined
+      ? splitDeleted(response.data.transactions, (t) => t.id)
+      : { changed: response.data.transactions, deletedIds: [] };
 
-  let transactions = response.data.transactions;
+  let transactions = changed;
 
   // Sort by date descending
   transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -151,24 +161,37 @@ export async function handleListAccountTransactions(
     approved: txn.approved,
     flag_color: txn.flag_color,
     ...transactionChainFields(txn),
+    // A delta may list removed split lines as deleted.
     subtransactions:
-      (txn.subtransactions ?? []).length > 0
-        ? (txn.subtransactions ?? []).map(formatSubtransaction)
+      (txn.subtransactions ?? []).some((sub) => !sub.deleted)
+        ? (txn.subtransactions ?? []).filter((sub) => !sub.deleted).map(formatSubtransaction)
         : undefined,
   }));
 
+  const rangeNote = validated.since_date === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {};
   return JSON.stringify(
     {
+      ...(cursor !== undefined ? deltaFields(cursor, deletedIds) : {}),
       account_id: validated.account_id,
       transactions: formattedTransactions,
-      summary: {
-        count: formattedTransactions.length,
-        ...truncationSummary(totalCount, formattedTransactions.length),
-        ...(validated.since_date === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {}),
-        total_inflow: formatCurrency(totalInflow),
-        total_outflow: formatCurrency(totalOutflow),
-        net: formatCurrency(totalInflow - totalOutflow),
-      },
+      summary:
+        cursor !== undefined
+          ? {
+              count: formattedTransactions.length,
+              ...truncationSummary(totalCount, formattedTransactions.length),
+              deleted_count: deletedIds.length,
+              ...rangeNote,
+              note: DELTA_SUMMARY_NOTE,
+            }
+          : {
+              count: formattedTransactions.length,
+              ...truncationSummary(totalCount, formattedTransactions.length),
+              ...rangeNote,
+              total_inflow: formatCurrency(totalInflow),
+              total_outflow: formatCurrency(totalOutflow),
+              net: formatCurrency(totalInflow - totalOutflow),
+            },
+      server_knowledge: response.data.server_knowledge,
     },
     null,
     2
