@@ -78,7 +78,8 @@ jobs:
           POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: ynab_test
         ports:
-          - 5432:5432
+          # Loopback only: the service uses trust auth.
+          - 127.0.0.1:5432:5432
         options: >-
           --health-cmd "pg_isready -U ynab -d ynab_test"
           --health-interval 5s
@@ -131,7 +132,8 @@ jobs:
           POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: ynab_test
         ports:
-          - 5432:5432
+          # Loopback only: the service uses trust auth.
+          - 127.0.0.1:5432:5432
         options: >-
           --health-cmd "pg_isready -U ynab -d ynab_test"
           --health-interval 5s
