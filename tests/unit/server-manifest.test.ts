@@ -15,6 +15,7 @@ const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
   name: string;
   version: string;
   mcpName: string;
+  bin: Record<string, string>;
 };
 const server = JSON.parse(readFileSync(resolve(root, 'server.json'), 'utf8')) as {
   $schema: string;
@@ -62,5 +63,11 @@ describe('server.json manifest', () => {
       expect(token?.isRequired).toBe(true);
       expect(token?.isSecret).toBe(true);
     }
+  });
+
+  it('ships the ynab-mcp bin, keeping ynab-mcp-server as an alias for one release', () => {
+    // npx runs the bin named after the package, so `npx -y ynab-mcp` keeps working.
+    expect(pkg.bin['ynab-mcp']).toBe('dist/index.js');
+    expect(pkg.bin['ynab-mcp-server']).toBe(pkg.bin['ynab-mcp']);
   });
 });
