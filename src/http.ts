@@ -19,6 +19,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import {
+  createOAuthMetadata,
   getOAuthProtectedResourceMetadataUrl,
   mcpAuthRouter,
 } from '@modelcontextprotocol/sdk/server/auth/router.js';
@@ -32,6 +33,7 @@ import { Encryptor } from './crypto.js';
 import { createStorage } from './storage/index.js';
 import { McpOAuthProvider } from './auth/mcp-provider.js';
 import { YnabTokenResolver } from './auth/user-session.js';
+import { issOnAuthorizationRedirects } from './middleware/iss-redirect.js';
 
 function jsonRpcError(code: number, message: string): unknown {
   return { jsonrpc: '2.0', error: { code, message }, id: null };
@@ -97,11 +99,15 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     const publicUrl = config.publicUrl as string;
     // The protected resource (RFC 8707 audience) every token is bound to.
     const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
+    // The issuer identifier: published in AS metadata and sent as `iss` on every
+    // authorization response (RFC 9207), so both must use this exact string.
+    const issuerUrl = new URL(publicUrl);
     const provider = new McpOAuthProvider({
       storage,
       encryptor,
       ynab,
       publicUrl,
+      issuer: issuerUrl.href,
       resourceUrl: resourceServerUrl.href,
       allowWrite: config.allowWrite,
       globalReadOnly: config.readOnly,
@@ -115,7 +121,6 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     // /.well-known/oauth-protected-resource/mcp). The SDK's own PRM lacks
     // bearer_methods_supported, so it is mounted explicitly (first match wins)
     // with the SDK's metadataHandler (CORS: any origin, GET/OPTIONS only).
-    const issuerUrl = new URL(publicUrl);
     const scopesSupported = ['read-only', 'read-write'];
     const resourceName = 'YNAB MCP Server';
     resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceServerUrl);
@@ -130,10 +135,24 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
     // Root alias for clients that probe the non-path-aware location.
     app.use('/.well-known/oauth-protected-resource', metadataHandler(protectedResourceMetadata));
 
-    // OAuth 2.1 AS endpoints (/authorize, /token, /register, /revoke, metadata).
+    // AS metadata (RFC 8414) is the SDK's, plus
+    // authorization_response_iss_parameter_supported (RFC 9207 section 3), which
+    // the SDK does not emit; mounted ahead of the SDK router, which also serves it.
+    const authRouterOptions = { provider, issuerUrl, resourceServerUrl, scopesSupported, resourceName };
+    const oauthMetadata = {
+      ...createOAuthMetadata(authRouterOptions),
+      authorization_response_iss_parameter_supported: true,
+    };
+    app.use('/.well-known/oauth-authorization-server', metadataHandler(oauthMetadata));
+    // The SDK's /authorize handler redirects errors to the client without `iss`;
+    // this adds it to every redirect from the authorization endpoint (only).
     app.use(
-      mcpAuthRouter({ provider, issuerUrl, resourceServerUrl, scopesSupported, resourceName })
+      new URL(oauthMetadata.authorization_endpoint).pathname,
+      issOnAuthorizationRedirects(oauthMetadata.issuer)
     );
+
+    // OAuth 2.1 AS endpoints (/authorize, /token, /register, /revoke, metadata).
+    app.use(mcpAuthRouter(authRouterOptions));
 
     // YNAB federation legs.
     app.get('/oauth/ynab/start', async (req: Request, res: Response) => {
@@ -150,6 +169,14 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
       try {
         const code = String(req.query['code'] ?? '');
         const state = String(req.query['state'] ?? '');
+        const error = req.query['error'];
+        if (state && error !== undefined) {
+          // YNAB refused (e.g. the user clicked Deny). Tell the MCP client, with a
+          // fixed error code; YNAB's own error text is never forwarded.
+          const denial = error === 'access_denied' ? 'access_denied' : 'server_error';
+          res.redirect(await provider.denyAuthorization(state, denial));
+          return;
+        }
         if (!code || !state) {
           res.status(400).send('Missing code or state.');
           return;
@@ -158,6 +185,19 @@ export async function createHttpApp(config: HttpConfig): Promise<express.Express
         res.redirect(redirect);
       } catch {
         res.status(400).send('Could not complete YNAB authorization. Please start over.');
+      }
+    });
+    // "Cancel" on the consent screen: an access_denied authorization response.
+    app.get('/oauth/cancel', async (req: Request, res: Response) => {
+      try {
+        const state = String(req.query['state'] ?? '');
+        if (!state) {
+          res.status(400).send('Missing state.');
+          return;
+        }
+        res.redirect(await provider.denyAuthorization(state, 'access_denied'));
+      } catch {
+        res.status(400).send('Authorization request expired or invalid. Please start over.');
       }
     });
 

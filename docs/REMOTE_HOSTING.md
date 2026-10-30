@@ -132,6 +132,21 @@ existing users stay connected. If you change `MCP_RESOURCE_URL` (or `PUBLIC_URL`
 when it supplies the default), tokens issued for the old URL stop working and
 users must reconnect.
 
+### Issuer identification (RFC 9207)
+
+Every redirect back to an MCP client's `redirect_uri` carries
+`iss=<issuer>`, the `issuer` from `/.well-known/oauth-authorization-server`
+(`PUBLIC_URL` in URL form, e.g. `https://YOUR_PUBLIC_URL/`). That covers the
+success redirect with `code` and every error redirect: `/authorize` validation
+errors, `invalid_target`, the consent screen's **Cancel** (`access_denied`), a
+denial at YNAB (`access_denied`; any other YNAB error becomes `server_error`),
+and a failed YNAB code exchange (`server_error`). The metadata advertises
+`authorization_response_iss_parameter_supported: true`, so clients can detect
+mix-up attacks. The redirect to YNAB's own authorize page carries no `iss`.
+Error descriptions are fixed text; nothing from YNAB is forwarded. If you put
+the server behind a proxy, set `PUBLIC_URL` to the exact URL clients use: it
+is both the issuer and the `iss` value. No new environment variables.
+
 ## Upgrading
 
 **Back up your database before upgrading** (copy the SQLite file while the

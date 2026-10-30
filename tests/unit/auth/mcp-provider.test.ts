@@ -267,6 +267,87 @@ describe('McpOAuthProvider.handleYnabCallback', () => {
   });
 });
 
+describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
+  /** Run authorize() and return the pending state from the consent page. */
+  async function pendingState(provider: McpOAuthProvider, params: Partial<AuthorizationParams> = {}): Promise<string> {
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    const res = makeRes();
+    await provider.authorize(client, { ...authParams, ...params }, res as unknown as Response);
+    return extractState(res.send.mock.calls[0]?.[0] as string);
+  }
+
+  it('defaults the issuer to the SDK metadata form of publicUrl', () => {
+    expect(makeProvider().provider.issuer).toBe('https://mcp.example.com/');
+    expect(makeProvider({ issuer: 'https://as.example.com/x' }).provider.issuer).toBe('https://as.example.com/x');
+  });
+
+  it('adds iss to the success redirect', async () => {
+    const { provider } = makeProvider({ issuer: 'https://as.example.com/x' });
+    const { redirectUrl } = await driveToAuthCode(provider);
+    const parsed = new URL(redirectUrl);
+    expect(parsed.searchParams.get('iss')).toBe('https://as.example.com/x');
+    expect(parsed.searchParams.get('state')).toBe('clientState');
+  });
+
+  it('links a Cancel action on the consent page', async () => {
+    const { provider } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    const res = makeRes();
+    await provider.authorize(client, authParams, res as unknown as Response);
+    const html = res.send.mock.calls[0]?.[0] as string;
+    const state = extractState(html);
+    expect(html).toContain(`https://mcp.example.com/oauth/cancel?state=${encodeURIComponent(state)}`);
+  });
+
+  it('denyAuthorization redirects access_denied with state and iss, and consumes the pending auth', async () => {
+    const { provider } = makeProvider();
+    const state = await pendingState(provider);
+    const url = new URL(await provider.denyAuthorization(state, 'access_denied'));
+    expect(url.origin + url.pathname).toBe('https://client/cb');
+    expect(url.searchParams.get('error')).toBe('access_denied');
+    expect(url.searchParams.get('error_description')).toBe('The user denied the authorization request');
+    expect(url.searchParams.get('state')).toBe('clientState');
+    expect(url.searchParams.get('iss')).toBe('https://mcp.example.com/');
+    expect(url.searchParams.has('code')).toBe(false);
+    await expect(provider.denyAuthorization(state, 'access_denied')).rejects.toBeInstanceOf(InvalidGrantError);
+    await expect(provider.startYnabAuthorization(state, 'read-only')).rejects.toThrow();
+  });
+
+  it('denyAuthorization omits state when the client sent none, and supports server_error', async () => {
+    const { provider } = makeProvider();
+    const state = await pendingState(provider, { state: undefined });
+    const url = new URL(await provider.denyAuthorization(state, 'server_error'));
+    expect(url.searchParams.get('error')).toBe('server_error');
+    expect(url.searchParams.has('state')).toBe(false);
+    expect(url.searchParams.get('iss')).toBe('https://mcp.example.com/');
+  });
+
+  it('denyAuthorization throws for an unknown state', async () => {
+    const { provider } = makeProvider();
+    await expect(provider.denyAuthorization('bogus', 'access_denied')).rejects.toBeInstanceOf(InvalidGrantError);
+  });
+
+  it.each([
+    ['the YNAB code exchange', () => exchangeCodeMock.mockRejectedValueOnce(new Error('exchange failed'))],
+    ['the YNAB user lookup', () => getYnabUserIdMock.mockRejectedValueOnce(new Error('user lookup failed'))],
+  ])('a failure in %s redirects server_error with iss and saves no user', async (_label, arrange) => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    arrange();
+    const { provider, storage } = makeProvider();
+    const state = await pendingState(provider);
+    const url = new URL(await provider.handleYnabCallback('ynabcode', state));
+    expect(url.searchParams.get('error')).toBe('server_error');
+    expect(url.searchParams.get('error_description')).toBe('Could not complete YNAB authorization');
+    expect(url.searchParams.get('state')).toBe('clientState');
+    expect(url.searchParams.get('iss')).toBe('https://mcp.example.com/');
+    expect(url.searchParams.has('code')).toBe(false);
+    expect(await storage.getUser('ynab-user-1')).toBeUndefined();
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('ynabcode');
+    errorSpy.mockRestore();
+  });
+});
+
 describe('McpOAuthProvider token issuance', () => {
   it('challenge + exchange issues bearer tokens and the code is single-use', async () => {
     const { provider } = makeProvider();

@@ -15,6 +15,11 @@
  * `/token` must name that resource, otherwise the request fails with
  * `invalid_target`. Rows written by 0.3.x carry no resource and are treated as
  * bound to the configured resource, so existing users keep working.
+ *
+ * Issuer identification (RFC 9207): every redirect back to the client's
+ * redirect URI that this provider builds (the code, a denial from the consent
+ * screen or from YNAB, a failed YNAB exchange) carries `iss`. The SDK's own
+ * `/authorize` error redirects get it from the iss-redirect middleware.
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -46,6 +51,8 @@ import {
   type YnabOAuthConfig,
 } from './ynab-oauth.js';
 import { canonicalResource, isSameResource } from './resource.js';
+import { withIssuer } from '../middleware/iss-redirect.js';
+import { sanitizeErrorMessage } from '../utils/sanitize.js';
 
 export interface McpProviderOptions {
   storage: Storage;
@@ -58,6 +65,12 @@ export interface McpProviderOptions {
    * https://ynab-mcp.example.com/mcp. Defaults to `publicUrl` + `/mcp`.
    */
   resourceUrl?: string;
+  /**
+   * Issuer identifier, exactly as published in the authorization server
+   * metadata; sent as `iss` on authorization responses (RFC 9207). Defaults to
+   * `new URL(publicUrl).href`, which is what the SDK's metadata publishes.
+   */
+  issuer?: string;
   /** Whether read-write access may be offered at consent. */
   allowWrite: boolean;
   /** Force read-only regardless of the user's choice (defense in depth). */
@@ -76,6 +89,15 @@ function normalizeScopes(scopes: string[] | undefined): string[] {
 }
 
 const FOREIGN_RESOURCE = 'The requested resource is not served by this server';
+
+/** Error codes this provider redirects to the client with (RFC 6749 section 4.1.2.1). */
+export type AuthorizationDenial = 'access_denied' | 'server_error';
+
+/** Fixed, generic descriptions: nothing from YNAB or storage reaches the client. */
+const DENIAL_DESCRIPTIONS: Record<AuthorizationDenial, string> = {
+  access_denied: 'The user denied the authorization request',
+  server_error: 'Could not complete YNAB authorization',
+};
 
 function htmlEscape(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
@@ -100,12 +122,31 @@ export class McpOAuthProvider implements OAuthServerProvider {
   >();
   /** Canonical form of the one resource this server issues tokens for. */
   readonly resource: string;
+  /** Issuer identifier sent as `iss` on authorization responses (RFC 9207). */
+  readonly issuer: string;
 
   constructor(opts: McpProviderOptions) {
     this.opts = opts;
     const resource = canonicalResource(opts.resourceUrl ?? `${opts.publicUrl}/mcp`);
     if (resource === undefined) throw new Error('Invalid MCP resource URL');
     this.resource = resource;
+    this.issuer = opts.issuer ?? new URL(opts.publicUrl).href;
+  }
+
+  /**
+   * Build an authorization response redirect to the client's redirect URI (which
+   * the SDK validated against the registration at `/authorize`): `params`, the
+   * client's `state` when it sent one, and `iss`.
+   */
+  private authorizationResponse(
+    redirectUri: string,
+    clientState: string | undefined,
+    params: Record<string, string>
+  ): string {
+    const url = new URL(redirectUri);
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+    if (clientState !== undefined) url.searchParams.set('state', clientState);
+    return withIssuer(url.href, this.issuer);
   }
 
   /**
@@ -175,6 +216,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
     const startBase = `${this.opts.publicUrl}/oauth/ynab/start`;
     const roLink = `${startBase}?state=${encodeURIComponent(state)}&scope=read-only`;
     const rwLink = `${startBase}?state=${encodeURIComponent(state)}&scope=read-write`;
+    const cancelLink = `${this.opts.publicUrl}/oauth/cancel?state=${encodeURIComponent(state)}`;
     const offerWrite = this.opts.allowWrite && !this.opts.globalReadOnly;
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -190,6 +232,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
 <a class="btn" href="${htmlEscape(roLink)}"><strong>Read-only</strong><br><span class="muted">View budgets, accounts, and transactions. No changes.</span></a>
 ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; write</strong><br><span class="muted">View and modify (create/update/delete) your budget data.</span></a>` : ''}
 <p class="muted">You'll be sent to YNAB to authorize. You can disconnect at any time.</p>
+<p><a href="${htmlEscape(cancelLink)}">Cancel</a></p>
 </body></html>`);
   }
 
@@ -211,42 +254,67 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
   }
 
   /**
+   * End a pending authorization without a code: the user chose Cancel on the
+   * consent screen, or YNAB redirected back with an error. Consumes the pending
+   * authorization (so it cannot be resumed) and returns the client redirect URL
+   * carrying `error`, a fixed `error_description`, the client's `state` and `iss`.
+   * Throws when `state` names no pending authorization (there is then no
+   * validated redirect URI to send the browser to).
+   */
+  async denyAuthorization(state: string, error: AuthorizationDenial): Promise<string> {
+    const rec = await this.opts.storage.takePendingAuth(state);
+    if (!rec) throw new InvalidGrantError('Authorization request expired or invalid');
+    return this.authorizationResponse(rec.redirectUri, rec.clientState, {
+      error,
+      error_description: DENIAL_DESCRIPTIONS[error],
+    });
+  }
+
+  /**
    * Called by the `/oauth/ynab/callback` route once YNAB redirects back with a
-   * code. Returns the MCP client redirect URL (with our `code` + `state`).
+   * code. Returns the MCP client redirect URL: our `code`, the client's `state`
+   * and `iss` on success, or `error=server_error` (same `state` and `iss`) when
+   * the YNAB exchange or storage fails. Throws only for an unknown `state`.
    */
   async handleYnabCallback(code: string, state: string): Promise<string> {
     const rec = await this.opts.storage.takePendingAuth(state);
     if (!rec) throw new InvalidGrantError('Authorization request expired or invalid');
 
-    const tokens = await exchangeCode(this.opts.ynab, {
-      code,
-      redirectUri: this.callbackUrl,
-    });
-    const userId = await getYnabUserId(tokens.accessToken, this.opts.ynab.endpoints);
-
-    await this.opts.storage.upsertUser({
-      userId,
-      grantedScope: rec.grantedScope,
-      encryptedRefreshToken: this.opts.encryptor.encrypt(tokens.refreshToken),
-      updatedAt: Date.now(),
-    });
-
     const mcpCode = newToken();
-    await this.opts.storage.saveAuthCode({
-      code: mcpCode,
-      clientId: rec.clientId,
-      userId,
-      redirectUri: rec.redirectUri,
-      codeChallenge: rec.codeChallenge,
-      scopes: rec.scopes,
-      expiresAt: Date.now() + this.opts.authCodeTtlSec * 1000,
-      resource: rec.resource,
-    });
+    try {
+      const tokens = await exchangeCode(this.opts.ynab, {
+        code,
+        redirectUri: this.callbackUrl,
+      });
+      const userId = await getYnabUserId(tokens.accessToken, this.opts.ynab.endpoints);
 
-    const url = new URL(rec.redirectUri);
-    url.searchParams.set('code', mcpCode);
-    if (rec.clientState !== undefined) url.searchParams.set('state', rec.clientState);
-    return url.toString();
+      await this.opts.storage.upsertUser({
+        userId,
+        grantedScope: rec.grantedScope,
+        encryptedRefreshToken: this.opts.encryptor.encrypt(tokens.refreshToken),
+        updatedAt: Date.now(),
+      });
+
+      await this.opts.storage.saveAuthCode({
+        code: mcpCode,
+        clientId: rec.clientId,
+        userId,
+        redirectUri: rec.redirectUri,
+        codeChallenge: rec.codeChallenge,
+        scopes: rec.scopes,
+        expiresAt: Date.now() + this.opts.authCodeTtlSec * 1000,
+        resource: rec.resource,
+      });
+    } catch (err) {
+      // Logged sanitized and internally only; the client gets a fixed description.
+      console.error('[OAuth] YNAB authorization could not be completed:', sanitizeErrorMessage(err));
+      return this.authorizationResponse(rec.redirectUri, rec.clientState, {
+        error: 'server_error',
+        error_description: DENIAL_DESCRIPTIONS.server_error,
+      });
+    }
+
+    return this.authorizationResponse(rec.redirectUri, rec.clientState, { code: mcpCode });
   }
 
   async challengeForAuthorizationCode(
