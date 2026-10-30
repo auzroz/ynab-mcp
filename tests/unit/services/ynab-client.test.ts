@@ -696,6 +696,31 @@ describe('createCategory (write)', () => {
     });
   });
 
+  it('passes target fields through and audits presence only', async () => {
+    const client = makeClient(false);
+    setResolve(mockApi.categories.createCategory, { data: { category: { id: 'cat-new' } } });
+    const body = {
+      category: {
+        name: 'Vacation',
+        category_group_id: 'g-1',
+        goal_target: 123450,
+        goal_target_date: '2027-06-01',
+        goal_needs_whole_amount: true,
+      },
+    };
+    await client.createCategory(BUDGET, body as never);
+    expect(mockApi.categories.createCategory).toHaveBeenCalledWith(BUDGET, body);
+    const entry = getAuditLog().getAll()[0];
+    expect(entry?.details).toEqual({
+      has_name: true,
+      category_group_id: 'g-1',
+      has_goal_target: true,
+      has_goal_target_date: true,
+      has_goal_needs_whole_amount: true,
+    });
+    expect(JSON.stringify(entry)).not.toContain('123450');
+  });
+
   it('logs failure and rethrows', async () => {
     const client = makeClient(false);
     setReject(mockApi.categories.createCategory, new Error('fail'));

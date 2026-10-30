@@ -9,6 +9,11 @@ import { NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId, ynabId } from '../../utils/
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import {
+  categoryTargetCreateShape,
+  categoryTargetCreateJsonProperties,
+  pickCategoryTargets,
+} from './category-targets.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -19,6 +24,7 @@ const inputSchema = z.object({
     .describe('The UUID of the category group to add the category to'),
   name: z.string().min(1).max(NAME_MAX_LENGTH).describe('The name of the new category'),
   note: z.string().max(NOTE_MAX_LENGTH).optional().describe('Optional note for the category'),
+  ...categoryTargetCreateShape,
 });
 
 // Tool definition
@@ -31,6 +37,8 @@ Use when the user asks:
 - "Create a budgeting category for Y"
 
 Requires a category_group_id. Use ynab_list_categories first to find the group ID.
+
+Optionally set a target (goal) at creation: goal_target (milliunits), goal_target_date (YYYY-MM-DD) and goal_needs_whole_amount. Supplying goal_target creates a monthly spending target.
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
   inputSchema: {
@@ -56,6 +64,7 @@ Requires a category_group_id. Use ynab_list_categories first to find the group I
         maxLength: 500,
         description: 'Optional note for the category',
       },
+      ...categoryTargetCreateJsonProperties,
     },
     required: ['category_group_id', 'name'],
   },
@@ -77,6 +86,7 @@ export async function handleCreateCategory(
       name: validated.name,
       category_group_id: validated.category_group_id,
       ...(validated.note !== undefined ? { note: validated.note } : {}),
+      ...pickCategoryTargets(validated),
     },
   });
 

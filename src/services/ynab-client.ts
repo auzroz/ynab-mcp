@@ -12,6 +12,18 @@ import { getAuditLog, type AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { isBudgetIdSentinel } from '../utils/schemas.js';
 
+/** Audit details for category creation: presence flags only, no amounts or names. */
+function createCategoryAuditDetails(data: ynab.PostCategoryWrapper): Record<string, unknown> {
+  const c = data.category;
+  return {
+    has_name: !!c.name,
+    category_group_id: c.category_group_id,
+    ...(c.goal_target !== undefined ? { has_goal_target: true } : {}),
+    ...(c.goal_target_date !== undefined ? { has_goal_target_date: true } : {}),
+    ...(c.goal_needs_whole_amount !== undefined ? { has_goal_needs_whole_amount: true } : {}),
+  };
+}
+
 export class YnabClient {
   private readonly api: ynab.API;
   private readonly rateLimiter: RateLimiter;
@@ -355,7 +367,7 @@ export class YnabClient {
         resourceType: 'category',
         resourceId: response.data.category.id,
         // Category names may be sensitive; log only presence and grouping.
-        details: { has_name: !!data.category.name, category_group_id: data.category.category_group_id },
+        details: createCategoryAuditDetails(data),
         success: true,
       });
       return response;
@@ -365,7 +377,7 @@ export class YnabClient {
         tool: 'ynab_create_category',
         budgetId,
         resourceType: 'category',
-        details: { has_name: !!data.category.name, category_group_id: data.category.category_group_id },
+        details: createCategoryAuditDetails(data),
         success: false,
         error: sanitizeErrorMessage(error),
       });
