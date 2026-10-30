@@ -44,7 +44,7 @@ Optionally set a target (goal) at creation: goal_target (in dollars, e.g. 200 fo
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
 
-Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering categories, and setting a target's due day or cadence beyond monthly/weekly/yearly.`,
+Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering categories, target cadences other than monthly/weekly/yearly, due days, choosing the target type, and snoozing a target.`,
   inputSchema: {
     type: 'object',
     properties: {

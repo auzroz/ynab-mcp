@@ -38,7 +38,7 @@ Use when the user asks:
 
 Returns category groups with their categories, including budgeted amounts, activity, and remaining balances.
 
-Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering categories and groups.`,
+Not possible through the YNAB API (do it in the YNAB app): target cadences other than monthly/weekly/yearly, due days, choosing the target type, and snoozing a target; hiding, unhiding, deleting or reordering categories and groups.`,
   inputSchema: {
     type: 'object',
     properties: {
