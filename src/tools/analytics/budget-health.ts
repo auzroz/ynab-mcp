@@ -11,6 +11,7 @@ import { formatCurrency } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { isInternalGroup } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -120,7 +121,7 @@ export async function handleBudgetHealth(
 
   for (const group of categoriesResponse.data.category_groups) {
     // Skip internal categories
-    if (group.hidden || group.name === 'Internal Master Category') continue;
+    if (group.hidden || isInternalGroup(group)) continue;
 
     for (const cat of group.categories) {
       if (cat.hidden || cat.deleted) continue;

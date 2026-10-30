@@ -11,6 +11,7 @@ import { formatCurrency } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { indexCategoryGroups } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -107,12 +108,7 @@ export async function handleBudgetVsActuals(
   const monthData = monthResponse.data.month;
 
   // Build category group lookup
-  const groupLookup = new Map<string, string>();
-  for (const group of categoriesResponse.data.category_groups) {
-    for (const cat of group.categories) {
-      groupLookup.set(cat.id, group.name);
-    }
-  }
+  const { names: groupLookup, internalIds } = indexCategoryGroups(categoriesResponse.data.category_groups);
 
   // Build reports by category group
   const groupReports = new Map<string, GroupReport>();
@@ -130,7 +126,7 @@ export async function handleBudgetVsActuals(
     const groupName = groupLookup.get(category.id) ?? 'Other';
 
     // Skip hidden categories and internal master category
-    if (category.hidden || groupName === 'Internal Master Category') {
+    if (category.hidden || internalIds.has(category.id)) {
       continue;
     }
 
@@ -243,8 +239,7 @@ export async function handleBudgetVsActuals(
     let prevTotalActivity = 0;
 
     for (const category of prevData.categories) {
-      const prevGroupName = groupLookup.get(category.id) ?? 'Other';
-      if (category.hidden || prevGroupName === 'Internal Master Category') {
+      if (category.hidden || internalIds.has(category.id)) {
         continue;
       }
       prevTotalBudgeted += category.budgeted;

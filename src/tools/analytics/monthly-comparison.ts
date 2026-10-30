@@ -11,6 +11,7 @@ import { formatCurrency } from '../../utils/milliunits.js';
 import { getCurrentMonth, getPreviousMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { indexCategoryGroups } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -81,12 +82,7 @@ export async function handleMonthlyComparison(
   const previousData = previousMonthResponse.data.month;
 
   // Build group lookup
-  const groupLookup = new Map<string, string>();
-  for (const group of categoriesResponse.data.category_groups) {
-    for (const cat of group.categories) {
-      groupLookup.set(cat.id, group.name);
-    }
-  }
+  const { names: groupLookup, internalIds } = indexCategoryGroups(categoriesResponse.data.category_groups);
 
   // Calculate overall metrics for current month
   // Use the month's income field directly rather than summing category activity
@@ -95,8 +91,7 @@ export async function handleMonthlyComparison(
   let currentBudgeted = 0;
 
   for (const cat of currentData.categories) {
-    const groupName = groupLookup.get(cat.id) ?? 'Other';
-    if (groupName === 'Internal Master Category' || cat.hidden) continue;
+    if (internalIds.has(cat.id) || cat.hidden) continue;
 
     currentBudgeted += cat.budgeted;
     if (cat.activity < 0) {
@@ -111,8 +106,7 @@ export async function handleMonthlyComparison(
   let previousBudgeted = 0;
 
   for (const cat of previousData.categories) {
-    const groupName = groupLookup.get(cat.id) ?? 'Other';
-    if (groupName === 'Internal Master Category' || cat.hidden) continue;
+    if (internalIds.has(cat.id) || cat.hidden) continue;
 
     previousBudgeted += cat.budgeted;
     if (cat.activity < 0) {
@@ -128,7 +122,7 @@ export async function handleMonthlyComparison(
 
   for (const cat of currentData.categories) {
     const groupName = groupLookup.get(cat.id) ?? 'Other';
-    if (groupName === 'Internal Master Category' || cat.hidden) continue;
+    if (internalIds.has(cat.id) || cat.hidden) continue;
 
     categoryMap.set(cat.id, {
       current: cat.activity < 0 ? Math.abs(cat.activity) : 0,
@@ -140,7 +134,7 @@ export async function handleMonthlyComparison(
 
   for (const cat of previousData.categories) {
     const groupName = groupLookup.get(cat.id) ?? 'Other';
-    if (groupName === 'Internal Master Category' || cat.hidden) continue;
+    if (internalIds.has(cat.id) || cat.hidden) continue;
 
     const existing = categoryMap.get(cat.id);
     if (existing) {

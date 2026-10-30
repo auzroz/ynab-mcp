@@ -10,6 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, formatCurrencyWithFormat } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { isInternalGroup } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -130,7 +131,7 @@ export async function handleGetBudget(
 
   // Summarize categories
   const categoryGroups = (budget.category_groups ?? [])
-    .filter((g) => !g.hidden && g.name !== 'Internal Master Category')
+    .filter((g) => !g.hidden && !isInternalGroup(g))
     .map((group) => ({
       name: sanitizeName(group.name),
       categories: (budget.categories ?? [])

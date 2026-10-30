@@ -10,6 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { isInternalGroup } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -132,7 +133,7 @@ export async function handleUnusedCategories(
 
   for (const group of categoriesResponse.data.category_groups) {
     // Skip internal categories
-    if (group.name === 'Internal Master Category' || group.hidden) {
+    if (isInternalGroup(group) || group.hidden) {
       continue;
     }
 
@@ -200,7 +201,7 @@ export async function handleUnusedCategories(
   // Calculate total categories
   let totalCategories = 0;
   for (const group of categoriesResponse.data.category_groups) {
-    if (group.name !== 'Internal Master Category' && !group.hidden) {
+    if (!isInternalGroup(group) && !group.hidden) {
       totalCategories += group.categories.filter((c) => !c.hidden).length;
     }
   }

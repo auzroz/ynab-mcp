@@ -11,6 +11,7 @@ import { formatCurrency } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { indexCategoryGroups } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -77,12 +78,7 @@ export async function handleSpendingPace(
   ]);
 
   // Build group lookup
-  const groupLookup = new Map<string, string>();
-  for (const group of categoriesResponse.data.category_groups) {
-    for (const cat of group.categories) {
-      groupLookup.set(cat.id, group.name);
-    }
-  }
+  const { names: groupLookup, internalIds } = indexCategoryGroups(categoriesResponse.data.category_groups);
 
   // Calculate days in month and days elapsed using UTC to avoid timezone drift
   const now = new Date();
@@ -100,7 +96,7 @@ export async function handleSpendingPace(
 
   for (const cat of monthResponse.data.month.categories) {
     const groupName = groupLookup.get(cat.id) ?? 'Other';
-    if (groupName === 'Internal Master Category' || cat.hidden) continue;
+    if (internalIds.has(cat.id) || cat.hidden) continue;
 
     const budgeted = cat.budgeted;
     // Use net activity so refunds reduce spent (matches YNAB's category balance)

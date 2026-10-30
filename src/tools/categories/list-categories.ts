@@ -10,6 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { isInternalGroup } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -68,7 +69,7 @@ export async function handleListCategories(
 
   // Filter out internal category group unless explicitly including hidden
   if (!includeHidden) {
-    groups = groups.filter((g) => !g.hidden && g.name !== 'Internal Master Category');
+    groups = groups.filter((g) => !g.hidden && !isInternalGroup(g));
   }
 
   // Build response with categories grouped

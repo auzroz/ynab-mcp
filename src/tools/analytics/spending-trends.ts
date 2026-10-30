@@ -10,6 +10,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { indexCategoryGroups } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -111,12 +112,7 @@ export async function handleSpendingTrends(
   ]);
 
   // Build group lookup
-  const groupLookup = new Map<string, string>();
-  for (const group of categoriesResponse.data.category_groups) {
-    for (const cat of group.categories) {
-      groupLookup.set(cat.id, group.name);
-    }
-  }
+  const { names: groupLookup, internalIds } = indexCategoryGroups(categoriesResponse.data.category_groups);
 
   // Build category spending by month
   const categoryData = new Map<
@@ -130,7 +126,7 @@ export async function handleSpendingTrends(
 
     for (const cat of monthData.categories) {
       const groupName = groupLookup.get(cat.id) ?? 'Other';
-      if (groupName === 'Internal Master Category' || cat.hidden) continue;
+      if (internalIds.has(cat.id) || cat.hidden) continue;
 
       // Filter by category if specified
       if (validated.category_id && cat.id !== validated.category_id) continue;

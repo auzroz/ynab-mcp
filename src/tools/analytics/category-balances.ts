@@ -11,6 +11,7 @@ import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
+import { indexCategoryGroups } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -103,19 +104,14 @@ export async function handleCategoryBalances(
   ]);
 
   // Build group lookup
-  const groupLookup = new Map<string, string>();
-  for (const group of categoriesResponse.data.category_groups) {
-    for (const cat of group.categories) {
-      groupLookup.set(cat.id, group.name);
-    }
-  }
+  const { names: groupLookup, internalIds } = indexCategoryGroups(categoriesResponse.data.category_groups);
 
   // Process categories
   let categories: CategoryBalance[] = [];
 
   for (const cat of monthResponse.data.month.categories) {
     const groupName = groupLookup.get(cat.id) ?? 'Other';
-    if (groupName === 'Internal Master Category' || cat.hidden) continue;
+    if (internalIds.has(cat.id) || cat.hidden) continue;
 
     categories.push({
       category_name: sanitizeName(cat.name),

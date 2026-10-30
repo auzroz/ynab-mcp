@@ -11,6 +11,7 @@ import { formatCurrency } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { indexCategoryGroups } from '../../utils/categories.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -102,12 +103,7 @@ export async function handleGoalProgress(
   const monthData = monthResponse.data.month;
 
   // Build group lookup
-  const groupLookup = new Map<string, string>();
-  for (const group of categoriesResponse.data.category_groups) {
-    for (const cat of group.categories) {
-      groupLookup.set(cat.id, group.name);
-    }
-  }
+  const { names: groupLookup, internalIds } = indexCategoryGroups(categoriesResponse.data.category_groups);
 
   // Find categories with goals
   const goalsInfo: GoalInfo[] = [];
@@ -119,7 +115,7 @@ export async function handleGoalProgress(
     }
 
     const groupName = groupLookup.get(category.id) ?? 'Other';
-    if (groupName === 'Internal Master Category') {
+    if (internalIds.has(category.id)) {
       continue;
     }
 
