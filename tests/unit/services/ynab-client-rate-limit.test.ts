@@ -131,3 +131,34 @@ describe('YnabClient 429 handling', () => {
     await expect(b.client.getUser()).resolves.toBeDefined();
   });
 });
+
+describe('YnabClient money movement groups cache', () => {
+  const groupsBody = { data: { money_movement_groups: [], server_knowledge: 1 } };
+
+  it('caches groups per budget and month, so a repeat read sends no request', async () => {
+    fetchMock.mockImplementation(async () => ok(groupsBody));
+    const { client } = makeClient();
+    const id = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+
+    await client.getMoneyMovementGroups(id);
+    await client.getMoneyMovementGroups(id);
+    await client.getMoneyMovementGroupsByMonth(id, '2024-01-01');
+    await client.getMoneyMovementGroupsByMonth(id, '2024-01-01');
+    await client.getMoneyMovementGroupsByMonth(id, '2024-02-01');
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not cache under budget aliases or the "current" month', async () => {
+    fetchMock.mockImplementation(async () => ok(groupsBody));
+    const { client } = makeClient();
+    const id = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+
+    await client.getMoneyMovementGroups('last-used');
+    await client.getMoneyMovementGroups('last-used');
+    await client.getMoneyMovementGroupsByMonth(id, 'current');
+    await client.getMoneyMovementGroupsByMonth(id, 'current');
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+});

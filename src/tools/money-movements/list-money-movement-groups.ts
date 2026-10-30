@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
+import { maskId } from '../../utils/mask.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId, monthParam } from '../../utils/schemas.js';
 
@@ -29,7 +30,7 @@ Use when the user asks:
 - "Show my money move groups for [month]"
 - "What were the notes on my category fund moves?"
 
-Each group has an id, creation time, month and note. Use the group id to match entries from ynab_list_money_movements (money_movement_group_id). Pass month (YYYY-MM-01 or "current") to limit to one budget month.`,
+Each group has an id, creation time, month, note and who performed it (performed_by_user_id, masked). Use the group id to match entries from ynab_list_money_movements (money_movement_group_id). Pass month (YYYY-MM-01 or "current") to limit to one budget month.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -68,6 +69,7 @@ export async function handleListMoneyMovementGroups(
     group_created_at: g.group_created_at,
     note: sanitizeMemo(g.note),
     has_performed_by_user: !!g.performed_by_user_id,
+    performed_by_user_id: g.performed_by_user_id ? maskId(g.performed_by_user_id) : null,
   }));
 
   return JSON.stringify(

@@ -1285,16 +1285,41 @@ export class YnabClient {
     return this.api.money_movements.getMoneyMovementsByMonth(budgetId, month);
   }
 
+  /**
+   * Money movement groups, cached like the other metadata reads (not under the
+   * "last-used"/"default" aliases, which can point at a different budget later).
+   */
   async getMoneyMovementGroups(budgetId: string): Promise<ynab.MoneyMovementGroupsResponse> {
-    await this.rateLimiter.acquire();
-    return this.api.money_movements.getMoneyMovementGroups(budgetId);
+    return this.cachedMoneyMovementGroups(budgetId, `money-movement-groups:${budgetId}`, () =>
+      this.api.money_movements.getMoneyMovementGroups(budgetId)
+    );
   }
 
   async getMoneyMovementGroupsByMonth(
     budgetId: string,
     month: string
   ): Promise<ynab.MoneyMovementGroupsResponse> {
+    return this.cachedMoneyMovementGroups(
+      budgetId,
+      // "current" moves with the calendar, so it is never cached under that name.
+      month === 'current' ? undefined : `money-movement-groups:${budgetId}:${month}`,
+      () => this.api.money_movements.getMoneyMovementGroupsByMonth(budgetId, month)
+    );
+  }
+
+  private async cachedMoneyMovementGroups(
+    budgetId: string,
+    cacheKey: string | undefined,
+    fetchGroups: () => Promise<ynab.MoneyMovementGroupsResponse>
+  ): Promise<ynab.MoneyMovementGroupsResponse> {
+    const cacheable = cacheKey !== undefined && !isBudgetIdSentinel(budgetId);
+    if (cacheable) {
+      const cached = this.cache.get<ynab.MoneyMovementGroupsResponse>(cacheKey);
+      if (cached !== undefined) return cached;
+    }
     await this.rateLimiter.acquire();
-    return this.api.money_movements.getMoneyMovementGroupsByMonth(budgetId, month);
+    const response = await fetchGroups();
+    if (cacheable) this.cache.set(cacheKey, response);
+    return response;
   }
 }

@@ -31,6 +31,7 @@ describe('handleListMoneyMovementGroups', () => {
       group_created_at: '2024-01-15T10:00:00Z',
       note: 'January rebalancing',
       has_performed_by_user: true,
+      performed_by_user_id: '3f25...3301',
     });
     expect(mockClient.getMoneyMovementGroupsByMonth).not.toHaveBeenCalled();
   });
