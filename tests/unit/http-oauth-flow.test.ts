@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHash, randomBytes } from 'node:crypto';
+import { createRequire } from 'node:module';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { Storage } from '../../src/storage/types.js';
@@ -54,6 +55,7 @@ import { cookieHeaderFrom } from './helpers/consent-cookie.js';
 
 const PUBLIC_URL = 'https://mcp.example.com';
 const RESOURCE = `${PUBLIC_URL}/mcp`;
+const pkg = createRequire(import.meta.url)('../../package.json') as { version: string };
 const METADATA_URL = `${PUBLIC_URL}/.well-known/oauth-protected-resource/mcp`;
 const CALLBACK = 'https://client.example/cb';
 const YNAB_CALLBACK = `${PUBLIC_URL}/oauth/ynab/callback`;
@@ -292,7 +294,8 @@ async function initialize(accessToken: string): Promise<string> {
     },
   });
   expect(res.status).toBe(200);
-  expect(rpcMessage(res)['result']['serverInfo']['name']).toBe('ynab-mcp-server');
+  // The version, not the name: a rename of serverInfo must not break this flow test.
+  expect(rpcMessage(res)['result']['serverInfo']['version']).toBe(pkg.version);
   const sessionId = res.headers['mcp-session-id'] as string;
   expect(sessionId).toBeTruthy();
   const ack = await mcp('post', accessToken, sessionId).send({
@@ -383,7 +386,9 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     expect(await listTools(tokens.access, sessionId)).toEqual(ALL_TOOLS);
     expect(handle.sessions.size).toBe(1);
 
-    // A read tool reaches YNAB with the user's access token.
+    // A read tool reaches YNAB with the user's access token. The token from the
+    // code exchange is not cached, so the first call refreshes (ynab-access-1);
+    // this pins today's behaviour, not a requirement.
     const first = await callTool(tokens.access, sessionId, 'ynab_list_budgets');
     expect(first.isError).toBe(false);
     expect(JSON.parse(first.text).budgets).toEqual([expect.objectContaining({ id: 'plan-1', name: 'Household' })]);
@@ -456,6 +461,7 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
       name: 'Sneaky',
     });
     expect(write.isError).toBe(true);
+    expect(JSON.parse(write.text).type).toBe('read_only_mode');
     expect(fetchMock).not.toHaveBeenCalled();
 
     const widen = await tokenRequest({
@@ -504,36 +510,40 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     expect(refused.status).toBe(302);
     expect(new URL(refused.headers['location'] as string).searchParams.get('error')).toBe('invalid_target');
 
-    // ...so plant a token a misconfigured or older server could have issued.
+    // ...so plant a token a misconfigured or older server could have issued,
+    // next to a twin that differs only in its resource.
     const good = await connect('read-write');
-    await created.storage?.saveAccessToken({
-      token: 'foreign-access-token',
-      clientId: good.clientId,
-      userId: ynabUserId,
-      scopes: ['read-only', 'read-write'],
-      expiresAt: Date.now() + 3600_000,
-      resource: 'https://other.example.com/mcp',
-      grantedScope: 'read-write',
-    });
+    expect(created.storage).toBeDefined();
+    const planted = (token: string, resource: string) =>
+      created.storage!.saveAccessToken({
+        token,
+        clientId: good.clientId,
+        userId: ynabUserId,
+        scopes: ['read-only', 'read-write'],
+        expiresAt: Date.now() + 3600_000,
+        resource,
+        grantedScope: 'read-write',
+      });
+    await planted('foreign-access-token', 'https://other.example.com/mcp');
+    await planted('twin-access-token', RESOURCE);
 
-    const res = await mcp('post', 'foreign-access-token').send({
+    const init = {
       jsonrpc: '2.0',
       id: 1,
       method: 'initialize',
       params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '0' } },
-    });
+    };
+    const res = await mcp('post', 'foreign-access-token').send(init);
     expect(res.status).toBe(401);
     expect(res.headers['www-authenticate']).toContain('error="invalid_token"');
     expect(res.headers['www-authenticate']).toContain(`resource_metadata="${METADATA_URL}"`);
     expect(JSON.stringify(res.body)).not.toContain('foreign-access-token');
     expect(handle.sessions.size).toBe(0);
 
-    // The same grant's real token is accepted.
-    expect((await mcp('post', good.access).send({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '0' } },
-    })).status).toBe(200);
+    // The twin with this server's resource is accepted, so the resource is the
+    // only difference between the 401 and the 200.
+    expect((await mcp('post', 'twin-access-token').send(init)).status).toBe(200);
+    // And so is the grant's real token.
+    expect((await mcp('post', good.access).send(init)).status).toBe(200);
   });
 });
