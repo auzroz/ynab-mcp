@@ -11,6 +11,18 @@ import { ReadOnlyModeError, YnabApiError } from '../utils/errors.js';
 import { getAuditLog, type AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { isBudgetIdSentinel } from '../utils/schemas.js';
+import { DeltaCache, type Snapshot } from './delta-cache.js';
+import {
+  DeltaMergeError,
+  countCategoryEntities,
+  countTransactionEntities,
+  mergeBy,
+  mergeById,
+  mergeCategoryGroups,
+  mergeTransactions,
+  orderLike,
+  withoutDeletedSubtransactions,
+} from './delta-merge.js';
 
 // TEMPORARY WORKAROUND: the ynab SDK (4.5.0) drops `goal_frequency` when it
 // serializes SaveCategory/NewCategory/ExistingCategory, so requests carrying it
@@ -93,6 +105,159 @@ export interface ScopedTransactionOptions {
   lastKnowledgeOfServer?: number | undefined;
 }
 
+/** Query options for the budget-wide and month transaction endpoints. */
+export interface TransactionListOptions {
+  sinceDate?: string | undefined;
+  /** Inclusive upper bound (ynab SDK 4.5+); undefined means no upper bound. */
+  untilDate?: string | undefined;
+  type?: 'uncategorized' | 'unapproved' | undefined;
+  /**
+   * Caller's delta cursor: when set, the response holds only what changed since
+   * this knowledge (deleted entities with deleted: true), straight from YNAB.
+   */
+  lastKnowledgeOfServer?: number | undefined;
+}
+
+/** Options for list reads of resources without query filters (accounts, categories, ...). */
+export interface DeltaReadOptions {
+  /** Caller's delta cursor; see TransactionListOptions.lastKnowledgeOfServer. */
+  lastKnowledgeOfServer?: number | undefined;
+}
+
+/** Any list response: its data carries the server_knowledge it reflects. */
+interface KnowledgeResponse {
+  data: { server_knowledge?: number | undefined };
+}
+
+/** How one list endpoint is read through the delta snapshot store (see snapshotRead). */
+interface SnapshotRead<R extends KnowledgeResponse> {
+  budgetId: string;
+  /** Endpoint name, as used by the server-knowledge key. */
+  resource: string;
+  /** Request parameters that change the result set (part of every key). */
+  params?: Record<string, string | undefined>;
+  /** TTL cache key, for resources served from the TTL cache between refreshes. */
+  ttlKey?: string;
+  /**
+   * Extra snapshot-key part for results that depend on the date: YNAB's
+   * default 12-month window moves daily, so such snapshots are per UTC day.
+   */
+  window?: string;
+  /** false when the query must always be fetched in full (see snapshotKey). */
+  snapshot?: boolean;
+  /** The caller's delta cursor (since_server_knowledge), if any. */
+  cursor?: number | undefined;
+  /**
+   * Send this endpoint's request (taking a rate-limit token is the caller's
+   * job); lastKnowledgeOfServer undefined means a full fetch.
+   */
+  fetch: (lastKnowledgeOfServer: number | undefined) => Promise<R>;
+  /**
+   * Bring a snapshot up to date: the full result as of a newer knowledge, or
+   * undefined when it can't be done exactly (then a full fetch follows). Takes
+   * its own rate-limit tokens; throws DeltaMergeError for a delta that doesn't
+   * apply.
+   */
+  refresh: (base: R, knowledge: number) => Promise<R | undefined>;
+  /**
+   * Apply a delta of this same endpoint to a full result, for endpoints whose
+   * deltas are complete (no query filters). The cursor path uses it to keep the
+   * snapshot current with the caller's delta.
+   */
+  merge?: ((base: R, delta: R) => R) | undefined;
+  /** A copy whose arrays the caller can't reach (tools sort results in place). */
+  copy: (response: R) => R;
+  /** Entity count, for the snapshot store's memory bound. */
+  size: (response: R) => number;
+}
+
+function isKnowledge(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Shallow copy of a response with some data fields replaced. */
+function withData<R extends { data: object }>(response: R, data: Partial<R['data']>): R {
+  return { ...response, data: { ...response.data, ...data } };
+}
+
+interface FilterableTransaction {
+  date: string;
+  approved: boolean;
+  account_id?: string;
+}
+
+/** Days either side of the estimated default-window start that count as ambiguous. */
+const DEFAULT_WINDOW_MARGIN_DAYS = 3;
+
+function addDays(isoDate: string, days: number): string {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * A transaction query's filters in local form, used to place each transaction
+ * of the budget's change feed into or out of a snapshot.
+ * - `core(t)`: the filters that can be checked exactly from the transaction
+ *   (since/until dates, month, unapproved, account);
+ * - `keep(t)`: whether `t` belongs in the result (core plus YNAB's default
+ *   12-month window when there is no since_date);
+ * - `ambiguous(t)`: membership can't be told locally (the "uncategorized"
+ *   type, or a date too close to the default window's start, whose exact day
+ *   depends on YNAB's clock). A refresh that meets an ambiguous change that
+ *   could concern the snapshot falls back to a full fetch.
+ */
+interface TransactionQueryModel {
+  core: (t: FilterableTransaction) => boolean;
+  keep: (t: FilterableTransaction) => boolean;
+  ambiguous: (t: FilterableTransaction) => boolean;
+}
+
+function transactionQueryModel(
+  q: {
+    sinceDate?: string | undefined;
+    untilDate?: string | undefined;
+    type?: 'uncategorized' | 'unapproved' | undefined;
+    month?: string | undefined;
+    accountId?: string | undefined;
+  },
+  today: string
+): TransactionQueryModel {
+  const checks: Array<(t: FilterableTransaction) => boolean> = [];
+  const { sinceDate: since, untilDate: until, accountId } = q;
+  if (since !== undefined) checks.push((t) => t.date >= since);
+  if (until !== undefined) checks.push((t) => t.date <= until);
+  const month = q.month;
+  if (month !== undefined) {
+    const prefix = month.slice(0, 8); // "YYYY-MM-"
+    checks.push((t) => t.date.startsWith(prefix));
+  }
+  if (q.type === 'unapproved') checks.push((t) => !t.approved);
+  if (accountId !== undefined) checks.push((t) => t.account_id === accountId);
+  const core = (t: FilterableTransaction): boolean => checks.every((check) => check(t));
+
+  const ambiguities: Array<(t: FilterableTransaction) => boolean> = [];
+  if (q.type === 'uncategorized') ambiguities.push(() => true);
+  let keep = core;
+  if (since === undefined) {
+    // YNAB defaults since_date to about a year ago (API 1.85+).
+    const d = new Date(`${today}T00:00:00Z`);
+    d.setUTCFullYear(d.getUTCFullYear() - 1);
+    const windowStart = d.toISOString().slice(0, 10);
+    const low = addDays(windowStart, -DEFAULT_WINDOW_MARGIN_DAYS);
+    const high = addDays(windowStart, DEFAULT_WINDOW_MARGIN_DAYS);
+    if (month === undefined) {
+      keep = (t) => core(t) && t.date >= windowStart;
+      ambiguities.push((t) => t.date >= low && t.date <= high);
+    } else if (month < high) {
+      // Whether the default window applies to the month endpoint isn't
+      // documented; it can only matter for a month that reaches back to it.
+      ambiguities.push(() => true);
+    }
+  }
+  return { core, keep, ambiguous: (t) => ambiguities.some((a) => a(t)) };
+}
+
 export class YnabClient {
   private readonly api: ynab.API;
   // Only used by the goal_frequency direct-call workaround; never logged.
@@ -102,6 +267,7 @@ export class YnabClient {
   private readonly defaultBudgetId: string;
   private readonly readOnly: boolean;
   private readonly auditLog: AuditLog;
+  private readonly deltaCache: DeltaCache;
 
   // Track server knowledge for delta sync. Keyed by budget, resource and any
   // request parameters that change the result set (see knowledgeKey), because a
@@ -117,7 +283,10 @@ export class YnabClient {
     // Injected per-instance audit log. Defaults to the process-wide singleton so
     // single-user (stdio) usage is unchanged; multi-tenant callers pass a
     // per-user instance so one user's write history never leaks to another.
-    auditLog: AuditLog = getAuditLog()
+    auditLog: AuditLog = getAuditLog(),
+    // Delta-sync snapshots. Per user like the cache (HTTP sessions of one user
+    // share it); a client built without one gets its own.
+    deltaCache: DeltaCache = new DeltaCache()
   ) {
     if (typeof accessToken === 'string') {
       this.api = new ynab.API(accessToken);
@@ -140,6 +309,7 @@ export class YnabClient {
     this.defaultBudgetId = defaultBudgetId ?? 'last-used';
     this.readOnly = readOnly;
     this.auditLog = auditLog;
+    this.deltaCache = deltaCache;
   }
 
   /**
@@ -235,6 +405,198 @@ export class YnabClient {
     params?: Record<string, string | undefined>
   ): void {
     this.serverKnowledge.set(this.knowledgeKey(budgetId, resource, params), knowledge);
+  }
+
+  // ==================== Delta sync ====================
+
+  /**
+   * Snapshot-store key for a read, or undefined when the query must always be
+   * fetched in full: budget aliases ("last-used", "default") can point at a
+   * different budget over time, and a delta from one budget merged into
+   * another's entities would corrupt the result.
+   */
+  private snapshotKey<R extends KnowledgeResponse>(spec: SnapshotRead<R>): string | undefined {
+    if (spec.snapshot === false || isBudgetIdSentinel(spec.budgetId)) return undefined;
+    return JSON.stringify([this.knowledgeKey(spec.budgetId, spec.resource, spec.params), spec.window ?? '']);
+  }
+
+  /** UTC day, for SnapshotRead.window. */
+  private snapshotDay(): string {
+    return new Date(this.deltaCache.now()).toISOString().slice(0, 10);
+  }
+
+  /**
+   * Read a list endpoint through the TTL cache and the delta snapshot store.
+   *
+   * 1. A TTL cache hit is returned as before (resources that have a TTL key).
+   * 2. Otherwise, with a snapshot for this exact query, YNAB is asked only for
+   *    what changed since the snapshot's knowledge and the delta is merged into
+   *    it; the merged FULL result is returned and becomes the new snapshot.
+   * 3. With no snapshot, or when the delta can't be trusted (no or backwards
+   *    server_knowledge, a merge that doesn't apply, a failed request), the
+   *    snapshot is dropped and the endpoint is fetched in full.
+   *
+   * Callers always get the complete set a full fetch would return. Writes drop
+   * the TTL entry (and bump the cache generation) but leave the snapshot, so the
+   * next read is a small delta. The generation guards only the TTL store: a read
+   * that started before a write must not cache its result. Snapshots don't need
+   * that guard, since they are ordered by server_knowledge (DeltaCache.offer)
+   * and every read refreshes one from YNAB before using it.
+   */
+  private async snapshotRead<R extends KnowledgeResponse>(spec: SnapshotRead<R>): Promise<R> {
+    if (spec.cursor !== undefined) return this.cursorRead(spec, spec.cursor);
+
+    if (spec.ttlKey !== undefined) {
+      const cached = this.cache.get<R>(spec.ttlKey);
+      if (cached !== undefined) return cached;
+    }
+
+    const generation = this.cache.generation();
+    const key = this.snapshotKey(spec);
+    const base = key === undefined ? undefined : this.deltaCache.get<R>(key);
+    let response: R | undefined;
+    if (key !== undefined && base !== undefined) {
+      response = await this.refreshSnapshot(spec, key, base);
+    }
+    if (response === undefined) {
+      await this.rateLimiter.acquire();
+      response = await spec.fetch(undefined);
+      const knowledge = response.data.server_knowledge;
+      if (key !== undefined && isKnowledge(knowledge)) {
+        this.storeSnapshot(spec, key, response, knowledge, this.deltaCache.now());
+      }
+    }
+
+    this.recordKnowledge(spec, response);
+    if (spec.ttlKey !== undefined && generation === this.cache.generation()) {
+      this.cache.set(spec.ttlKey, response);
+    }
+    return response;
+  }
+
+  /** Step 2 of snapshotRead; undefined means "fall back to a full fetch". */
+  private async refreshSnapshot<R extends KnowledgeResponse>(
+    spec: SnapshotRead<R>,
+    key: string,
+    base: Snapshot<R>
+  ): Promise<R | undefined> {
+    let merged: R | undefined;
+    try {
+      merged = await spec.refresh(base.data, base.knowledge);
+    } catch (error) {
+      // Whatever went wrong, the next read starts over with a full fetch.
+      this.deltaCache.delete(key, base);
+      if (error instanceof DeltaMergeError) return undefined;
+      throw error;
+    }
+    const knowledge = merged?.data.server_knowledge;
+    if (merged === undefined || !isKnowledge(knowledge) || knowledge < base.knowledge) {
+      this.deltaCache.delete(key, base);
+      return undefined;
+    }
+    this.storeSnapshot(spec, key, merged, knowledge, base.baseFetchedAt, base);
+    return merged;
+  }
+
+  /**
+   * A caller-supplied cursor: return YNAB's delta for it as is (never cached).
+   * When the store holds a snapshot whose knowledge is at or after the cursor,
+   * the same delta also covers everything changed since the snapshot, so it is
+   * merged in to keep the snapshot current at no extra request.
+   */
+  private async cursorRead<R extends KnowledgeResponse>(spec: SnapshotRead<R>, cursor: number): Promise<R> {
+    await this.rateLimiter.acquire();
+    const response = await spec.fetch(cursor);
+    const knowledge = response.data.server_knowledge;
+    const key = this.snapshotKey(spec);
+    const merge = spec.merge;
+    if (key !== undefined && merge !== undefined && isKnowledge(knowledge)) {
+      const base = this.deltaCache.get<R>(key);
+      if (base !== undefined && cursor <= base.knowledge && knowledge >= base.knowledge) {
+        try {
+          this.storeSnapshot(spec, key, merge(base.data, response), knowledge, base.baseFetchedAt, base);
+        } catch (error) {
+          if (!(error instanceof DeltaMergeError)) throw error;
+          this.deltaCache.delete(key, base);
+        }
+      }
+    }
+    this.recordKnowledge(spec, response);
+    return response;
+  }
+
+  private storeSnapshot<R extends KnowledgeResponse>(
+    spec: SnapshotRead<R>,
+    key: string,
+    response: R,
+    knowledge: number,
+    baseFetchedAt: number,
+    base?: Snapshot<R>
+  ): void {
+    const data = spec.copy(response);
+    this.deltaCache.offer(key, { data, knowledge, entities: spec.size(data), baseFetchedAt }, base);
+  }
+
+  private recordKnowledge<R extends KnowledgeResponse>(spec: SnapshotRead<R>, response: R): void {
+    const knowledge = response.data.server_knowledge;
+    if (knowledge !== undefined) {
+      this.updateServerKnowledge(spec.budgetId, knowledge, spec.resource, spec.params);
+    }
+  }
+
+  /**
+   * Drop TTL entries a write changes, bumping the generation so a read already
+   * in flight (in any of the user's sessions) can't put its pre-write result
+   * back. Called before the write, as before, and again once it has finished,
+   * which also covers a read that started while the write was in flight.
+   * Snapshots are left alone: the next read refreshes them with a delta.
+   */
+  private invalidateCached(...keys: string[]): void {
+    this.cache.bumpGeneration();
+    for (const key of keys) this.cache.delete(key);
+  }
+
+  /**
+   * SnapshotRead fields for an endpoint without query filters (accounts,
+   * categories, months, payees, scheduled transactions): its own delta is
+   * complete, so a refresh is one delta request merged into the snapshot.
+   */
+  private endpointDelta<R extends KnowledgeResponse>(
+    fetch: (lastKnowledgeOfServer: number | undefined) => Promise<R>,
+    merge: (base: R, delta: R) => R
+  ): Pick<SnapshotRead<R>, 'fetch' | 'refresh' | 'merge'> {
+    return {
+      fetch,
+      merge,
+      refresh: async (base, knowledge) => {
+        await this.rateLimiter.acquire();
+        const delta = await fetch(knowledge);
+        return isKnowledge(delta.data.server_knowledge) ? merge(base, delta) : undefined;
+      },
+    };
+  }
+
+  /**
+   * Every transaction in the budget changed since `knowledge` (deleted ones
+   * with deleted: true): the budget-wide endpoint from the budget's first
+   * month, with no other filter. Transaction snapshots are refreshed from this
+   * rather than from their own endpoint's delta, because a filtered delta
+   * (account, category, payee, type, dates) need not report a transaction that
+   * changed so that it no longer matches (approved, re-categorized, re-dated),
+   * which would leave it behind in the snapshot. Undefined when the first month
+   * is unknown.
+   */
+  private async transactionChangeFeed(
+    budgetId: string,
+    knowledge: number
+  ): Promise<{ firstMonth: string; transactions: ynab.TransactionDetail[]; knowledge: number } | undefined> {
+    const firstMonth = await this.getBudgetFirstMonth(budgetId);
+    if (firstMonth === undefined) return undefined;
+    await this.rateLimiter.acquire();
+    const delta = await this.api.transactions.getTransactions(budgetId, firstMonth, undefined, undefined, knowledge);
+    const next = delta.data.server_knowledge;
+    if (!isKnowledge(next) || !Array.isArray(delta.data.transactions)) return undefined;
+    return { firstMonth, transactions: delta.data.transactions, knowledge: next };
   }
 
   // ==================== User ====================
@@ -341,15 +703,20 @@ export class YnabClient {
 
   // ==================== Accounts ====================
 
-  async getAccounts(budgetId: string): Promise<ynab.AccountsResponse> {
-    const cacheKey = `accounts:${budgetId}`;
-    const cached = this.cache.get<ynab.AccountsResponse>(cacheKey);
-    if (cached !== undefined) return cached;
-
-    await this.rateLimiter.acquire();
-    const response = await this.api.accounts.getAccounts(budgetId);
-    this.cache.set(cacheKey, response);
-    return response;
+  /** All accounts (TTL cached, delta refreshed; see snapshotRead). */
+  async getAccounts(budgetId: string, options?: DeltaReadOptions): Promise<ynab.AccountsResponse> {
+    return this.snapshotRead<ynab.AccountsResponse>({
+      budgetId,
+      resource: 'accounts',
+      ttlKey: `accounts:${budgetId}`,
+      cursor: options?.lastKnowledgeOfServer,
+      ...this.endpointDelta(
+        (knowledge) => this.api.accounts.getAccounts(budgetId, knowledge),
+        (base, delta) => withData(delta, { accounts: mergeById(base.data.accounts, delta.data.accounts) })
+      ),
+      copy: (r) => withData(r, { accounts: r.data.accounts.slice() }),
+      size: (r) => r.data.accounts.length,
+    });
   }
 
   async getAccountById(budgetId: string, accountId: string): Promise<ynab.AccountResponse> {
@@ -365,9 +732,8 @@ export class YnabClient {
     await this.rateLimiter.acquire();
     // Invalidate accounts cache after creating
     // Also invalidate budgets cache since getBudgets(true) includes account data
-    this.cache.delete(`accounts:${budgetId}`);
     // Only invalidate budgets:true since getBudgets(false) doesn't include account data
-    this.cache.delete('budgets:true');
+    this.invalidateCached(`accounts:${budgetId}`, 'budgets:true');
 
     const auditLog = this.auditLog;
     try {
@@ -393,20 +759,33 @@ export class YnabClient {
         error: sanitizeErrorMessage(error),
       });
       throw error;
+    } finally {
+      this.invalidateCached(`accounts:${budgetId}`, 'budgets:true');
     }
   }
 
   // ==================== Categories ====================
 
-  async getCategories(budgetId: string): Promise<ynab.CategoriesResponse> {
-    const cacheKey = `categories:${budgetId}`;
-    const cached = this.cache.get<ynab.CategoriesResponse>(cacheKey);
-    if (cached !== undefined) return cached;
-
-    await this.rateLimiter.acquire();
-    const response = await this.api.categories.getCategories(budgetId);
-    this.cache.set(cacheKey, response);
-    return response;
+  /** All category groups with their categories (TTL cached, delta refreshed). */
+  async getCategories(budgetId: string, options?: DeltaReadOptions): Promise<ynab.CategoriesResponse> {
+    return this.snapshotRead<ynab.CategoriesResponse>({
+      budgetId,
+      resource: 'categories',
+      ttlKey: `categories:${budgetId}`,
+      cursor: options?.lastKnowledgeOfServer,
+      ...this.endpointDelta(
+        (knowledge) => this.api.categories.getCategories(budgetId, knowledge),
+        (base, delta) =>
+          withData(delta, {
+            category_groups: mergeCategoryGroups(base.data.category_groups, delta.data.category_groups),
+          })
+      ),
+      copy: (r) =>
+        withData(r, {
+          category_groups: r.data.category_groups.map((g) => ({ ...g, categories: g.categories.slice() })),
+        }),
+      size: (r) => countCategoryEntities(r.data.category_groups),
+    });
   }
 
   async getCategoryById(budgetId: string, categoryId: string): Promise<ynab.CategoryResponse> {
@@ -432,7 +811,7 @@ export class YnabClient {
     this.assertWriteAllowed('updateMonthCategory');
     await this.rateLimiter.acquire();
     // Invalidate categories cache after updating
-    this.cache.delete(`categories:${budgetId}`);
+    this.invalidateCached(`categories:${budgetId}`);
 
     const auditLog = this.auditLog;
     try {
@@ -459,6 +838,8 @@ export class YnabClient {
         error: sanitizeErrorMessage(error),
       });
       throw error;
+    } finally {
+      this.invalidateCached(`categories:${budgetId}`);
     }
   }
 
@@ -475,7 +856,7 @@ export class YnabClient {
     this.assertWriteAllowed('updateCategory');
     await this.rateLimiter.acquire();
     // Invalidate categories cache after updating (names, groups and targets all change)
-    this.cache.delete(`categories:${budgetId}`);
+    this.invalidateCached(`categories:${budgetId}`);
 
     const auditLog = this.auditLog;
     try {
@@ -513,6 +894,8 @@ export class YnabClient {
         error: sanitizeErrorMessage(error),
       });
       throw error;
+    } finally {
+      this.invalidateCached(`categories:${budgetId}`);
     }
   }
 
@@ -554,7 +937,7 @@ export class YnabClient {
     this.assertWriteAllowed('createCategory');
     await this.rateLimiter.acquire();
     // Invalidate categories cache after creating
-    this.cache.delete(`categories:${budgetId}`);
+    this.invalidateCached(`categories:${budgetId}`);
 
     const auditLog = this.auditLog;
     try {
@@ -588,6 +971,8 @@ export class YnabClient {
         error: sanitizeErrorMessage(error),
       });
       throw error;
+    } finally {
+      this.invalidateCached(`categories:${budgetId}`);
     }
   }
 
@@ -598,7 +983,7 @@ export class YnabClient {
     this.assertWriteAllowed('createCategoryGroup');
     await this.rateLimiter.acquire();
     // Invalidate categories cache after creating (groups are returned with categories)
-    this.cache.delete(`categories:${budgetId}`);
+    this.invalidateCached(`categories:${budgetId}`);
 
     const auditLog = this.auditLog;
     try {
@@ -624,6 +1009,8 @@ export class YnabClient {
         error: sanitizeErrorMessage(error),
       });
       throw error;
+    } finally {
+      this.invalidateCached(`categories:${budgetId}`);
     }
   }
 
@@ -635,7 +1022,7 @@ export class YnabClient {
     this.assertWriteAllowed('updateCategoryGroup');
     await this.rateLimiter.acquire();
     // Invalidate categories cache after updating
-    this.cache.delete(`categories:${budgetId}`);
+    this.invalidateCached(`categories:${budgetId}`);
 
     const auditLog = this.auditLog;
     try {
@@ -666,72 +1053,101 @@ export class YnabClient {
         error: sanitizeErrorMessage(error),
       });
       throw error;
+    } finally {
+      this.invalidateCached(`categories:${budgetId}`);
     }
   }
 
   // ==================== Transactions ====================
 
-  async getTransactions(
-    budgetId: string,
-    options?: {
-      sinceDate?: string;
-      /** Inclusive upper bound (ynab SDK 4.5+); undefined means no upper bound. */
-      untilDate?: string;
-      type?: 'uncategorized' | 'unapproved';
-      lastKnowledgeOfServer?: number;
-    }
-  ): Promise<ynab.TransactionsResponse> {
-    await this.rateLimiter.acquire();
-    const response = await this.api.transactions.getTransactions(
-      budgetId,
-      options?.sinceDate,
-      options?.untilDate,
-      options?.type,
-      options?.lastKnowledgeOfServer
+  /**
+   * Budget transactions. Not TTL cached: every read asks YNAB, as a delta
+   * against this query's snapshot when there is one (see snapshotRead).
+   */
+  async getTransactions(budgetId: string, options?: TransactionListOptions): Promise<ynab.TransactionsResponse> {
+    return this.transactionListRead(budgetId, 'transactions', {}, options, (knowledge) =>
+      this.api.transactions.getTransactions(
+        budgetId,
+        options?.sinceDate,
+        options?.untilDate,
+        options?.type,
+        knowledge
+      )
     );
-
-    if (response.data.server_knowledge !== undefined) {
-      this.updateServerKnowledge(budgetId, response.data.server_knowledge, 'transactions', {
-        sinceDate: options?.sinceDate,
-        untilDate: options?.untilDate,
-        type: options?.type,
-      });
-    }
-
-    return response;
   }
 
-  /** Transactions for one plan month (YYYY-MM-01 or "current"). Not cached, like getTransactions. */
+  /** Transactions for one plan month (YYYY-MM-01 or "current"). Not TTL cached, like getTransactions. */
   async getTransactionsByMonth(
     budgetId: string,
     month: string,
-    options?: {
-      sinceDate?: string;
-      untilDate?: string;
-      type?: 'uncategorized' | 'unapproved';
-      lastKnowledgeOfServer?: number;
-    }
+    options?: TransactionListOptions
   ): Promise<ynab.TransactionsResponse> {
-    await this.rateLimiter.acquire();
-    const response = await this.api.transactions.getTransactionsByMonth(
-      budgetId,
-      month,
-      options?.sinceDate,
-      options?.untilDate,
-      options?.type,
-      options?.lastKnowledgeOfServer
-    );
-
-    if (response.data.server_knowledge !== undefined) {
-      this.updateServerKnowledge(budgetId, response.data.server_knowledge, 'transactions-by-month', {
+    return this.transactionListRead(budgetId, 'transactions-by-month', { month }, options, (knowledge) =>
+      this.api.transactions.getTransactionsByMonth(
+        budgetId,
         month,
+        options?.sinceDate,
+        options?.untilDate,
+        options?.type,
+        knowledge
+      )
+    );
+  }
+
+  /**
+   * Shared snapshotRead spec for the TransactionDetail list endpoints (budget,
+   * month, account). The key holds the scope and every filter; queries without
+   * since_date get YNAB's moving 12-month default, so their snapshots are per
+   * UTC day, and "current" month (whose meaning moves too) is never kept.
+   * Refreshes apply the budget's change feed through the query's local model
+   * (see transactionQueryModel and transactionChangeFeed).
+   */
+  private transactionListRead(
+    budgetId: string,
+    resource: string,
+    scope: { month?: string; id?: string },
+    options: TransactionListOptions | undefined,
+    fetch: (knowledge: number | undefined) => Promise<ynab.TransactionsResponse>
+  ): Promise<ynab.TransactionsResponse> {
+    const today = this.snapshotDay();
+    const model = transactionQueryModel(
+      {
         sinceDate: options?.sinceDate,
         untilDate: options?.untilDate,
         type: options?.type,
-      });
-    }
-
-    return response;
+        month: scope.month,
+        accountId: resource === 'account-transactions' ? scope.id : undefined,
+      },
+      today
+    );
+    return this.snapshotRead<ynab.TransactionsResponse>({
+      budgetId,
+      resource,
+      params: { ...scope, sinceDate: options?.sinceDate, untilDate: options?.untilDate, type: options?.type },
+      ...(options?.sinceDate === undefined ? { window: today } : {}),
+      snapshot: scope.month === undefined || /^\d{4}-\d{2}-01$/.test(scope.month),
+      cursor: options?.lastKnowledgeOfServer,
+      fetch,
+      refresh: async (base, knowledge) => {
+        const feed = await this.transactionChangeFeed(budgetId, knowledge);
+        if (feed === undefined) return undefined;
+        const held = new Set<string>();
+        for (const t of base.data.transactions) {
+          // The feed starts at the first month; anything older means it isn't complete.
+          if (t.date < feed.firstMonth) return undefined;
+          held.add(t.id);
+        }
+        for (const t of feed.transactions) {
+          if (t.deleted !== true && model.ambiguous(t) && (held.has(t.id) || model.core(t))) return undefined;
+        }
+        return withData(base, {
+          transactions: mergeTransactions(base.data.transactions, feed.transactions, model.keep),
+          server_knowledge: feed.knowledge,
+        });
+      },
+      copy: (r) => withData(r, { transactions: r.data.transactions.slice() }),
+      size: (r) => countTransactionEntities(r.data.transactions),
+    });
   }
 
   async getTransactionById(
@@ -950,17 +1366,16 @@ export class YnabClient {
     accountId: string,
     options?: ScopedTransactionOptions
   ): Promise<ynab.TransactionsResponse> {
-    await this.rateLimiter.acquire();
-    const response = await this.api.transactions.getTransactionsByAccount(
-      budgetId,
-      accountId,
-      options?.sinceDate,
-      options?.untilDate,
-      options?.type,
-      options?.lastKnowledgeOfServer
+    return this.transactionListRead(budgetId, 'account-transactions', { id: accountId }, options, (knowledge) =>
+      this.api.transactions.getTransactionsByAccount(
+        budgetId,
+        accountId,
+        options?.sinceDate,
+        options?.untilDate,
+        options?.type,
+        knowledge
+      )
     );
-    this.recordScopedKnowledge(budgetId, 'account-transactions', accountId, response, options);
-    return response;
   }
 
   /** Transactions for one category. `type` filters to unapproved/uncategorized transactions. */
@@ -969,17 +1384,16 @@ export class YnabClient {
     categoryId: string,
     options?: ScopedTransactionOptions
   ): Promise<ynab.HybridTransactionsResponse> {
-    await this.rateLimiter.acquire();
-    const response = await this.api.transactions.getTransactionsByCategory(
-      budgetId,
-      categoryId,
-      options?.sinceDate,
-      options?.untilDate,
-      options?.type,
-      options?.lastKnowledgeOfServer
+    return this.hybridListRead(budgetId, 'category-transactions', categoryId, options, (knowledge) =>
+      this.api.transactions.getTransactionsByCategory(
+        budgetId,
+        categoryId,
+        options?.sinceDate,
+        options?.untilDate,
+        options?.type,
+        knowledge
+      )
     );
-    this.recordScopedKnowledge(budgetId, 'category-transactions', categoryId, response, options);
-    return response;
   }
 
   /** Transactions for one payee. `type` filters to unapproved/uncategorized transactions. */
@@ -988,45 +1402,92 @@ export class YnabClient {
     payeeId: string,
     options?: ScopedTransactionOptions
   ): Promise<ynab.HybridTransactionsResponse> {
-    await this.rateLimiter.acquire();
-    const response = await this.api.transactions.getTransactionsByPayee(
-      budgetId,
-      payeeId,
-      options?.sinceDate,
-      options?.untilDate,
-      options?.type,
-      options?.lastKnowledgeOfServer
+    return this.hybridListRead(budgetId, 'payee-transactions', payeeId, options, (knowledge) =>
+      this.api.transactions.getTransactionsByPayee(
+        budgetId,
+        payeeId,
+        options?.sinceDate,
+        options?.untilDate,
+        options?.type,
+        knowledge
+      )
     );
-    this.recordScopedKnowledge(budgetId, 'payee-transactions', payeeId, response, options);
-    return response;
   }
 
   /**
-   * Record the delta-sync cursor for an account/category/payee transaction query.
-   * The id and every filter (including type) are part of the key, so a cursor from a
-   * filtered query is never reused for a different one.
+   * snapshotRead spec for the HybridTransaction endpoints (category, payee),
+   * where split lines are rows of their own. Keyed like transactionListRead,
+   * with the scope id and every filter. A refresh reads the budget's change
+   * feed: when no changed transaction touches this category/payee (by id, or by
+   * its or a split line's category/payee) the snapshot is returned as is at the
+   * new knowledge; otherwise the endpoint is re-read in full.
    */
-  private recordScopedKnowledge(
+  private hybridListRead(
     budgetId: string,
     resource: string,
     scopeId: string,
-    response: { data: { server_knowledge?: number } },
-    options?: ScopedTransactionOptions
-  ): void {
-    if (response.data.server_knowledge === undefined) return;
-    this.updateServerKnowledge(budgetId, response.data.server_knowledge, resource, {
-      id: scopeId,
-      sinceDate: options?.sinceDate,
-      untilDate: options?.untilDate,
-      type: options?.type,
+    options: ScopedTransactionOptions | undefined,
+    fetch: (knowledge: number | undefined) => Promise<ynab.HybridTransactionsResponse>
+  ): Promise<ynab.HybridTransactionsResponse> {
+    const field = resource === 'category-transactions' ? 'category_id' : 'payee_id';
+    return this.snapshotRead<ynab.HybridTransactionsResponse>({
+      budgetId,
+      resource,
+      params: { id: scopeId, sinceDate: options?.sinceDate, untilDate: options?.untilDate, type: options?.type },
+      ...(options?.sinceDate === undefined ? { window: this.snapshotDay() } : {}),
+      cursor: options?.lastKnowledgeOfServer,
+      fetch,
+      refresh: async (base, knowledge) => {
+        const feed = await this.transactionChangeFeed(budgetId, knowledge);
+        if (feed === undefined) return undefined;
+        const held = new Set<string>();
+        for (const row of base.data.transactions) {
+          held.add(row.id);
+          if (row.parent_transaction_id) held.add(row.parent_transaction_id);
+        }
+        const touches = feed.transactions.some(
+          (t) =>
+            held.has(t.id) ||
+            t[field] === scopeId ||
+            (t.subtransactions ?? []).some((sub) => held.has(sub.id) || sub[field] === scopeId)
+        );
+        // Untouched: nothing in this category/payee changed, so the snapshot is
+        // current as is. Touched: the rows a change produces here (split lines,
+        // their names and amounts) are YNAB's to build, so re-read in full.
+        return touches
+          ? undefined
+          : withData(base, { transactions: base.data.transactions.slice(), server_knowledge: feed.knowledge });
+      },
+      copy: (r) => withData(r, { transactions: r.data.transactions.slice() }),
+      size: (r) => r.data.transactions.length,
     });
   }
 
   // ==================== Scheduled Transactions ====================
 
-  async getScheduledTransactions(budgetId: string): Promise<ynab.ScheduledTransactionsResponse> {
-    await this.rateLimiter.acquire();
-    return this.api.scheduledTransactions.getScheduledTransactions(budgetId);
+  /** All scheduled transactions. Not TTL cached; delta refreshed on every read. */
+  async getScheduledTransactions(
+    budgetId: string,
+    options?: DeltaReadOptions
+  ): Promise<ynab.ScheduledTransactionsResponse> {
+    return this.snapshotRead<ynab.ScheduledTransactionsResponse>({
+      budgetId,
+      resource: 'scheduled-transactions',
+      cursor: options?.lastKnowledgeOfServer,
+      ...this.endpointDelta(
+        (knowledge) => this.api.scheduledTransactions.getScheduledTransactions(budgetId, knowledge),
+        (base, delta) =>
+          withData(delta, {
+            scheduled_transactions: mergeById(
+              base.data.scheduled_transactions,
+              delta.data.scheduled_transactions,
+              { prepare: withoutDeletedSubtransactions }
+            ),
+          })
+      ),
+      copy: (r) => withData(r, { scheduled_transactions: r.data.scheduled_transactions.slice() }),
+      size: (r) => countTransactionEntities(r.data.scheduled_transactions),
+    });
   }
 
   async getScheduledTransactionById(
@@ -1189,15 +1650,20 @@ export class YnabClient {
 
   // ==================== Payees ====================
 
-  async getPayees(budgetId: string): Promise<ynab.PayeesResponse> {
-    const cacheKey = `payees:${budgetId}`;
-    const cached = this.cache.get<ynab.PayeesResponse>(cacheKey);
-    if (cached !== undefined) return cached;
-
-    await this.rateLimiter.acquire();
-    const response = await this.api.payees.getPayees(budgetId);
-    this.cache.set(cacheKey, response);
-    return response;
+  /** All payees (TTL cached, delta refreshed). */
+  async getPayees(budgetId: string, options?: DeltaReadOptions): Promise<ynab.PayeesResponse> {
+    return this.snapshotRead<ynab.PayeesResponse>({
+      budgetId,
+      resource: 'payees',
+      ttlKey: `payees:${budgetId}`,
+      cursor: options?.lastKnowledgeOfServer,
+      ...this.endpointDelta(
+        (knowledge) => this.api.payees.getPayees(budgetId, knowledge),
+        (base, delta) => withData(delta, { payees: mergeById(base.data.payees, delta.data.payees) })
+      ),
+      copy: (r) => withData(r, { payees: r.data.payees.slice() }),
+      size: (r) => r.data.payees.length,
+    });
   }
 
   async getPayeeById(budgetId: string, payeeId: string): Promise<ynab.PayeeResponse> {
@@ -1212,7 +1678,7 @@ export class YnabClient {
     this.assertWriteAllowed('createPayee');
     await this.rateLimiter.acquire();
     // Invalidate payees cache after creating
-    this.cache.delete(`payees:${budgetId}`);
+    this.invalidateCached(`payees:${budgetId}`);
 
     const auditLog = this.auditLog;
     try {
@@ -1239,6 +1705,8 @@ export class YnabClient {
         error: sanitizeErrorMessage(error),
       });
       throw error;
+    } finally {
+      this.invalidateCached(`payees:${budgetId}`);
     }
   }
 
@@ -1250,7 +1718,7 @@ export class YnabClient {
     this.assertWriteAllowed('updatePayee');
     await this.rateLimiter.acquire();
     // Invalidate payees cache after updating
-    this.cache.delete(`payees:${budgetId}`);
+    this.invalidateCached(`payees:${budgetId}`);
 
     const auditLog = this.auditLog;
     try {
@@ -1278,6 +1746,8 @@ export class YnabClient {
         error: sanitizeErrorMessage(error),
       });
       throw error;
+    } finally {
+      this.invalidateCached(`payees:${budgetId}`);
     }
   }
 
@@ -1306,9 +1776,27 @@ export class YnabClient {
 
   // ==================== Months ====================
 
-  async getBudgetMonths(budgetId: string): Promise<ynab.MonthSummariesResponse> {
-    await this.rateLimiter.acquire();
-    return this.api.months.getPlanMonths(budgetId);
+  /** All plan months. Not TTL cached; delta refreshed on every read. Months are keyed by `month`. */
+  async getBudgetMonths(budgetId: string, options?: DeltaReadOptions): Promise<ynab.MonthSummariesResponse> {
+    return this.snapshotRead<ynab.MonthSummariesResponse>({
+      budgetId,
+      resource: 'months',
+      cursor: options?.lastKnowledgeOfServer,
+      ...this.endpointDelta(
+        (knowledge) => this.api.months.getPlanMonths(budgetId, knowledge),
+        (base, delta) =>
+          withData(delta, {
+            months: orderLike(
+              base.data.months,
+              mergeBy(base.data.months, delta.data.months, (m) => m.month),
+              (m) => m.month,
+              delta.data.months
+            ),
+          })
+      ),
+      copy: (r) => withData(r, { months: r.data.months.slice() }),
+      size: (r) => r.data.months.length,
+    });
   }
 
   async getBudgetMonth(budgetId: string, month: string): Promise<ynab.MonthDetailResponse> {

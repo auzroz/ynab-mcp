@@ -236,7 +236,7 @@ describe('read methods', () => {
     setResolve(mockApi.months.getPlanMonths, { data: { months: [{ month: '2020-04-01' }] } });
 
     expect(await makeClient(true).getBudgetFirstMonth('last-used')).toBe('2020-04-01');
-    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledWith('last-used');
+    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledWith('last-used', undefined);
   });
 
   it('getBudgetFirstMonth is recomputed after a transaction write', async () => {
@@ -303,7 +303,7 @@ describe('read methods', () => {
     });
 
     expect(await makeClient(true).getBudgetFirstMonth(BUDGET)).toBe('2022-07-01');
-    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledWith(BUDGET);
+    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledWith(BUDGET, undefined);
   });
 
   it('getBudgets caches separately by includeAccounts flag', async () => {
@@ -353,7 +353,7 @@ describe('read methods', () => {
     await client.getAccounts(BUDGET);
 
     expect(asMock(mockApi.accounts.getAccounts)).toHaveBeenCalledTimes(1);
-    expect(asMock(mockApi.accounts.getAccounts)).toHaveBeenCalledWith(BUDGET);
+    expect(asMock(mockApi.accounts.getAccounts)).toHaveBeenCalledWith(BUDGET, undefined);
   });
 
   it('getAccountById is not cached', async () => {
@@ -557,7 +557,8 @@ describe('read methods', () => {
     });
     await makeClient(true).getScheduledTransactions(BUDGET);
     expect(asMock(mockApi.scheduledTransactions.getScheduledTransactions)).toHaveBeenCalledWith(
-      BUDGET
+      BUDGET,
+      undefined
     );
   });
 
@@ -612,7 +613,7 @@ describe('read methods', () => {
   it('getBudgetMonths maps to months.getPlanMonths', async () => {
     setResolve(mockApi.months.getPlanMonths, { data: { months: [] } });
     await makeClient(true).getBudgetMonths(BUDGET);
-    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledWith(BUDGET);
+    expect(asMock(mockApi.months.getPlanMonths)).toHaveBeenCalledWith(BUDGET, undefined);
   });
 
   it('getBudgetMonth maps to months.getPlanMonth', async () => {

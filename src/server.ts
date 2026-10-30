@@ -49,7 +49,7 @@ export interface UserContext {
 
 /**
  * Build a session's YnabClient on the given per-user components (rate limiter,
- * cache, audit log). Without them it gets its own set (stdio, tests).
+ * cache, delta snapshots, audit log). Without them it gets its own set (stdio, tests).
  */
 export function buildYnabClient(
   ctx: UserContext,
@@ -61,7 +61,8 @@ export function buildYnabClient(
     components.rateLimiter,
     components.cache,
     ctx.readOnly,
-    components.auditLog
+    components.auditLog,
+    components.deltaCache
   );
 }
 
