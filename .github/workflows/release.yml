@@ -1,13 +1,43 @@
 name: Release
 
+# Three ways in, one publish path:
+# - A `v*.*.*` tag push is a release. Every publish job is guarded by the literal
+#   `if:` "a tag push in auzroz/ynab-mcp". The docker and npm jobs wait for an
+#   approval on the `production` environment, and only publish jobs hold
+#   `id-token: write`. Nothing publishes before `verify` has proven the tagged
+#   commit is on main or a release/* branch.
+# - A pull request that touches the release inputs runs verify, test, build and
+#   pack, and the image build for amd64 and arm64 with a better-sqlite3 load
+#   check. Those jobs use no environment, no id-token, and `contents: read`.
+# - workflow_dispatch (`dry_run`, default true) runs the same jobs as a pull
+#   request on the chosen ref. It never publishes; `dry_run: false` is refused.
+#
+# Release procedure, approvals and verification: CONTRIBUTING.md "Releases".
+# Scratch-repo rehearsal of the tag path: scripts/release-rehearsal.md.
+
 on:
   push:
     tags:
       - 'v*.*.*'
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'package*.json'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build, pack and build the images without publishing. Must stay true: only a tag push publishes.'
+        type: boolean
+        required: true
+        default: true
 
 concurrency:
-  group: release
-  cancel-in-progress: false
+  # Tag pushes queue one at a time and are never cancelled. Pull request and
+  # dispatch runs cancel the superseded run for the same ref.
+  group: ${{ github.event_name == 'push' && 'release-publish' || format('release-check-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   contents: read
@@ -17,10 +47,128 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  verify:
+    name: 'Release: Verify'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Refuse a publishing dispatch
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run }}
+        run: |
+          echo "::error::workflow_dispatch only runs dry. A release publishes only from a v*.*.* tag push in auzroz/ynab-mcp."
+          exit 1
+
+      # Full history and every branch, for the ancestry check below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: Read package version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::package.json version '$version' is not a plain semver version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches package.json and server.json
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Tag v$TAG does not match package.json version $VERSION"
+            exit 1
+          fi
+          node -e "const s=require('./server.json');const t=process.argv[1];const bad=[];if(s.version!==t)bad.push('version '+s.version);for(const p of s.packages||[]){const v=p.registryType==='oci'?String(p.identifier).split(':').pop():p.version;if(v!==t)bad.push(p.registryType+' '+v);}if(bad.length){console.error('::error::server.json differs from tag '+t+': '+bad.join(', '));process.exit(1);}" "$TAG"
+
+      # Anyone with push rights can create a tag on any commit. Only a commit
+      # that is already on main or a release/* branch (both under rulesets) may
+      # be released.
+      - name: Verify the tagged commit is on main or a release branch
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse --verify "${GITHUB_SHA}^{commit}")"
+          tagged="$(git rev-parse --verify "refs/tags/${GITHUB_REF_NAME}^{commit}")"
+          if [ "$commit" != "$tagged" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} now points at $tagged, but this run was started for $commit"
+            exit 1
+          fi
+          found=""
+          while IFS= read -r ref; do
+            case "$ref" in
+              refs/remotes/origin/main|refs/remotes/origin/release/*) ;;
+              *) continue ;;
+            esac
+            if git merge-base --is-ancestor "$commit" "$ref"; then
+              echo "Tagged commit $commit is on ${ref#refs/remotes/origin/}"
+              found="$ref"
+              break
+            fi
+          done < <(git for-each-ref --format='%(refname)' refs/remotes/origin/main refs/remotes/origin/release)
+          if [ -z "$found" ]; then
+            echo "::error::Tagged commit $commit is not on main or any release/* branch. Refusing to release."
+            exit 1
+          fi
+
   test:
-    name: Test
+    name: 'Release: Test'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: verify
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # No dependency runs code at install time. better-sqlite3 loads the
+      # prebuild shipped in its npm tarball; esbuild and fsevents are dev-only.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run type check
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+  build:
+    name: 'Release: Build and pack'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: verify
+    # No id-token: this job runs the build and holds no publishing identity.
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,48 +181,141 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
-      - name: Verify tag matches package.json version
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          PKG="$(node -p "require('./package.json').version")"
-          if [ "$TAG" != "$PKG" ]; then
-            echo "::error::Tag v$TAG does not match package.json version $PKG"
-            exit 1
-          fi
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
 
-      - name: Verify server.json versions match tag
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          node -e "const s=require('./server.json');const t=process.argv[1];const bad=[];if(s.version!==t)bad.push('version '+s.version);for(const p of s.packages||[]){const v=p.registryType==='oci'?String(p.identifier).split(':').pop():p.version;if(v!==t)bad.push(p.registryType+' '+v);}if(bad.length){console.error('::error::server.json differs from tag '+t+': '+bad.join(', '));process.exit(1);}" "$TAG"
-
-      - name: Run lint
-        run: npm run lint
-
-      - name: Run type check
-        run: npm run typecheck
-
-      - name: Run tests
-        run: npm test
+      - name: Verify better-sqlite3 loads from its prebuild
+        run: node -e "new (require('better-sqlite3'))(':memory:').close()"
 
       - name: Build
         run: npm run build
 
-  docker:
-    name: Docker
+      - name: Pack npm tarball
+        run: |
+          set -euo pipefail
+          mkdir -p release-dist
+          npm pack --ignore-scripts --pack-destination release-dist
+          tarball="release-dist/ynab-mcp-${VERSION}.tgz"
+          test -f "$tarball"
+          tar -tzf "$tarball" | grep -qx 'package/dist/index.js'
+
+      # SBOM of the production dependency tree pinned by package-lock.json: the
+      # tree the Docker image installs. npm consumers resolve their own tree
+      # within the same semver ranges.
+      - name: Generate SBOM
+        run: npm sbom --omit=dev --sbom-format spdx --package-lock-only > "release-dist/ynab-mcp-${VERSION}.spdx.json"
+
+      - name: Package skills
+        run: |
+          set -euo pipefail
+          cd skills
+          # One bundle with every skill folder at the top level (no wrapper dir),
+          # for dropping straight into a skills directory.
+          zip -qr "../release-dist/ynab-mcp-skills-v${VERSION}.zip" . -x 'README.md' -x '*.DS_Store'
+          # One zip per skill, for Claude.ai's one-at-a-time upload flow.
+          for dir in */; do
+            name="$(basename "$dir")"
+            zip -qr "../release-dist/${name}.zip" "${name}" -x '*.DS_Store'
+          done
+
+      - name: Write SHA256SUMS
+        working-directory: release-dist
+        run: |
+          set -euo pipefail
+          sha256sum -- *.tgz *.spdx.json *.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dist
+          path: release-dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  image:
+    name: 'Release: Image (${{ matrix.platform }})'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: test
+    needs: verify
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: x64
+          - platform: linux/arm64
+            arch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Same Dockerfile as the publish job, one platform at a time, without
+      # cache, loaded into the local daemon instead of pushed.
+      - name: Build image (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: ynab-mcp:release-check
+
+      - name: Verify better-sqlite3 loads in the image
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          docker run --rm --platform "$PLATFORM" --entrypoint node ynab-mcp:release-check -e "if(process.arch!==process.argv[1]){console.error('expected '+process.argv[1]+', got '+process.arch);process.exit(1)}const D=require('better-sqlite3');const db=new D(':memory:');console.log('better-sqlite3 (SQLite '+db.prepare('select sqlite_version() v').get().v+') loads on '+process.platform+'-'+process.arch);db.close()" "$ARCH"
+
+  # Publish jobs. Each runs only for a tag push in auzroz/ynab-mcp, after
+  # verify, test, build and both image checks passed. The docker job and then
+  # the npm job each wait for their own `production` approval, so the
+  # irreversible npm publish is approved last.
+
+  docker:
+    name: 'Release: Publish image'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [verify, test, build, image]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'auzroz/ynab-mcp'
+    environment: production
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Download release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist
+          path: release-dist
+
+      - name: Verify release files
+        working-directory: release-dist
+        run: sha256sum --check --strict SHA256SUMS
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -100,6 +341,7 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
 
+      # No build cache: the published image is built from the tagged source only.
       - name: Build and push Docker image
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -107,37 +349,64 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          no-cache: true
           sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
-  npm:
-    name: npm Publish
+      - name: Attest image build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          # Storage records exist only for organization-owned repositories.
+          create-storage-record: false
+
+      # actions/attest is the documented replacement for actions/attest-sbom,
+      # which is deprecated and now only wraps it.
+      - name: Attest image SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: release-dist/ynab-mcp-${{ env.VERSION }}.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+  npm-publish:
+    name: 'Release: Publish npm'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: test
+    needs: [verify, build, docker]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'auzroz/ynab-mcp'
+    # The npm trusted publisher for ynab-mcp names release.yml and this
+    # environment.
+    environment: production
     permissions:
       contents: read
       id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    # No checkout and no install: this job publishes the tarball the build job
+    # packed and runs no code from the dependency tree.
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          persist-credentials: false
+          name: release-dist
+          path: release-dist
+
+      - name: Verify release files
+        working-directory: release-dist
+        run: sha256sum --check --strict SHA256SUMS
 
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
 
       # Trusted publishing (OIDC) needs npm >= 11.5.1 and id-token: write.
       # Node 24 bundles a new enough npm; fail loudly rather than publish with an old one.
@@ -145,21 +414,46 @@ jobs:
         run: |
           node -e "const [a,b,c]=process.argv[1].split('.').map(Number);const ok=a>11||(a===11&&(b>5||(b===5&&c>=1)));if(!ok){console.error('::error::npm '+process.argv[1]+' is older than 11.5.1 (required for trusted publishing)');process.exit(1);}" "$(npm --version)"
 
+      # One provenance attestation whose subjects are every file in SHA256SUMS:
+      # the npm tarball, the SBOM and the skills zips.
+      - name: Attest release files provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: release-dist/SHA256SUMS
+
+      - name: Attest npm tarball SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-dist/ynab-mcp-${{ env.VERSION }}.tgz
+          sbom-path: release-dist/ynab-mcp-${{ env.VERSION }}.spdx.json
+
       # No NODE_AUTH_TOKEN: npm exchanges the job's OIDC token with the trusted
-      # publisher configured for this workflow on npmjs.com (first used by v0.3.5)
-      # and attaches provenance automatically.
+      # publisher configured for this workflow on npmjs.com and attaches
+      # provenance. Outside auzroz/ynab-mcp (the scratch-repo rehearsal, which
+      # edits the job guards) the publish is a dry run.
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        env:
+          TARBALL: release-dist/ynab-mcp-${{ env.VERSION }}.tgz
+        run: |
+          set -euo pipefail
+          dist_tag=latest
+          case "$VERSION" in *-*) dist_tag=next ;; esac
+          if [ "$GITHUB_REPOSITORY" = "auzroz/ynab-mcp" ]; then
+            npm publish "$TARBALL" --provenance --access public --tag "$dist_tag" --ignore-scripts
+          else
+            echo "::notice::$GITHUB_REPOSITORY is not auzroz/ynab-mcp, so npm publish runs as a dry run."
+            npm publish "$TARBALL" --dry-run --access public --tag "$dist_tag" --ignore-scripts
+          fi
 
   # Opt-in: claiming the io.github.auzroz namespace is the maintainer's decision.
   # Enable by setting the repository variable PUBLISH_MCP_REGISTRY=true.
   # Nothing else depends on this job, so a registry failure never blocks the GitHub release.
   mcp-registry:
-    name: MCP Registry Publish
+    name: 'Release: MCP Registry'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [npm, docker]
-    if: ${{ vars.PUBLISH_MCP_REGISTRY == 'true' }}
+    needs: [npm-publish, docker]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'auzroz/ynab-mcp' && vars.PUBLISH_MCP_REGISTRY == 'true'
     permissions:
       contents: read
       id-token: write
@@ -198,41 +492,32 @@ jobs:
         run: ./mcp-publisher publish server.json
 
   github-release:
-    name: GitHub Release
+    name: 'Release: GitHub release'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [docker, npm]
+    needs: [verify, docker, npm-publish]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'auzroz/ynab-mcp'
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          persist-credentials: false
+          name: release-dist
+          path: release-dist
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-
-      - name: Package skills for distribution
-        run: |
-          mkdir -p skills-dist
-          cd skills
-          # One bundle with every skill folder at the top level (no wrapper dir),
-          # for dropping straight into a skills directory.
-          zip -r "../skills-dist/ynab-mcp-skills-v${{ steps.version.outputs.version }}.zip" . -x 'README.md' -x '*.DS_Store'
-          # One zip per skill, for Claude.ai's one-at-a-time upload flow.
-          for dir in */; do
-            name="$(basename "$dir")"
-            zip -r "../skills-dist/${name}.zip" "${name}" -x '*.DS_Store'
-          done
-          cd ..
-          ls -la skills-dist
+      - name: Verify release files
+        working-directory: release-dist
+        run: sha256sum --check --strict SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
-          files: skills-dist/*.zip
+          prerelease: ${{ contains(github.ref, '-') }}
+          files: release-dist/*
           body: |
             ## Installation
 
@@ -240,13 +525,13 @@ jobs:
             ```bash
             npx -y ynab-mcp
             # or install globally
-            npm install -g ynab-mcp@${{ steps.version.outputs.version }}
+            npm install -g ynab-mcp@${{ env.VERSION }}
             ```
 
             ### Docker
             ```bash
-            docker pull ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
-            docker run -e YNAB_ACCESS_TOKEN=your_token ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            docker pull ghcr.io/${{ github.repository }}:${{ env.VERSION }}
+            docker run -e YNAB_ACCESS_TOKEN=your_token ghcr.io/${{ github.repository }}:${{ env.VERSION }}
             ```
 
             ### Claude Desktop
@@ -267,9 +552,22 @@ jobs:
 
             This release also attaches a standalone [YNAB best-practices skills
             library](https://github.com/${{ github.repository }}/tree/main/skills) —
-            15 Claude Agent Skills, downloadable below (`ynab-mcp-skills-v${{ steps.version.outputs.version }}.zip`
+            15 Claude Agent Skills, downloadable below (`ynab-mcp-skills-v${{ env.VERSION }}.zip`
             for the full bundle, or grab an individual skill's zip). Install via
             Claude.ai → Settings → Capabilities → Skills → Upload skill, or drop
             into a Claude Code skills directory. See
             [skills/README.md](https://github.com/${{ github.repository }}/blob/main/skills/README.md)
             for details — 7 work with this MCP server connected, 8 work standalone.
+
+            ### Verify
+
+            Every file attached below is listed in `SHA256SUMS` and has a build
+            provenance attestation from this repository's release workflow. The
+            npm tarball and the image also have an SPDX SBOM attestation.
+            ```bash
+            sha256sum --check SHA256SUMS
+            gh attestation verify ynab-mcp-${{ env.VERSION }}.tgz -R ${{ github.repository }} \
+              --signer-workflow ${{ github.repository }}/.github/workflows/release.yml --source-ref ${{ github.ref }}
+            gh attestation verify oci://ghcr.io/${{ github.repository }}:${{ env.VERSION }} -R ${{ github.repository }} \
+              --signer-workflow ${{ github.repository }}/.github/workflows/release.yml --source-ref ${{ github.ref }}
+            ```

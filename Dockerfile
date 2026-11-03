@@ -10,13 +10,13 @@ WORKDIR /app
 # Copy package files first for better layer caching
 COPY package.json package-lock.json ./
 
-# Install all dependencies (including dev for build). Build tools let the optional
-# native `better-sqlite3` addon compile on musl; they're removed afterward. The
-# SQLite driver stays optional — if the build fails the image still works with the
-# memory/postgres drivers.
-RUN apk add --no-cache --virtual .build-deps python3 make g++ \
-    && npm ci \
-    && apk del .build-deps
+# Install all dependencies (including dev for build) without running any install
+# script, so no compiler is needed. better-sqlite3 ships Node-API prebuilds for
+# linuxmusl-x64 and linuxmusl-arm64 inside its npm tarball (pinned by the
+# lockfile's integrity hash) and loads them at runtime. The only other install
+# scripts in the tree belong to dev-only packages (esbuild, fsevents) that the
+# TypeScript build doesn't use.
+RUN npm ci --ignore-scripts
 
 # Copy source files
 COPY tsconfig.json ./
@@ -26,7 +26,10 @@ COPY src ./src
 RUN npm run build
 
 # Prune dev dependencies
-RUN npm prune --omit=dev
+RUN npm prune --omit=dev --ignore-scripts
+
+# Fail the build if the SQLite driver can't load on this platform.
+RUN node -e "new (require('better-sqlite3'))(':memory:').close()"
 
 # Stage 2: Production
 FROM node:24-alpine3.24@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS production
