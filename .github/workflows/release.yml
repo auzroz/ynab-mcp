@@ -6,6 +6,12 @@ name: Release
 #   approval on the `production` environment, and only publish jobs hold
 #   `id-token: write`. Nothing publishes before `verify` has proven the tagged
 #   commit is on main or a release/* branch.
+#   npm enforces the environment server side once its trusted publisher names
+#   `production` (admin checklist in scripts/release-rehearsal.md). ghcr does
+#   not: any workflow run in this repository that is granted `packages: write`
+#   can push the image, approval or not. The image's proof of origin is its
+#   attestation (`gh attestation verify --source-ref refs/tags/v...`). See
+#   CONTRIBUTING.md "What the gate does not cover".
 # - A pull request that touches the release inputs runs verify, test, build and
 #   pack, and the image build for amd64 and arm64 with a better-sqlite3 load
 #   check. Those jobs use no environment, no id-token, and `contents: read`.
@@ -34,8 +40,12 @@ on:
         default: true
 
 concurrency:
-  # Tag pushes queue one at a time and are never cancelled. Pull request and
-  # dispatch runs cancel the superseded run for the same ref.
+  # Tag pushes share one group, so two releases never run at once, and a run
+  # in progress is never cancelled. GitHub keeps only one pending run per
+  # group: if a third tag is pushed while one run is in progress and another
+  # waits, the waiting run is cancelled before it starts (re-run it from its
+  # run page). Pull request and dispatch runs cancel the superseded run for the
+  # same ref.
   group: ${{ github.event_name == 'push' && 'release-publish' || format('release-check-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
@@ -84,7 +94,15 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Verify tag matches package.json and server.json
+      # Every event, so a pull request or the dry run on main catches a version
+      # mismatch that a tag push would refuse after the tag already exists.
+      - name: Verify package-lock.json and server.json carry the package.json version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node -e "const v=process.argv[1];const l=require('./package-lock.json');const s=require('./server.json');const bad=[];if(l.version!==v)bad.push('package-lock.json version '+l.version);if(!l.packages||!l.packages['']||l.packages[''].version!==v)bad.push('package-lock.json root package '+(l.packages&&l.packages['']&&l.packages[''].version));if(s.version!==v)bad.push('server.json version '+s.version);const ps=s.packages||[];if(!ps.length)bad.push('server.json has no packages');for(const p of ps){const pv=p.registryType==='oci'?String(p.identifier).split(':').pop():p.version;if(pv!==v)bad.push('server.json '+p.registryType+' '+pv);}if(bad.length){console.error('::error::package.json is '+v+' but: '+bad.join(', '));process.exit(1);}console.log('package.json, package-lock.json and server.json all carry '+v);" "$VERSION"
+
+      - name: Verify tag matches package.json
         if: github.event_name == 'push'
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -95,11 +113,13 @@ jobs:
             echo "::error::Tag v$TAG does not match package.json version $VERSION"
             exit 1
           fi
-          node -e "const s=require('./server.json');const t=process.argv[1];const bad=[];if(s.version!==t)bad.push('version '+s.version);for(const p of s.packages||[]){const v=p.registryType==='oci'?String(p.identifier).split(':').pop():p.version;if(v!==t)bad.push(p.registryType+' '+v);}if(bad.length){console.error('::error::server.json differs from tag '+t+': '+bad.join(', '));process.exit(1);}" "$TAG"
 
       # Anyone with push rights can create a tag on any commit. Only a commit
-      # that is already on main or a release/* branch (both under rulesets) may
-      # be released.
+      # that is already on main or a release/* branch may be released. This is
+      # only as strong as the rulesets on those branches: main requires a PR,
+      # and release/** must require a PR AND restrict creations, or anyone with
+      # Contents write can create release/x at their own commit. See the admin
+      # checklist in scripts/release-rehearsal.md.
       - name: Verify the tagged commit is on main or a release branch
         if: github.event_name == 'push'
         run: |
@@ -143,7 +163,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          cache: 'npm'
+          # No dependency cache on the tag path: a release installs only from
+          # the lockfile and the registry. Checks still use the cache.
+          cache: ${{ github.event_name != 'push' && 'npm' || '' }}
 
       # No dependency runs code at install time. better-sqlite3 loads the
       # prebuild shipped in its npm tarball; esbuild and fsevents are dev-only.
@@ -178,7 +200,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          cache: 'npm'
+          # No dependency cache on the tag path: a release installs only from
+          # the lockfile and the registry. Checks still use the cache.
+          cache: ${{ github.event_name != 'push' && 'npm' || '' }}
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
@@ -233,7 +257,9 @@ jobs:
           name: release-dist
           path: release-dist/
           if-no-files-found: error
-          retention-days: 14
+          # The publish jobs and any re-run of them download this artifact. An
+          # approval can wait up to 30 days, so keep it longer than that.
+          retention-days: 90
 
   image:
     name: 'Release: Image (${{ matrix.platform }})'
@@ -365,7 +391,10 @@ jobs:
 
       # actions/attest is the documented replacement for actions/attest-sbom,
       # which is deprecated and now only wraps it.
-      - name: Attest image SBOM
+      # This signed SBOM lists the application's production npm dependencies
+      # (from package-lock.json), not the image's Alpine packages or the Node
+      # runtime. Those are in the unsigned BuildKit SBOM from `sbom: true`.
+      - name: Attest image application-dependency SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -563,7 +592,10 @@ jobs:
 
             Every file attached below is listed in `SHA256SUMS` and has a build
             provenance attestation from this repository's release workflow. The
-            npm tarball and the image also have an SPDX SBOM attestation.
+            npm tarball and the image also have a signed SPDX SBOM attestation of
+            the production npm dependencies (the image's OS packages are only in
+            its unsigned BuildKit SBOM). For the image, the attestation is the
+            proof of origin, not the ghcr tag, so verify it:
             ```bash
             sha256sum --check SHA256SUMS
             gh attestation verify ynab-mcp-${{ env.VERSION }}.tgz -R ${{ github.repository }} \

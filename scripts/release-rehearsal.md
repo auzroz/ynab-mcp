@@ -21,9 +21,136 @@ The rehearsal proves four things (plan gate G16b):
 Run it from your own terminal and your own `gh` login (not an agent token). It
 never touches `auzroz/ynab-mcp`, npm, a YNAB token or a database.
 
+The admin checklist for `auzroz/ynab-mcp` itself comes first. The release gate
+in `release.yml` depends on those settings (CONTRIBUTING.md, "Settings the gate
+relies on").
+
+## Admin checklist (auzroz/ynab-mcp)
+
+The maintainer does these in this order, from their own login. Agents can't
+and must not. Each step ends with a read-only check.
+
+### 1. Wed Nov 4: `release/**` branch ruleset
+
+Settings → Rules → Rulesets → New ruleset → New branch ruleset:
+
+- **Ruleset name** `release branches`, **Enforcement status** Active;
+- **Bypass list** → Add bypass → Repository admin, mode **Always allow**;
+- **Target branches** → Add target → Include by pattern → `release/**`;
+- tick **Restrict creations**. Without it, anyone with Contents write can
+  create `release/x` at their own commit, and a tag on that commit passes the
+  ancestry check in `Release: Verify`;
+- tick **Restrict deletions** and **Block force pushes**;
+- tick **Require a pull request before merging**, with the same settings as
+  `main`;
+- tick **Require status checks to pass**, and add the CI checks `main` requires.
+  Don't add the `Release: …` checks: they run only when the release inputs
+  change, so on any other PR a required one would wait forever;
+- **Create**.
+
+`release/0.5.0` already exists; Restrict creations only affects new branches.
+
+```bash
+gh api repos/auzroz/ynab-mcp/rulesets --jq '.[] | [.id, .name, .target] | @tsv'
+gh api repos/auzroz/ynab-mcp/rulesets/<id> --jq '{include: .conditions.ref_name.include, rules: [.rules[].type]}'
+# expect include ["refs/heads/release/**"] and rules containing
+# creation, deletion, non_fast_forward, pull_request, required_status_checks
+```
+
+### 2. Thu Nov 12: Restrict creations on the tag ruleset
+
+Settings → Rules → Rulesets → **Protect release tags**:
+
+- tick **Restrict creations** (it already has Restrict updates, Restrict
+  deletions and Block force pushes);
+- check that **Bypass list** has Repository admin with **Always allow**, or your
+  own `git push origin vX.Y.Z` is refused too;
+- **Save changes**.
+
+```bash
+gh api repos/auzroz/ynab-mcp/rulesets/<id> --jq '{include: .conditions.ref_name.include, bypass: .bypass_actors, rules: [.rules[].type]}'
+# expect rules containing creation, update, deletion, non_fast_forward
+```
+
+### 3. Thu Nov 12: the `production` environment
+
+Settings → Environments → New environment → name `production` → Configure
+environment:
+
+- tick **Required reviewers** and add `auzroz`. Leave **Prevent self-review**
+  unticked: you push the tag and approve it;
+- leave **Wait timer** off;
+- untick **Allow administrators to bypass configured protection rules**, so
+  every publish waits for an explicit approval, yours included;
+- **Deployment branches and tags** → Selected branches and tags → Add
+  deployment branch or tag rule → **Ref type: Tag**, name pattern `v*.*.*` →
+  Add rule. Add no branch rule;
+- **Save protection rules**. Add no environment secrets or variables.
+
+```bash
+gh api repos/auzroz/ynab-mcp/environments/production \
+  --jq '{rules: [.protection_rules[].type], policy: .deployment_branch_policy, admins_bypass: .can_admins_bypass}'
+# expect rules [required_reviewers, branch_policy], custom_branch_policies true, admins_bypass false
+gh api repos/auzroz/ynab-mcp/environments/production/deployment-branch-policies \
+  --jq '.branch_policies[] | [.name, .type] | @tsv'
+# expect exactly one line: v*.*.*  tag
+```
+
+### 4. Thu Nov 12, same sitting: the npm trusted publisher names `production`
+
+npmjs.com → `ynab-mcp` → Settings → Trusted Publisher (GitHub Actions) → edit:
+
+- Organization or user `auzroz`, Repository `ynab-mcp`, Workflow filename
+  `release.yml`, **Environment name `production`** → Update;
+- recommended: under **Publishing access**, choose **Require two-factor
+  authentication and disallow tokens** → Update Package Settings, and revoke
+  any access token that can publish `ynab-mcp`. Trusted publishing and your own
+  2FA publish keep working.
+
+Why the environment name matters: with the field empty, npm accepts an OIDC
+token from any job that runs a `release.yml` in this repository, including a
+branch run whose `release.yml` was edited to add `id-token: write`. With it
+set, npm accepts only a job in the `production` environment, which step 3
+limits to `v*.*.*` tags and your approval.
+
+**From this moment, `main`'s current `release.yml` (no environment) can't
+publish to npm.** Don't push a `v0.4.x` tag on `main` until this `release.yml`
+is on `main`. If an emergency 0.4.x is needed before Dec 18, first merge this
+`release.yml` and `Dockerfile` into `main` with a PR, then release as in
+CONTRIBUTING.md. Don't clear the Environment field to make the old workflow
+work.
+
+To check, open the package's Settings page and confirm the trusted publisher
+shows `release.yml` and `production`.
+
+### 5. Thu Nov 12: ghcr package access
+
+`https://github.com/users/auzroz/packages/container/ynab-mcp/settings` →
+**Manage Actions access**: only `auzroz/ynab-mcp` is listed, with role Write.
+Remove any other repository.
+
+This can't limit pushes to the `production` environment: any workflow run in
+`auzroz/ynab-mcp` that is granted `packages: write` can push the image. That
+residual risk is documented in CONTRIBUTING.md ("What the gate does not
+cover") and tracked as 62b.
+
+### 6. Thu Nov 12: the scratch repository
+
+Do "Before you start" below.
+
+### 7. Thu Dec 3: the rehearsal
+
+Do sections 1 to 6 below and send the report.
+
+### 8. Fri Dec 18: the release
+
+Follow CONTRIBUTING.md "How a release runs": merge the REL PR into `main`,
+dispatch the dry run on `main` (G16d), tag, approve the two prompts (image,
+then npm), and run the step 6 checks (G16e).
+
 ## Before you start (one time)
 
-These are the scratch-repo steps from the admin checklist in the 62a PR.
+These are the scratch-repo steps of admin checklist step 6.
 
 1. Create a **public** repository `auzroz/ynab-mcp-release-rehearsal` with no
    README, license or `.gitignore`. It has to be public, because artifact
@@ -100,19 +227,39 @@ git commit --allow-empty -m "rehearsal: a commit that is not on main"
 git switch rehearsal-main
 ```
 
-Push both branches, and nothing else:
+Push `main` first, make it the default branch (step 5 dispatches on it), then
+push the other branch:
 
 ```bash
 git remote add scratch "https://github.com/$SCRATCH.git"
-git push scratch rehearsal-main:refs/heads/main feature/not-a-release:refs/heads/feature/not-a-release
+git push scratch rehearsal-main:refs/heads/main
+gh repo edit "$SCRATCH" --default-branch main
+gh repo view "$SCRATCH" --json defaultBranchRef --jq .defaultBranchRef.name   # expect main
+git push scratch feature/not-a-release:refs/heads/feature/not-a-release
+
+MAIN_SHA="$(git rev-parse rehearsal-main)"
+OFF_SHA="$(git rev-parse feature/not-a-release)"
 ```
 
 Branch pushes don't start `release.yml`, because it has no branch-push trigger.
 
-A helper for the steps below. It prints the newest release run for an event:
+A helper for the steps below. `wait_run EVENT SHA [AFTER]` waits up to five
+minutes for a release run started by `EVENT` on commit `SHA` whose id is greater
+than `AFTER` (default 0), then prints its id. Matching the commit means it can't
+pick up an earlier run by mistake.
 
 ```bash
-latest_run() { gh run list -R "$SCRATCH" --workflow release.yml --event "$1" --limit 1 --json databaseId --jq '.[0].databaseId'; }
+wait_run() {
+  local id="" i
+  for i in $(seq 60); do
+    id="$(gh run list -R "$SCRATCH" --workflow release.yml --event "$1" --commit "$2" --limit 20 \
+      --json databaseId --jq "[.[] | select(.databaseId > ${3:-0}) | .databaseId] | max // empty")"
+    if [ -n "$id" ]; then echo "$id"; return 0; fi
+    sleep 5
+  done
+  echo "no $1 run on $2 after 5 minutes" >&2
+  return 1
+}
 ```
 
 ## 2. A tag off `main` is refused
@@ -120,7 +267,7 @@ latest_run() { gh run list -R "$SCRATCH" --workflow release.yml --event "$1" --l
 ```bash
 git tag -a "v$V" -m "rehearsal: must be refused" feature/not-a-release
 git push scratch "refs/tags/v$V"
-sleep 20; RUN="$(latest_run push)"; echo "run $RUN"
+RUN="$(wait_run push "$OFF_SHA")"; echo "run $RUN"
 gh run watch "$RUN" -R "$SCRATCH"            # ends in failure; that is the pass condition
 gh run view "$RUN" -R "$SCRATCH" --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
 gh run view "$RUN" -R "$SCRATCH" --log-failed | grep "Refusing to release"
@@ -143,7 +290,8 @@ git tag -d "v$V"
 ```bash
 git tag -a "v$V" -m "rehearsal" rehearsal-main
 git push scratch "refs/tags/v$V"
-sleep 20; RUN="$(latest_run push)"; echo "run $RUN"
+RUN="$(wait_run push "$MAIN_SHA")"; echo "run $RUN"
+TAG_RUN="$RUN"
 echo "https://github.com/$SCRATCH/actions/runs/$RUN"
 ```
 
@@ -224,12 +372,13 @@ prints "refused, as expected".
 
 ```bash
 gh workflow run release.yml -R "$SCRATCH" --ref main -f dry_run=true
-sleep 20; RUN="$(latest_run workflow_dispatch)"
+RUN="$(wait_run workflow_dispatch "$MAIN_SHA" "$TAG_RUN")"; echo "run $RUN"
 gh run watch "$RUN" -R "$SCRATCH" --exit-status
 gh run view "$RUN" -R "$SCRATCH" --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
+DRY_RUN="$RUN"
 
 gh workflow run release.yml -R "$SCRATCH" --ref main -f dry_run=false
-sleep 20; RUN="$(latest_run workflow_dispatch)"
+RUN="$(wait_run workflow_dispatch "$MAIN_SHA" "$DRY_RUN")"; echo "run $RUN"
 gh run watch "$RUN" -R "$SCRATCH"            # ends in failure; that is the pass condition
 gh run view "$RUN" -R "$SCRATCH" --log-failed | grep "only runs dry"
 ```
