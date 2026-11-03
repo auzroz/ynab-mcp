@@ -1515,3 +1515,17 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     await expect(provider.verifyAccessToken('legacy-at')).resolves.toBeDefined();
   });
 });
+
+describe('McpOAuthProvider consent page wording', () => {
+  it('promises no in-app disconnect; it points to YNAB, where access can be removed', async () => {
+    const { provider } = makeProvider();
+    const client = await provider.clientsStore.registerClient(clientMetadata);
+    const res = makeRes();
+    await provider.authorize(client, authParams, res as unknown as Response);
+    const html = res.send.mock.calls[0]?.[0] as string;
+    expect(html).not.toMatch(/disconnect/i);
+    expect(html).toContain(
+      'To end this access later, remove the app under Authorized Applications in your YNAB account settings.'
+    );
+  });
+});

@@ -370,16 +370,8 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     const tokens = await exchange(grant);
     expect(tokens.scope).toBe('read-only read-write');
 
-    // The code is single use.
-    const replayedCode = await tokenRequest({
-      grant_type: 'authorization_code',
-      client_id: grant.clientId,
-      code: grant.code,
-      code_verifier: grant.verifier,
-      redirect_uri: CALLBACK,
-    });
-    expect(replayedCode.status).toBe(400);
-    expect(replayedCode.body.error).toBe('invalid_grant');
+    // The code is single use. It isn't replayed here: a replay revokes the
+    // tokens it issued (RFC 9700), see http-oauth-code-replay.test.ts.
 
     // A read-write grant sees every tool.
     const sessionId = await initialize(tokens.access);
