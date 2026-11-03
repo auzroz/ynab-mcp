@@ -7,7 +7,9 @@
  * Every route is a pipeline of named stages, always in this order:
  *
  *   [host-validation]  mounted by http.ts on the whole app, before this router
- *   as-limiter         an AS-level rate limit, before any body is read
+ *   ...limiters        rate limits, before any body is read (today only the
+ *                      /oauth legs' oauth-leg-limiter; #55a adds an AS-wide
+ *                      as-limiter ahead of it on every route)
  *   bounded-parser     the request-body parser, with its size limit
  *   ...slots           route-specific checks (iss-redirect today; later the
  *                      route limiter, client authentication, the /authorize
@@ -58,7 +60,8 @@ export const OAUTH_LEG_RATE_LIMIT = 100;
 interface AsRoute {
   /** The path prefix it is mounted on (app.use semantics), and its name in the pipeline test. */
   readonly path: string;
-  readonly limiter?: Stage;
+  /** Rate limits, in order, all ahead of the parser. */
+  readonly limiters?: readonly Stage[];
   readonly parser: Stage;
   readonly slots?: readonly Stage[];
   readonly router: Stage;
@@ -67,7 +70,7 @@ interface AsRoute {
 /** The stages of a route, in the one order every route uses. */
 function routePipeline(route: AsRoute): Stage[] {
   return [
-    ...(route.limiter ? [route.limiter] : []),
+    ...(route.limiters ?? []),
     route.parser,
     ...(route.slots ?? []),
     route.router,
@@ -224,7 +227,7 @@ export function mountAuthorizationServer(
   // comes from req.ip, so TRUST_PROXY must match the proxy hops, or every
   // client behind the proxy shares one budget. One limiter for all the legs.
   const oauthLegLimiter = stage(
-    'as-limiter',
+    'oauth-leg-limiter',
     rateLimit({
       windowMs: 15 * 60 * 1000,
       limit: OAUTH_LEG_RATE_LIMIT,
@@ -239,9 +242,10 @@ export function mountAuthorizationServer(
   // supports them), without its own metadata routes, which the ones here
   // replace. Each SDK handler still applies its own CORS, method check, form
   // parser and per-route rate limit inside the sdk-router stage.
-  // The as-limiter position on these routes is empty for now: their only
+  // The limiters position on these routes is empty for now: their only
   // limits are the SDK's own, inside sdk-router, after its form parser (#55a
-  // moves a limiter ahead of the parser).
+  // adds an as-limiter ahead of the parser on every route, /oauth included,
+  // where it goes before oauth-leg-limiter).
   const routes: AsRoute[] = [
     { path: pathOf(resourceMetadataUrl), parser: boundedParser(), router: metadata(protectedResourceMetadata) },
     // Root alias for clients that probe the non-path-aware location.
@@ -273,7 +277,7 @@ export function mountAuthorizationServer(
   }
   routes.push({
     path: '/oauth',
-    limiter: oauthLegLimiter,
+    limiters: [oauthLegLimiter],
     parser: boundedParser(),
     router: stage('ynab-federation', ynabFederationLegs(provider)),
   });

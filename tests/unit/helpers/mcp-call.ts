@@ -98,13 +98,19 @@ export async function mcpInitialize(app: Express, auth: McpAuth, clientName = 'm
 
 /**
  * Initialize and acknowledge (notifications/initialized). Throws, with the
- * status and JSON-RPC error, if the server refuses the initialize.
+ * status, the JSON-RPC error (or the body, e.g. the bearer check's OAuth
+ * error) and any WWW-Authenticate challenge, if the server refuses the
+ * initialize.
  */
 export async function mcpConnect(app: Express, auth: McpAuth, clientName = 'mcp-call-test'): Promise<McpConnection> {
   const init = await mcpInitialize(app, auth, clientName);
   const initMessage = rpcMessageOrUndefined(init);
   if (init.status !== 200 || !initMessage?.['result']) {
-    throw new Error(`initialize refused: ${init.status} ${JSON.stringify(initMessage?.['error'] ?? init.text)}`);
+    const challenge = init.headers['www-authenticate'] as string | undefined;
+    throw new Error(
+      `initialize refused: ${init.status} ${JSON.stringify(initMessage?.['error'] ?? init.text)}` +
+        (challenge ? ` (WWW-Authenticate: ${challenge})` : '')
+    );
   }
   let sessionId = init.headers['mcp-session-id'] as string | undefined;
   let nextId = 1;

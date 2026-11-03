@@ -4,11 +4,18 @@
  *
  *  - `routes` are mounted after Host/Origin validation, the authorization
  *    server and the global JSON parser, and before /mcp. They see the same
- *    Host check as every other route (except /health).
+ *    Host check as every other route (except /health), and nothing else:
+ *    they are UNAUTHENTICATED (no bearer check, no Origin check), so a route
+ *    that serves per-user or instance data must authenticate the request
+ *    itself. They never run for /mcp or anything under it (isMcpPath): those
+ *    requests skip the extension routes, so an extension can't sit ahead of
+ *    /mcp's bearer check.
  *  - `jobs` start once storage is ready, when the server starts
- *    (startHttpServer, not buildHttpApp), and are stopped on its shutdown path
- *    (http.Server close). A job's timers should be unref()'d, and its stop()
- *    should finish promptly: it runs inside the shutdown deadline.
+ *    (startHttpServer, not buildHttpApp), and are stopped on its shutdown path:
+ *    http.Server close() waits for every job's stop() before calling back, and
+ *    index.ts exits the process after that. A job's timers should be unref()'d,
+ *    and its stop() should finish promptly, well inside the platform's stop
+ *    grace period (10 s for docker stop) before the process is killed.
  *
  * The registries at the bottom are append-only, one line per module.
  */
@@ -17,6 +24,15 @@ import type { Router } from 'express';
 import type { HttpConfig } from '../config/environment.js';
 import type { Storage } from '../storage/types.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
+
+/**
+ * Whether `path` is /mcp or under it, as Express would match app.use('/mcp')
+ * (case-insensitively). Extension routes never run for these paths.
+ */
+export function isMcpPath(path: string): boolean {
+  const p = path.toLowerCase();
+  return p === '/mcp' || p.startsWith('/mcp/');
+}
 
 /** What an extension gets to work with. */
 export interface ExtensionContext {

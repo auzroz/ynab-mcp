@@ -1,8 +1,9 @@
 /**
  * The HTTP extension points (src/http/extensions.ts): route modules mounted
  * after Host validation, the authorization server and the JSON parser and
- * before /mcp; job modules started once storage is ready and stopped on the
- * server's shutdown path.
+ * before /mcp, never reached for /mcp itself; job modules started once
+ * storage is ready and stopped on the server's shutdown path, before close()
+ * calls back.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -39,8 +40,11 @@ function echoRoute(seen: ExtensionContext[] = []): RouteExtension {
       router.all('/ext/echo', (req, res) => {
         res.json({ body: req.body ?? null, hasStorage: ctx.storage !== undefined });
       });
-      // Under /mcp on purpose: answered here only if mounted before /mcp's handlers.
+      // Under /mcp on purpose: extension routes must never answer there.
       router.get('/mcp/ext-probe', (_req, res) => {
+        res.json({ ok: true });
+      });
+      router.post('/mcp', (_req, res) => {
         res.json({ ok: true });
       });
     },
@@ -91,11 +95,24 @@ describe('route extensions', () => {
     expect(big.status).toBe(413);
   });
 
-  it('runs before /mcp (and its bearer check in oauth mode)', async () => {
+  it('never runs for /mcp or under it, so it cannot get ahead of the bearer check (oauth mode)', async () => {
     const { app } = await buildHttpApp(oauthConfig(), { routes: [echoRoute()] });
-    expect((await request(app).get('/mcp/ext-probe')).status).toBe(200);
-    // /mcp itself is unchanged.
+    for (const path of ['/mcp/ext-probe', '/MCP/ext-probe', '/mcp/ext-probe/']) {
+      const res = await request(app).get(path);
+      expect(res.status, path).toBe(401);
+      expect(res.headers['www-authenticate'], path).toContain('Bearer');
+    }
+    // /mcp itself is unchanged: still the bearer check, not the extension's handler.
     expect((await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' })).status).toBe(401);
+    // The module's other routes still answer.
+    expect((await request(app).get('/ext/echo')).status).toBe(200);
+  });
+
+  it('never runs for /mcp or under it (header mode)', async () => {
+    const { app } = await buildHttpApp(makeHttpConfig(), { routes: [echoRoute()] });
+    expect((await request(app).get('/mcp/ext-probe')).status).toBe(404);
+    // /mcp's own handler answers: no session, not an initialize.
+    expect((await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' })).status).toBe(400);
   });
 });
 
@@ -184,6 +201,45 @@ describe('jobs and the server lifecycle', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls the close callback only after an async job stop has finished', async () => {
+    const order: string[] = [];
+    const server = await startHttpServer(makeHttpConfig(), {
+      jobs: [
+        {
+          name: 'slow',
+          start: () => ({
+            stop: () =>
+              new Promise<void>((resolve) =>
+                setTimeout(() => {
+                  order.push('job stopped');
+                  resolve();
+                }, 50)
+              ),
+          }),
+        },
+      ],
+    });
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    await new Promise<void>((resolve) =>
+      server.close(() => {
+        order.push('close callback');
+        resolve();
+      })
+    );
+    expect(order).toEqual(['job stopped', 'close callback']);
+  });
+
+  it('passes a close error to the callback after the jobs stop', async () => {
+    const stop = vi.fn();
+    const server = await startHttpServer(makeHttpConfig(), { jobs: [{ name: 'j', start: () => ({ stop }) }] });
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // Closing again: Node reports the server is not running.
+    const err = await new Promise<Error | undefined>((resolve) => server.close((e) => resolve(e)));
+    expect((err as NodeJS.ErrnoException | undefined)?.code).toBe('ERR_SERVER_NOT_RUNNING');
     expect(stop).toHaveBeenCalledTimes(1);
   });
 });

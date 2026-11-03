@@ -34,6 +34,7 @@ import { deriveOriginsFromHosts, hostValidation, originValidation } from './midd
 import { MAX_JSON_BODY, mountStages, stage, type RoutePipeline, type StageObserver } from './http/pipeline.js';
 import {
   createJobRunner,
+  isMcpPath,
   jobs as registeredJobs,
   routes as registeredRoutes,
   type ExtensionContext,
@@ -211,11 +212,18 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   });
 
   // Extension routes (src/http/extensions.ts): after host validation, the AS
-  // and the JSON parser; before /mcp.
+  // and the JSON parser; before /mcp. Unauthenticated, so they never see a
+  // request for /mcp or under it (that goes on to /mcp's own handlers).
   const extensionContext: ExtensionContext = { config, storage };
   const extensionRouter = express.Router();
   for (const route of options.routes ?? registeredRoutes) route.mount(extensionRouter, extensionContext);
-  app.use(extensionRouter);
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (isMcpPath(req.path)) {
+      next();
+      return;
+    }
+    extensionRouter(req, res, next);
+  });
   const jobs = createJobRunner(options.jobs ?? registeredJobs, extensionContext);
 
   // Resolves the per-session UserContext at `initialize` time.
@@ -448,8 +456,14 @@ export async function startHttpServer(
   httpServer.close = (callback) => {
     // The streams ended by closing the sessions leave idle keep-alive
     // connections, which would otherwise hold close() open until they time out.
-    void Promise.all([sessions.close(), jobs.stop()]).then(() => httpServer.closeIdleConnections());
-    return closeServer(callback);
+    // The caller's callback runs only once the jobs have stopped too: a job's
+    // stop() may be async (finishing a sweep, releasing a lock), and a caller
+    // that exits the process from the callback (index.ts) must not cut that short.
+    const stopped = Promise.allSettled([sessions.close(), jobs.stop()]);
+    void stopped.then(() => httpServer.closeIdleConnections());
+    return closeServer((err) => {
+      void stopped.then(() => callback?.(err));
+    });
   };
   return httpServer;
 }

@@ -7,7 +7,9 @@
  * through the observeStage hook), and checks what each position does: Host
  * validation answers before anything else runs, the /oauth limiter answers
  * before the body is read, and the bounded parser refuses a body over the
- * limit before the route's handler runs.
+ * limit before the route's handler runs. It also walks the app's layer stack,
+ * so a handler mounted on an AS path without going through a stage (an
+ * app.use('/token', ...) ahead of the AS) fails here too.
  *
  * A PR that changes a route's stages changes EXPECTED here on purpose, and the
  * reviewer reads that diff.
@@ -18,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import request from 'supertest';
 import type { Express } from 'express';
 import { buildHttpApp, MAX_JSON_BODY, OAUTH_LEG_RATE_LIMIT, type HttpApp } from '../../src/http.js';
+import { stageOfHandler } from '../../src/http/pipeline.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 
 const HOST = 'mcp.example.com';
@@ -32,7 +35,7 @@ const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
   { route: '/token', stages: ['host-validation', 'bounded-parser', 'sdk-router'] },
   { route: '/register', stages: ['host-validation', 'bounded-parser', 'sdk-router'] },
   { route: '/revoke', stages: ['host-validation', 'bounded-parser', 'sdk-router'] },
-  { route: '/oauth', stages: ['host-validation', 'as-limiter', 'bounded-parser', 'ynab-federation'] },
+  { route: '/oauth', stages: ['host-validation', 'oauth-leg-limiter', 'bounded-parser', 'ynab-federation'] },
 ];
 const stagesOf = (route: string): readonly string[] => EXPECTED.find((e) => e.route === route)!.stages;
 
@@ -127,6 +130,57 @@ describe('G21: AS stage list per route', () => {
   });
 });
 
+/** An Express 5 router layer, as far as this test reads it. */
+interface Layer {
+  readonly name: string;
+  readonly handle: unknown;
+  match(path: string): boolean;
+}
+
+/** The app's top-level layers, in mount order. */
+const layersOf = (app: Express): readonly Layer[] => (app as unknown as { router: { stack: Layer[] } }).router.stack;
+
+/** The paths to check per route: the route itself and the /oauth legs the probes call. */
+const PROBED_PATHS: ReadonlyArray<{ route: string; path: string }> = [
+  ...EXPECTED.map((e) => ({ route: e.route, path: e.route })),
+  ...['/oauth/ynab/start', '/oauth/ynab/callback', '/oauth/cancel'].map((path) => ({ route: '/oauth', path })),
+];
+
+describe('G21: nothing outside a stage runs on an AS route', () => {
+  it.each(EXPECTED.map((e) => e.route))('every layer that %s reaches up to its handler is a declared stage', (route) => {
+    const layers = layersOf(handle.app);
+    const expected = stagesOf(route);
+    const terminal = expected.at(-1)!;
+    for (const { path } of PROBED_PATHS.filter((p) => p.route === route)) {
+      const end = layers.findIndex((l) => l.match(path) && stageOfHandler(l.handle) === terminal);
+      expect(end, `${path}: no ${terminal} layer`).toBeGreaterThanOrEqual(0);
+      const before = layers.slice(0, end + 1).filter((l) => l.match(path));
+      // Untagged means mounted outside mountStages(): it would run unlisted.
+      expect(
+        before.filter((l) => stageOfHandler(l.handle) === undefined).map((l) => l.name),
+        `${path}: layers outside a stage`
+      ).toEqual([]);
+      // And the tagged layers it passes are exactly the declared stages, in order.
+      const names = before.map((l) => stageOfHandler(l.handle)!);
+      expect(names.filter((n, i) => n !== names[i - 1])).toEqual(expected);
+    }
+  });
+
+  it('mounts the global JSON parser after the AS, with only stages on every path before it', () => {
+    const layers = layersOf(handle.app);
+    const parser = layers.findIndex((l) => l.name === 'jsonParser' && stageOfHandler(l.handle) === undefined);
+    expect(parser).toBeGreaterThan(0);
+    const lastStage = layers.reduce((last, l, i) => (stageOfHandler(l.handle) !== undefined ? i : last), -1);
+    expect(parser).toBeGreaterThan(lastStage);
+    // A path no route names: whatever matches it matches every request.
+    const everywhere = layers.slice(0, parser).filter((l) => l.match('/__g21_unrouted__/x'));
+    expect(everywhere.map((l) => stageOfHandler(l.handle) ?? `untagged ${l.name}`)).toEqual([
+      'host-validation',
+      'host-validation',
+    ]);
+  });
+});
+
 describe('G21: what each position does', () => {
   it.each(PROBES)('host-validation answers $name with a bad Host before any other stage', async ({ send }) => {
     trace.length = 0;
@@ -156,7 +210,7 @@ describe('G21: what each position does', () => {
     expect(res.status).toBe(400);
   });
 
-  it('as-limiter answers /oauth/* past the limit before the parser reads the body', async () => {
+  it('oauth-leg-limiter answers /oauth/* past the limit before the parser reads the body', async () => {
     for (let i = 0; i < OAUTH_LEG_RATE_LIMIT; i++) {
       await request(handle.app).get('/oauth/cancel').set('Host', HOST);
     }
@@ -164,7 +218,7 @@ describe('G21: what each position does', () => {
       request(handle.app).get('/oauth/cancel').set('Content-Type', 'application/json').send('{not json')
     );
     expect(res.status).toBe(429);
-    expect(stages).toEqual(['host-validation', 'as-limiter']);
+    expect(stages).toEqual(['host-validation', 'oauth-leg-limiter']);
   });
 });
 

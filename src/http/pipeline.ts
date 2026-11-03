@@ -35,6 +35,19 @@ export interface RoutePipeline {
  */
 export type StageObserver = (stage: string, req: Request) => void;
 
+/**
+ * With an observer, the stage each mounted handler belongs to (the observer's
+ * pass-through and the stage's own handlers). Tests walk the app's layer stack
+ * with stageOfHandler() to check that nothing but these runs on an AS route
+ * (G21). Filled only when an observer is passed, so production has no entries.
+ */
+const mountedStageHandlers = new WeakMap<RequestHandler, string>();
+
+/** The stage `handler` was mounted for by mountStages() (with an observer), if any. */
+export function stageOfHandler(handler: unknown): string | undefined {
+  return typeof handler === 'function' ? mountedStageHandlers.get(handler as RequestHandler) : undefined;
+}
+
 /** A named stage made of the given handlers. */
 export function stage(name: string, ...handlers: RequestHandler[]): Stage {
   return { name, handlers };
@@ -43,8 +56,9 @@ export function stage(name: string, ...handlers: RequestHandler[]): Stage {
 /**
  * Mount the stages in order, on `path` (prefix match, like app.use) or on
  * every request when `path` is undefined. Returns the stage names. With an
- * observer, each stage is preceded by a pass-through handler that reports it;
- * without one, only the stages' own handlers are mounted.
+ * observer, each stage is preceded by a pass-through handler that reports it,
+ * and every handler is recorded for stageOfHandler(); without one, only the
+ * stages' own handlers are mounted.
  */
 export function mountStages(
   router: Router,
@@ -56,10 +70,13 @@ export function mountStages(
   for (const s of stages) {
     if (observe) {
       const name = s.name;
-      handlers.push((req: Request, _res: Response, next: NextFunction): void => {
+      const report = (req: Request, _res: Response, next: NextFunction): void => {
         observe(name, req);
         next();
-      });
+      };
+      mountedStageHandlers.set(report, name);
+      for (const h of s.handlers) mountedStageHandlers.set(h, name);
+      handlers.push(report);
     }
     handlers.push(...s.handlers);
   }
