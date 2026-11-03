@@ -16,15 +16,8 @@
 
 import { randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { rateLimit } from 'express-rate-limit';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import {
-  createOAuthMetadata,
-  getOAuthProtectedResourceMetadataUrl,
-  mcpAuthRouter,
-} from '@modelcontextprotocol/sdk/server/auth/router.js';
-import { metadataHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/metadata.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
@@ -34,24 +27,27 @@ import { SessionManager } from './services/session-manager.js';
 import type { HttpConfig } from './config/environment.js';
 import { Encryptor } from './crypto.js';
 import { createStorage } from './storage/index.js';
-import type { GrantedScope } from './storage/types.js';
-import { McpOAuthProvider } from './auth/mcp-provider.js';
+import type { GrantedScope, Storage } from './storage/types.js';
+import { mountAuthorizationServer, type AuthorizationServer } from './auth/as-router.js';
 import { YnabTokenResolver } from './auth/user-session.js';
-import { issOnAuthorizationRedirects } from './middleware/iss-redirect.js';
 import { deriveOriginsFromHosts, hostValidation, originValidation } from './middleware/origin-validation.js';
+import { MAX_JSON_BODY, mountStages, stage, type RoutePipeline, type StageObserver } from './http/pipeline.js';
+import {
+  createJobRunner,
+  jobs as registeredJobs,
+  routes as registeredRoutes,
+  type ExtensionContext,
+  type JobExtension,
+  type JobRunner,
+  type RouteExtension,
+} from './http/extensions.js';
+
+export { MAX_JSON_BODY } from './http/pipeline.js';
+export { OAUTH_LEG_RATE_LIMIT } from './auth/as-router.js';
 
 function jsonRpcError(code: number, message: string): unknown {
   return { jsonrpc: '2.0', error: { code, message }, id: null };
 }
-
-/**
- * Max JSON request body. A maximal 100-transaction ynab_create_transactions payload
- * is on the order of 100KB, so 512kb leaves headroom without accepting multi-MB bodies.
- */
-export const MAX_JSON_BODY = '512kb';
-
-/** Requests per client IP per 15 minutes on the YNAB OAuth legs, matching the SDK's /authorize. */
-export const OAUTH_LEG_RATE_LIMIT = 100;
 
 /** Select and initialize the configured storage driver. */
 async function buildStorage(config: HttpConfig): ReturnType<typeof createStorage> {
@@ -110,23 +106,41 @@ function sessionNotFound(res: Response): void {
   res.status(404).json(jsonRpcError(-32001, 'Session not found'));
 }
 
-/** The app and the session manager behind it. */
+/** The app and what its owner starts and stops with it. */
 export interface HttpApp {
   app: express.Express;
   /** Live sessions; close() it when the server stops. */
   sessions: SessionManager;
+  /** The extension jobs (src/http/extensions.ts): startHttpServer starts them; its close() stops them. */
+  jobs: JobRunner;
+  /**
+   * The authorization server's routes and their stage names, in order,
+   * starting with host-validation when that is on (oauth mode; undefined in
+   * header mode). Asserted by tests/unit/http-as-pipeline.test.ts.
+   */
+  asPipeline: readonly RoutePipeline[] | undefined;
+}
+
+/** Test hooks and overrides for buildHttpApp; production passes none. */
+export interface HttpAppOptions {
+  /** Replaces the registered route extensions. */
+  routes?: readonly RouteExtension[];
+  /** Replaces the registered job extensions. */
+  jobs?: readonly JobExtension[];
+  /** Reports each named stage as a request enters it. */
+  observeStage?: StageObserver | undefined;
 }
 
 /**
  * Build the Express app (async because oauth mode initializes storage).
  * Exported for testing without binding a port.
  */
-export async function createHttpApp(config: HttpConfig): Promise<express.Express> {
-  return (await buildHttpApp(config)).app;
+export async function createHttpApp(config: HttpConfig, options: HttpAppOptions = {}): Promise<express.Express> {
+  return (await buildHttpApp(config, options)).app;
 }
 
-/** Like createHttpApp, also returning the session manager so its owner can shut it down. */
-export async function buildHttpApp(config: HttpConfig): Promise<HttpApp> {
+/** Like createHttpApp, also returning the session manager and jobs so their owner can start and stop them. */
+export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions = {}): Promise<HttpApp> {
   const app = express();
   // Number of reverse-proxy hops to trust for X-Forwarded-* (rate limiting, audit
   // logging). Defaults to 0 (trust none) so a self-hosted, direct-exposed instance
@@ -145,30 +159,39 @@ export async function buildHttpApp(config: HttpConfig): Promise<HttpApp> {
   //    state-changing surface. The one cookie (the SameSite=Lax consent cookie
   //    the federation legs require) only proves which browser saw the consent
   //    page; it grants nothing by itself.
+  const upstreamStages: string[] = [];
   if (config.enableDnsRebindingProtection) {
     const hosts = config.allowedHosts ?? [];
-    app.use(hostValidation(hosts, { skipPaths: ['/health'] }));
+    upstreamStages.push(
+      ...mountStages(
+        app,
+        undefined,
+        [stage('host-validation', hostValidation(hosts, { skipPaths: ['/health'] }))],
+        options.observeStage
+      )
+    );
     app.use('/mcp', originValidation(config.allowedOrigins ?? deriveOriginsFromHosts(hosts)));
   }
-  // The YNAB OAuth legs get the limit the SDK puts on /authorize (100 per 15
-  // minutes), the step right before them in the same browser flow, so a login
-  // that gets past /authorize isn't then refused here. The callback reads
-  // storage and can call YNAB's token endpoint, so it must not be unlimited.
-  // Mounted before body parsing so a limited request costs no parsing. The
-  // client IP comes from req.ip, so TRUST_PROXY must match the proxy hops, or
-  // every client behind the proxy shares one budget.
+
+  // oauth mode: storage, then the authorization server (src/auth/as-router.ts).
+  // Each AS route carries its own bounded parser (and the /oauth legs their
+  // limiter, ahead of it), so the AS is mounted before the global JSON parser.
+  let storage: Storage | undefined;
+  let oauth: { as: AuthorizationServer; resolver: YnabTokenResolver } | undefined;
   if (config.authMode === 'oauth') {
-    app.use(
-      '/oauth',
-      rateLimit({
-        windowMs: 15 * 60 * 1000,
-        limit: OAUTH_LEG_RATE_LIMIT,
-        standardHeaders: true,
-        legacyHeaders: false,
-        message: 'Too many authorization requests. Please wait and try again.',
-      })
-    );
+    storage = await buildStorage(config);
+    const encryptor = new Encryptor(config.encryptionKey);
+    const ynab = {
+      clientId: config.oauthClientId as string,
+      clientSecret: config.oauthClientSecret as string,
+    };
+    oauth = {
+      as: mountAuthorizationServer(app, { config, storage, encryptor, ynab, observeStage: options.observeStage }),
+      resolver: new YnabTokenResolver(storage, encryptor, ynab),
+    };
   }
+  const asPipeline = oauth?.as.routes.map((r) => ({ route: r.route, stages: [...upstreamStages, ...r.stages] }));
+
   app.use(express.json({ limit: MAX_JSON_BODY }));
 
   const sessions = new SessionManager({
@@ -187,132 +210,24 @@ export async function buildHttpApp(config: HttpConfig): Promise<HttpApp> {
     res.json({ status: 'ok', transport: 'http', authMode: config.authMode, sessions: sessions.size });
   });
 
+  // Extension routes (src/http/extensions.ts): after host validation, the AS
+  // and the JSON parser; before /mcp.
+  const extensionContext: ExtensionContext = { config, storage };
+  const extensionRouter = express.Router();
+  for (const route of options.routes ?? registeredRoutes) route.mount(extensionRouter, extensionContext);
+  app.use(extensionRouter);
+  const jobs = createJobRunner(options.jobs ?? registeredJobs, extensionContext);
+
   // Resolves the per-session UserContext at `initialize` time.
   let resolveInitContext: (req: Request) => Promise<ContextResult>;
   // RFC 9728 metadata URL advertised in 401 challenges (oauth mode only).
   let resourceMetadataUrl: string | undefined;
 
-  if (config.authMode === 'oauth') {
-    // --- OAuth mode: AS endpoints + YNAB federation ---
-    const storage = await buildStorage(config);
-    const encryptor = new Encryptor(config.encryptionKey);
-    const ynab = {
-      clientId: config.oauthClientId as string,
-      clientSecret: config.oauthClientSecret as string,
-    };
-    const publicUrl = config.publicUrl as string;
-    // The protected resource (RFC 8707 audience) every token is bound to.
-    const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
-    // The issuer identifier: published in AS metadata and sent as `iss` on every
-    // authorization response (RFC 9207), so both must use this exact string.
-    const issuerUrl = new URL(publicUrl);
-    const provider = new McpOAuthProvider({
-      storage,
-      encryptor,
-      ynab,
-      publicUrl,
-      issuer: issuerUrl.href,
-      resourceUrl: resourceServerUrl.href,
-      allowWrite: config.allowWrite,
-      globalReadOnly: config.readOnly,
-      accessTokenTtlSec: config.accessTokenTtlSec,
-      authCodeTtlSec: config.authCodeTtlSec,
-    });
-    const resolver = new YnabTokenResolver(storage, encryptor, ynab);
-
-    // Protected-resource metadata (RFC 9728) describes the MCP endpoint, so it is
-    // served at the path-aware well-known URL for the resource (e.g.
-    // /.well-known/oauth-protected-resource/mcp). The SDK's own PRM lacks
-    // bearer_methods_supported, so it is mounted explicitly (first match wins)
-    // with the SDK's metadataHandler (CORS: any origin, GET/OPTIONS only).
-    const scopesSupported = ['read-only', 'read-write'];
-    const resourceName = 'YNAB MCP Server';
-    resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceServerUrl);
-    const protectedResourceMetadata = {
-      resource: resourceServerUrl.href,
-      authorization_servers: [issuerUrl.href],
-      scopes_supported: scopesSupported,
-      bearer_methods_supported: ['header'],
-      resource_name: resourceName,
-    };
-    app.use(new URL(resourceMetadataUrl).pathname, metadataHandler(protectedResourceMetadata));
-    // Root alias for clients that probe the non-path-aware location.
-    app.use('/.well-known/oauth-protected-resource', metadataHandler(protectedResourceMetadata));
-
-    // AS metadata (RFC 8414) is the SDK's, plus
-    // authorization_response_iss_parameter_supported (RFC 9207 section 3), which
-    // the SDK does not emit; mounted ahead of the SDK router, which also serves it.
-    const authRouterOptions = { provider, issuerUrl, resourceServerUrl, scopesSupported, resourceName };
-    const oauthMetadata = {
-      ...createOAuthMetadata(authRouterOptions),
-      authorization_response_iss_parameter_supported: true,
-    };
-    app.use('/.well-known/oauth-authorization-server', metadataHandler(oauthMetadata));
-    // The SDK's /authorize handler redirects errors to the client without `iss`;
-    // this adds it to every redirect from the authorization endpoint (only).
-    app.use(
-      new URL(oauthMetadata.authorization_endpoint).pathname,
-      issOnAuthorizationRedirects(oauthMetadata.issuer)
-    );
-
-    // OAuth 2.1 AS endpoints (/authorize, /token, /register, /revoke, metadata).
-    app.use(mcpAuthRouter(authRouterOptions));
-
-    // YNAB federation legs. Each requires the consent cookie that /authorize set
-    // for this state (provider.consentCookie), so the legs only run in the
-    // browser that was shown the consent page.
-    const consentNonce = (req: Request, state: string): string | undefined =>
-      provider.consentCookie.read(req.header('cookie'), state);
-    app.get('/oauth/ynab/start', async (req: Request, res: Response) => {
-      try {
-        const state = String(req.query['state'] ?? '');
-        const scope = req.query['scope'] === 'read-write' ? 'read-write' : 'read-only';
-        const url = await provider.startYnabAuthorization(state, scope, consentNonce(req, state));
-        res.redirect(url);
-      } catch {
-        res.status(400).send('Authorization request expired or invalid. Please start over.');
-      }
-    });
-    app.get('/oauth/ynab/callback', async (req: Request, res: Response) => {
-      try {
-        const code = String(req.query['code'] ?? '');
-        const state = String(req.query['state'] ?? '');
-        const error = req.query['error'];
-        if (state && error !== undefined) {
-          // YNAB refused (e.g. the user clicked Deny). Tell the MCP client, with a
-          // fixed error code; YNAB's own error text is never forwarded.
-          const denial = error === 'access_denied' ? 'access_denied' : 'server_error';
-          const redirect = await provider.denyAuthorization(state, denial, consentNonce(req, state));
-          res.append('Set-Cookie', provider.consentCookie.clear(state));
-          res.redirect(redirect);
-          return;
-        }
-        if (!code || !state) {
-          res.status(400).send('Missing code or state.');
-          return;
-        }
-        const redirect = await provider.handleYnabCallback(code, state, consentNonce(req, state));
-        res.append('Set-Cookie', provider.consentCookie.clear(state));
-        res.redirect(redirect);
-      } catch {
-        res.status(400).send('Could not complete YNAB authorization. Please start over.');
-      }
-    });
-    // "Cancel" on the consent screen: an access_denied authorization response.
-    app.get('/oauth/cancel', async (req: Request, res: Response) => {
-      try {
-        const state = String(req.query['state'] ?? '');
-        if (!state) {
-          res.status(400).send('Missing state.');
-          return;
-        }
-        const redirect = await provider.denyAuthorization(state, 'access_denied', consentNonce(req, state));
-        res.append('Set-Cookie', provider.consentCookie.clear(state));
-        res.redirect(redirect);
-      } catch {
-        res.status(400).send('Authorization request expired or invalid. Please start over.');
-      }
-    });
+  if (oauth) {
+    // --- OAuth mode: the AS is mounted above; /mcp takes its bearer tokens ---
+    const { provider, resourceServerUrl } = oauth.as;
+    const resolver = oauth.resolver;
+    resourceMetadataUrl = oauth.as.resourceMetadataUrl;
 
     // Protect the MCP endpoint with the bearer verifier. expectedResource makes the
     // SDK refuse (401 invalid_token) any token whose audience is not this resource;
@@ -497,18 +412,22 @@ export async function buildHttpApp(config: HttpConfig): Promise<HttpApp> {
     }
   });
 
-  return { app, sessions };
+  return { app, sessions, jobs, asPipeline };
 }
 
 /**
  * Build and start the HTTP server. Returns the Node http.Server; closing it
  * also closes every live session (an open SSE stream would otherwise keep it
- * from ever finishing closing) and stops the idle sweep.
+ * from ever finishing closing), stops the idle sweep and stops the extension
+ * jobs, which start here once storage is ready.
  */
 export async function startHttpServer(
-  config: HttpConfig
+  config: HttpConfig,
+  options: HttpAppOptions = {}
 ): Promise<ReturnType<express.Express['listen']>> {
-  const { app, sessions } = await buildHttpApp(config);
+  const { app, sessions, jobs } = await buildHttpApp(config, options);
+  // Storage is ready once the app is built.
+  jobs.start();
   const httpServer = app.listen(config.port, () => {
     console.error(`YNAB MCP Server (HTTP, ${config.authMode} auth) listening on port ${config.port}`);
     console.error(
@@ -529,7 +448,7 @@ export async function startHttpServer(
   httpServer.close = (callback) => {
     // The streams ended by closing the sessions leave idle keep-alive
     // connections, which would otherwise hold close() open until they time out.
-    void sessions.close().then(() => httpServer.closeIdleConnections());
+    void Promise.all([sessions.close(), jobs.stop()]).then(() => httpServer.closeIdleConnections());
     return closeServer(callback);
   };
   return httpServer;
