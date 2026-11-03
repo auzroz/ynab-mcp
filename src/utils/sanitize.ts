@@ -7,10 +7,10 @@
 
 /**
  * Bidirectional control characters that can reorder displayed text:
- * ARABIC LETTER MARK (U+061C), LRE/RLE/PDF/LRO/RLO (U+202A-U+202E),
- * and LRI/RLI/FSI/PDI (U+2066-U+2069).
+ * ARABIC LETTER MARK (U+061C), LRM/RLM (U+200E-U+200F),
+ * LRE/RLE/PDF/LRO/RLO (U+202A-U+202E) and LRI/RLI/FSI/PDI (U+2066-U+2069).
  */
-const BIDI_CONTROL_PATTERN = /[\u061C\u202A-\u202E\u2066-\u2069]/g;
+const BIDI_CONTROL_PATTERN = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 
 /**
  * Remove bidirectional control characters from a string.

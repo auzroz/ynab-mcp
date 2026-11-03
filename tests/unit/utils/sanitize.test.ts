@@ -12,6 +12,8 @@ describe('sanitize utilities', () => {
   describe('stripBidi', () => {
     it.each([
       ['U+061C ARABIC LETTER MARK', '\u061C'],
+      ['U+200E LRM', '\u200E'],
+      ['U+200F RLM', '\u200F'],
       ['U+202A LRE', '\u202A'],
       ['U+202B RLE', '\u202B'],
       ['U+202C PDF', '\u202C'],
