@@ -56,7 +56,7 @@ describe('sanitize utilities', () => {
     });
 
     it('applies length limits after stripping bidi controls', () => {
-      // 10 visible chars plus 5 bidi controls; the limit counts only visible chars
+      // 15 visible chars plus 4 bidi controls; the limit of 10 counts only visible chars
       expect(sanitizeString('abc\u202Adef\u202Bghi\u202Cjkl\u202Dmno', 10)).toBe('abcdefg...');
     });
   });
