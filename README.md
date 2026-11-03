@@ -9,6 +9,8 @@
 
 A comprehensive [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for **YNAB (You Need A Budget)** that enables AI assistants like **Claude Desktop** to read your budget, analyze spending patterns, detect subscriptions, and provide personalized financial insights—all through natural conversation.
 
+**Documentation site:** <https://auzroz.github.io/ynab-mcp/>, with installation, example conversations and the full tool reference.
+
 ## Why YNAB MCP?
 
 Traditional YNAB integrations require manual API calls or custom scripting. This MCP server lets you:
