@@ -37,8 +37,8 @@ export const ADDED_COLUMNS: readonly AddedColumn[] = [
 
 export interface AddedIndex {
   name: string;
-  table: 'access_tokens' | 'refresh_tokens' | 'consumed_refresh_tokens';
-  column: 'family_id' | 'expires_at';
+  table: 'access_tokens' | 'refresh_tokens' | 'consumed_refresh_tokens' | 'consumed_auth_codes';
+  column: 'family_id' | 'expires_at' | 'user_id';
 }
 
 /** Indexes added since 0.3.x, created after {@link ADDED_COLUMNS}. */
@@ -47,4 +47,32 @@ export const ADDED_INDEXES: readonly AddedIndex[] = [
   { name: 'access_tokens_family_id', table: 'access_tokens', column: 'family_id' },
   { name: 'refresh_tokens_family_id', table: 'refresh_tokens', column: 'family_id' },
   { name: 'consumed_refresh_tokens_expires_at', table: 'consumed_refresh_tokens', column: 'expires_at' },
+  // 0.5.0 (M1): pruning of expired code tombstones, and deletion by user.
+  { name: 'consumed_auth_codes_expires_at', table: 'consumed_auth_codes', column: 'expires_at' },
+  { name: 'consumed_auth_codes_user_id', table: 'consumed_auth_codes', column: 'user_id' },
 ];
+
+/**
+ * 0.5.0 (M1): tombstones of authorization codes spent at the token endpoint
+ * (RFC 9700 section 4.2.1), per dialect. A new table, created IF NOT EXISTS
+ * before {@link ADDED_INDEXES}; 0.4.x ignores it. `revoked` is 0/1 on SQLite
+ * and a boolean on Postgres.
+ */
+export const CONSUMED_AUTH_CODES_TABLE = {
+  sqlite: `CREATE TABLE IF NOT EXISTS consumed_auth_codes (
+        code TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        user_id TEXT,
+        family_id TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked INTEGER NOT NULL DEFAULT 0
+      );`,
+  postgres: `CREATE TABLE IF NOT EXISTS consumed_auth_codes (
+        code TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        user_id TEXT,
+        family_id TEXT NOT NULL,
+        expires_at BIGINT NOT NULL,
+        revoked BOOLEAN NOT NULL DEFAULT FALSE
+      );`,
+} as const;

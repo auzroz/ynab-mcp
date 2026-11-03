@@ -908,3 +908,532 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
     return s;
   });
 });
+
+// --- Authorization-code tombstones (0.5.0, M1; RFC 9700 section 4.2.1) ---
+
+/** A spend of a code into the fresh family `familyId`, its tombstone kept for 10 minutes. */
+function makeConsumption(familyId: string = randomUUID()): { familyId: string; consumedUntil: number } {
+  return { familyId, consumedUntil: Date.now() + 600_000 };
+}
+
+/** The pair issued for a spent code, in `familyId`. */
+function makeCodeTokens(familyId: string) {
+  return {
+    familyId,
+    accessToken: makeAccessToken({ familyId }),
+    refreshToken: makeRefreshToken({ familyId }),
+  };
+}
+
+function runCodeTombstoneConformance(name: string, factory: () => Promise<Storage>): void {
+  describe(`Code tombstones: ${name}`, () => {
+    let storage: Storage;
+
+    beforeEach(async () => {
+      storage = await factory();
+    });
+
+    afterEach(async () => {
+      vi.useRealTimers();
+      await storage.close();
+    });
+
+    it('spends a live code once and records its tombstone with the pre-allocated family', async () => {
+      const code = makeAuthCode({ userId: 'user-7', resource: 'https://r/mcp', grantedScope: 'read-write' });
+      await storage.saveAuthCode(code);
+      const consumption = makeConsumption();
+
+      expect(await storage.consumeAuthCode(code.code, consumption)).toEqual(code);
+      expect(await storage.getConsumedAuthCode(code.code)).toEqual({
+        code: code.code,
+        clientId: code.clientId,
+        userId: 'user-7',
+        familyId: consumption.familyId,
+        expiresAt: consumption.consumedUntil,
+        revoked: false,
+      });
+      // Gone from the live codes, whichever way it is taken next.
+      expect(await storage.consumeAuthCode(code.code, makeConsumption())).toBeUndefined();
+      expect(await storage.takeAuthCode(code.code)).toBeUndefined();
+      // A second spend never rewrites the tombstone.
+      expect((await storage.getConsumedAuthCode(code.code))?.familyId).toBe(consumption.familyId);
+    });
+
+    it('records nothing for an unknown or expired code', async () => {
+      expect(await storage.consumeAuthCode('never-issued', makeConsumption())).toBeUndefined();
+      expect(await storage.getConsumedAuthCode('never-issued')).toBeUndefined();
+
+      const expired = makeAuthCode({ expiresAt: Date.now() - 1 });
+      await storage.saveAuthCode(expired);
+      expect(await storage.consumeAuthCode(expired.code, makeConsumption())).toBeUndefined();
+      expect(await storage.getConsumedAuthCode(expired.code)).toBeUndefined();
+      // The expired code is still deleted.
+      expect(await storage.takeAuthCode(expired.code)).toBeUndefined();
+    });
+
+    it('a code taken without a tombstone (takeAuthCode) leaves nothing to revoke', async () => {
+      const code = makeAuthCode();
+      await storage.saveAuthCode(code);
+      await storage.takeAuthCode(code.code);
+      expect(await storage.revokeConsumedAuthCode(code.code)).toBeUndefined();
+    });
+
+    it('lets exactly one of several concurrent spends of a code succeed', async () => {
+      const code = makeAuthCode();
+      await storage.saveAuthCode(code);
+      const spends = Array.from({ length: 5 }, () => makeConsumption());
+      const results = await Promise.all(spends.map((c) => storage.consumeAuthCode(code.code, c)));
+      const winners = results.flatMap((r, i) => (r ? [i] : []));
+      expect(winners).toHaveLength(1);
+      // The tombstone names the winner's family.
+      const winner = spends[winners[0] as number];
+      expect((await storage.getConsumedAuthCode(code.code))?.familyId).toBe(winner?.familyId);
+    });
+
+    it('saves the code tokens only for the live, unrevoked tombstone and its own family', async () => {
+      const code = makeAuthCode();
+      await storage.saveAuthCode(code);
+      const { familyId } = makeConsumption();
+      await storage.consumeAuthCode(code.code, { familyId, consumedUntil: Date.now() + 600_000 });
+
+      // Another family, or a code with no tombstone: refused, nothing written.
+      const wrongFamily = makeCodeTokens(randomUUID());
+      expect(await storage.saveCodeTokens(code.code, wrongFamily)).toBe(false);
+      expect(await storage.getAccessToken(wrongFamily.accessToken.token)).toBeUndefined();
+      expect(await storage.getRefreshToken(wrongFamily.refreshToken.token)).toBeUndefined();
+      const noTombstone = makeCodeTokens(familyId);
+      expect(await storage.saveCodeTokens('never-issued', noTombstone)).toBe(false);
+      expect(await storage.getAccessToken(noTombstone.accessToken.token)).toBeUndefined();
+
+      const pair = makeCodeTokens(familyId);
+      expect(await storage.saveCodeTokens(code.code, pair)).toBe(true);
+      expect(await storage.getAccessToken(pair.accessToken.token)).toEqual(pair.accessToken);
+      expect(await storage.getRefreshToken(pair.refreshToken.token)).toEqual(pair.refreshToken);
+    });
+
+    it('a replay revokes the family the code produced, and nothing else', async () => {
+      const code = makeAuthCode();
+      await storage.saveAuthCode(code);
+      const { familyId } = makeConsumption();
+      await storage.consumeAuthCode(code.code, { familyId, consumedUntil: Date.now() + 600_000 });
+      const pair = makeCodeTokens(familyId);
+      await storage.saveCodeTokens(code.code, pair);
+      // A refresh in the family's chain, another family, and a legacy token.
+      const rotated = makeRotation(familyId);
+      await storage.rotateRefreshToken(pair.refreshToken.token, rotated);
+      const otherFamily = randomUUID();
+      const otherAt = makeAccessToken({ familyId: otherFamily });
+      const otherRt = makeRefreshToken({ familyId: otherFamily });
+      const legacyAt = makeAccessToken();
+      await storage.saveAccessToken(otherAt);
+      await storage.saveRefreshToken(otherRt);
+      await storage.saveAccessToken(legacyAt);
+
+      expect(await storage.revokeConsumedAuthCode(code.code)).toMatchObject({
+        code: code.code,
+        familyId,
+        revoked: true,
+      });
+
+      expect(await storage.getAccessToken(pair.accessToken.token)).toBeUndefined();
+      expect(await storage.getAccessToken(rotated.accessToken.token)).toBeUndefined();
+      expect(await storage.getRefreshToken(rotated.refreshToken.token)).toBeUndefined();
+      expect(await storage.getAccessToken(otherAt.token)).toEqual(otherAt);
+      expect(await storage.getRefreshToken(otherRt.token)).toEqual(otherRt);
+      expect(await storage.getAccessToken(legacyAt.token)).toEqual(legacyAt);
+      expect((await storage.getConsumedAuthCode(code.code))?.revoked).toBe(true);
+      // A further replay finds it revoked already; still no tokens.
+      expect(await storage.revokeConsumedAuthCode(code.code)).toMatchObject({ revoked: true });
+    });
+
+    it('refuses the code tokens once a replay has revoked the tombstone', async () => {
+      const code = makeAuthCode();
+      await storage.saveAuthCode(code);
+      const { familyId } = makeConsumption();
+      await storage.consumeAuthCode(code.code, { familyId, consumedUntil: Date.now() + 600_000 });
+      await storage.revokeConsumedAuthCode(code.code);
+
+      const pair = makeCodeTokens(familyId);
+      expect(await storage.saveCodeTokens(code.code, pair)).toBe(false);
+      expect(await storage.getAccessToken(pair.accessToken.token)).toBeUndefined();
+      expect(await storage.getRefreshToken(pair.refreshToken.token)).toBeUndefined();
+    });
+
+    it('reads an expired tombstone as absent: no revocation, no tokens saved', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const t0 = Date.now();
+      const code = makeAuthCode();
+      await storage.saveAuthCode(code);
+      const familyId = randomUUID();
+      await storage.consumeAuthCode(code.code, { familyId, consumedUntil: t0 + 1000 });
+      const live = makeAccessToken({ familyId });
+      await storage.saveAccessToken(live);
+
+      vi.setSystemTime(t0 + 1001);
+      expect(await storage.getConsumedAuthCode(code.code)).toBeUndefined();
+      expect(await storage.revokeConsumedAuthCode(code.code)).toBeUndefined();
+      expect(await storage.saveCodeTokens(code.code, makeCodeTokens(familyId))).toBe(false);
+      expect(await storage.getAccessToken(live.token)).toMatchObject({ token: live.token });
+    });
+
+    it('prunes expired tombstones when it records a new one', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const t0 = Date.now();
+      const stale = makeAuthCode();
+      const kept = makeAuthCode();
+      await storage.saveAuthCode(stale);
+      await storage.consumeAuthCode(stale.code, { familyId: randomUUID(), consumedUntil: t0 + 1000 });
+      await storage.saveAuthCode(kept);
+      await storage.consumeAuthCode(kept.code, { familyId: randomUUID(), consumedUntil: t0 + 5000 });
+
+      // Past the stale tombstone's expiry, the next spend prunes it...
+      vi.setSystemTime(t0 + 2000);
+      const next = makeAuthCode({ expiresAt: t0 + 60_000 });
+      await storage.saveAuthCode(next);
+      await storage.consumeAuthCode(next.code, makeConsumption());
+      // ...which shows once the clock is back before its expiry: it is gone.
+      vi.setSystemTime(t0);
+      expect(await storage.getConsumedAuthCode(stale.code)).toBeUndefined();
+      expect(await storage.getConsumedAuthCode(kept.code)).toBeDefined();
+    });
+  });
+}
+
+runCodeTombstoneConformance('MemoryStorage', async () => {
+  const s = new MemoryStorage();
+  await s.init();
+  return s;
+});
+
+describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage code tombstones', () => {
+  const files: string[] = [];
+
+  async function openSqlite(file: string): Promise<Storage> {
+    const { SqliteStorage } = await import('../../../src/storage/sqlite.js');
+    const s = new SqliteStorage({ path: file });
+    await s.init();
+    return s;
+  }
+
+  function newFile(): string {
+    const file = join(tmpdir(), `ynab-mcp-sqlite-codes-${randomUUID()}.db`);
+    files.push(file);
+    return file;
+  }
+
+  runCodeTombstoneConformance('SqliteStorage', () => openSqlite(newFile()));
+
+  it('two processes sharing the file: one spends the code, the other sees its tombstone', async () => {
+    const file = newFile();
+    const a = await openSqlite(file);
+    const b = await openSqlite(file);
+    try {
+      const code = makeAuthCode();
+      await a.saveAuthCode(code);
+      const { familyId } = makeConsumption();
+      expect(await a.consumeAuthCode(code.code, { familyId, consumedUntil: Date.now() + 600_000 })).toEqual(code);
+      expect(await b.consumeAuthCode(code.code, makeConsumption())).toBeUndefined();
+      expect(await b.revokeConsumedAuthCode(code.code)).toMatchObject({ familyId, revoked: true });
+      expect(await a.saveCodeTokens(code.code, makeCodeTokens(familyId))).toBe(false);
+    } finally {
+      await a.close();
+      await b.close();
+    }
+  });
+
+  it('creates the tombstone table and its indexes on a 0.3.x database, and spends a legacy code', async () => {
+    const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3');
+    const file = newFile();
+    const raw = new Database(file);
+    raw.exec(legacySchema('INTEGER'));
+    raw.exec(legacyRows(Date.now() + 3_600_000));
+    raw.close();
+
+    const first = await openSqlite(file);
+    await first.close();
+    const s = await openSqlite(file); // init() twice is a no-op
+    try {
+      const { familyId } = makeConsumption();
+      expect(
+        await s.consumeAuthCode('legacy-code', { familyId, consumedUntil: Date.now() + 600_000 })
+      ).toMatchObject({ code: 'legacy-code', userId: 'legacy-user', grantedScope: undefined });
+      expect(await s.saveCodeTokens('legacy-code', makeCodeTokens(familyId))).toBe(true);
+    } finally {
+      await s.close();
+    }
+    const db = new Database(file, { readonly: true });
+    try {
+      const cols = (db.prepare('PRAGMA table_info(consumed_auth_codes)').all() as Array<{ name: string }>).map(
+        (c) => c.name
+      );
+      expect(cols).toEqual(['code', 'client_id', 'user_id', 'family_id', 'expires_at', 'revoked']);
+      const indexes = (db.prepare('PRAGMA index_list(consumed_auth_codes)').all() as Array<{ name: string }>).map(
+        (i) => i.name
+      );
+      expect(indexes).toEqual(
+        expect.arrayContaining(['consumed_auth_codes_expires_at', 'consumed_auth_codes_user_id'])
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  afterAll(() => {
+    for (const f of files) {
+      rmSync(f, { force: true });
+      rmSync(`${f}-wal`, { force: true });
+      rmSync(`${f}-shm`, { force: true });
+    }
+  });
+});
+
+describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage code tombstones', () => {
+  async function openPostgres(connectionString?: string): Promise<Storage> {
+    const { PostgresStorage } = await import('../../../src/storage/postgres.js');
+    const url = connectionString ?? process.env.DATABASE_URL;
+    if (!url) throw new Error('DATABASE_URL not set');
+    const s = new PostgresStorage({ connectionString: url });
+    await s.init();
+    return s;
+  }
+
+  runCodeTombstoneConformance('PostgresStorage', () => openPostgres());
+
+  it('creates the tombstone table and its indexes on a 0.3.x schema, and spends a legacy code', async () => {
+    const pg = (await import('pg')).default;
+    const base = process.env.DATABASE_URL;
+    if (!base) throw new Error('DATABASE_URL not set');
+    const schema = `legacy_codes_${randomUUID().replace(/-/g, '')}`;
+    const url = new URL(base);
+    url.searchParams.set('options', `-c search_path=${schema}`);
+    const admin = new pg.Pool({ connectionString: base });
+    try {
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      const raw = new pg.Pool({ connectionString: url.toString() });
+      try {
+        await raw.query(legacySchema('BIGINT'));
+        await raw.query(legacyRows(Date.now() + 3_600_000));
+      } finally {
+        await raw.end();
+      }
+      const first = await openPostgres(url.toString());
+      await first.close();
+      const s = await openPostgres(url.toString()); // init() twice is a no-op
+      try {
+        const { familyId } = makeConsumption();
+        expect(
+          await s.consumeAuthCode('legacy-code', { familyId, consumedUntil: Date.now() + 600_000 })
+        ).toMatchObject({ code: 'legacy-code', userId: 'legacy-user', grantedScope: undefined });
+        expect(await s.saveCodeTokens('legacy-code', makeCodeTokens(familyId))).toBe(true);
+      } finally {
+        await s.close();
+      }
+      const cols = await admin.query<{ column_name: string; data_type: string }>(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = $1 AND table_name = 'consumed_auth_codes' ORDER BY ordinal_position`,
+        [schema]
+      );
+      expect(cols.rows.map((r) => [r.column_name, r.data_type])).toEqual([
+        ['code', 'text'],
+        ['client_id', 'text'],
+        ['user_id', 'text'],
+        ['family_id', 'text'],
+        ['expires_at', 'bigint'],
+        ['revoked', 'boolean'],
+      ]);
+      const indexes = await admin.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = 'consumed_auth_codes'`,
+        [schema]
+      );
+      expect(indexes.rows.map((r) => r.indexname)).toEqual(
+        expect.arrayContaining(['consumed_auth_codes_expires_at', 'consumed_auth_codes_user_id'])
+      );
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.end();
+    }
+  });
+
+  describe('family lock: a replay vs. the code exchange in flight (two pools)', () => {
+    async function setup() {
+      const { LOCK_FAMILY } = await import('../../../src/storage/postgres.js');
+      const pg = (await import('pg')).default;
+      const connectionString = process.env.DATABASE_URL;
+      if (!connectionString) throw new Error('DATABASE_URL not set');
+      const storage = await openPostgres(connectionString);
+      const raw = new pg.Pool({ connectionString });
+      return { storage, raw, LOCK_FAMILY };
+    }
+
+    /**
+     * Resolves once another backend is queued for `familyId`'s family lock: the
+     * barrier that the call under test has reached the lock and is blocked on it.
+     * Polls the lock table (no timers); fails if the call settles first.
+     */
+    async function lockWaiter(
+      raw: import('pg').Pool,
+      familyId: string,
+      call: { settled: () => boolean }
+    ): Promise<void> {
+      for (;;) {
+        if (call.settled()) throw new Error('the call settled without waiting for the family lock');
+        const res = await raw.query(
+          `SELECT 1 FROM pg_locks
+           WHERE locktype = 'advisory' AND NOT granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+             AND classid = $1::bigint::oid AND objid = (hashtext($2)::bigint & 4294967295)::oid AND objsubid = 2`,
+          [0x666d6c79, familyId]
+        );
+        if ((res.rowCount ?? 0) > 0) return;
+      }
+    }
+
+    function track<T>(p: Promise<T>): { promise: Promise<T>; settled: () => boolean } {
+      let done = false;
+      const promise = p.finally(() => {
+        done = true;
+      });
+      return { promise, settled: () => done };
+    }
+
+    async function spentCode(storage: Storage): Promise<{ code: string; familyId: string }> {
+      const code = makeAuthCode();
+      await storage.saveAuthCode(code);
+      const familyId = randomUUID();
+      await storage.consumeAuthCode(code.code, { familyId, consumedUntil: Date.now() + 600_000 });
+      return { code: code.code, familyId };
+    }
+
+    it('a replay waits for a code exchange in flight and revokes the pair it saved', async () => {
+      const { storage, raw, LOCK_FAMILY } = await setup();
+      const tx = await raw.connect();
+      try {
+        const { code, familyId } = await spentCode(storage);
+        const pair = makeCodeTokens(familyId);
+        // saveCodeTokens by hand on another connection, left uncommitted.
+        await tx.query('BEGIN');
+        await tx.query(LOCK_FAMILY, [familyId]);
+        await tx.query(
+          `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, family_id)
+           VALUES ($1, 'client-1', 'user-1', '["read"]', $2, $3)`,
+          [pair.accessToken.token, Date.now() + 60_000, familyId]
+        );
+        await tx.query(
+          `INSERT INTO refresh_tokens (token, client_id, user_id, scopes, family_id)
+           VALUES ($1, 'client-1', 'user-1', '["read"]', $2)`,
+          [pair.refreshToken.token, familyId]
+        );
+
+        const replay = track(storage.revokeConsumedAuthCode(code));
+        await lockWaiter(raw, familyId, replay);
+        await tx.query('COMMIT');
+        expect(await replay.promise).toMatchObject({ familyId, revoked: true });
+
+        expect(await storage.getAccessToken(pair.accessToken.token)).toBeUndefined();
+        expect(await storage.getRefreshToken(pair.refreshToken.token)).toBeUndefined();
+      } finally {
+        await tx.query('ROLLBACK').catch(() => undefined);
+        tx.release();
+        await raw.end();
+        await storage.close();
+      }
+    });
+
+    it('a code exchange waits for a replay in flight and then saves nothing', async () => {
+      const { storage, raw, LOCK_FAMILY } = await setup();
+      const tx = await raw.connect();
+      try {
+        const { code, familyId } = await spentCode(storage);
+        // revokeConsumedAuthCode by hand on another connection, left uncommitted.
+        await tx.query('BEGIN');
+        await tx.query(LOCK_FAMILY, [familyId]);
+        await tx.query('UPDATE consumed_auth_codes SET revoked = TRUE WHERE code = $1', [code]);
+
+        const pair = makeCodeTokens(familyId);
+        const save = track(storage.saveCodeTokens(code, pair));
+        await lockWaiter(raw, familyId, save);
+        await tx.query('COMMIT');
+        expect(await save.promise).toBe(false);
+
+        expect(await storage.getAccessToken(pair.accessToken.token)).toBeUndefined();
+        expect(await storage.getRefreshToken(pair.refreshToken.token)).toBeUndefined();
+      } finally {
+        await tx.query('ROLLBACK').catch(() => undefined);
+        tx.release();
+        await raw.end();
+        await storage.close();
+      }
+    });
+
+    it("a replay takes its table locks in migrate()'s order, so a replica starting up can't deadlock it", async () => {
+      // migrate() locks the token tables (ALTER, CREATE INDEX) before
+      // consumed_auth_codes. Stand in for a migrate between the two: hold the
+      // token tables, let the replay queue on them, then take the tombstone
+      // table. If the replay already held it, this would deadlock.
+      const pg = (await import('pg')).default;
+      const base = process.env.DATABASE_URL;
+      if (!base) throw new Error('DATABASE_URL not set');
+      const appName = `replay-${randomUUID().slice(0, 8)}`;
+      const url = new URL(base);
+      url.searchParams.set('application_name', appName);
+      const storage = await openPostgres(url.toString());
+      const raw = new pg.Pool({ connectionString: base });
+      const tx = await raw.connect();
+      try {
+        const { code, familyId } = await spentCode(storage);
+        await tx.query('BEGIN');
+        await tx.query("SET LOCAL lock_timeout = '5s'");
+        await tx.query('LOCK TABLE access_tokens, refresh_tokens IN SHARE MODE');
+        const replay = track(storage.revokeConsumedAuthCode(code));
+        for (;;) {
+          if (replay.settled()) throw new Error('the replay did not wait for the token tables');
+          const waiting = await raw.query(
+            `SELECT 1 FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock'`,
+            [appName]
+          );
+          if ((waiting.rowCount ?? 0) > 0) break;
+        }
+        await tx.query('LOCK TABLE consumed_auth_codes IN SHARE MODE');
+        await tx.query('COMMIT');
+        expect(await replay.promise).toMatchObject({ familyId, revoked: true });
+      } finally {
+        await tx.query('ROLLBACK').catch(() => undefined);
+        tx.release();
+        await raw.end();
+        await storage.close();
+      }
+    });
+
+    it('two replicas racing an exchange and a replay of one code never leave a live token', async () => {
+      const a = await openPostgres();
+      const b = await openPostgres();
+      try {
+        for (let i = 0; i < 10; i++) {
+          const code = makeAuthCode();
+          await a.saveAuthCode(code);
+          const familyId = randomUUID();
+          const spends = await Promise.all([
+            a.consumeAuthCode(code.code, { familyId, consumedUntil: Date.now() + 600_000 }),
+            b.consumeAuthCode(code.code, { familyId: randomUUID(), consumedUntil: Date.now() + 600_000 }),
+          ]);
+          // Whichever replica spent the code exchanges it; the other replays it.
+          const [winner, loser, winnerFamily] = spends[0]
+            ? [a, b, familyId]
+            : [b, a, (await a.getConsumedAuthCode(code.code))?.familyId ?? ''];
+          expect(spends.filter(Boolean)).toHaveLength(1);
+          const pair = makeCodeTokens(winnerFamily);
+          const [saved, revoked] = await Promise.all([
+            winner.saveCodeTokens(code.code, pair),
+            loser.revokeConsumedAuthCode(code.code),
+          ]);
+          expect(revoked).toMatchObject({ revoked: true });
+          expect(typeof saved).toBe('boolean');
+          expect(await a.getAccessToken(pair.accessToken.token)).toBeUndefined();
+          expect(await b.getRefreshToken(pair.refreshToken.token)).toBeUndefined();
+        }
+      } finally {
+        await a.close();
+        await b.close();
+      }
+    });
+  });
+});

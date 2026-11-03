@@ -6,7 +6,8 @@
  * objects are stored as JSON TEXT. One-time records (auth codes, refresh tokens,
  * pending auth) are deleted-and-returned atomically inside a transaction; a
  * refresh-token rotation writes its tombstone and new tokens in that same
- * transaction.
+ * transaction, as spending a code at the token endpoint writes the code's
+ * tombstone.
  */
 
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
@@ -19,10 +20,13 @@ import type {
   RefreshTokenRecord,
   RefreshTokenRotation,
   ConsumedRefreshTokenRecord,
+  ConsumedAuthCodeRecord,
+  AuthCodeConsumption,
+  CodeTokens,
   PendingAuthRecord,
   GrantedScope,
 } from './types.js';
-import { ADDED_COLUMNS, ADDED_INDEXES } from './migrations.js';
+import { ADDED_COLUMNS, ADDED_INDEXES, CONSUMED_AUTH_CODES_TABLE } from './migrations.js';
 
 export interface SqliteStorageOptions {
   path: string;
@@ -91,6 +95,40 @@ interface ConsumedRefreshTokenRow {
   client_id: string;
   family_id: string;
   expires_at: number;
+}
+
+interface ConsumedAuthCodeRow {
+  code: string;
+  client_id: string;
+  user_id: string | null;
+  family_id: string;
+  expires_at: number;
+  revoked: number;
+}
+
+function consumedAuthCodeFromRow(row: ConsumedAuthCodeRow): ConsumedAuthCodeRecord {
+  return {
+    code: row.code,
+    clientId: row.client_id,
+    userId: row.user_id ?? undefined,
+    familyId: row.family_id,
+    expiresAt: row.expires_at,
+    revoked: row.revoked !== 0,
+  };
+}
+
+function authCodeFromRow(row: AuthCodeRow): AuthCodeRecord {
+  return {
+    code: row.code,
+    clientId: row.client_id,
+    userId: row.user_id,
+    redirectUri: row.redirect_uri,
+    codeChallenge: row.code_challenge,
+    scopes: parseScopes(row.scopes),
+    expiresAt: row.expires_at,
+    resource: row.resource ?? undefined,
+    grantedScope: parseGrantedScope(row.granted_scope),
+  };
 }
 
 function parseScopes(json: string): string[] {
@@ -208,6 +246,8 @@ export class SqliteStorage implements Storage {
         family_id TEXT NOT NULL,
         expires_at INTEGER NOT NULL
       );
+      -- 0.5.0 (M1)
+      ${CONSUMED_AUTH_CODES_TABLE.sqlite}
     `);
     migrate(db);
 
@@ -357,17 +397,85 @@ export class SqliteStorage implements Storage {
     });
     const row = take(code);
     if (!row || row.expires_at < Date.now()) return undefined;
-    return {
-      code: row.code,
-      clientId: row.client_id,
-      userId: row.user_id,
-      redirectUri: row.redirect_uri,
-      codeChallenge: row.code_challenge,
-      scopes: parseScopes(row.scopes),
-      expiresAt: row.expires_at,
-      resource: row.resource ?? undefined,
-      grantedScope: parseGrantedScope(row.granted_scope),
-    };
+    return authCodeFromRow(row);
+  }
+
+  async consumeAuthCode(
+    code: string,
+    consumption: AuthCodeConsumption
+  ): Promise<AuthCodeRecord | undefined> {
+    const now = Date.now();
+    const consume = this.database.transaction((c: string): AuthCodeRow | undefined => {
+      this.database.prepare('DELETE FROM consumed_auth_codes WHERE expires_at < ?').run(now);
+      const row = this.database.prepare('SELECT * FROM auth_codes WHERE code = ?').get(c) as
+        | AuthCodeRow
+        | undefined;
+      if (!row) return undefined;
+      this.database.prepare('DELETE FROM auth_codes WHERE code = ?').run(c);
+      if (row.expires_at < now) return undefined;
+      // A code is spent once, so its tombstone is never overwritten.
+      this.database
+        .prepare(
+          `INSERT OR IGNORE INTO consumed_auth_codes (code, client_id, user_id, family_id, expires_at, revoked)
+           VALUES (@code, @clientId, @userId, @familyId, @expiresAt, 0)`
+        )
+        .run({
+          code: c,
+          clientId: row.client_id,
+          userId: row.user_id,
+          familyId: consumption.familyId,
+          expiresAt: consumption.consumedUntil,
+        });
+      return row;
+    });
+    // IMMEDIATE, as in rotateRefreshToken: another process spending the same
+    // code waits for the write lock and then finds the code gone and its
+    // tombstone in place.
+    const row = consume.immediate(code);
+    return row ? authCodeFromRow(row) : undefined;
+  }
+
+  async getConsumedAuthCode(code: string): Promise<ConsumedAuthCodeRecord | undefined> {
+    const row = this.database
+      .prepare('SELECT * FROM consumed_auth_codes WHERE code = ?')
+      .get(code) as ConsumedAuthCodeRow | undefined;
+    if (!row || row.expires_at < Date.now()) return undefined;
+    return consumedAuthCodeFromRow(row);
+  }
+
+  async revokeConsumedAuthCode(code: string): Promise<ConsumedAuthCodeRecord | undefined> {
+    const revoke = this.database.transaction((c: string): ConsumedAuthCodeRow | undefined => {
+      const row = this.database
+        .prepare('UPDATE consumed_auth_codes SET revoked = 1 WHERE code = ? AND expires_at >= ? RETURNING *')
+        .get(c, Date.now()) as ConsumedAuthCodeRow | undefined;
+      if (!row) return undefined;
+      this.database.prepare('DELETE FROM access_tokens WHERE family_id = ?').run(row.family_id);
+      this.database.prepare('DELETE FROM refresh_tokens WHERE family_id = ?').run(row.family_id);
+      return row;
+    });
+    // IMMEDIATE: the write lock is the family lock here; saveCodeTokens takes
+    // it too, so the two never interleave across processes.
+    const row = revoke.immediate(code);
+    return row ? consumedAuthCodeFromRow(row) : undefined;
+  }
+
+  async saveCodeTokens(code: string, tokens: CodeTokens): Promise<boolean> {
+    const save = this.database.transaction((c: string): boolean => {
+      const live = this.database
+        .prepare(
+          `SELECT 1 FROM consumed_auth_codes
+           WHERE code = ? AND family_id = ? AND revoked = 0 AND expires_at >= ?`
+        )
+        .get(c, tokens.familyId, Date.now());
+      if (!live) return false;
+      this.insertAccessToken(tokens.accessToken);
+      this.insertRefreshToken(tokens.refreshToken);
+      return true;
+    });
+    // IMMEDIATE takes the write lock before the check, so a replay's revocation
+    // in another process either committed before it (and the check fails) or
+    // waits until the pair is saved (and then deletes it).
+    return save.immediate(code);
   }
 
   // MCP access tokens
