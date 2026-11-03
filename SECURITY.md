@@ -15,7 +15,7 @@ This is a single-maintainer, volunteer-run project. These are targets, not a ser
 |---|---|
 | Acknowledge your report | within 3 business days |
 | Triage: confirm or decline, and tell you the severity | within 10 business days |
-| Fix for a critical issue | within 30 days of triage |
+| Fix for a critical issue | within 30 days of the report |
 
 Lower-severity issues are fixed in the next appropriate release. A fix ships as a patch release, or as a minor release if the fix has to change behaviour. If a target is going to slip, the maintainer will say so on the report. An advisory is published once the fix is available, and you are credited unless you ask not to be.
 

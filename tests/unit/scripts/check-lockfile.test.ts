@@ -41,6 +41,24 @@ describe('checkLockfile', () => {
     expect(check(lock({ 'node_modules/a/node_modules/b': { version: '1.0.0', inBundle: true } }))).toEqual([]);
   });
 
+  it('rejects inBundle on a top-level entry, with or without resolved', () => {
+    const withUrl = { ...good('foo'), resolved: 'file:foo-1.0.0.tgz', inBundle: true };
+    expect(check(lock({ 'node_modules/foo': withUrl })).join('\n')).toMatch(/inBundle is not allowed on a top-level/);
+    expect(check(lock({ 'node_modules/foo': { version: '1.0.0', inBundle: true } })).join('\n')).toMatch(
+      /inBundle is not allowed/
+    );
+  });
+
+  it('checks a nested inBundle entry that carries a resolved URL', () => {
+    const key = 'node_modules/a/node_modules/b';
+    const bad = { ...good('b'), resolved: 'https://attacker.example/b/-/b-1.0.0.tgz', inBundle: true };
+    expect(check(lock({ [key]: bad })).join('\n')).toMatch(/resolved host must be registry\.npmjs\.org/);
+    expect(check(lock({ [key]: { ...good('b'), inBundle: true } }))).toEqual([]);
+    expect(check(lock({ [key]: { ...good('b'), integrity: 'sha1-abc', inBundle: true } })).join('\n')).toMatch(
+      /sha512/
+    );
+  });
+
   it('rejects a git dependency', () => {
     const problems = check(
       lock({

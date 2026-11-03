@@ -8,7 +8,9 @@
 //   - resolved carries credentials, a query string or a fragment;
 //   - the tarball path does not match the package name and version;
 //   - integrity is missing or not sha512;
-//   - a non-link, non-root entry has no resolved URL.
+//   - a non-link, non-root entry has no resolved URL;
+//   - inBundle is set on a top-level entry, or on an entry that has a resolved URL
+//     (the latter is checked like any other entry).
 //
 // Usage: node scripts/check-lockfile.mjs [path/to/package-lock.json]
 
@@ -53,7 +55,18 @@ export function checkLockfile(lock) {
       problems.push(`${key}: link entries are not allowed (resolved to ${String(entry.resolved)})`);
       continue;
     }
-    if (entry.inBundle === true) continue; // shipped inside its parent tarball
+    if (entry.inBundle === true) {
+      // npm only treats the flag as "bundled" when the parent is a real dependency.
+      // On a top-level entry the parent is the root project, and npm ci still
+      // fetches `resolved`, so the flag must not be a way past the host policy.
+      if (key.indexOf('node_modules/') === key.lastIndexOf('node_modules/')) {
+        problems.push(`${key}: inBundle is not allowed on a top-level entry`);
+        continue;
+      }
+      // Shipped inside its parent tarball: nothing to fetch, unless a resolved
+      // URL is present, in which case it gets the same checks as any other entry.
+      if (entry.resolved === undefined) continue;
+    }
 
     const resolved = entry.resolved;
     if (typeof resolved !== 'string' || resolved === '') {

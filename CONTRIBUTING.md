@@ -174,7 +174,7 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
 
 ## Dependency advisories and triage
 
-`package.json` and `package-lock.json` change only in a dedicated dependency PR, never as a side effect of another change. When an advisory (Dependabot alert, `npm audit`, or a report) lands, classify it, then act within the target below. The clock starts when the maintainer sees it.
+Dependency changes (`package.json`, `package-lock.json`) are stated in the PR description and limited to what the PR needs; an advisory fix is a lockfile-only PR. When an advisory (Dependabot alert, `npm audit`, or a report) lands, classify it, then act within the target below. The clock starts when the maintainer sees it.
 
 | What is affected | Target |
 |---|---|

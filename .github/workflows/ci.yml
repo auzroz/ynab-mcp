@@ -174,7 +174,7 @@ jobs:
           cache: 'npm'
 
       - name: Check lockfile policy
-        # Zero-dependency: runs before npm ci so a bad lockfile never reaches an install.
+        # Zero-dependency: fails this job before its own npm ci. Other jobs run their own npm ci in parallel.
         run: node scripts/check-lockfile.mjs
 
       - name: Install dependencies
