@@ -164,6 +164,7 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
 
 ## Releases
 
+- **Planning:** each planned release has a [milestone](https://github.com/auzroz/ynab-mcp/milestones) named for its version (`0.5.0`). A milestone named `x.y.x` (`0.5.x`) holds follow-ups that are planned but not yet scheduled. When that release is planned, the milestone is renamed to the real version. An issue with no milestone is backlog. The maintainer sets milestones; a PR gets the milestone of the release it will ship in. The milestone is closed when its release is tagged. The [roadmap board](https://github.com/users/auzroz/projects/1) shows the same issues by status (Backlog, Planned, In progress, In review, Done), priority and size.
 - **Versioning:** [Semantic Versioning](https://semver.org/). Breaking changes go in a minor release while the project is 0.x, with a "Breaking" section in the CHANGELOG.
 - **CHANGELOG:** the maintainer writes `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/)) when preparing a release. Describe user-visible and breaking changes in your PR, and they'll be picked up.
 - **Publishing:** the maintainer tags a release, and the release workflow publishes:
