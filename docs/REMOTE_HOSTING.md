@@ -244,16 +244,17 @@ That is the intended RFC 9700 behaviour; well-behaved clients serialize their
 refreshes. Other connections of the same user are unaffected. 0.3.x refresh
 tokens keep working and join a family at their next refresh.
 
-Authorization codes get the same treatment (RFC 9700 section 4.2.1). A code is
-single-use, and a spent code is remembered for 10 minutes. If it is presented
-again, from any client, the server treats it as leaked: it revokes the family
-the code started (the tokens issued for it and every refresh since) and
-answers `invalid_grant` with the same response as for an unknown code. This
-also covers a replay that arrives while the first exchange is still running:
-the first exchange then issues no tokens, so whichever request redeemed the
-code first, an attacker or the client, the connection it started is cut off
-and the user must reconnect. Clients that send each code once, as OAuth
-requires, are unaffected. Codes issued before the upgrade keep working.
+Authorization codes get the same treatment (RFC 9700 section 4.2.4, RFC 6749
+section 4.1.2). A code is single-use, and a spent code is remembered for 10
+minutes. If it is presented again, from any client, the server treats it as
+leaked: it revokes the family the code started (the tokens issued for it and
+every refresh since) and answers `invalid_grant` with the same response as for
+an unknown code. This also covers a replay that arrives while the first
+exchange is still running: the first exchange then issues no tokens, so
+whichever request redeemed the code first, an attacker or the client, the
+connection it started is cut off and the user must reconnect. Clients that send
+each code once, as OAuth requires, are unaffected. Codes issued before the
+upgrade keep working.
 
 ### Issuer identification (RFC 9207)
 

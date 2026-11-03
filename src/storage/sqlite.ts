@@ -444,6 +444,10 @@ export class SqliteStorage implements Storage {
   }
 
   async revokeConsumedAuthCode(code: string): Promise<ConsumedAuthCodeRecord | undefined> {
+    // A plain read first, as on Postgres, so an unknown code at /token never
+    // takes the write lock. Safe because a tombstone's family never changes
+    // and the UPDATE below re-checks the row under the lock.
+    if (!(await this.getConsumedAuthCode(code))) return undefined;
     const revoke = this.database.transaction((c: string): ConsumedAuthCodeRow | undefined => {
       const row = this.database
         .prepare('UPDATE consumed_auth_codes SET revoked = 1 WHERE code = ? AND expires_at >= ? RETURNING *')

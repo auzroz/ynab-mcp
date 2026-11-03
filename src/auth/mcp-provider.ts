@@ -42,10 +42,10 @@
  * `/revoke`. The client sees the same `invalid_grant` as for an unknown token.
  * A 0.3.x refresh token carries no family and starts one at its next refresh.
  *
- * Authorization-code replay (RFC 9700 section 4.2.1, OAuth 2.1 section 4.1.3):
- * the family is allocated when the code is spent at the token endpoint, and a
- * tombstone naming it is written in the same atomic step, for
- * {@link AUTH_CODE_REPLAY_WINDOW_MS}. A second use of the code revokes that
+ * Authorization-code replay (RFC 9700 section 4.2.4, RFC 6749 section 4.1.2,
+ * OAuth 2.1 section 4.1.3): the family is allocated when the code is spent at
+ * the token endpoint, and a tombstone naming it is written in the same atomic
+ * step, for {@link AUTH_CODE_REPLAY_WINDOW_MS}. A second use of the code revokes that
  * family and marks the tombstone revoked; the code's tokens are saved only
  * while the tombstone is live and not revoked, so a replay that lands between
  * the code being spent and its tokens being saved leaves no live token. Unknown,
@@ -360,7 +360,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
 <p class="muted">After you approve, you will be returned to <code>${htmlEscape(params.redirectUri)}</code>. Continue only if you started this connection and recognize that address.</p>
 <a class="btn" href="${htmlEscape(roLink)}"><strong>Read-only</strong><br><span class="muted">View budgets, accounts, and transactions. No changes.</span></a>
 ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; write</strong><br><span class="muted">View and modify (create/update/delete) your budget data.</span></a>` : ''}
-<p class="muted">You'll be sent to YNAB to authorize. To end this access later, remove the app under Authorized Applications in your YNAB account settings.</p>
+<p class="muted">You'll be sent to YNAB to authorize. To end this access later, revoke this app in your YNAB settings at app.ynab.com/settings.</p>
 <p><a href="${htmlEscape(cancelLink)}">Cancel</a></p>
 </body></html>`);
   }

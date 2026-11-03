@@ -909,7 +909,7 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
   });
 });
 
-// --- Authorization-code tombstones (0.5.0, M1; RFC 9700 section 4.2.1) ---
+// --- Authorization-code tombstones (0.5.0, M1; RFC 9700 section 4.2.4) ---
 
 /** A spend of a code into the fresh family `familyId`, its tombstone kept for 10 minutes. */
 function makeConsumption(familyId: string = randomUUID()): { familyId: string; consumedUntil: number } {
@@ -1122,6 +1122,30 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage code tombsto
   }
 
   runCodeTombstoneConformance('SqliteStorage', () => openSqlite(newFile()));
+
+  it('revoking an unknown code never takes the write lock', async () => {
+    const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3');
+    const file = newFile();
+    const s = await openSqlite(file);
+    // Another process holds the write lock for the whole check. A revoke that
+    // began an IMMEDIATE transaction would wait on it and fail with SQLITE_BUSY.
+    const holder = new Database(file, { timeout: 0 });
+    holder.exec('BEGIN IMMEDIATE');
+    try {
+      expect(await s.revokeConsumedAuthCode('never-issued')).toBeUndefined();
+      // An expired tombstone counts as unknown too.
+      holder.exec('ROLLBACK');
+      const code = makeAuthCode();
+      await s.saveAuthCode(code);
+      await s.consumeAuthCode(code.code, { familyId: randomUUID(), consumedUntil: Date.now() - 1 });
+      holder.exec('BEGIN IMMEDIATE');
+      expect(await s.revokeConsumedAuthCode(code.code)).toBeUndefined();
+    } finally {
+      if (holder.inTransaction) holder.exec('ROLLBACK');
+      holder.close();
+      await s.close();
+    }
+  });
 
   it('two processes sharing the file: one spends the code, the other sees its tombstone', async () => {
     const file = newFile();

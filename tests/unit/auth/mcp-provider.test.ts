@@ -1525,7 +1525,7 @@ describe('McpOAuthProvider consent page wording', () => {
     const html = res.send.mock.calls[0]?.[0] as string;
     expect(html).not.toMatch(/disconnect/i);
     expect(html).toContain(
-      'To end this access later, remove the app under Authorized Applications in your YNAB account settings.'
+      'To end this access later, revoke this app in your YNAB settings at app.ynab.com/settings.'
     );
   });
 });

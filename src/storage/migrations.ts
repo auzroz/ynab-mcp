@@ -54,7 +54,7 @@ export const ADDED_INDEXES: readonly AddedIndex[] = [
 
 /**
  * 0.5.0 (M1): tombstones of authorization codes spent at the token endpoint
- * (RFC 9700 section 4.2.1), per dialect. A new table, created IF NOT EXISTS
+ * (RFC 9700 section 4.2.4, RFC 6749 section 4.1.2), per dialect. A new table, created IF NOT EXISTS
  * before {@link ADDED_INDEXES}; 0.4.x ignores it. `revoked` is 0/1 on SQLite
  * and a boolean on Postgres.
  */

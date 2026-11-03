@@ -1,10 +1,10 @@
 /**
- * Authorization-code replay over HTTP (RFC 9700 section 4.2.1, issue #42),
- * through the SDK's real /register, /authorize and /token handlers and the
- * bearer middleware on /mcp: a second use of a code revokes the tokens issued
- * from it, and the token endpoint answers an unknown, a replayed and a
- * revoked code with byte-identical responses. Only the YNAB network calls are
- * mocked.
+ * Authorization-code replay over HTTP (RFC 9700 section 4.2.4, RFC 6749
+ * section 4.1.2, issue #42), through the SDK's real /register, /authorize and
+ * /token handlers and the bearer middleware on /mcp: a second use of a code
+ * revokes the tokens issued from it, and the token endpoint answers an
+ * unknown, a replayed and a revoked code with byte-identical responses. Only
+ * the YNAB network calls are mocked.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

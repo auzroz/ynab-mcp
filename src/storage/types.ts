@@ -120,9 +120,9 @@ export interface RefreshTokenRotation {
 /**
  * Tombstone of an authorization code spent at the token endpoint, kept until
  * `expiresAt` so a second use of the code can be recognized as a replay
- * (RFC 9700 section 4.2.1). Written in the same atomic step that spends the
- * code, with the token family the code's tokens will join, before those tokens
- * exist. Keyed by the plaintext code until codes are hashed at rest.
+ * (RFC 9700 section 4.2.4, RFC 6749 section 4.1.2). Written in the same
+ * atomic step that spends the code, with the token family the code's tokens
+ * will join, before those tokens exist. Keyed by the plaintext code until codes are hashed at rest.
  */
 export interface ConsumedAuthCodeRecord {
   code: string;

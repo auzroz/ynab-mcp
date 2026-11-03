@@ -1,5 +1,5 @@
 /**
- * Authorization-code replay in McpOAuthProvider (RFC 9700 section 4.2.1,
+ * Authorization-code replay in McpOAuthProvider (RFC 9700 section 4.2.4,
  * issue #42), on every storage driver: memory always, SQLite when
  * better-sqlite3 loads, Postgres when DATABASE_URL is set (REQUIRE_DB_TESTS=1
  * makes a missing driver fail instead of skip).
