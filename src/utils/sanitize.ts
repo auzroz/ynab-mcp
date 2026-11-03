@@ -10,7 +10,6 @@
  * ARABIC LETTER MARK (U+061C), LRE/RLE/PDF/LRO/RLO (U+202A-U+202E),
  * and LRI/RLI/FSI/PDI (U+2066-U+2069).
  */
-// eslint-disable-next-line no-misleading-character-class
 const BIDI_CONTROL_PATTERN = /[\u061C\u202A-\u202E\u2066-\u2069]/g;
 
 /**
