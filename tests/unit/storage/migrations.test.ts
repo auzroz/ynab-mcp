@@ -4,6 +4,7 @@
  * (The three real drivers are covered by storage.test.ts.)
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
 import {
   ADDED_COLUMNS,
@@ -92,6 +93,14 @@ describe('migration tables', () => {
     expect(compareReleases(STORAGE_RELEASE, MIN_COMPATIBLE_RELEASE)).toBeGreaterThanOrEqual(0);
   });
 
+  it('keeps the storage release at or above the package version', () => {
+    // A hand-kept constant must not lag a release: a floor raised to that release would lock it out.
+    const pkg = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')) as {
+      version: string;
+    };
+    expect(compareReleases(STORAGE_RELEASE, pkg.version)).toBeGreaterThanOrEqual(0);
+  });
+
   it('maps column types per dialect', () => {
     expect(sqlColumnType('TEXT', 'sqlite')).toBe('TEXT');
     expect(sqlColumnType('TEXT', 'postgres')).toBe('TEXT');
@@ -150,7 +159,7 @@ describe('applyMigrations', () => {
     expect(lite.calls[0]).toBe('LITE');
   });
 
-  it('runs a backfill once, with the one timestamp captured by the caller', async () => {
+  it('runs every backfill with the one timestamp captured by the caller', async () => {
     const seen: number[] = [];
     const run = vi.fn(async ({ now }: { now: number }) => {
       seen.push(now);
@@ -172,11 +181,13 @@ describe('applyMigrations', () => {
     clock.mockRestore();
     expect(store.get('schema_version')).toBe('3');
 
+    // A restart runs them again (they are idempotent), with that run's own instant.
     await applyMigrations(tx, 999999, plan);
-    expect(run).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledTimes(4);
+    expect(seen.slice(2)).toEqual([999999, 999999]);
   });
 
-  it('runs only the backfills newer than the stored version', async () => {
+  it('runs every backfill whatever the stored version, so rows an older release wrote are converted', async () => {
     const ran: string[] = [];
     const plan: MigrationPlan = {
       ...emptyPlan,
@@ -191,7 +202,7 @@ describe('applyMigrations', () => {
     };
     const { tx } = fakeTx('postgres', { schema_version: '2', min_compatible_release: '0.5.0' });
     await applyMigrations(tx, 1, plan);
-    expect(ran).toEqual(['m3']);
+    expect(ran).toEqual(['m1', 'm2', 'm3']);
   });
 
   it('writes nothing when the database is already stamped', async () => {

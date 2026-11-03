@@ -10,7 +10,8 @@
  *   2. The compatibility check against `schema_meta` (see below).
  *   3. {@link ADDED_COLUMNS}: one nullable column each, skipped when present.
  *   4. {@link ADDED_INDEXES}: CREATE INDEX IF NOT EXISTS.
- *   5. {@link BACKFILLS}: app-side data steps, each run once.
+ *   5. {@link BACKFILLS}: app-side data steps, run in version order on every
+ *      startup (they must be idempotent; see {@link Backfill}).
  *   6. `schema_meta` is stamped with the schema version and compatibility floor.
  *
  * so init() is idempotent against a fresh database, one created by an older
@@ -72,8 +73,21 @@ export interface BackfillContext {
   tx: MigrationTx;
 }
 
+/**
+ * An app-side data step. It runs on EVERY startup, in `version` order, not only
+ * when the stored `schema_version` is lower, so it MUST be idempotent: touch
+ * only rows still needing conversion (`WHERE col IS NULL`, `WHERE key NOT LIKE
+ * 'h1.%'`) and write nothing when there are none.
+ *
+ * Why: 0.4.x ignores `schema_meta` and keeps writing old-shape rows after a
+ * newer release has stamped the database, whether after a rollback or from a
+ * 0.4.x replica sharing the database during a rolling deploy. A run-once step
+ * would never convert them, leaving (for example) plaintext tokens at rest.
+ * Read paths should still tolerate an unconverted row, because rows can arrive
+ * between startups.
+ */
 export interface Backfill {
-  /** The schema version this step brings the database to; it runs when the stored version is lower. */
+  /** The schema version this step belongs to: it fixes the run order, and a step above the plan's version is skipped. */
   version: number;
   name: string;
   run(ctx: BackfillContext): Promise<void>;
@@ -145,8 +159,8 @@ export const ADDED_INDEXES: readonly AddedIndex[] = [
 ];
 
 /**
- * App-side data steps, run in `version` order under the migrate lock, each once
- * (when the stored `schema_version` is lower than its `version`). Empty at M0.
+ * App-side data steps, run in `version` order under the migrate lock on every
+ * startup; each must be idempotent (see {@link Backfill}). Empty at M0.
  */
 export const BACKFILLS: readonly Backfill[] = [];
 
@@ -212,7 +226,8 @@ async function writeMeta(tx: MigrationTx, key: string, value: string): Promise<v
  * database's compatibility floor above this release; logs a warning when the
  * database is at a newer schema version but still compatible.
  *
- * `now` is captured once by the caller and handed to every backfill.
+ * `now` is captured once by the caller, after it holds the migrate lock, and
+ * handed to every backfill.
  */
 export async function applyMigrations(
   tx: MigrationTx,
@@ -268,10 +283,11 @@ export async function applyMigrations(
     await tx.exec(`CREATE INDEX IF NOT EXISTS ${name} ON ${table} (${column})`);
   }
 
-  const pending = plan.backfills
-    .filter((b) => b.version > storedVersion && b.version <= plan.schemaVersion)
+  // Every step, every startup: 0.4.x writes unconverted rows after the stamp (see Backfill).
+  const steps = plan.backfills
+    .filter((b) => b.version <= plan.schemaVersion)
     .sort((a, b) => a.version - b.version);
-  for (const backfill of pending) {
+  for (const backfill of steps) {
     await backfill.run({ now, tx });
   }
 

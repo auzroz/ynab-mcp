@@ -188,9 +188,10 @@ function pgTx(client: PoolClient): MigrationTx {
 async function migrate(pool: PgPool): Promise<void> {
   const client = await pool.connect();
   try {
-    const now = Date.now();
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1)', [SCHEMA_LOCK_KEY]);
+    // Captured once, after the lock is held, so a replica that waited stamps when it really ran.
+    const now = Date.now();
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,

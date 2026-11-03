@@ -142,9 +142,10 @@ function sqliteTx(db: BetterSqlite3.Database): MigrationTx {
  * in between.
  */
 async function migrate(db: BetterSqlite3.Database, baseSchema: string): Promise<void> {
-  const now = Date.now();
   db.exec('BEGIN IMMEDIATE');
   try {
+    // Captured once, with the write lock held, so it is when the migration really runs.
+    const now = Date.now();
     db.exec(baseSchema);
     await applyMigrations(sqliteTx(db), now);
     db.exec('COMMIT');
