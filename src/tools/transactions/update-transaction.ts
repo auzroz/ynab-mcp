@@ -11,6 +11,7 @@ import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { omitNull } from '../../utils/omit-null.js';
 
 // Cleared status options
 const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
@@ -172,10 +173,10 @@ export async function handleUpdateTransaction(
   if (validated.amount !== undefined) updateData.amount = toMilliunits(validated.amount);
   // null reaches the API as JSON null (clears the field); undefined means unchanged.
   // The SDK types omit null for these fields, but its ToJSON passes it through.
-  if (validated.payee_id !== undefined) updateData.payee_id = validated.payee_id as string;
+  if (validated.payee_id !== undefined) updateData.payee_id = validated.payee_id;
   if (validated.payee_name !== undefined) updateData.payee_name = validated.payee_name;
-  if (validated.category_id !== undefined) updateData.category_id = validated.category_id as string;
-  if (validated.memo !== undefined) updateData.memo = validated.memo as string;
+  if (validated.category_id !== undefined) updateData.category_id = validated.category_id;
+  if (validated.memo !== undefined) updateData.memo = validated.memo;
   if (validated.cleared !== undefined)
     updateData.cleared = validated.cleared as ynab.TransactionClearedStatus;
   if (validated.approved !== undefined) updateData.approved = validated.approved;
@@ -202,7 +203,7 @@ export async function handleUpdateTransaction(
         memo: sanitizeMemo(txn.memo),
         cleared: txn.cleared,
         approved: txn.approved,
-        flag_color: txn.flag_color,
+        ...omitNull({ flag_color: txn.flag_color }),
       },
     },
     null,

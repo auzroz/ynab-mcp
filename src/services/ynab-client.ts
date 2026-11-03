@@ -24,16 +24,6 @@ import {
   withoutDeletedSubtransactions,
 } from './delta-merge.js';
 
-// TEMPORARY WORKAROUND: the ynab SDK (4.5.0) drops `goal_frequency` when it
-// serializes SaveCategory/NewCategory/ExistingCategory, so requests carrying it
-// are sent straight to the API. Tracked in auzroz/ynab-mcp#22 and
-// ynab/ynab-sdk-js#308. Delete the direct-call path (sendCategoryDirect and the
-// goal_frequency branches below) once a regenerated SDK is released.
-const YNAB_API_BASE_URL = 'https://api.ynab.com/v1'; // same as the SDK's BASE_PATH
-const DIRECT_REQUEST_TIMEOUT_MS = 30_000;
-
-type GoalFrequency = 'monthly' | 'weekly' | 'yearly';
-
 /**
  * A fixed YNAB access token (stdio, header mode), or a function returning the
  * current one, called for every YNAB request (oauth mode, where the ~2h YNAB
@@ -52,13 +42,9 @@ class ConfiguredApi extends ynab.API {
   }
 }
 
-/** Create body: the SDK's NewCategory plus the field the SDK cannot send. */
-export interface CreateCategoryBody {
-  category: ynab.NewCategory & { goal_frequency?: GoalFrequency };
-}
 
 /** Audit details for category creation: presence flags only, no amounts or names. */
-function createCategoryAuditDetails(data: CreateCategoryBody): Record<string, unknown> {
+function createCategoryAuditDetails(data: ynab.PostCategoryWrapper): Record<string, unknown> {
   const c = data.category;
   return {
     has_name: !!c.name,
@@ -70,18 +56,8 @@ function createCategoryAuditDetails(data: CreateCategoryBody): Record<string, un
   };
 }
 
-/**
- * Request body for updateCategory. The API (SaveCategory) accepts null to clear
- * name/note/target values, but the SDK's ExistingCategory type only declares the
- * non-null forms, so the body is typed with SaveCategory and cast at the SDK call.
- * The SDK serializer passes values (including null) through unchanged.
- */
-export interface UpdateCategoryBody {
-  category: ynab.SaveCategory & { goal_frequency?: GoalFrequency };
-}
-
 /** Audit details for category detail updates: presence flags only, no names, notes or amounts. */
-function updateCategoryDetailsAuditDetails(data: UpdateCategoryBody): Record<string, unknown> {
+function updateCategoryDetailsAuditDetails(data: ynab.PatchCategoryWrapper): Record<string, unknown> {
   const c = data.category;
   return {
     ...(c.name !== undefined ? { has_name: true } : {}),
@@ -312,7 +288,7 @@ function transactionQueryModel(
 
 export class YnabClient {
   private readonly api: ynab.API;
-  // Only used by the goal_frequency direct-call workaround; never logged.
+  // Resolved per request (the SDK Configuration calls it too); never logged.
   private readonly getAccessToken: () => Promise<string>;
   private readonly rateLimiter: RateLimiter;
   private readonly cache: Cache;
@@ -1018,7 +994,7 @@ export class YnabClient {
   async updateCategory(
     budgetId: string,
     categoryId: string,
-    data: UpdateCategoryBody
+    data: ynab.PatchCategoryWrapper
   ): Promise<ynab.SaveCategoryResponse> {
     this.assertWriteAllowed('updateCategory');
     await this.rateLimiter.acquire();
@@ -1030,18 +1006,7 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     try {
-      const response =
-        data.category.goal_frequency !== undefined
-          ? await this.sendCategoryDirect(
-              'PATCH',
-              `/plans/${encodeURIComponent(budgetId)}/categories/${encodeURIComponent(categoryId)}`,
-              data
-            )
-          : await this.api.categories.updateCategory(
-              budgetId,
-              categoryId,
-              data as ynab.PatchCategoryWrapper
-            );
+      const response = await this.api.categories.updateCategory(budgetId, categoryId, data);
       auditLog.log({
         operation: 'update',
         tool: 'ynab_update_category_details',
@@ -1080,41 +1045,9 @@ export class YnabClient {
     return new YnabApiError('YNAB API request failed', '429', undefined, Math.ceil(windowMs / 1000));
   }
 
-  /**
-   * Send a category write straight to the YNAB API (see the workaround note at
-   * the top of this file). Non-2xx responses throw a YnabApiError carrying only
-   * the HTTP status, so formatErrorResponse returns its mapped generic message;
-   * upstream response text is never read into an error.
-   */
-  private async sendCategoryDirect(
-    method: 'POST' | 'PATCH',
-    path: string,
-    body: unknown
-  ): Promise<ynab.SaveCategoryResponse> {
-    // Resolved per request, like the SDK path, so a refreshed token is used.
-    const accessToken = await this.getAccessToken();
-    const response = await fetch(`${YNAB_API_BASE_URL}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(DIRECT_REQUEST_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-      // Release the connection without reading upstream text into the error.
-      await response.body?.cancel().catch(() => {});
-      if (response.status === 429) throw this.noteYnabRateLimited(response);
-      throw new YnabApiError('YNAB API request failed', String(response.status));
-    }
-    return (await response.json()) as ynab.SaveCategoryResponse;
-  }
-
   async createCategory(
     budgetId: string,
-    data: CreateCategoryBody
+    data: ynab.PostCategoryWrapper
   ): Promise<ynab.SaveCategoryResponse> {
     this.assertWriteAllowed('createCategory');
     await this.rateLimiter.acquire();
@@ -1123,14 +1056,7 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     try {
-      const response =
-        data.category.goal_frequency !== undefined
-          ? await this.sendCategoryDirect(
-              'POST',
-              `/plans/${encodeURIComponent(budgetId)}/categories`,
-              data
-            )
-          : await this.api.categories.createCategory(budgetId, data);
+      const response = await this.api.categories.createCategory(budgetId, data);
       auditLog.log({
         operation: 'create',
         tool: 'ynab_create_category',
@@ -1413,7 +1339,7 @@ export class YnabClient {
     const txn = data.transaction;
     // Fields explicitly cleared with null (names only, never values).
     const clearedFields = (['category_id', 'payee_id', 'memo'] as const).filter(
-      (f) => (txn[f] as string | null | undefined) === null
+      (f) => txn[f] === null
     );
     try {
       const response = await this.api.transactions.updateTransaction(budgetId, transactionId, data);
@@ -1468,7 +1394,7 @@ export class YnabClient {
     const byImportId = data.transactions.filter((t) => t.id === undefined && t.import_id != null).length;
     const clearedFieldCount = data.transactions.reduce(
       (n, t) =>
-        n + (['category_id', 'payee_id', 'memo'] as const).filter((f) => (t[f] as string | null | undefined) === null).length,
+        n + (['category_id', 'payee_id', 'memo'] as const).filter((f) => t[f] === null).length,
       0
     );
     const extra = {

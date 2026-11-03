@@ -1,0 +1,1795 @@
+{
+  "ynab_get_user": {
+    "args": {},
+    "result": {
+      "user": {
+        "id": "u1"
+      }
+    }
+  },
+  "ynab_list_budgets": {
+    "args": {},
+    "result": {
+      "budgets": [
+        {
+          "id": "budget-1",
+          "name": "B",
+          "first_month": null,
+          "last_month": null,
+          "date_format": null,
+          "accounts": [
+            {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "Checking",
+              "type": "checking",
+              "balance": "$100.00",
+              "closed": false
+            }
+          ]
+        }
+      ],
+      "count": 1,
+      "default_budget_id": "budget-1"
+    }
+  },
+  "ynab_get_budget": {
+    "args": {},
+    "result": {
+      "budget_id": "budget-1",
+      "name": "B",
+      "first_month": null,
+      "last_month": null,
+      "date_format": null,
+      "summary": {
+        "total_assets": "$100.00",
+        "total_liabilities": "$0.00",
+        "net_worth": "$100.00",
+        "account_count": 1,
+        "category_count": 1,
+        "payee_count": 1
+      },
+      "accounts_by_type": {
+        "checking": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "name": "Checking",
+            "balance": "$100.00"
+          }
+        ]
+      },
+      "category_groups": [
+        {
+          "name": "Bills",
+          "categories": [
+            {
+              "name": "Rent",
+              "budgeted": "$50.00",
+              "activity": "-$62.34",
+              "balance": "-$12.34"
+            }
+          ]
+        }
+      ],
+      "server_knowledge": 10
+    }
+  },
+  "ynab_get_budget_settings": {
+    "args": {},
+    "result": {
+      "budget_id": "budget-1",
+      "settings": {
+        "date_format": null,
+        "currency_format": null
+      }
+    }
+  },
+  "ynab_list_accounts": {
+    "args": {},
+    "result": {
+      "accounts_by_type": {
+        "checking": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "name": "Checking",
+            "balance": "$100.00",
+            "cleared_balance": "$100.00",
+            "uncleared_balance": "$0.00",
+            "on_budget": true,
+            "closed": false,
+            "note": null,
+            "last_reconciled_at": null,
+            "direct_import_linked": false,
+            "direct_import_in_error": false,
+            "transfer_payee_id": null,
+            "debt_original_balance": null
+          }
+        ]
+      },
+      "summary": {
+        "total_accounts": 1,
+        "total_assets": "$100.00",
+        "total_liabilities": "$0.00",
+        "net_worth": "$100.00"
+      },
+      "server_knowledge": 10
+    }
+  },
+  "ynab_get_account": {
+    "args": {
+      "account_id": "11111111-1111-4111-8111-111111111111"
+    },
+    "result": {
+      "account": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "name": "Checking",
+        "type": "checking",
+        "balance": "$100.00",
+        "cleared_balance": "$100.00",
+        "uncleared_balance": "$0.00",
+        "on_budget": true,
+        "closed": false,
+        "note": null,
+        "last_reconciled_at": null,
+        "direct_import_linked": false,
+        "direct_import_in_error": false,
+        "transfer_payee_id": null,
+        "debt_original_balance": null,
+        "debt_interest_rates": {},
+        "debt_interest_rates_formatted": {},
+        "debt_minimum_payments": {},
+        "debt_minimum_payments_formatted": {},
+        "debt_escrow_amounts": {},
+        "debt_escrow_amounts_formatted": {}
+      }
+    }
+  },
+  "ynab_list_categories": {
+    "args": {},
+    "result": {
+      "category_groups": [
+        {
+          "id": "22222222-2222-4222-8222-222222222222",
+          "name": "Bills",
+          "hidden": false,
+          "categories": [
+            {
+              "id": "33333333-3333-4333-8333-333333333333",
+              "name": "Rent",
+              "budgeted": "$50.00",
+              "activity": "-$62.34",
+              "balance": "-$12.34",
+              "balance_raw": -12340,
+              "goal_type": null,
+              "goal": null,
+              "goal_percentage_complete": null,
+              "goal_under_funded": null,
+              "goal_under_funded_raw": null,
+              "hidden": false
+            }
+          ]
+        }
+      ],
+      "summary": {
+        "group_count": 1,
+        "category_count": 1,
+        "total_budgeted": "$50.00",
+        "total_activity": "-$62.34",
+        "total_balance": "-$12.34",
+        "overspent_count": 1,
+        "underfunded_count": 0
+      },
+      "alerts": {
+        "overspent_categories": [
+          {
+            "name": "Rent",
+            "balance": "-$12.34"
+          }
+        ],
+        "underfunded_goals": []
+      },
+      "server_knowledge": 10
+    }
+  },
+  "ynab_get_category": {
+    "args": {
+      "category_id": "33333333-3333-4333-8333-333333333333"
+    },
+    "result": {
+      "category": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "category_group_id": "22222222-2222-4222-8222-222222222222",
+        "name": "Rent",
+        "hidden": false,
+        "note": null,
+        "budgeted": "$50.00",
+        "activity": "-$62.34",
+        "balance": "-$12.34",
+        "goal": null,
+        "deleted": false
+      }
+    }
+  },
+  "ynab_get_month_category": {
+    "args": {
+      "month": "2026-10-01",
+      "category_id": "33333333-3333-4333-8333-333333333333"
+    },
+    "result": {
+      "month": "2026-10-01",
+      "category": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "category_group_id": "22222222-2222-4222-8222-222222222222",
+        "name": "Rent",
+        "hidden": false,
+        "note": null,
+        "budgeted": "$50.00",
+        "activity": "-$62.34",
+        "balance": "-$12.34",
+        "goal": null
+      }
+    }
+  },
+  "ynab_list_payees": {
+    "args": {},
+    "result": {
+      "payees": [
+        {
+          "id": "55555555-5555-4555-8555-555555555555",
+          "name": "Store",
+          "transfer_account_id": null
+        }
+      ],
+      "transfer_payees": [],
+      "summary": {
+        "total_payees": 1,
+        "regular_payees": 1,
+        "transfer_payees": 0
+      },
+      "server_knowledge": 10
+    }
+  },
+  "ynab_get_payee": {
+    "args": {
+      "payee_id": "55555555-5555-4555-8555-555555555555"
+    },
+    "result": {
+      "payee": {
+        "id": "55555555-5555-4555-8555-555555555555",
+        "name": "Store",
+        "transfer_account_id": null,
+        "deleted": false
+      }
+    }
+  },
+  "ynab_list_payee_locations": {
+    "args": {},
+    "result": {
+      "location_count": 1,
+      "payee_locations": [
+        {
+          "id": "99999999-9999-4999-8999-999999999999",
+          "payee_id": "55555555-5555-4555-8555-555555555555",
+          "latitude": "1",
+          "longitude": "2"
+        }
+      ]
+    }
+  },
+  "ynab_get_payee_location": {
+    "args": {
+      "payee_location_id": "99999999-9999-4999-8999-999999999999"
+    },
+    "result": {
+      "payee_location": {
+        "id": "99999999-9999-4999-8999-999999999999",
+        "payee_id": "55555555-5555-4555-8555-555555555555",
+        "latitude": "1",
+        "longitude": "2"
+      }
+    }
+  },
+  "ynab_list_payee_locations_by_payee": {
+    "args": {
+      "payee_id": "55555555-5555-4555-8555-555555555555"
+    },
+    "result": {
+      "payee_id": "55555555-5555-4555-8555-555555555555",
+      "location_count": 1,
+      "payee_locations": [
+        {
+          "id": "99999999-9999-4999-8999-999999999999",
+          "latitude": "1",
+          "longitude": "2"
+        }
+      ]
+    }
+  },
+  "ynab_list_months": {
+    "args": {},
+    "result": {
+      "months": [
+        {
+          "month": "2026-10-01",
+          "note": null,
+          "income": "$0.00",
+          "budgeted": "$50.00",
+          "activity": "-$62.34",
+          "to_be_budgeted": "$0.00",
+          "deleted": false
+        }
+      ],
+      "count": 1,
+      "server_knowledge": 10
+    }
+  },
+  "ynab_get_month": {
+    "args": {
+      "month": "2026-10-01"
+    },
+    "result": {
+      "month": "2026-10-01",
+      "summary": {
+        "note": null,
+        "income": "$0.00",
+        "budgeted": "$50.00",
+        "activity": "-$62.34",
+        "to_be_budgeted": "$0.00"
+      },
+      "category_count": 1,
+      "categories_by_group": [
+        {
+          "group_id": "22222222-2222-4222-8222-222222222222",
+          "group_name": "Bills",
+          "categories": [
+            {
+              "name": "Rent",
+              "budgeted": "$50.00",
+              "activity": "-$62.34",
+              "balance": "-$12.34"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "ynab_list_transactions": {
+    "args": {},
+    "result": {
+      "transactions": [
+        {
+          "id": "77777777-7777-4777-8777-777777777777",
+          "date": "2026-10-15",
+          "amount": "-$12.34",
+          "memo": null,
+          "payee_name": "Unknown",
+          "category_name": "Unknown",
+          "account_name": "Checking",
+          "cleared": "cleared",
+          "approved": true,
+          "account_id": "11111111-1111-4111-8111-111111111111",
+          "payee_id": null,
+          "category_id": null,
+          "transfer_account_id": null,
+          "transfer_transaction_id": null,
+          "matched_transaction_id": null,
+          "import_id": null,
+          "debt_transaction_type": null,
+          "flag_name": null
+        },
+        {
+          "id": "77777777-7777-4777-8777-777777777778",
+          "date": "2026-10-02",
+          "amount": "-$50.00",
+          "memo": "rent",
+          "payee_name": "Store",
+          "category_name": "Rent",
+          "account_name": "Checking",
+          "cleared": "cleared",
+          "approved": true,
+          "account_id": "11111111-1111-4111-8111-111111111111",
+          "payee_id": "55555555-5555-4555-8555-555555555555",
+          "category_id": "33333333-3333-4333-8333-333333333333",
+          "transfer_account_id": null,
+          "transfer_transaction_id": null,
+          "matched_transaction_id": null,
+          "import_id": null,
+          "debt_transaction_type": null,
+          "flag_name": null
+        }
+      ],
+      "summary": {
+        "count": 2,
+        "total_count": 2,
+        "truncated": false,
+        "total_inflow": "$0.00",
+        "total_outflow": "$62.34",
+        "net": "-$62.34",
+        "date_range": {
+          "from": "2026-10-02",
+          "to": "2026-10-15"
+        },
+        "date_range_note": "since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history."
+      },
+      "filters_applied": {
+        "month": null,
+        "since_date": null,
+        "until_date": null,
+        "type": null,
+        "limit": 100
+      },
+      "server_knowledge": 10
+    }
+  },
+  "ynab_get_transaction": {
+    "args": {
+      "transaction_id": "77777777-7777-4777-8777-777777777777"
+    },
+    "result": {
+      "transaction": {
+        "id": "77777777-7777-4777-8777-777777777777",
+        "date": "2026-10-15",
+        "amount": "-$12.34",
+        "memo": null,
+        "payee_name": "Unknown",
+        "category_name": "Unknown",
+        "account_id": "11111111-1111-4111-8111-111111111111",
+        "account_name": "Checking",
+        "cleared": "cleared",
+        "approved": true,
+        "flag_name": null,
+        "import_id": null,
+        "import_payee_name": "Unknown",
+        "import_payee_name_original": "Unknown",
+        "subtransactions": []
+      }
+    }
+  },
+  "ynab_list_account_transactions": {
+    "args": {
+      "account_id": "11111111-1111-4111-8111-111111111111"
+    },
+    "result": {
+      "account_id": "11111111-1111-4111-8111-111111111111",
+      "transactions": [
+        {
+          "id": "77777777-7777-4777-8777-777777777777",
+          "date": "2026-10-15",
+          "amount": "-$12.34",
+          "memo": null,
+          "payee_name": "Unknown",
+          "category_name": "Unknown",
+          "cleared": "cleared",
+          "approved": true,
+          "account_id": "11111111-1111-4111-8111-111111111111",
+          "payee_id": null,
+          "category_id": null,
+          "transfer_account_id": null,
+          "transfer_transaction_id": null,
+          "matched_transaction_id": null,
+          "import_id": null,
+          "debt_transaction_type": null,
+          "flag_name": null
+        },
+        {
+          "id": "77777777-7777-4777-8777-777777777778",
+          "date": "2026-10-02",
+          "amount": "-$50.00",
+          "memo": "rent",
+          "payee_name": "Store",
+          "category_name": "Rent",
+          "cleared": "cleared",
+          "approved": true,
+          "account_id": "11111111-1111-4111-8111-111111111111",
+          "payee_id": "55555555-5555-4555-8555-555555555555",
+          "category_id": "33333333-3333-4333-8333-333333333333",
+          "transfer_account_id": null,
+          "transfer_transaction_id": null,
+          "matched_transaction_id": null,
+          "import_id": null,
+          "debt_transaction_type": null,
+          "flag_name": null
+        }
+      ],
+      "summary": {
+        "count": 2,
+        "total_count": 2,
+        "truncated": false,
+        "date_range_note": "since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.",
+        "total_inflow": "$0.00",
+        "total_outflow": "$62.34",
+        "net": "-$62.34"
+      },
+      "server_knowledge": 10
+    }
+  },
+  "ynab_list_category_transactions": {
+    "args": {
+      "category_id": "33333333-3333-4333-8333-333333333333"
+    },
+    "result": {
+      "category_id": "33333333-3333-4333-8333-333333333333",
+      "transactions": [
+        {
+          "id": "77777777-7777-4777-8777-777777777777",
+          "date": "2026-10-15",
+          "amount": "-$12.34",
+          "memo": null,
+          "payee_name": "Unknown",
+          "account_name": "Checking",
+          "cleared": "cleared",
+          "approved": true,
+          "account_id": "11111111-1111-4111-8111-111111111111",
+          "payee_id": null,
+          "category_id": null,
+          "transfer_account_id": null,
+          "transfer_transaction_id": null,
+          "matched_transaction_id": null,
+          "import_id": null,
+          "debt_transaction_type": null,
+          "flag_name": null,
+          "type": "transaction",
+          "parent_transaction_id": null
+        },
+        {
+          "id": "77777777-7777-4777-8777-777777777778",
+          "date": "2026-10-02",
+          "amount": "-$50.00",
+          "memo": "rent",
+          "payee_name": "Store",
+          "account_name": "Checking",
+          "cleared": "cleared",
+          "approved": true,
+          "account_id": "11111111-1111-4111-8111-111111111111",
+          "payee_id": "55555555-5555-4555-8555-555555555555",
+          "category_id": "33333333-3333-4333-8333-333333333333",
+          "transfer_account_id": null,
+          "transfer_transaction_id": null,
+          "matched_transaction_id": null,
+          "import_id": null,
+          "debt_transaction_type": null,
+          "flag_name": null,
+          "type": "transaction",
+          "parent_transaction_id": null
+        }
+      ],
+      "summary": {
+        "count": 2,
+        "total_count": 2,
+        "truncated": false,
+        "date_range_note": "since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.",
+        "total_spent": "$62.34",
+        "top_payees": [
+          {
+            "name": "Store",
+            "amount": "$50.00"
+          },
+          {
+            "name": "Unknown",
+            "amount": "$12.34"
+          }
+        ]
+      },
+      "server_knowledge": 10
+    }
+  },
+  "ynab_list_payee_transactions": {
+    "args": {
+      "payee_id": "55555555-5555-4555-8555-555555555555"
+    },
+    "result": {
+      "payee_id": "55555555-5555-4555-8555-555555555555",
+      "transactions": [
+        {
+          "id": "77777777-7777-4777-8777-777777777777",
+          "date": "2026-10-15",
+          "amount": "-$12.34",
+          "memo": null,
+          "category_name": "Unknown",
+          "account_name": "Checking",
+          "cleared": "cleared",
+          "approved": true,
+          "account_id": "11111111-1111-4111-8111-111111111111",
+          "payee_id": null,
+          "category_id": null,
+          "transfer_account_id": null,
+          "transfer_transaction_id": null,
+          "matched_transaction_id": null,
+          "import_id": null,
+          "debt_transaction_type": null,
+          "flag_name": null,
+          "type": "transaction",
+          "parent_transaction_id": null
+        },
+        {
+          "id": "77777777-7777-4777-8777-777777777778",
+          "date": "2026-10-02",
+          "amount": "-$50.00",
+          "memo": "rent",
+          "category_name": "Rent",
+          "account_name": "Checking",
+          "cleared": "cleared",
+          "approved": true,
+          "account_id": "11111111-1111-4111-8111-111111111111",
+          "payee_id": "55555555-5555-4555-8555-555555555555",
+          "category_id": "33333333-3333-4333-8333-333333333333",
+          "transfer_account_id": null,
+          "transfer_transaction_id": null,
+          "matched_transaction_id": null,
+          "import_id": null,
+          "debt_transaction_type": null,
+          "flag_name": null,
+          "type": "transaction",
+          "parent_transaction_id": null
+        }
+      ],
+      "summary": {
+        "count": 2,
+        "total_count": 2,
+        "truncated": false,
+        "date_range_note": "since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.",
+        "outflow_count": 2,
+        "inflow_count": 0,
+        "total_spent": "$62.34",
+        "average_outflow": "$31.17",
+        "top_categories": [
+          {
+            "name": "Rent",
+            "amount": "$50.00"
+          },
+          {
+            "name": "Uncategorized",
+            "amount": "$12.34"
+          }
+        ]
+      },
+      "server_knowledge": 10
+    }
+  },
+  "ynab_list_scheduled_transactions": {
+    "args": {},
+    "result": {
+      "scheduled_transactions": [
+        {
+          "id": "88888888-8888-4888-8888-888888888888",
+          "date_first": "2026-10-01",
+          "date_next": "2026-11-15",
+          "frequency": "monthly",
+          "amount": "-$5.00",
+          "memo": null,
+          "payee_name": "Unknown",
+          "category_name": "Unknown",
+          "account_name": "Checking",
+          "flag_name": null,
+          "account_id": "11111111-1111-4111-8111-111111111111",
+          "payee_id": null,
+          "category_id": null,
+          "transfer_account_id": null,
+          "subtransactions": []
+        }
+      ],
+      "summary": {
+        "total_count": 1,
+        "estimated_monthly_total": "$5.00",
+        "by_frequency": {
+          "monthly": 1
+        }
+      },
+      "server_knowledge": 10
+    }
+  },
+  "ynab_get_scheduled_transaction": {
+    "args": {
+      "scheduled_transaction_id": "88888888-8888-4888-8888-888888888888"
+    },
+    "result": {
+      "scheduled_transaction": {
+        "id": "88888888-8888-4888-8888-888888888888",
+        "date_first": "2026-10-01",
+        "date_next": "2026-11-15",
+        "frequency": "monthly",
+        "amount": "-$5.00",
+        "memo": null,
+        "flag_name": null,
+        "account_id": "11111111-1111-4111-8111-111111111111",
+        "account_name": "Checking",
+        "payee_name": "Unknown",
+        "category_name": "Unknown",
+        "deleted": false,
+        "subtransactions": []
+      }
+    }
+  },
+  "ynab_detect_recurring": {
+    "args": {},
+    "result": {
+      "recurring_transactions": [],
+      "summary": {
+        "total_recurring_found": 0,
+        "high_confidence_count": 0,
+        "medium_confidence_count": 0,
+        "estimated_monthly_total": "$0.00",
+        "analysis_period": "6 months",
+        "since_date": "2026-05-03"
+      },
+      "by_frequency": {
+        "weekly": 0,
+        "biweekly": 0,
+        "monthly": 0,
+        "quarterly": 0,
+        "annual": 0,
+        "irregular": 0
+      }
+    }
+  },
+  "ynab_spending_analysis": {
+    "args": {},
+    "result": {
+      "spending_by_category": [
+        {
+          "category_name": "Rent",
+          "group_name": "Bills",
+          "total_spent": "$50.00",
+          "transaction_count": 1,
+          "average_per_transaction": "$50.00",
+          "percent_of_total": 80.2,
+          "monthly_average": "$16.67",
+          "trend": "stable",
+          "trend_percent": null
+        },
+        {
+          "category_name": "Uncategorized",
+          "group_name": "Other",
+          "total_spent": "$12.34",
+          "transaction_count": 1,
+          "average_per_transaction": "$12.34",
+          "percent_of_total": 19.8,
+          "monthly_average": "$4.11",
+          "trend": "stable",
+          "trend_percent": null
+        }
+      ],
+      "monthly_spending": [
+        {
+          "month": "2026-10",
+          "total_spent": "$62.34",
+          "category_breakdown": [
+            {
+              "name": "Rent",
+              "amount": "$50.00"
+            },
+            {
+              "name": "Uncategorized",
+              "amount": "$12.34"
+            }
+          ]
+        }
+      ],
+      "summary": {
+        "total_spent": "$62.34",
+        "monthly_average": "$20.78",
+        "daily_average": "$0.69",
+        "transaction_count": 2,
+        "category_count": 2,
+        "analysis_period": "3 months",
+        "since_date": "2026-08-01"
+      },
+      "insights": {
+        "top_5_categories": [
+          {
+            "name": "Rent",
+            "amount": "$50.00",
+            "percent": 80.2
+          },
+          {
+            "name": "Uncategorized",
+            "amount": "$12.34",
+            "percent": 19.8
+          }
+        ],
+        "increasing_spending": [],
+        "decreasing_spending": []
+      }
+    }
+  },
+  "ynab_budget_health": {
+    "args": {},
+    "result": {
+      "health_score": 90,
+      "health_status": "excellent",
+      "month": "2026-11-01",
+      "alerts": [
+        {
+          "severity": "warning",
+          "type": "overspent_category",
+          "message": "Rent is overspent by $12.34",
+          "category": "Rent",
+          "amount": "$12.34"
+        }
+      ],
+      "key_metrics": {
+        "to_be_budgeted": "$0.00",
+        "total_budgeted": "$50.00",
+        "total_spent": "$62.34",
+        "total_income": "$0.00",
+        "total_overspent": "$12.34",
+        "overspent_category_count": 1,
+        "underfunded_goals_count": 0
+      },
+      "month_progress": {
+        "days_remaining": 27,
+        "percent_complete": 10,
+        "daily_budget_remaining": "-$0.46",
+        "daily_budget_remaining_milliunits": -457
+      },
+      "category_health": [
+        {
+          "name": "Rent",
+          "budgeted": "$50.00",
+          "budgeted_milliunits": 50000,
+          "spent": "$62.34",
+          "spent_milliunits": 62340,
+          "available": "-$12.34",
+          "available_milliunits": -12340,
+          "status": "overspent",
+          "percent_used": 125
+        }
+      ],
+      "recommendations": [
+        "Cover 1 overspent category by moving money from other categories",
+        "Great job! Your budget is in excellent shape"
+      ]
+    }
+  },
+  "ynab_savings_opportunities": {
+    "args": {},
+    "result": {
+      "opportunities": [],
+      "summary": {
+        "total_opportunities_found": 0,
+        "total_potential_monthly_savings": "$0.00",
+        "total_potential_monthly_savings_milliunits": 0,
+        "high_confidence_savings": "$0.00",
+        "high_confidence_savings_milliunits": 0,
+        "current_monthly_spend": "$20.78",
+        "current_monthly_spend_milliunits": 20780,
+        "potential_savings_percent": 0,
+        "analysis_period": "3 months"
+      },
+      "quick_wins": []
+    }
+  },
+  "ynab_budget_vs_actuals": {
+    "args": {},
+    "result": {
+      "month": "2026-11-01",
+      "summary": {
+        "total_budgeted": "$50.00",
+        "total_activity": "$62.34",
+        "budget_usage_percent": 125,
+        "overspent_categories": 1,
+        "warning_categories": 0,
+        "on_track_categories": 0,
+        "underspent_categories": 0
+      },
+      "alerts": {
+        "overspent": [
+          {
+            "category": "Rent",
+            "group": "Bills",
+            "overspent_by": "$12.34"
+          }
+        ],
+        "warnings": []
+      },
+      "by_group": [
+        {
+          "group_name": "Bills",
+          "total_budgeted": "$50.00",
+          "total_activity": "$62.34",
+          "total_available": "-$12.34",
+          "categories": [
+            {
+              "category_name": "Rent",
+              "group_name": "Bills",
+              "budgeted": "$50.00",
+              "activity": "$62.34",
+              "available": "-$12.34",
+              "budgeted_raw": 50000,
+              "activity_raw": 62340,
+              "available_raw": -12340,
+              "variance": "-$12.34",
+              "variance_percent": -25,
+              "status": "overspent"
+            }
+          ]
+        }
+      ],
+      "previous_month_comparison": null
+    }
+  },
+  "ynab_quick_summary": {
+    "args": {},
+    "result": {
+      "status": "attention_needed",
+      "message": "1 categories are overspent",
+      "month": "2026-11-01",
+      "key_metrics": {
+        "ready_to_assign": "$0.00",
+        "spent_this_month": "$62.34",
+        "total_in_budget_accounts": "$100.00",
+        "total_debt": "$0.00",
+        "total_in_tracking_accounts": "$0.00",
+        "age_of_money": null
+      },
+      "alerts": {
+        "overspent_categories": [
+          {
+            "name": "Rent",
+            "overspent_by": "$12.34"
+          }
+        ],
+        "underfunded_goals": null,
+        "low_balance_accounts": null
+      },
+      "account_summary": {
+        "checking_savings": [
+          {
+            "name": "Checking",
+            "balance": "$100.00"
+          }
+        ],
+        "debt_accounts": []
+      },
+      "tips": [
+        "Move money from other categories to cover overspending"
+      ]
+    }
+  },
+  "ynab_income_expense": {
+    "args": {},
+    "result": {
+      "status": "concern",
+      "message": "No income recorded, but expenses occurred",
+      "trend": "stable",
+      "trend_message": "Savings rate is stable",
+      "period": {
+        "months_analyzed": 1,
+        "since_date": "2026-05-01"
+      },
+      "totals": {
+        "total_income": "$0.00",
+        "total_expenses": "$62.34",
+        "net_savings": "-$62.34",
+        "savings_rate": "N/A"
+      },
+      "averages": {
+        "avg_monthly_income": "$0.00",
+        "avg_monthly_expenses": "$62.34",
+        "avg_monthly_net": "-$62.34"
+      },
+      "monthly_breakdown": [
+        {
+          "month": "2026-10",
+          "income": "$0.00",
+          "expenses": "$62.34",
+          "net": "-$62.34",
+          "savings_rate": "N/A"
+        }
+      ],
+      "insights": {
+        "best_month": "2026-10",
+        "worst_month": "2026-10"
+      }
+    }
+  },
+  "ynab_net_worth": {
+    "args": {},
+    "result": {
+      "status": "positive",
+      "message": "Net worth is positive",
+      "net_worth": "$100.00",
+      "summary": {
+        "total_assets": "$100.00",
+        "total_liabilities": "$0.00",
+        "net_worth": "$100.00"
+      },
+      "breakdown": {
+        "budget_accounts": {
+          "count": 1,
+          "total": "$100.00"
+        },
+        "tracking_accounts": {
+          "count": 0,
+          "total": "$0.00"
+        }
+      },
+      "by_account_type": [
+        {
+          "type": "checking",
+          "total": "$100.00",
+          "accounts": [
+            {
+              "name": "Checking",
+              "balance": "$100.00",
+              "on_budget": true
+            }
+          ]
+        }
+      ],
+      "account_count": {
+        "total": 1,
+        "budget": 1,
+        "tracking": 0,
+        "closed_excluded": 0
+      }
+    }
+  },
+  "ynab_goal_progress": {
+    "args": {},
+    "result": {
+      "status": "healthy",
+      "message": "No goals configured",
+      "month": "2026-11-01",
+      "summary": {
+        "total_goals": 0,
+        "complete": 0,
+        "on_track": 0,
+        "behind": 0,
+        "underfunded": 0,
+        "snoozed": 0,
+        "total_underfunded": "$0.00"
+      },
+      "goals": [],
+      "filter_applied": "all",
+      "tips": []
+    }
+  },
+  "ynab_spending_by_payee": {
+    "args": {},
+    "result": {
+      "period": {
+        "months_analyzed": 3,
+        "since_date": "2026-08-01"
+      },
+      "summary": {
+        "total_spending": "$62.34",
+        "unique_payees": 2,
+        "payees_shown": 2,
+        "top_5_concentration": "100%",
+        "transaction_count": 2
+      },
+      "top_payees": [
+        {
+          "payee": "Store",
+          "total": "$50.00",
+          "transactions": 1,
+          "average": "$50.00",
+          "percent": "80.2%",
+          "category": "Rent",
+          "last_transaction": "2026-10-02"
+        },
+        {
+          "payee": "Unknown",
+          "total": "$12.34",
+          "transactions": 1,
+          "average": "$12.34",
+          "percent": "19.8%",
+          "category": null,
+          "last_transaction": "2026-10-15"
+        }
+      ],
+      "insights": {
+        "highest_spender": "Store",
+        "most_frequent": "Store",
+        "highest_average": null
+      }
+    }
+  },
+  "ynab_unused_categories": {
+    "args": {},
+    "result": {
+      "period": {
+        "months_checked": 6,
+        "since_date": "2026-05-03"
+      },
+      "summary": {
+        "total_categories": 1,
+        "unused_categories": 0,
+        "percent_unused": 0,
+        "safe_to_remove": 0,
+        "needs_review": 0
+      },
+      "categories": {
+        "safe_to_remove": [],
+        "needs_review": []
+      },
+      "by_group": [],
+      "tips": [
+        "Review categories before deleting to avoid losing historical data",
+        "Consider hiding categories instead of deleting to preserve history",
+        "Move any remaining funds to other categories before cleanup"
+      ]
+    }
+  },
+  "ynab_monthly_comparison": {
+    "args": {},
+    "result": {
+      "status": "similar",
+      "message": "Spending is similar to last month",
+      "months": {
+        "current": "2026-11-01",
+        "previous": "2026-10-01"
+      },
+      "comparison": {
+        "spending": {
+          "this_month": "$62.34",
+          "last_month": "$62.34",
+          "change": "$0.00",
+          "change_percent": 0,
+          "direction": "same"
+        },
+        "income": {
+          "this_month": "$0.00",
+          "last_month": "$0.00",
+          "change": "$0.00",
+          "change_percent": 0,
+          "direction": "same"
+        },
+        "budgeted": {
+          "this_month": "$50.00",
+          "last_month": "$50.00",
+          "change": "$0.00"
+        }
+      },
+      "notable_changes": {
+        "biggest_increases": [],
+        "biggest_decreases": []
+      },
+      "insights": {
+        "categories_with_increased_spending": 0,
+        "categories_with_decreased_spending": 0,
+        "categories_unchanged": 1,
+        "new_categories": 0
+      }
+    }
+  },
+  "ynab_spending_trends": {
+    "args": {},
+    "result": {
+      "period": {
+        "months_analyzed": 6,
+        "date_range": "2026-06-01 to 2026-11-01"
+      },
+      "overall": {
+        "trend": "stable",
+        "message": "Overall spending has been relatively stable",
+        "change_percent": 0
+      },
+      "monthly_totals": [
+        {
+          "month": "2026-06-01",
+          "total": "$62.34"
+        },
+        {
+          "month": "2026-07-01",
+          "total": "$62.34"
+        },
+        {
+          "month": "2026-08-01",
+          "total": "$62.34"
+        },
+        {
+          "month": "2026-09-01",
+          "total": "$62.34"
+        },
+        {
+          "month": "2026-10-01",
+          "total": "$62.34"
+        },
+        {
+          "month": "2026-11-01",
+          "total": "$62.34"
+        }
+      ],
+      "summary": {
+        "categories_analyzed": 1,
+        "increasing": 0,
+        "decreasing": 0,
+        "stable": 1
+      },
+      "notable_increases": [],
+      "notable_decreases": [],
+      "all_trends": [
+        {
+          "category": "Rent",
+          "group": "Bills",
+          "monthly_spending": [
+            {
+              "month": "2026-06-01",
+              "amount": "$62.34"
+            },
+            {
+              "month": "2026-07-01",
+              "amount": "$62.34"
+            },
+            {
+              "month": "2026-08-01",
+              "amount": "$62.34"
+            },
+            {
+              "month": "2026-09-01",
+              "amount": "$62.34"
+            },
+            {
+              "month": "2026-10-01",
+              "amount": "$62.34"
+            },
+            {
+              "month": "2026-11-01",
+              "amount": "$62.34"
+            }
+          ],
+          "average": "$62.34",
+          "trend": "stable",
+          "trend_percent": "0%"
+        }
+      ]
+    }
+  },
+  "ynab_cash_flow_forecast": {
+    "args": {},
+    "result": {
+      "status": "healthy",
+      "message": "Cash flow looks healthy for the forecast period",
+      "forecast_period": {
+        "start": "2026-11-03",
+        "end": "2026-12-03",
+        "days": 30
+      },
+      "current_position": {
+        "cash_balance": "$100.00",
+        "budget_accounts": 1
+      },
+      "projected": {
+        "end_balance": "$95.00",
+        "total_income": "$0.00",
+        "total_expenses": "$5.00",
+        "net_change": "-$5.00",
+        "lowest_balance": "$95.00",
+        "lowest_balance_date": "2026-11-15"
+      },
+      "upcoming_expenses": [],
+      "upcoming_income": [],
+      "daily_forecast": [
+        {
+          "date": "2026-11-15",
+          "income": "$0.00",
+          "expenses": "$5.00",
+          "balance": "$95.00"
+        },
+        {
+          "date": "2026-12-01",
+          "income": "$0.00",
+          "expenses": "$0.00",
+          "balance": "$95.00"
+        }
+      ],
+      "scheduled_transaction_count": 1
+    }
+  },
+  "ynab_reconciliation_helper": {
+    "args": {},
+    "result": {
+      "status": "up_to_date",
+      "message": "All transactions are cleared or reconciled",
+      "summary": {
+        "lookback_days": 90,
+        "since_date": "2026-08-05",
+        "accounts_with_uncleared": 0,
+        "total_uncleared_transactions": 0,
+        "total_uncleared_amount": "$0.00",
+        "accounts_needing_attention": 0
+      },
+      "accounts": [],
+      "tips": [
+        "Mark transactions as cleared when they appear on your bank statement",
+        "Reconcile accounts regularly to catch discrepancies early",
+        "Transactions pending over 7 days may need investigation"
+      ]
+    }
+  },
+  "ynab_budget_suggestions": {
+    "args": {},
+    "result": {
+      "analysis_period": {
+        "months_requested": 3,
+        "months_available": 3,
+        "months": [
+          "2026-10-01",
+          "2026-09-01",
+          "2026-08-01"
+        ]
+      },
+      "summary": {
+        "categories_analyzed": 1,
+        "needs_increase": 1,
+        "can_decrease": 0,
+        "on_target": 0,
+        "net_adjustment_needed": "$20.00"
+      },
+      "needs_increase": [
+        {
+          "category": "Rent",
+          "group": "Bills",
+          "current": "$50.00",
+          "suggested": "$70.00",
+          "average_spending": "$62.34",
+          "increase_by": "$20.00",
+          "confidence": "high"
+        }
+      ],
+      "can_decrease": [],
+      "on_target": [],
+      "tips": [
+        "Suggestions include a 10% buffer above average spending",
+        "High confidence means consistent spending patterns",
+        "Review low confidence suggestions more carefully",
+        "Consider seasonal variations not captured in recent months"
+      ]
+    }
+  },
+  "ynab_overspending_alerts": {
+    "args": {},
+    "result": {
+      "status": "minor_overspend",
+      "message": "1 category(ies) slightly over budget",
+      "month": "2026-11-01",
+      "summary": {
+        "overspent_categories": 1,
+        "total_overspent": "$12.34",
+        "total_budgeted_in_overspent": "$50.00",
+        "total_spent_in_overspent": "$62.34"
+      },
+      "alerts": [
+        {
+          "category": "Rent",
+          "group": "Bills",
+          "budgeted": "$50.00",
+          "spent": "$62.34",
+          "over_by": "$12.34",
+          "percent_over": "25%"
+        }
+      ],
+      "by_group": [
+        {
+          "group": "Bills",
+          "count": 1,
+          "total_over": "$12.34",
+          "categories": [
+            "Rent"
+          ]
+        }
+      ],
+      "suggestions": [
+        "Move funds from other categories to cover overspending",
+        "Check if overspending can be offset by underspending elsewhere",
+        "Consider adjusting future budgets based on actual needs"
+      ]
+    }
+  },
+  "ynab_transaction_search": {
+    "args": {},
+    "result": {
+      "search": {
+        "criteria": "all transactions",
+        "date_range": {
+          "from": "last 12 months (YNAB default)",
+          "to": "now"
+        },
+        "note": "since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass since_date to search older history."
+      },
+      "summary": {
+        "total_matches": 2,
+        "showing": 2,
+        "total_amount": "-$62.34",
+        "total_outflow": "$62.34",
+        "total_inflow": "$0.00"
+      },
+      "transactions": [
+        {
+          "date": "2026-10-15",
+          "payee": "Unknown",
+          "category": null,
+          "amount": "-$12.34",
+          "memo": null,
+          "account": "Checking",
+          "cleared": "cleared"
+        },
+        {
+          "date": "2026-10-02",
+          "payee": "Store",
+          "category": "Rent",
+          "amount": "-$50.00",
+          "memo": "rent",
+          "account": "Checking",
+          "cleared": "cleared"
+        }
+      ],
+      "has_more": false
+    }
+  },
+  "ynab_spending_pace": {
+    "args": {},
+    "result": {
+      "status": "overspent",
+      "message": "Already over budget by $12.34",
+      "month": "2026-11-01",
+      "progress": {
+        "day_of_month": 3,
+        "days_in_month": 30,
+        "days_remaining": 27,
+        "percent_elapsed": "10%"
+      },
+      "overall": {
+        "total_budgeted": "$50.00",
+        "total_spent": "$62.34",
+        "remaining": "-$12.34",
+        "percent_spent": "125%",
+        "daily_target": "$1.67",
+        "daily_actual": "$20.78",
+        "daily_allowance_remaining": "-$0.46",
+        "projected_end_of_month": "$623.40"
+      },
+      "category_status": {
+        "overspent": 1,
+        "behind": 0,
+        "on_track": 0,
+        "ahead": 0
+      },
+      "categories_needing_attention": [
+        {
+          "category": "Rent",
+          "group": "Bills",
+          "budgeted": "$50.00",
+          "spent": "$62.34",
+          "remaining": "-$12.34",
+          "daily_target": "$1.67",
+          "daily_actual": "$20.78",
+          "status": "overspent"
+        }
+      ],
+      "categories_ahead": []
+    }
+  },
+  "ynab_category_balances": {
+    "args": {},
+    "result": {
+      "month": "2026-11-01",
+      "filter": "none",
+      "summary": {
+        "categories_shown": 1,
+        "total_balance": "-$12.34",
+        "total_budgeted": "$50.00",
+        "total_activity": "-$62.34"
+      },
+      "by_group": [
+        {
+          "group": "Bills",
+          "category_count": 1,
+          "total_balance": "-$12.34",
+          "categories": [
+            {
+              "name": "Rent",
+              "balance": "-$12.34",
+              "budgeted": "$50.00",
+              "activity": "-$62.34"
+            }
+          ]
+        }
+      ],
+      "top_balances": [
+        {
+          "category": "Rent",
+          "group": "Bills",
+          "balance": "-$12.34",
+          "budgeted": "$50.00"
+        }
+      ],
+      "negative_balances": [
+        {
+          "category": "Rent",
+          "group": "Bills",
+          "balance": "-$12.34"
+        }
+      ]
+    }
+  },
+  "ynab_credit_card_status": {
+    "args": {},
+    "result": {
+      "status": "no_credit_cards",
+      "message": "No active credit card accounts found",
+      "credit_cards": []
+    }
+  },
+  "ynab_age_of_money": {
+    "args": {},
+    "result": {
+      "status": "unknown",
+      "message": "Age of Money is not yet calculated. It requires at least 10 outflow transactions.",
+      "age_of_money": "Not calculated yet",
+      "age_of_money_raw": null,
+      "target": "N/A",
+      "context": {
+        "cash_on_hand": "$100.00",
+        "budget_accounts": 1,
+        "estimated_buffer": "Unknown"
+      },
+      "explanation": {
+        "what_is_it": "Age of Money measures the average age of the dollars you spend. It shows how long money sits in your accounts before being spent.",
+        "why_it_matters": "A higher Age of Money means you have more buffer between earning and spending. At 30+ days, you're spending last month's income, not this month's.",
+        "how_calculated": "YNAB looks at the last 10 cash outflows and calculates how old those dollars were when spent, then averages them."
+      },
+      "milestones": [
+        {
+          "days": 7,
+          "meaning": "One week buffer"
+        },
+        {
+          "days": 14,
+          "meaning": "Two week buffer"
+        },
+        {
+          "days": 21,
+          "meaning": "Three week buffer"
+        },
+        {
+          "days": 30,
+          "meaning": "Living on last month's income - YNAB's goal!"
+        },
+        {
+          "days": 60,
+          "meaning": "Two month buffer - excellent financial health"
+        },
+        {
+          "days": 90,
+          "meaning": "Three month buffer - very secure"
+        }
+      ],
+      "tips_to_improve": [
+        "Great job! Maintain your buffer by continuing to spend less than you earn",
+        "Consider building additional savings goals",
+        "Your buffer protects you from unexpected expenses"
+      ]
+    }
+  },
+  "ynab_preview_scheduled_transaction": {
+    "args": {
+      "account_id": "11111111-1111-4111-8111-111111111111",
+      "amount": -5000,
+      "frequency": "monthly",
+      "payee_id": "55555555-5555-4555-8555-555555555555"
+    },
+    "result": {
+      "valid": true,
+      "preview": {
+        "account_name": "Checking",
+        "payee_name": "Store",
+        "category_name": null,
+        "amount_display": "-$5000.00",
+        "frequency_display": "Monthly",
+        "start_date": "2026-12-03",
+        "next_occurrences": [
+          "2026-12-03",
+          "2027-01-03",
+          "2027-02-03"
+        ]
+      },
+      "estimated_costs": {
+        "monthly": "$5000.00",
+        "annual": "$60000.00"
+      },
+      "api_payload": {
+        "account_id": "11111111-1111-4111-8111-111111111111",
+        "date": "2026-12-03",
+        "amount": -5000000,
+        "frequency": "monthly",
+        "payee_id": "55555555-5555-4555-8555-555555555555"
+      }
+    }
+  },
+  "ynab_list_money_movements": {
+    "args": {},
+    "result": {
+      "money_movements": [
+        {
+          "id": "mm1",
+          "amount": "$1.00",
+          "amount_milliunits": 1000,
+          "month": "2026-10-01",
+          "moved_at": null,
+          "from_category_id": null,
+          "to_category_id": "33333333-3333-4333-8333-333333333333",
+          "money_movement_group_id": null,
+          "performed_by_user_id": null,
+          "note": null
+        }
+      ],
+      "count": 1,
+      "month": null
+    }
+  },
+  "ynab_list_money_movement_groups": {
+    "args": {},
+    "result": {
+      "money_movement_groups": [
+        {
+          "id": "g1",
+          "note": null,
+          "has_performed_by_user": false,
+          "performed_by_user_id": null
+        }
+      ],
+      "count": 1,
+      "month": null
+    }
+  },
+  "ynab_rate_limit_status": {
+    "args": {},
+    "result": {
+      "status": "healthy",
+      "message": "Plenty of API quota available",
+      "ynab_exhausted": null,
+      "rate_limit": {
+        "available_requests": 10000,
+        "total_limit": 10000,
+        "used_requests": 0,
+        "percent_used": 0
+      },
+      "timing": {
+        "can_make_request_now": true,
+        "wait_time_seconds": 0,
+        "full_reset_minutes": 0
+      },
+      "recommendations": []
+    }
+  },
+  "ynab_audit_log": {
+    "args": {},
+    "result": {
+      "entries": [],
+      "count": 0,
+      "summary": {
+        "total_operations": 0,
+        "success_count": 0,
+        "failure_count": 0
+      },
+      "message": "No matching audit log entries found"
+    }
+  },
+  "ynab_health_check": {
+    "args": {},
+    "result": {
+      "status": "healthy",
+      "message": "All systems operational",
+      "checks": [
+        {
+          "name": "rate_limiter",
+          "status": "pass",
+          "message": "10000/10000 requests available"
+        },
+        {
+          "name": "api_connectivity",
+          "status": "pass",
+          "duration_ms": 0,
+          "message": "Connected successfully"
+        },
+        {
+          "name": "write_operations",
+          "status": "pass",
+          "message": "Server is in READ-ONLY mode (write operations disabled)"
+        },
+        {
+          "name": "default_budget",
+          "status": "pass",
+          "message": "Default budget configured (budget-1)"
+        }
+      ],
+      "summary": {
+        "total_checks": 4,
+        "passed": 4,
+        "failed": 0,
+        "total_duration_ms": 0
+      },
+      "timestamp": "2026-11-03T12:00:00.000Z"
+    }
+  },
+  "ynab_update_transaction": {
+    "args": {
+      "transaction_id": "77777777-7777-4777-8777-777777777777",
+      "memo": "x"
+    },
+    "result": {
+      "success": true,
+      "message": "Transaction updated: -$12.34 at Unknown",
+      "transaction": {
+        "id": "77777777-7777-4777-8777-777777777777",
+        "date": "2026-10-15",
+        "amount": "-$12.34",
+        "payee_name": "Unknown",
+        "category_name": "Unknown",
+        "account_name": "Checking",
+        "memo": null,
+        "cleared": "cleared",
+        "approved": true
+      }
+    }
+  },
+  "ynab_create_transaction": {
+    "args": {
+      "account_id": "11111111-1111-4111-8111-111111111111",
+      "date": "2026-10-15",
+      "amount": -12.34
+    },
+    "result": {
+      "success": true,
+      "message": "Transaction created: -$12.34 at Unknown",
+      "transaction": {
+        "id": "77777777-7777-4777-8777-777777777777",
+        "date": "2026-10-15",
+        "amount": "-$12.34",
+        "payee_name": "Unknown",
+        "category_name": "Unknown",
+        "account_name": "Checking",
+        "memo": null,
+        "cleared": "cleared",
+        "approved": true
+      }
+    }
+  },
+  "ynab_create_scheduled_transaction": {
+    "args": {
+      "account_id": "11111111-1111-4111-8111-111111111111",
+      "date": "2026-11-15",
+      "amount": -50,
+      "frequency": "monthly",
+      "payee_name": "Store"
+    },
+    "result": {
+      "success": true,
+      "message": "Scheduled transaction created: -$5.00 at Unknown (monthly)",
+      "scheduled_transaction": {
+        "id": "88888888-8888-4888-8888-888888888888",
+        "date_first": "2026-10-01",
+        "date_next": "2026-11-15",
+        "frequency": "monthly",
+        "amount": "-$5.00",
+        "payee_name": "Unknown",
+        "category_name": "Unknown",
+        "account_name": "Checking",
+        "memo": null
+      }
+    }
+  },
+  "ynab_update_scheduled_transaction": {
+    "args": {
+      "scheduled_transaction_id": "88888888-8888-4888-8888-888888888888",
+      "memo": "x"
+    },
+    "result": {
+      "success": true,
+      "message": "Scheduled transaction updated: -$5.00 at Unknown (monthly)",
+      "scheduled_transaction": {
+        "id": "88888888-8888-4888-8888-888888888888",
+        "date_first": "2026-10-01",
+        "date_next": "2026-11-15",
+        "frequency": "monthly",
+        "amount": "-$5.00",
+        "payee_name": "Unknown",
+        "category_name": "Unknown",
+        "account_name": "Checking",
+        "memo": null
+      }
+    }
+  }
+}

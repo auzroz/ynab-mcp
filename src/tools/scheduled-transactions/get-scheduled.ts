@@ -11,6 +11,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeFlagName } from '../transactions/format.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { omitNull } from '../../utils/omit-null.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -74,15 +75,15 @@ export async function handleGetScheduledTransaction(
         frequency: txn.frequency,
         amount: formatCurrency(txn.amount),
         memo: sanitizeMemo(txn.memo),
-        flag_color: txn.flag_color,
+        ...omitNull({ flag_color: txn.flag_color }),
         flag_name: sanitizeFlagName(txn.flag_name),
         account_id: txn.account_id,
         account_name: sanitizeName(txn.account_name),
-        payee_id: txn.payee_id,
+        ...omitNull({ payee_id: txn.payee_id }),
         payee_name: sanitizeName(txn.payee_name),
-        category_id: txn.category_id,
+        ...omitNull({ category_id: txn.category_id }),
         category_name: sanitizeName(txn.category_name),
-        transfer_account_id: txn.transfer_account_id,
+        ...omitNull({ transfer_account_id: txn.transfer_account_id }),
         deleted: txn.deleted,
         subtransactions: (() => {
           const subs = txn.subtransactions ?? [];
@@ -92,9 +93,11 @@ export async function handleGetScheduledTransaction(
                 scheduled_transaction_id: sub.scheduled_transaction_id,
                 amount: formatCurrency(sub.amount),
                 memo: sanitizeMemo(sub.memo),
-                payee_id: sub.payee_id,
-                category_id: sub.category_id,
-                transfer_account_id: sub.transfer_account_id,
+                ...omitNull({
+                  payee_id: sub.payee_id,
+                  category_id: sub.category_id,
+                  transfer_account_id: sub.transfer_account_id,
+                }),
               }))
             : [];
         })(),
