@@ -59,6 +59,9 @@ jobs:
   deploy:
     name: Deploy
     needs: build
+    # Defence in depth beside the github-pages environment's branch policy:
+    # a workflow_dispatch from any other branch builds but never deploys.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # Runs no repository code: it only publishes the artifact from the build job.
     permissions:

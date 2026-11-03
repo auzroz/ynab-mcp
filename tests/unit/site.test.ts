@@ -3,7 +3,7 @@
  * variable names it mentions must exist in the code, and the build script
  * must produce a site whose links all resolve.
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -20,21 +20,36 @@ const read = (file: string): string =>
 const toolNames = new Set(tools.map((t) => t.name));
 const promptNames = new Set(prompts.map((p) => p.name));
 
-/** Environment variables the server reads: src/config plus the transport switch in src/index.ts. */
+/** Every .ts file under a directory, at any depth. */
+function tsFilesUnder(dir: string): string[] {
+  return readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .filter((f) => f.endsWith('.ts'))
+    .map((f) => join(dir, f));
+}
+
+/**
+ * Environment variables the server reads: everything under src/config (at any
+ * depth) plus the entry points that hold the transport switch (src/index.ts,
+ * and src/entry.ts once it exists). Matches process.env['X'], process.env["X"]
+ * and process.env.X.
+ */
 function configEnvVars(): Set<string> {
   const files = [
-    ...readdirSync(join(root, 'src/config'))
-      .filter((f) => f.endsWith('.ts'))
-      .map((f) => join(root, 'src/config', f)),
-    join(root, 'src/index.ts'),
+    ...tsFilesUnder(join(root, 'src/config')),
+    ...['src/index.ts', 'src/entry.ts'].map((f) => join(root, f)).filter((f) => existsSync(f)),
   ];
   const names = new Set<string>();
   for (const file of files) {
-    for (const m of readFileSync(file, 'utf8').matchAll(/process\.env\[['"]([A-Z0-9_]+)['"]\]/g)) {
-      names.add(m[1] as string);
-    }
+    for (const name of envReadsIn(readFileSync(file, 'utf8'))) names.add(name);
   }
   return names;
+}
+
+/** Names read from process.env in a source text, in any of the three access forms. */
+function envReadsIn(source: string): string[] {
+  return [...source.matchAll(/process\.env(?:\[\s*['"]([A-Z0-9_]+)['"]\s*\]|\.([A-Z0-9_]+)\b)/g)].map(
+    (m) => (m[1] ?? m[2]) as string
+  );
 }
 
 /** Text of every <code> element on a page (inline and inside <pre>). */
@@ -60,6 +75,15 @@ function envNamesOn(html: string): Set<string> {
 }
 
 describe('site content matches the code', () => {
+  it('finds environment reads in every access form', () => {
+    expect(envReadsIn(`process.env['A_B']; process.env["C"]; process.env.D_E; process.env[name]`)).toEqual([
+      'A_B',
+      'C',
+      'D_E',
+    ]);
+    expect(configEnvVars()).toContain('MCP_TRANSPORT');
+  });
+
   it('has the expected pages', () => {
     expect(pages.sort()).toEqual(
       ['examples.html', 'index.html', 'install.html', 'security.html', 'self-hosting.html', 'tools.html'].sort()

@@ -63,7 +63,7 @@
         <!-- 1. Monthly review -->
         <article class="convo" aria-labelledby="monthly-review">
           <h2 id="monthly-review">Monthly review</h2>
-          <p class="intro">An end-of-month check-in. Clients that support MCP prompts can also start this from the <code>ynab-monthly-review</code> prompt, which runs the same steps.</p>
+          <p class="intro">An end-of-month check-in. Clients that support MCP prompts can also start this from the <code>ynab-monthly-review</code> prompt, which runs these steps and a few more.</p>
 
           <div class="msg msg-user">
             <span class="msg-who">You</span>
@@ -148,7 +148,7 @@
       "payee_name": "Lumen Fitness",
       "category_name": "Subscriptions",
       "frequency": "monthly",
-      "average_amount": "-$34.00",
+      "average_amount": "$34.00",
       "last_date": "2026-10-03",
       "next_expected": "2026-11-03",
       "occurrence_count": 8,
@@ -243,7 +243,7 @@
               <li><a href="tools.html#ynab_list_categories"><code>ynab_list_categories</code></a> <span>to find both categories</span></li>
               <li><a href="tools.html#ynab_create_transaction"><code>ynab_create_transaction</code></a> <span>amount: -142.67, two subtransactions</span></li>
             </ul>
-            <p>Done. I added a <strong>$142.67</strong> outflow at Costco on your Visa, dated today and uncleared, split into Groceries ($96.40) and Household Supplies ($46.27).<span class="sample-tag">Sample data</span> YNAB doesn't allow a split to be edited later, so let me know now if either amount is off and I'll delete and re-add it.</p>
+            <p>Done. I added a <strong>$142.67</strong> outflow at Costco on your Visa, dated today and uncleared, split into Groceries ($96.40) and Household Supplies ($46.27).<span class="sample-tag">Sample data</span> I can't edit a split after creating it (YNAB's API doesn't allow it), so let me know now if either amount is off and I'll delete and re-add it.</p>
             <details class="response-json">
               <summary>Abridged <code>ynab_create_transaction</code> arguments</summary>
               <div class="code" data-label="sample arguments">
@@ -321,7 +321,7 @@
   "projected": {
     "end_balance": "$4,510.00",
     "total_income": "$3,150.00",
-    "total_expenses": "-$3,760.00",
+    "total_expenses": "$3,760.00",
     "lowest_balance": "$1,486.00",
     "lowest_balance_date": "2026-11-12"
   },
