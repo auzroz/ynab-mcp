@@ -87,10 +87,10 @@ describe('YnabClient token provider', () => {
     });
 
     const sdkError = await client.getUser().catch((e: unknown) => e);
-    const directError = await client.createCategory('budget-1', categoryWithFrequency).catch((e: unknown) => e);
+    const categoryError = await client.createCategory('budget-1', categoryWithFrequency).catch((e: unknown) => e);
 
     expect(sdkError).toBeInstanceOf(YnabAuthError);
-    expect(directError).toBeInstanceOf(YnabAuthError);
+    expect(categoryError).toBeInstanceOf(YnabAuthError);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(JSON.parse(formatErrorResponse(sdkError))).toEqual({
       error: true,

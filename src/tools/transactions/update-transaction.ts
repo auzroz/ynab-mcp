@@ -172,7 +172,7 @@ export async function handleUpdateTransaction(
   if (validated.date !== undefined) updateData.date = validated.date;
   if (validated.amount !== undefined) updateData.amount = toMilliunits(validated.amount);
   // null reaches the API as JSON null (clears the field); undefined means unchanged.
-  // The SDK types omit null for these fields, but its ToJSON passes it through.
+  // Typed `| null` since ynab 5.0, so no casts are needed.
   if (validated.payee_id !== undefined) updateData.payee_id = validated.payee_id;
   if (validated.payee_name !== undefined) updateData.payee_name = validated.payee_name;
   if (validated.category_id !== undefined) updateData.category_id = validated.category_id;

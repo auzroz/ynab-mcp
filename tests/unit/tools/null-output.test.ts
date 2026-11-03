@@ -39,9 +39,14 @@ const txnNulls = {
 const txnFull = {
   ...txnNulls, id: TXN2, date: '2026-10-02', amount: -50000, memo: 'rent', payee_id: PAY, category_id: CAT,
 };
+const splitNulls = (n: number) => ({
+  id: `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa${n}`, transaction_id: TXN, amount: -6170, memo: null,
+  payee_id: null, payee_name: null, category_id: null, category_name: null,
+  transfer_account_id: null, transfer_transaction_id: null, deleted: false,
+});
 const named = (t: Record<string, unknown>, full: boolean) => ({
   ...t, account_name: 'Checking', payee_name: full ? 'Store' : null, category_name: full ? 'Rent' : null,
-  subtransactions: [],
+  subtransactions: full ? [] : [splitNulls(1), splitNulls(2)],
 });
 const hybrid = (t: Record<string, unknown>, full: boolean) => ({
   ...named(t, full), type: 'transaction', parent_transaction_id: null,
@@ -74,7 +79,8 @@ const scheduled = {
   id: SCH, date_first: '2026-10-01', date_next: '2026-11-15', frequency: 'monthly', amount: -5000,
   memo: null, flag_color: null, flag_name: null, account_id: ACC, payee_id: null, category_id: null,
   transfer_account_id: null, deleted: false, account_name: 'Checking', payee_name: null,
-  category_name: null, subtransactions: [],
+  category_name: null,
+  subtransactions: [{ ...splitNulls(3), transaction_id: SCH }],
 };
 const movement = {
   id: 'mm1', month: '2026-10-01', moved_at: null, note: null, money_movement_group_id: null,
@@ -142,6 +148,18 @@ const WRITES: Array<{ tool: string; args: Record<string, unknown> }> = [
   { tool: 'ynab_create_transaction', args: { account_id: ACC, date: '2026-10-15', amount: -12.34 } },
   { tool: 'ynab_create_scheduled_transaction', args: { account_id: ACC, date: '2026-11-15', amount: -50, frequency: 'monthly', payee_name: 'Store' } },
   { tool: 'ynab_update_scheduled_transaction', args: { scheduled_transaction_id: SCH, memo: 'x' } },
+  { tool: 'ynab_create_transactions', args: { transactions: [{ account_id: ACC, date: '2026-10-15', amount: -12.34 }] } },
+  { tool: 'ynab_update_transactions', args: { transactions: [{ id: TXN, memo: 'x' }] } },
+  { tool: 'ynab_delete_transaction', args: { transaction_id: TXN } },
+  { tool: 'ynab_delete_scheduled_transaction', args: { scheduled_transaction_id: SCH } },
+  { tool: 'ynab_create_account', args: { name: 'Checking', type: 'checking', balance: 100 } },
+  { tool: 'ynab_create_category', args: { category_group_id: GRP, name: 'Rent' } },
+  { tool: 'ynab_update_category', args: { category_id: CAT, month: '2026-10-01', budgeted: 50 } },
+  { tool: 'ynab_update_category_details', args: { category_id: CAT, name: 'Rent' } },
+  { tool: 'ynab_create_category_group', args: { name: 'Bills' } },
+  { tool: 'ynab_update_category_group', args: { category_group_id: GRP, name: 'Bills' } },
+  { tool: 'ynab_create_payee', args: { name: 'Store' } },
+  { tool: 'ynab_update_payee', args: { payee_id: PAY, name: 'Store' } },
 ];
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/null-output-0.4.1.json', import.meta.url));
@@ -151,6 +169,17 @@ function writeRoute(method: string, path: string): unknown {
   if (method === 'POST' && /\/transactions$/.test(p)) {
     return { data: { transaction_ids: [TXN], transaction: txns[0], server_knowledge: 10 } };
   }
+  if (method === 'POST' && /\/accounts$/.test(p)) return { data: { account } };
+  if (method === 'POST' && /\/categories$/.test(p)) return { data: { category, ...K } };
+  if (method === 'POST' && /\/category_groups$/.test(p)) return { data: { category_group: groups[0], ...K } };
+  if (method === 'POST' && /\/payees$/.test(p)) return { data: { payee, ...K } };
+  if (method === 'PATCH' && /\/months\/[^/]+\/categories\/[^/]+$/.test(p)) return { data: { category } };
+  if (method === 'PATCH' && /\/categories\/[^/]+$/.test(p)) return { data: { category, ...K } };
+  if (method === 'PATCH' && /\/category_groups\/[^/]+$/.test(p)) return { data: { category_group: groups[0], ...K } };
+  if (method === 'PATCH' && /\/payees\/[^/]+$/.test(p)) return { data: { payee, ...K } };
+  if (method === 'PATCH' && /\/transactions$/.test(p)) return { data: { transaction_ids: [TXN], transactions: txns, ...K } };
+  if (method === 'DELETE' && /\/transactions\/[^/]+$/.test(p)) return { data: { transaction: txns[0], ...K } };
+  if (method === 'DELETE' && /\/scheduled_transactions\/[^/]+$/.test(p)) return { data: { scheduled_transaction: scheduled } };
   if (method === 'PUT' && /\/transactions\/[^/]+$/.test(p)) return { data: { transaction: txns[0], ...K } };
   if (method === 'POST' && /\/scheduled_transactions$/.test(p)) return { data: { scheduled_transaction: scheduled } };
   if (method === 'PUT' && /\/scheduled_transactions\/[^/]+$/.test(p)) return { data: { scheduled_transaction: scheduled } };
@@ -224,6 +253,13 @@ describe('tool output under explicit API nulls (ynab SDK 5.x)', () => {
       expect(txn, k).not.toHaveProperty(k);
     }
     expect(out['ynab_list_transactions']!.result.transactions[0]).not.toHaveProperty('flag_color');
+    const splits = txn.subtransactions as Array<Record<string, unknown>>;
+    expect(splits.length).toBeGreaterThan(0);
+    for (const sp of splits) {
+      for (const k of ['payee_id', 'category_id', 'transfer_account_id', 'transfer_transaction_id']) {
+        expect(sp, k).not.toHaveProperty(k);
+      }
+    }
     expect(out['ynab_get_month']!.result.summary).not.toHaveProperty('age_of_money');
     expect(out['ynab_get_category']!.result.category).not.toHaveProperty('original_category_group_id');
   });
