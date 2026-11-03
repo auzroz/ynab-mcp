@@ -5,9 +5,62 @@ import {
   sanitizeMemo,
   sanitizeName,
   sanitizeErrorMessage,
+  stripBidi,
 } from '../../../src/utils/sanitize.js';
 
 describe('sanitize utilities', () => {
+  describe('stripBidi', () => {
+    it.each([
+      ['U+061C ARABIC LETTER MARK', '\u061C'],
+      ['U+202A LRE', '\u202A'],
+      ['U+202B RLE', '\u202B'],
+      ['U+202C PDF', '\u202C'],
+      ['U+202D LRO', '\u202D'],
+      ['U+202E RLO', '\u202E'],
+      ['U+2066 LRI', '\u2066'],
+      ['U+2067 RLI', '\u2067'],
+      ['U+2068 FSI', '\u2068'],
+      ['U+2069 PDI', '\u2069'],
+    ])('removes %s', (_name, ch) => {
+      expect(stripBidi(`a${ch}b`)).toBe('ab');
+    });
+
+    it('leaves neighbouring code points untouched', () => {
+      // U+202F, U+2065 and U+206A are outside the bidi set
+      const input = 'x\u202Fy\u2065z\u206Aw';
+      expect(stripBidi(input)).toBe(input);
+    });
+
+    it('removes mixed bidi controls in ordinary text', () => {
+      expect(stripBidi('Pay\u202Ee\u2066e\u2069 \u061Cok')).toBe('Payee ok');
+    });
+
+    it('returns empty string for empty input', () => {
+      expect(stripBidi('')).toBe('');
+    });
+  });
+
+  describe('bidi controls in sanitizeString', () => {
+    it('strips every bidi control code point', () => {
+      const bidi = '\u061C\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069';
+      expect(sanitizeString(`safe${bidi}text`)).toBe('safetext');
+    });
+
+    it('strips bidi controls in mixed text and keeps visible content', () => {
+      expect(sanitizeString('  Coffee\u202E eeffoC \u2069 shop  ')).toBe('Coffee eeffoC  shop');
+    });
+
+    it('strips bidi controls from memos and names', () => {
+      expect(sanitizeMemo('note\u202Ehidden')).toBe('notehidden');
+      expect(sanitizeName('\u2067Payee\u2069')).toBe('Payee');
+    });
+
+    it('applies length limits after stripping bidi controls', () => {
+      // 10 visible chars plus 5 bidi controls; the limit counts only visible chars
+      expect(sanitizeString('abc\u202Adef\u202Bghi\u202Cjkl\u202Dmno', 10)).toBe('abcdefg...');
+    });
+  });
+
   describe('sanitizeString', () => {
     it('returns null for null input', () => {
       expect(sanitizeString(null)).toBeNull();
