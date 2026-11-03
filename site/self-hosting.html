@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Self-hosting ynab-mcp</title>
+  <meta name="description" content="Run ynab-mcp as a remote, multi-user server with YNAB OAuth, so your household or team can use it from claude.ai and other MCP clients.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect class="b" width="32" height="32" rx="8"/><rect class="l" x="8" y="9" width="16" height="2.6" rx="1.3"/><rect class="l" x="8" y="14.7" width="11" height="2.6" rx="1.3"/><rect class="l" x="8" y="20.4" width="6" height="2.6" rx="1.3"/></svg>
+        <span>ynab-mcp <span class="brand-sub">for YNAB</span></span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" hidden>Menu</button>
+      <nav class="site-nav" id="site-nav" aria-label="Main">
+        <ul class="nav-list">
+          <li><a href="install.html">Install</a></li>
+          <li><a href="examples.html">Examples</a></li>
+          <li><a href="tools.html">Tools</a></li>
+          <li><a href="self-hosting.html" aria-current="page">Self-hosting</a></li>
+          <li><a href="security.html">Security</a></li>
+          <li><a href="https://github.com/auzroz/ynab-mcp">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="wrap page-head">
+      <span class="eyebrow">Self-hosting</span>
+      <h1>One server for the whole household</h1>
+      <p class="lede">Run ynab-mcp on a server you control and everyone can use it from claude.ai, the Claude apps or any MCP client, each with their own YNAB account.</p>
+    </div>
+
+    <div class="wrap with-toc">
+      <aside class="toc" aria-labelledby="toc-title">
+        <div>
+          <h2 id="toc-title">On this page</h2>
+          <ul>
+            <li><a href="#when">When to self-host</a></li>
+            <li><a href="#how-it-works">How it works</a></li>
+            <li><a href="#setup">Setup at a glance</a></li>
+            <li><a href="#storage">Storage</a></li>
+            <li><a href="#access">Access levels</a></li>
+            <li><a href="#connect">Connecting clients</a></li>
+            <li><a href="#upgrading">Upgrading</a></li>
+            <li><a href="#guide">The full guide</a></li>
+          </ul>
+        </div>
+      </aside>
+
+      <div class="prose">
+        <section aria-labelledby="when">
+          <h2 id="when">When to self-host</h2>
+          <p>For one person using Claude Desktop or Claude Code on one computer, the <a href="install.html">local install</a> is simpler and you can stop there. Self-host when you want any of these:</p>
+          <ul>
+            <li>to use your budget from <strong>claude.ai</strong> or the Claude mobile apps, which connect to remote servers;</li>
+            <li>to share one instance with a <strong>partner, family or small team</strong>, with nobody seeing anyone else's budget;</li>
+            <li>to keep tokens off individual laptops.</li>
+          </ul>
+          <p>There is no central ynab-mcp service. You run the instance, and your users' YNAB data flows only between your server and YNAB.</p>
+        </section>
+
+        <section aria-labelledby="how-it-works">
+          <h2 id="how-it-works">How it works</h2>
+          <p>In HTTP mode with OAuth configured, the server signs people in with YNAB itself. There are no separate accounts or passwords: a person's identity is their YNAB user.</p>
+          <ol class="flow">
+            <li class="flow-node"><strong>MCP client</strong><span>claude.ai, Claude Desktop, Claude Code</span></li>
+            <li class="flow-link" aria-hidden="true"><svg viewBox="0 0 24 24" class="arrow-icon"><path d="M4 12h16M14 6l6 6-6 6"/></svg>OAuth 2.1</li>
+            <li class="flow-node is-accent"><strong>Your ynab-mcp server</strong><span>Shows a consent screen, stores each user's YNAB grant encrypted</span></li>
+            <li class="flow-link" aria-hidden="true"><svg viewBox="0 0 24 24" class="arrow-icon"><path d="M4 12h16M14 6l6 6-6 6"/></svg>YNAB OAuth</li>
+            <li class="flow-node"><strong>YNAB</strong><span>The user approves access to their budget</span></li>
+          </ol>
+          <ol class="steps">
+            <li>A person adds your server's <code>/mcp</code> address to their client.</li>
+            <li>The client registers with your server and opens its consent page, which names the client and where it will send them back.</li>
+            <li>They choose <strong>read-only</strong> or <strong>read-write</strong> and continue to YNAB to approve.</li>
+            <li>Your server stores their YNAB grant, encrypted, and gives the client its own short-lived token. From then on, every request runs as that person, with their own cache, rate limit and audit log.</li>
+          </ol>
+        </section>
+
+        <section aria-labelledby="setup">
+          <h2 id="setup">Setup at a glance</h2>
+          <ol class="steps">
+            <li><strong>Register a YNAB OAuth application</strong> in YNAB's <a href="https://app.ynab.com/settings/developer">Developer Settings</a>, with the redirect URI <code>https://YOUR_PUBLIC_URL/oauth/ynab/callback</code>.</li>
+            <li><strong>Generate an encryption key</strong> with <code>openssl rand -base64 32</code> and keep it somewhere safe. It must stay the same across restarts.</li>
+            <li><strong>Set the environment:</strong> <code>MCP_TRANSPORT=http</code>, <code>PUBLIC_URL</code>, <code>YNAB_OAUTH_CLIENT_ID</code>, <code>YNAB_OAUTH_CLIENT_SECRET</code>, <code>ENCRYPTION_KEY</code>, and a durable <code>STORAGE_DRIVER</code>. OAuth mode turns on when the four OAuth settings are all present.</li>
+            <li><strong>Put it behind TLS.</strong> OAuth needs HTTPS. A reverse proxy such as Caddy, Traefik or nginx in front of the container is the usual way. Set <code>TRUST_PROXY=1</code> for a single proxy hop.</li>
+            <li><strong>Connect a client</strong> to <code>https://YOUR_PUBLIC_URL/mcp</code>.</li>
+          </ol>
+          <p>A minimal Docker Compose service looks like this (the guide has the full version with Caddy):</p>
+          <div class="code" data-label="Docker Compose example">
+<pre><code>services:
+  ynab-mcp:
+    image: ghcr.io/auzroz/ynab-mcp:latest
+    environment:
+      MCP_TRANSPORT: http
+      PUBLIC_URL: https://ynab-mcp.example.com
+      YNAB_OAUTH_CLIENT_ID: ${YNAB_OAUTH_CLIENT_ID}
+      YNAB_OAUTH_CLIENT_SECRET: ${YNAB_OAUTH_CLIENT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      STORAGE_DRIVER: sqlite
+      SQLITE_PATH: /data/ynab-mcp.db
+      TRUST_PROXY: "1"
+    volumes: [ "ynab-data:/data" ]
+volumes: { ynab-data: {} }</code></pre>
+          </div>
+          <p>Every setting is listed in the <a href="install.html#configuration">configuration reference</a>.</p>
+        </section>
+
+        <section aria-labelledby="storage">
+          <h2 id="storage">Storage</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Driver</th><th scope="col">Good for</th></tr></thead>
+              <tbody>
+                <tr><td><code>memory</code></td><td>Trying it out. The default. Everything is lost on restart, so everyone has to reconnect.</td></tr>
+                <tr><td><code>sqlite</code></td><td>A single instance: a household or a small team. Set <code>SQLITE_PATH</code> to a file on a persistent volume.</td></tr>
+                <tr><td><code>postgres</code></td><td>When you already run Postgres, or want managed backups. Set <code>DATABASE_URL</code>.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>Stored YNAB tokens are encrypted with AES-256-GCM using your <code>ENCRYPTION_KEY</code>. Back the database up like anything else that matters.</p>
+        </section>
+
+        <section aria-labelledby="access">
+          <h2 id="access">Access levels</h2>
+          <p>Read-only or read-write is chosen <strong>per connection</strong> at the consent screen. Someone can connect their phone read-only and their laptop read-write, and each keeps its own level; a token refresh never widens it.</p>
+          <p>As the operator you can narrow it further:</p>
+          <ul>
+            <li><code>YNAB_OAUTH_ALLOW_WRITE=false</code> offers only read-only at consent.</li>
+            <li><code>YNAB_READ_ONLY=true</code> (the default) keeps the whole server read-only, whatever people choose. Set it to <code>false</code> to allow read-write connections at all.</li>
+          </ul>
+        </section>
+
+        <section aria-labelledby="connect">
+          <h2 id="connect">Connecting clients</h2>
+          <ul>
+            <li><strong>claude.ai:</strong> add a custom connector with the URL <code>https://YOUR_PUBLIC_URL/mcp</code>. Claude discovers your server's OAuth settings and walks you through consent.</li>
+            <li><strong>Claude Code:</strong> <code>claude mcp add --transport http ynab https://YOUR_PUBLIC_URL/mcp</code>, then run <code>/mcp</code> in a session to sign in.</li>
+            <li><strong>Claude Desktop and stdio-only clients:</strong> use the <code>mcp-remote</code> shim, which runs the same sign-in flow.</li>
+          </ul>
+          <div class="code" data-label="mcp-remote command">
+<pre><code>npx mcp-remote https://YOUR_PUBLIC_URL/mcp</code></pre>
+          </div>
+          <div class="callout note">
+            <span class="callout-title">Single-user header mode</span>
+            <p>Without the OAuth settings, HTTP mode takes a YNAB token per request in an <code>X-YNAB-Token</code> header. It is meant for a personal instance on a private network behind TLS. For anything shared or public, use OAuth mode.</p>
+          </div>
+        </section>
+
+        <section aria-labelledby="upgrading">
+          <h2 id="upgrading">Upgrading</h2>
+          <p><strong>Back up the database first.</strong> Copy the SQLite file while the server is stopped, or <code>pg_dump</code> the Postgres database. On startup the server updates its schema in place. Read the release notes before upgrading, as some releases ask users to reconnect once.</p>
+        </section>
+
+        <section aria-labelledby="guide">
+          <h2 id="guide">The full guide</h2>
+          <p>The deployer guide on GitHub has every detail: registering the YNAB app, each setting, the TLS and Compose setup, host and origin checks behind proxies, sessions, token rotation, and upgrades.</p>
+          <p><a class="button button-primary" href="https://github.com/auzroz/ynab-mcp/blob/main/docs/REMOTE_HOSTING.md">Read the remote hosting guide</a></p>
+          <ul>
+            <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/docs/REMOTE_HOSTING.md#1-register-a-ynab-oauth-application">Register a YNAB OAuth application</a></li>
+            <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/docs/REMOTE_HOSTING.md#2-configure-the-server">Configure the server</a></li>
+            <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/docs/REMOTE_HOSTING.md#3-serve-over-tls">Serve over TLS</a></li>
+            <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/docs/REMOTE_HOSTING.md#4-connect-a-client">Connect a client</a></li>
+            <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/docs/REMOTE_HOSTING.md#host-and-origin-validation">Host and Origin validation</a></li>
+            <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/docs/REMOTE_HOSTING.md#upgrading">Upgrading</a></li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="https://github.com/auzroz/ynab-mcp">Source on GitHub</a></li>
+        <li><a href="https://www.npmjs.com/package/ynab-mcp">npm package</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/releases">Releases</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/LICENSE">MIT License</a></li>
+        <li><a href="security.html#reporting">Report a vulnerability</a></li>
+      </ul>
+      <p class="disclaimer">ynab-mcp is an independent open-source project. It is not affiliated with, endorsed by or sponsored by YNAB. YNAB is a trademark of YNAB LLC.</p>
+    </div>
+  </footer>
+</body>
+</html>
