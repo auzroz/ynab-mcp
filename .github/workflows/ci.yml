@@ -110,14 +110,8 @@ jobs:
       - name: Run tests with coverage
         run: npm run test:coverage
 
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-
   # Separate job rather than a matrix so the "Test" check name stays stable for branch protection.
-  # Runs the same tests on the Node 22 floor; coverage is uploaded only from the Node 24 job.
+  # Runs the same tests on the Node 22 floor; coverage is not uploaded anywhere (no Codecov token is configured).
   test-node-22:
     name: Test (Node 22)
     runs-on: ubuntu-latest
@@ -178,6 +172,10 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
+
+      - name: Check lockfile policy
+        # Zero-dependency: runs before npm ci so a bad lockfile never reaches an install.
+        run: node scripts/check-lockfile.mjs
 
       - name: Install dependencies
         run: npm ci
