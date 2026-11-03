@@ -16,7 +16,19 @@ import type {
   RefreshTokenRotation,
   ConsumedRefreshTokenRecord,
   PendingAuthRecord,
+  GrantedScope,
 } from './types.js';
+import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
+
+/**
+ * The access level is checked at the read, as in the durable drivers, so an
+ * unexpected value (the types forbid one, but a caller may cast) reads as
+ * read-only. A missing level stays missing; callers treat it as read-only.
+ */
+function withOptionalScope<T extends { grantedScope?: GrantedScope | undefined }>(rec: T): T {
+  const grantedScope = parseOptionalGrantedScope(rec.grantedScope);
+  return grantedScope === undefined ? rec : { ...rec, grantedScope };
+}
 
 export class MemoryStorage implements Storage {
   private users = new Map<string, UserRecord>();
@@ -44,7 +56,8 @@ export class MemoryStorage implements Storage {
     this.users.set(rec.userId, rec);
   }
   async getUser(userId: string): Promise<UserRecord | undefined> {
-    return this.users.get(userId);
+    const rec = this.users.get(userId);
+    return rec && { ...rec, grantedScope: parseGrantedScope(rec.grantedScope) };
   }
   async deleteUser(userId: string): Promise<void> {
     this.users.delete(userId);
@@ -64,7 +77,7 @@ export class MemoryStorage implements Storage {
     const rec = this.pending.get(state);
     this.pending.delete(state);
     if (!rec || rec.expiresAt < Date.now()) return undefined;
-    return rec;
+    return { ...rec, grantedScope: parseGrantedScope(rec.grantedScope) };
   }
 
   async saveAuthCode(rec: AuthCodeRecord): Promise<void> {
@@ -74,7 +87,7 @@ export class MemoryStorage implements Storage {
     const rec = this.authCodes.get(code);
     this.authCodes.delete(code);
     if (!rec || rec.expiresAt < Date.now()) return undefined;
-    return rec;
+    return withOptionalScope(rec);
   }
 
   async saveAccessToken(rec: AccessTokenRecord): Promise<void> {
@@ -86,7 +99,7 @@ export class MemoryStorage implements Storage {
       this.accessTokens.delete(token);
       return undefined;
     }
-    return rec;
+    return rec && withOptionalScope(rec);
   }
   async deleteAccessToken(token: string): Promise<void> {
     this.accessTokens.delete(token);
@@ -96,12 +109,13 @@ export class MemoryStorage implements Storage {
     this.refreshTokens.set(rec.token, rec);
   }
   async getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
-    return this.refreshTokens.get(token);
+    const rec = this.refreshTokens.get(token);
+    return rec && withOptionalScope(rec);
   }
   async takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
     const rec = this.refreshTokens.get(token);
     this.refreshTokens.delete(token);
-    return rec;
+    return rec && withOptionalScope(rec);
   }
   async deleteRefreshToken(token: string): Promise<void> {
     this.refreshTokens.delete(token);
@@ -125,7 +139,7 @@ export class MemoryStorage implements Storage {
     });
     this.accessTokens.set(rotation.accessToken.token, rotation.accessToken);
     this.refreshTokens.set(rotation.refreshToken.token, rotation.refreshToken);
-    return rec;
+    return withOptionalScope(rec);
   }
 
   async getConsumedRefreshToken(token: string): Promise<ConsumedRefreshTokenRecord | undefined> {
