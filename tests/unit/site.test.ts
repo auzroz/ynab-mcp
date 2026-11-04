@@ -96,6 +96,11 @@ describe('site content matches the code', () => {
     );
   });
 
+  it('index.html meta description states the registered tool count', () => {
+    // The data-count spans are checked by the build; the meta tag is plain text.
+    expect(read('index.html')).toMatch(new RegExp(`<meta name="description" content="[^"]*\\b${tools.length} tools,`));
+  });
+
   it('every tool named in examples.html is registered', () => {
     const named = [...read('examples.html').matchAll(/\bynab_[a-z0-9_]+\b/g)].map((m) => m[0]);
     expect(named.length).toBeGreaterThan(10);
