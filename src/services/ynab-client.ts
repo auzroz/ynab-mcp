@@ -176,6 +176,9 @@ function hashText(text: string): number {
  * since_date of the transaction change feed: early enough to cover any
  * transaction, so the feed doesn't depend on a (cached) first month.
  */
+// Category writes kept the 30 s deadline the old direct-call path had. Other
+// SDK calls have no deadline yet (#58).
+const CATEGORY_WRITE_TIMEOUT_MS = 30_000;
 const FEED_SINCE_DATE = '1900-01-01';
 
 /** A YNAB 400 response (as the SDK throws it). */
@@ -1006,7 +1009,9 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     try {
-      const response = await this.api.categories.updateCategory(budgetId, categoryId, data);
+      const response = await this.api.categories.updateCategory(budgetId, categoryId, data, {
+        signal: AbortSignal.timeout(CATEGORY_WRITE_TIMEOUT_MS),
+      });
       auditLog.log({
         operation: 'update',
         tool: 'ynab_update_category_details',
@@ -1056,7 +1061,9 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     try {
-      const response = await this.api.categories.createCategory(budgetId, data);
+      const response = await this.api.categories.createCategory(budgetId, data, {
+        signal: AbortSignal.timeout(CATEGORY_WRITE_TIMEOUT_MS),
+      });
       auditLog.log({
         operation: 'create',
         tool: 'ynab_create_category',
