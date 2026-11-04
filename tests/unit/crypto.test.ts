@@ -57,6 +57,27 @@ describe('crypto', () => {
       return token.split('.');
     }
 
+    /** decrypt fails, and the message names none of the token, its segments or the key. */
+    function expectDecryptError(token: string, using: Buffer = key, pattern?: RegExp): void {
+      let message: string | undefined;
+      try {
+        decrypt(token, using);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toBeDefined();
+      if (pattern) expect(message).toMatch(pattern);
+      const secrets = [
+        token,
+        ...parts(token).filter((s) => s.length > 3),
+        keyB64,
+        using.toString('hex'),
+        using.toString('base64'),
+      ];
+      for (const secret of secrets) expect(message).not.toContain(secret);
+      expect(message).not.toMatch(/[/\\](?:Users|home|src|node_modules)[/\\]/);
+    }
+
     it('writes a 12-byte IV and a 16-byte tag', () => {
       const [, iv, tag] = parts(encrypt('secret', key));
       expect(Buffer.from(iv as string, 'base64url')).toHaveLength(12);
@@ -67,34 +88,32 @@ describe('crypto', () => {
       const p = parts(encrypt('secret', key));
       const short = Buffer.from(p[2] as string, 'base64url').subarray(0, length);
       const forged = [p[0], p[1], short.toString('base64url'), p[3]].join('.');
-      expect(() => decrypt(forged, key)).toThrow(/format/i);
+      expectDecryptError(forged, key, /format/i);
     });
 
     it('rejects an empty and an oversized tag', () => {
       const p = parts(encrypt('secret', key));
       const empty = [p[0], p[1], '', p[3]].join('.');
-      expect(() => decrypt(empty, key)).toThrow(/format/i);
+      expectDecryptError(empty, key, /format/i);
       const long = Buffer.concat([Buffer.from(p[2] as string, 'base64url'), Buffer.alloc(4)]);
-      expect(() => decrypt([p[0], p[1], long.toString('base64url'), p[3]].join('.'), key)).toThrow(
-        /format/i
-      );
+      expectDecryptError([p[0], p[1], long.toString('base64url'), p[3]].join('.'), key, /format/i);
     });
 
     it.each([0, 8, 11, 13, 16])('rejects a %i-byte IV', (length) => {
       const p = parts(encrypt('secret', key));
       const iv = randomBytes(length).toString('base64url');
-      expect(() => decrypt([p[0], iv, p[2], p[3]].join('.'), key)).toThrow(/format/i);
+      expectDecryptError([p[0], iv, p[2], p[3]].join('.'), key, /format/i);
     });
 
     it('still fails authentication for a right-sized but wrong tag', () => {
       const p = parts(encrypt('secret', key));
       const wrong = randomBytes(16).toString('base64url');
-      expect(() => decrypt([p[0], p[1], wrong, p[3]].join('.'), key)).toThrow();
+      expectDecryptError([p[0], p[1], wrong, p[3]].join('.'));
     });
 
     it('does not decrypt under another key', () => {
       const token = encrypt('secret', key);
-      expect(() => decrypt(token, parseEncryptionKey(randomBytes(32).toString('base64')))).toThrow();
+      expectDecryptError(token, parseEncryptionKey(randomBytes(32).toString('base64')));
     });
   });
 });
