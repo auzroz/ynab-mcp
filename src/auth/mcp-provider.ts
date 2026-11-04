@@ -41,6 +41,15 @@
  * family, as does presenting a live one from the wrong client or revoking one at
  * `/revoke`. The client sees the same `invalid_grant` as for an unknown token.
  * A 0.3.x refresh token carries no family and starts one at its next refresh.
+ *
+ * Authorization-code replay (RFC 9700 section 4.2.4, RFC 6749 section 4.1.2,
+ * OAuth 2.1 section 4.1.3): the family is allocated when the code is spent at
+ * the token endpoint, and a tombstone naming it is written in the same atomic
+ * step, for {@link AUTH_CODE_REPLAY_WINDOW_MS}. A second use of the code revokes that
+ * family and marks the tombstone revoked; the code's tokens are saved only
+ * while the tombstone is live and not revoked, so a replay that lands between
+ * the code being spent and its tokens being saved leaves no live token. Unknown,
+ * expired and replayed codes all get the same `invalid_grant`.
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -120,6 +129,27 @@ const FOREIGN_RESOURCE = 'The requested resource is not served by this server';
 
 const INVALID_REFRESH_TOKEN = 'Invalid refresh token';
 
+/** The one description for every code the token endpoint can't use: unknown, expired or replayed. */
+const INVALID_AUTHORIZATION_CODE = 'Invalid or expired authorization code';
+
+/**
+ * How long a spent authorization code's tombstone is kept (10 minutes). A second
+ * use of the code within this window is a replay and revokes the tokens issued
+ * from it; after it, the replay simply fails like any unknown code. The window
+ * covers the race it exists for (a leaked code redeemed by an attacker, then by
+ * the legitimate client a moment later, or the other way round) without letting
+ * a stale leaked code revoke a connection days later.
+ */
+export const AUTH_CODE_REPLAY_WINDOW_MS = 10 * 60 * 1000;
+
+/**
+ * How long a code spent by challengeForAuthorizationCode stays usable for the
+ * exchangeAuthorizationCode call of the same token request (the SDK makes both
+ * calls back to back, around the PKCE check). Entries older than this, left by
+ * requests that failed between the two calls, are pruned.
+ */
+export const CODE_EXCHANGE_WINDOW_MS = 60 * 1000;
+
 /**
  * How long a rotated refresh token's tombstone is kept (30 days). A replay
  * within this window is reuse and revokes the token's family; after it, the
@@ -174,6 +204,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
   private readonly opts: McpProviderOptions;
   // Bridges challengeForAuthorizationCode -> exchangeAuthorizationCode within a
   // single token request (the code is consumed from storage at challenge time).
+  // `consumedAt` bounds an entry's life to CODE_EXCHANGE_WINDOW_MS.
   private readonly consumedCodes = new Map<
     string,
     {
@@ -184,6 +215,8 @@ export class McpOAuthProvider implements OAuthServerProvider {
       scopes: string[];
       resource: string | undefined;
       grantedScope: GrantedScope;
+      familyId: string;
+      consumedAt: number;
     }
   >();
   /** Canonical form of the one resource this server issues tokens for. */
@@ -327,7 +360,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
 <p class="muted">After you approve, you will be returned to <code>${htmlEscape(params.redirectUri)}</code>. Continue only if you started this connection and recognize that address.</p>
 <a class="btn" href="${htmlEscape(roLink)}"><strong>Read-only</strong><br><span class="muted">View budgets, accounts, and transactions. No changes.</span></a>
 ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; write</strong><br><span class="muted">View and modify (create/update/delete) your budget data.</span></a>` : ''}
-<p class="muted">You'll be sent to YNAB to authorize. You can disconnect at any time.</p>
+<p class="muted">You'll be sent to YNAB to authorize. To end this access later, revoke this app in your YNAB settings at app.ynab.com/settings.</p>
 <p><a href="${htmlEscape(cancelLink)}">Cancel</a></p>
 </body></html>`);
   }
@@ -424,12 +457,34 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     return this.authorizationResponse(rec.redirectUri, rec.clientState, { code: mcpCode });
   }
 
+  /**
+   * Spend the code (the SDK calls this first, for the PKCE check) and return its
+   * challenge. The code's token family is allocated here and recorded on its
+   * tombstone in the same atomic step. A code that is not live and has a live
+   * tombstone is a replay: its family is revoked. Either way the client gets
+   * the same `invalid_grant` as for a code never issued.
+   */
   async challengeForAuthorizationCode(
     _client: OAuthClientInformationFull,
     authorizationCode: string
   ): Promise<string> {
-    const rec = await this.opts.storage.takeAuthCode(authorizationCode);
-    if (!rec) throw new InvalidGrantError('Invalid or expired authorization code');
+    const storage = this.opts.storage;
+    const now = Date.now();
+    for (const [code, pending] of this.consumedCodes) {
+      if (now - pending.consumedAt > CODE_EXCHANGE_WINDOW_MS) this.consumedCodes.delete(code);
+    }
+    // Each code exchange starts a new token family.
+    const familyId = randomUUID();
+    const rec = await storage.consumeAuthCode(authorizationCode, {
+      familyId,
+      consumedUntil: now + AUTH_CODE_REPLAY_WINDOW_MS,
+    });
+    if (!rec) {
+      if (await storage.revokeConsumedAuthCode(authorizationCode)) {
+        console.error('[OAuth] Authorization code replay detected; revoked its token family');
+      }
+      throw new InvalidGrantError(INVALID_AUTHORIZATION_CODE);
+    }
     this.consumedCodes.set(authorizationCode, {
       clientId: rec.clientId,
       userId: rec.userId,
@@ -439,6 +494,8 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       resource: rec.resource,
       // Codes written before 0.4.0 carry no access level: read-only.
       grantedScope: rec.grantedScope ?? 'read-only',
+      familyId,
+      consumedAt: now,
     });
     return rec.codeChallenge;
   }
@@ -452,14 +509,15 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
   ): Promise<OAuthTokens> {
     const rec = this.consumedCodes.get(authorizationCode);
     this.consumedCodes.delete(authorizationCode);
-    if (!rec) throw new InvalidGrantError('Invalid or expired authorization code');
+    if (!rec || Date.now() - rec.consumedAt > CODE_EXCHANGE_WINDOW_MS) {
+      throw new InvalidGrantError(INVALID_AUTHORIZATION_CODE);
+    }
     if (rec.clientId !== client.client_id) throw new InvalidGrantError('Client mismatch');
     if (redirectUri !== undefined && redirectUri !== rec.redirectUri) {
       throw new InvalidGrantError('redirect_uri mismatch');
     }
     // RFC 8707 section 2.2: a resource sent here must match the one authorized.
     const bound = this.bindResource(rec.resource, resource);
-    // Each code exchange starts a new token family.
     const pair = this.newTokenPair(
       rec.clientId,
       rec.userId,
@@ -467,10 +525,20 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       rec.scopes,
       bound,
       rec.grantedScope,
-      randomUUID()
+      rec.familyId
     );
-    await this.opts.storage.saveAccessToken(pair.accessToken);
-    await this.opts.storage.saveRefreshToken(pair.refreshToken);
+    // Saved only while the code's tombstone is live and not revoked: a replay
+    // that arrived after the code was spent has revoked it (or revokes the pair
+    // right after it is saved), so no token issued here outlives a replay.
+    const saved = await this.opts.storage.saveCodeTokens(authorizationCode, {
+      familyId: rec.familyId,
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken,
+    });
+    if (!saved) {
+      console.error('[OAuth] Authorization code revoked before its exchange completed; issued no tokens');
+      throw new InvalidGrantError(INVALID_AUTHORIZATION_CODE);
+    }
     return pair.tokens;
   }
 

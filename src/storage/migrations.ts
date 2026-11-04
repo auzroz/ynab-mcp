@@ -108,7 +108,7 @@ export interface MigrationTx {
  * The version of this release's schema: the highest step applied. Bump it with
  * each step (M1 is 2, and so on).
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** The release these migrations ship in. A database stamped with a newer floor is refused. */
 export const STORAGE_RELEASE = '0.5.0';
@@ -128,6 +128,30 @@ export const ADDED_TABLES: readonly AddedTable[] = [
     sql: {
       sqlite: 'CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
       postgres: 'CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    },
+  },
+  // M1: tombstones of authorization codes spent at the token endpoint (RFC 9700
+  // section 4.2.4, RFC 6749 section 4.1.2). 0.4.x ignores it. `revoked` is 0/1
+  // on SQLite and a boolean on Postgres.
+  {
+    name: 'consumed_auth_codes',
+    sql: {
+      sqlite: `CREATE TABLE IF NOT EXISTS consumed_auth_codes (
+        code TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        user_id TEXT,
+        family_id TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked INTEGER NOT NULL DEFAULT 0
+      )`,
+      postgres: `CREATE TABLE IF NOT EXISTS consumed_auth_codes (
+        code TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        user_id TEXT,
+        family_id TEXT NOT NULL,
+        expires_at BIGINT NOT NULL,
+        revoked BOOLEAN NOT NULL DEFAULT FALSE
+      )`,
     },
   },
 ];
@@ -156,6 +180,11 @@ export const ADDED_INDEXES: readonly AddedIndex[] = [
   { name: 'access_tokens_family_id', table: 'access_tokens', column: 'family_id' },
   { name: 'refresh_tokens_family_id', table: 'refresh_tokens', column: 'family_id' },
   { name: 'consumed_refresh_tokens_expires_at', table: 'consumed_refresh_tokens', column: 'expires_at' },
+  // M1: pruning of expired code tombstones, and deletion by user. Last, so a
+  // startup takes the token tables' locks before consumed_auth_codes, the order
+  // the code-replay revocation writes them in.
+  { name: 'consumed_auth_codes_expires_at', table: 'consumed_auth_codes', column: 'expires_at' },
+  { name: 'consumed_auth_codes_user_id', table: 'consumed_auth_codes', column: 'user_id' },
 ];
 
 /**

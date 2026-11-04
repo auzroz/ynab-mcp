@@ -6,7 +6,8 @@
  * arrays and full client objects are stored as JSON TEXT. One-time records (auth
  * codes, refresh tokens, pending auth) are deleted-and-returned atomically via a
  * `DELETE ... RETURNING` statement; a refresh-token rotation runs that statement
- * and writes the tombstone and new tokens in one transaction.
+ * and writes the tombstone and new tokens in one transaction, and spending a
+ * code at the token endpoint writes the code's tombstone in the same statement.
  */
 
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
@@ -19,6 +20,9 @@ import type {
   RefreshTokenRecord,
   RefreshTokenRotation,
   ConsumedRefreshTokenRecord,
+  ConsumedAuthCodeRecord,
+  AuthCodeConsumption,
+  CodeTokens,
   PendingAuthRecord,
 } from './types.js';
 import { applyMigrations, type MigrationTx } from './migrations.js';
@@ -90,6 +94,40 @@ interface ConsumedRefreshTokenRow extends QueryResultRow {
   client_id: string;
   family_id: string;
   expires_at: string | number;
+}
+
+interface ConsumedAuthCodeRow extends QueryResultRow {
+  code: string;
+  client_id: string;
+  user_id: string | null;
+  family_id: string;
+  expires_at: string | number;
+  revoked: boolean;
+}
+
+function consumedAuthCodeFromRow(row: ConsumedAuthCodeRow): ConsumedAuthCodeRecord {
+  return {
+    code: row.code,
+    clientId: row.client_id,
+    userId: row.user_id ?? undefined,
+    familyId: row.family_id,
+    expiresAt: toMillis(row.expires_at),
+    revoked: row.revoked,
+  };
+}
+
+function authCodeFromRow(row: AuthCodeRow): AuthCodeRecord {
+  return {
+    code: row.code,
+    clientId: row.client_id,
+    userId: row.user_id,
+    redirectUri: row.redirect_uri,
+    codeChallenge: row.code_challenge,
+    scopes: parseScopes(row.scopes),
+    expiresAt: toMillis(row.expires_at),
+    resource: row.resource ?? undefined,
+    grantedScope: parseOptionalGrantedScope(row.granted_scope),
+  };
 }
 
 function parseScopes(json: string): string[] {
@@ -416,20 +454,122 @@ export class PostgresStorage implements Storage {
       [code]
     );
     const row = res.rows[0];
-    if (!row) return undefined;
-    const expiresAt = toMillis(row.expires_at);
-    if (expiresAt < Date.now()) return undefined;
-    return {
-      code: row.code,
-      clientId: row.client_id,
-      userId: row.user_id,
-      redirectUri: row.redirect_uri,
-      codeChallenge: row.code_challenge,
-      scopes: parseScopes(row.scopes),
-      expiresAt,
-      resource: row.resource ?? undefined,
-      grantedScope: parseOptionalGrantedScope(row.granted_scope),
-    };
+    if (!row || toMillis(row.expires_at) < Date.now()) return undefined;
+    return authCodeFromRow(row);
+  }
+
+  async consumeAuthCode(
+    code: string,
+    consumption: AuthCodeConsumption
+  ): Promise<AuthCodeRecord | undefined> {
+    const now = Date.now();
+    // Pruned on its own first, as in rotateRefreshToken. SKIP LOCKED: concurrent
+    // prunes would otherwise lock the same expired rows in different orders and
+    // can deadlock; a row another transaction holds is left for a later prune.
+    await this.db.query(
+      `DELETE FROM consumed_auth_codes WHERE code IN (
+         SELECT code FROM consumed_auth_codes WHERE expires_at < $1 FOR UPDATE SKIP LOCKED
+       )`,
+      [now]
+    );
+    // One statement, so the take and the tombstone commit together: a
+    // concurrent take of the same code blocks on the row lock, then finds the
+    // code gone and the tombstone visible. A code is spent once, so its
+    // tombstone is never overwritten (DO NOTHING; saveCodeTokens then refuses
+    // the family it doesn't name).
+    const res = await this.db.query<AuthCodeRow>(
+      `WITH taken AS (DELETE FROM auth_codes WHERE code = $1 RETURNING *),
+       tombstone AS (
+         INSERT INTO consumed_auth_codes (code, client_id, user_id, family_id, expires_at, revoked)
+         SELECT code, client_id, user_id, $2::text, $3::bigint, FALSE FROM taken
+         WHERE expires_at >= $4::bigint
+         ON CONFLICT (code) DO NOTHING
+       )
+       SELECT * FROM taken`,
+      [code, consumption.familyId, consumption.consumedUntil, now]
+    );
+    const row = res.rows[0];
+    if (!row || toMillis(row.expires_at) < now) return undefined;
+    return authCodeFromRow(row);
+  }
+
+  async getConsumedAuthCode(code: string): Promise<ConsumedAuthCodeRecord | undefined> {
+    const res = await this.db.query<ConsumedAuthCodeRow>(
+      'SELECT * FROM consumed_auth_codes WHERE code = $1 AND expires_at >= $2',
+      [code, Date.now()]
+    );
+    const row = res.rows[0];
+    return row ? consumedAuthCodeFromRow(row) : undefined;
+  }
+
+  async revokeConsumedAuthCode(code: string): Promise<ConsumedAuthCodeRecord | undefined> {
+    // A tombstone's family never changes, so it can be read before the lock.
+    const found = await this.getConsumedAuthCode(code);
+    if (!found) return undefined;
+    // Under the family lock, so a saveCodeTokens in flight commits first and
+    // this DELETE's snapshot (taken after the lock is granted) sees its pair,
+    // or it runs after this commits and sees the tombstone revoked. The token
+    // tables are written before consumed_auth_codes, the order migrate() locks
+    // them in, so a replica starting up can't deadlock with this.
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(LOCK_FAMILY, [found.familyId]);
+      await client.query(
+        `WITH access AS (DELETE FROM access_tokens WHERE family_id = $1)
+         DELETE FROM refresh_tokens WHERE family_id = $1`,
+        [found.familyId]
+      );
+      const res = await client.query<ConsumedAuthCodeRow>(
+        `UPDATE consumed_auth_codes SET revoked = TRUE
+         WHERE code = $1 AND family_id = $2 AND expires_at >= $3 RETURNING *`,
+        [code, found.familyId, Date.now()]
+      );
+      const row = res.rows[0];
+      if (!row) {
+        // Expired or deleted since the read: nothing to revoke.
+        await client.query('ROLLBACK');
+        return undefined;
+      }
+      await client.query('COMMIT');
+      return consumedAuthCodeFromRow(row);
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async saveCodeTokens(code: string, tokens: CodeTokens): Promise<boolean> {
+    // The family lock serializes this with revokeConsumedAuthCode (and
+    // deleteTokenFamily). FOR UPDATE also holds the tombstone row, so a
+    // transaction that deletes the tombstone and then the user's tokens waits
+    // for this pair and then deletes it too.
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(LOCK_FAMILY, [tokens.familyId]);
+      const live = await client.query(
+        `SELECT 1 FROM consumed_auth_codes
+         WHERE code = $1 AND family_id = $2 AND NOT revoked AND expires_at >= $3
+         FOR UPDATE`,
+        [code, tokens.familyId, Date.now()]
+      );
+      if (live.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return false;
+      }
+      await client.query(INSERT_ACCESS_TOKEN, accessTokenValues(tokens.accessToken));
+      await client.query(INSERT_REFRESH_TOKEN, refreshTokenValues(tokens.refreshToken));
+      await client.query('COMMIT');
+      return true;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   // MCP access tokens
