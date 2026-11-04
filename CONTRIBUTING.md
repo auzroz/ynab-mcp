@@ -199,7 +199,7 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
 **Pull requests that touch `release.yml`, `Dockerfile`, `.dockerignore` or `package*.json`** also run the release workflow's checks: verify, test, build and pack, and both image builds. They use no environment and no `id-token`, and they must be green before merge. Changes to the tag path are rehearsed first in a scratch repository, following [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md).
 
 **If a publish job fails.** Tags can't be moved or re-pushed, so re-run the failed jobs from the run page. Each re-run asks for approval again. The publish jobs need the run's `release-dist` artifact, which is kept for 90 days (an approval request expires after 30), so a run can't be finished after that. If npm still can't be published from the workflow, the maintainer has two ways out:
-- download the run's `release-dist` artifact, check `SHA256SUMS`, and run `npm publish ynab-mcp-X.Y.Z.tgz` from their own terminal with 2FA (this copy has no provenance);
+- download the run's `release-dist` artifact, check `SHA256SUMS`, and run `npm publish ./ynab-mcp-X.Y.Z.tgz --tag latest` from their own terminal with 2FA, or `--tag next` for a prerelease (a version with a `-`), as the workflow does. This copy has no provenance;
 - cut the next patch version instead.
 
 ### Settings the gate relies on

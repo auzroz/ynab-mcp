@@ -601,7 +601,10 @@ jobs:
             its unsigned BuildKit SBOM). For the image, the attestation is the
             proof of origin, not the ghcr tag, so verify it:
             ```bash
-            sha256sum --check SHA256SUMS
+            # Checks every file you downloaded. Prints "Checksums OK" only if all of
+            # them match and the npm tarball is one of them.
+            sums=$(sha256sum --check --ignore-missing SHA256SUMS); ok=$?; printf '%s\n' "$sums"
+            [ "$ok" -eq 0 ] && grep -qx 'ynab-mcp-${{ env.VERSION }}.tgz: OK' <<<"$sums" && echo "Checksums OK"
             gh attestation verify ynab-mcp-${{ env.VERSION }}.tgz -R ${{ github.repository }} \
               --signer-workflow ${{ github.repository }}/.github/workflows/release.yml --source-ref ${{ github.ref }}
             gh attestation verify oci://ghcr.io/${{ github.repository }}:${{ env.VERSION }} -R ${{ github.repository }} \

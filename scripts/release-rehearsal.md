@@ -12,9 +12,11 @@ The rehearsal proves four things (plan gate G16b):
 2. **Two approvals.** A tag on a commit on `main` stops twice for a
    `production` approval: first `Release: Publish image`, then
    `Release: Publish npm`.
-3. **Attestations.** The build provenance and SBOM attestations on the npm
-   tarball, the skills zips and the image verify with `gh attestation verify`,
-   and `SHA256SUMS` matches the release files.
+3. **Attestations.** These verify with `gh attestation verify`: build
+   provenance on every file in `SHA256SUMS` (the npm tarball, its SBOM and the
+   skills zips), an SBOM attestation on the npm tarball, and provenance and an
+   SBOM attestation on the image. The skills zips have provenance only.
+   `SHA256SUMS` matches the release files.
 4. **npm stays dry.** Outside `auzroz/ynab-mcp`, the npm step runs
    `npm publish --dry-run`. Nothing reaches npmjs.com.
 
@@ -360,13 +362,23 @@ gh attestation verify "$IMG" -R "$SCRATCH" --signer-workflow "$WF" --source-ref 
 gh attestation verify "$IMG" -R "$SCRATCH" --signer-workflow "$WF" --predicate-type https://spdx.dev/Document/v2.3
 gh attestation verify "$IMG" -R "$SCRATCH" --signer-workflow "$WF" --bundle-from-oci
 
-# Negative check: the same tarball must NOT verify as an auzroz/ynab-mcp artifact
-gh attestation verify "ynab-mcp-$V.tgz" -R auzroz/ynab-mcp && echo "UNEXPECTED: verified" || echo "refused, as expected"
+# Negative check: the same tarball must NOT verify as an auzroz/ynab-mcp artifact.
+# Only "no attestation for this digest in that repo" counts as a refusal. gh 2.103
+# reports it as an HTTP 404 from that repo's attestations API; older releases say
+# "no attestations found". An auth, network or CLI error is not a refusal.
+if out=$(gh attestation verify "ynab-mcp-$V.tgz" -R auzroz/ynab-mcp 2>&1); then
+  echo "UNEXPECTED: verified"
+elif grep -Eq 'HTTP 404: Not Found \(https://api\.github\.com/repos/auzroz/ynab-mcp/attestations/sha256:|no attestations found' <<<"$out"; then
+  echo "refused, as expected"
+else
+  printf 'NEGATIVE CHECK ERROR (not a refusal):\n%s\n' "$out"
+fi
 ```
 
 **Pass:** `shasum` prints `OK` for every file, each `gh attestation verify`
 above the negative check exits 0 with no `FAILED:` line, and the negative check
-prints "refused, as expected".
+prints "refused, as expected". "UNEXPECTED: verified" or "NEGATIVE CHECK ERROR"
+fails this step; for the second, fix the cause and run the check again.
 
 ## 5. The dispatch dry run (rehearses G16d)
 
