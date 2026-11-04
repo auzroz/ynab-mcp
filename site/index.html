@@ -120,11 +120,13 @@
 
         <section class="tab-panel" id="qs-code">
           <h3 class="tab-title">Claude Code</h3>
-          <p>One command registers the server. Add <code>--scope user</code> to make it available in every project.</p>
+          <p>Run these in Bash or Zsh (on Windows, in WSL or Git Bash). First paste your token at the prompt; it isn't echoed or kept in shell history:</p>
+          <div class="code" data-label="token prompt">
+<pre><code>read -rs YNAB_ACCESS_TOKEN</code></pre>
+          </div>
+          <p>Then one command registers the server. Add <code>--scope user</code> to make it available in every project.</p>
           <div class="code" data-label="Claude Code command">
-<pre><code># Paste the token at the prompt: it isn't echoed or kept in shell history
-read -rs YNAB_ACCESS_TOKEN
-claude mcp add ynab -e YNAB_ACCESS_TOKEN="$YNAB_ACCESS_TOKEN" -- npx -y ynab-mcp
+<pre><code>claude mcp add ynab -e YNAB_ACCESS_TOKEN="$YNAB_ACCESS_TOKEN" -- npx -y ynab-mcp
 unset YNAB_ACCESS_TOKEN</code></pre>
           </div>
         </section>

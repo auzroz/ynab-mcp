@@ -145,10 +145,13 @@
 
         <section aria-labelledby="claude-code">
           <h2 id="claude-code">Claude Code</h2>
+          <p>These commands are for Bash or Zsh; on Windows, run them in WSL or Git Bash. First paste your token at the prompt, which doesn't echo it or keep it in shell history:</p>
+          <div class="code" data-label="token prompt">
+<pre><code>read -rs YNAB_ACCESS_TOKEN</code></pre>
+          </div>
+          <p>Then register the server:</p>
           <div class="code" data-label="Claude Code command">
-<pre><code># Paste the token at the prompt: it isn't echoed or kept in shell history
-read -rs YNAB_ACCESS_TOKEN
-claude mcp add ynab -e YNAB_ACCESS_TOKEN="$YNAB_ACCESS_TOKEN" -- npx -y ynab-mcp
+<pre><code>claude mcp add ynab -e YNAB_ACCESS_TOKEN="$YNAB_ACCESS_TOKEN" -- npx -y ynab-mcp
 unset YNAB_ACCESS_TOKEN</code></pre>
           </div>
           <p>This registers the server for you in the current project. Add <code>--scope user</code> to use it everywhere. Claude Code saves the token in its own configuration (<code>~/.claude.json</code>), as Claude Desktop does in its config file. Run <code>claude mcp list</code> to check it connected, or <code>/mcp</code> inside a session.</p>
@@ -176,12 +179,15 @@ cd ynab-mcp
 
 # Install dependencies and build
 npm install
-npm run build
-
-# Run the server (stdio). It needs your token in the environment:
-# paste it at the prompt, which doesn't echo it or keep it in history
-read -rs YNAB_ACCESS_TOKEN
-export YNAB_ACCESS_TOKEN
+npm run build</code></pre>
+          </div>
+          <p>The server (stdio) needs your token in the environment. Paste it at the prompt, which doesn't echo it or keep it in history (Bash or Zsh; on Windows, WSL or Git Bash):</p>
+          <div class="code" data-label="token prompt">
+<pre><code>read -rs YNAB_ACCESS_TOKEN</code></pre>
+          </div>
+          <p>Then start it:</p>
+          <div class="code" data-label="run the server">
+<pre><code>export YNAB_ACCESS_TOKEN
 npm start</code></pre>
           </div>
           <p>To try tools interactively without Claude, use MCP Inspector:</p>

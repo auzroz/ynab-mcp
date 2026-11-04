@@ -404,10 +404,12 @@ function checkUrl(problems, { fileSet, ids }, page, tagName, name, url) {
     problems.push(`${page}: root-relative URL ${value}; use a relative path`);
     return;
   }
-  const [pathPart, fragment] = value.split('#');
+  const [pathAndQuery, fragment] = value.split('#');
+  // A query-only URL ("?x=1#id") stays on the current page.
+  const pathPart = pathAndQuery.split('?')[0];
   let target = page;
   if (pathPart) {
-    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(page), pathPart.split('?')[0]));
+    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(page), pathPart));
     if (resolved.startsWith('..')) {
       problems.push(`${page}: ${value} points outside the site`);
       return;

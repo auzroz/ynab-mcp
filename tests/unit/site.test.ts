@@ -246,12 +246,12 @@ describe('checkSite rejects', () => {
   afterAll(() => rmSync(tmp, { recursive: true, force: true }));
   let n = 0;
 
-  /** Problems for a fixture site: index.html (with <body> set to `body`), other.html and assets/x.css. */
-  function problemsFor(body: string, css = ''): string[] {
+  /** Problems for a fixture site: index.html (with <body> set to `body`), other.html (`otherBody`) and assets/x.css. */
+  function problemsFor(body: string, css = '', otherBody = ''): string[] {
     const dir = join(tmp, `case-${n++}`);
     mkdirSync(join(dir, 'assets'), { recursive: true });
     writeFileSync(join(dir, 'index.html'), `<!doctype html><html><body><h1 id="top">x</h1>${body}</body></html>`);
-    writeFileSync(join(dir, 'other.html'), '<!doctype html><html><body><h2 id="here">y</h2></body></html>');
+    writeFileSync(join(dir, 'other.html'), `<!doctype html><html><body><h2 id="here">y</h2>${otherBody}</body></html>`);
     writeFileSync(join(dir, 'assets', 'x.css'), css);
     return checkSite(dir);
   }
@@ -263,6 +263,11 @@ describe('checkSite rejects', () => {
   it('nothing for single-quoted ids and the references to them', () => {
     expect(problemsFor("<div ID='pane'>p</div><button aria-controls='pane'>b</button><a href='#pane'>a</a>")).toEqual([]);
     expect(problemsFor('<section aria-labelledby=" top ">s</section>')).toEqual([]);
+  });
+
+  it('nothing for a query-only link, which stays on the current page', () => {
+    expect(problemsFor('', '', '<a href="?view=compact#here">q</a>')).toEqual([]);
+    expect(problemsFor('', '', '<a href="?view=compact#top">q</a>').join('\n')).toMatch(/no matching id in other\.html/);
   });
 
   it('nothing for srcset URLs that contain commas', () => {

@@ -67,7 +67,7 @@
           <h2 id="tokens">Your token</h2>
           <ul>
             <li>In local (stdio) mode the YNAB token comes only from the server's environment, never from tool arguments, so nothing in a conversation can supply or change it.</li>
-            <li>It is never written to logs or returned in tool responses. Errors from the YNAB API reach Claude as fixed, mapped messages, never YNAB's own text. Validation and not-found errors carry the server's own message, and any other error is returned with secrets and control characters removed. The detailed error is logged internally after the same redaction.</li>
+            <li>It is never written to logs or returned in tool responses. Errors from the YNAB API reach Claude as fixed, mapped messages, never YNAB's own text. Validation and not-found errors carry the server's own message, and any other error is returned with control characters and recognized secret patterns removed: bearer tokens, labeled values such as <code>token=</code>, <code>key=</code> or <code>password=</code>, connection strings and file paths. The detailed error is logged internally after the same redaction. Redaction works by pattern, so a secret with no recognizable label could still get through.</li>
             <li>The health check shows IDs masked to their first and last four characters.</li>
             <li>A personal access token can do anything you can do in YNAB, so keep it out of chats, issues and screenshots. Revoke it in YNAB's Developer Settings if it leaks.</li>
           </ul>
