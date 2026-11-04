@@ -11,6 +11,7 @@ import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
+import { omitNull } from '../../utils/omit-null.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -75,7 +76,7 @@ export async function handleListMonths(
     budgeted: formatCurrency(month.budgeted),
     activity: formatCurrency(month.activity),
     to_be_budgeted: formatCurrency(month.to_be_budgeted),
-    age_of_money: month.age_of_money,
+    ...omitNull({ age_of_money: month.age_of_money }),
     deleted: month.deleted,
   }));
 

@@ -143,11 +143,11 @@ export async function handleUpdateTransactions(
     if (t.date !== undefined) update.date = t.date;
     if (t.amount !== undefined) update.amount = toMilliunits(t.amount);
     // null reaches the API as JSON null (clears the field); undefined means unchanged.
-    // The SDK types omit null for these fields, but its ToJSON passes it through.
-    if (t.payee_id !== undefined) update.payee_id = t.payee_id as string;
+    // Typed `| null` since ynab 5.0, so no casts are needed.
+    if (t.payee_id !== undefined) update.payee_id = t.payee_id;
     if (t.payee_name !== undefined) update.payee_name = t.payee_name;
-    if (t.category_id !== undefined) update.category_id = t.category_id as string;
-    if (t.memo !== undefined) update.memo = t.memo as string;
+    if (t.category_id !== undefined) update.category_id = t.category_id;
+    if (t.memo !== undefined) update.memo = t.memo;
     if (t.cleared !== undefined) update.cleared = t.cleared as ynab.TransactionClearedStatus;
     if (t.approved !== undefined) update.approved = t.approved;
     if (t.flag_color !== undefined)

@@ -1,6 +1,6 @@
 /**
  * YNAB 429 handling, against the real ynab SDK with fetch stubbed: a 429 on the
- * SDK path or the goal_frequency direct-fetch path marks the user's RateLimiter
+ * SDK path or a category write marks the user's RateLimiter
  * exhausted (Retry-After honoured), later calls fail fast without a request,
  * and the mapped error carries retry_after_seconds and no upstream text.
  */
@@ -99,7 +99,7 @@ describe('YnabClient 429 handling', () => {
     expect(limiter.getStatus().ynabExhausted?.retryAfterMs).toBe(20 * 60_000);
   });
 
-  it('direct-fetch (goal_frequency) path handles 429 the same way', async () => {
+  it('category write (goal_frequency) handles 429 the same way', async () => {
     fetchMock.mockImplementation(async () => tooMany({ 'Retry-After': '30' }));
     const { client, limiter } = makeClient();
 

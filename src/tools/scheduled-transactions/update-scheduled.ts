@@ -13,6 +13,7 @@ import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { validateScheduledDate } from '../../utils/date-validation.js';
 import { frequencies, flagColors } from '../../utils/scheduled-constants.js';
+import { omitNull } from '../../utils/omit-null.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -216,7 +217,7 @@ export async function handleUpdateScheduledTransaction(
         category_name: sanitizeName(txn.category_name),
         account_name: sanitizeName(txn.account_name),
         memo: sanitizeMemo(txn.memo),
-        flag_color: txn.flag_color,
+        ...omitNull({ flag_color: txn.flag_color }),
       },
     },
     null,

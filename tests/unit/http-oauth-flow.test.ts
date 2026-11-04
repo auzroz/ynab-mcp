@@ -496,6 +496,27 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     expect(await listTools(tokens.access, sessionId)).toEqual(READ_TOOLS);
   });
 
+  it('a stored granted_scope the code does not know yields a read-only session, end to end (#57a)', async () => {
+    ynabUserId = 'ynab-user-corrupt-scope';
+    // The token itself is a read-write grant, so only the user's stored scope can narrow the session.
+    const tokens = await connect('read-write');
+    expect(created.storage).toBeDefined();
+    const user = await created.storage!.getUser(ynabUserId);
+    expect(user?.grantedScope).toBe('read-write');
+    // A row from a newer release, a manual edit or a bad restore.
+    await created.storage!.upsertUser({ ...user!, grantedScope: 'admin' as unknown as 'read-write' });
+
+    const sessionId = await initialize(tokens.access);
+    expect(await listTools(tokens.access, sessionId)).toEqual(READ_TOOLS);
+    const write = await callTool(tokens.access, sessionId, 'ynab_create_category_group', {
+      budget_id: 'plan-1',
+      name: 'Sneaky',
+    });
+    expect(write.isError).toBe(true);
+    expect(JSON.parse(write.text).type).toBe('read_only_mode');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('rejects a token bound to another resource at /mcp with a 401 challenge', async () => {
     // The authorization server refuses to start such a grant at all...
     const clientId = await register();

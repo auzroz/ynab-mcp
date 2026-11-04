@@ -25,6 +25,7 @@ import type {
   PendingAuthRecord,
 } from '../../../src/storage/types.js';
 import { MemoryStorage } from '../../../src/storage/memory.js';
+import { MIN_COMPATIBLE_RELEASE, SCHEMA_VERSION } from '../../../src/storage/migrations.js';
 
 function makeUser(overrides: Partial<UserRecord> = {}): UserRecord {
   return {
@@ -1458,6 +1459,250 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage c
         await a.close();
         await b.close();
       }
+    });
+  });
+});
+
+// --- Migrations: shared by every driver. Kept at the end of the file so later migration steps add cases here without touching the suites above ---
+
+/** What the migration tests need from a driver's raw database. */
+interface RawDb {
+  open: () => Promise<Storage>;
+  /** Tables, columns, indexes and the schema_meta rows, as one comparable string. */
+  snapshot: () => Promise<string>;
+  getMeta: (key: string) => Promise<string | undefined>;
+  setMeta: (key: string, value: string) => Promise<void>;
+  /** Insert one row per scope-bearing table with `granted_scope` set to the raw value. */
+  insertRawScopes: (scope: string) => Promise<void>;
+}
+
+function checkMigrations(getRaw: () => Promise<RawDb>): void {
+  it('migrating twice is a no-op, and keeps the data', async () => {
+    const raw = await getRaw();
+    const first = await raw.open();
+    await first.saveAccessToken(makeAccessToken({ token: 'twice-at', resource: 'https://r/mcp' }));
+    await first.close();
+    const afterFirst = await raw.snapshot();
+    expect(await raw.getMeta('schema_version')).toBe(String(SCHEMA_VERSION));
+    expect(await raw.getMeta('min_compatible_release')).toBe(MIN_COMPATIBLE_RELEASE);
+
+    const second = await raw.open();
+    expect((await second.getAccessToken('twice-at'))?.resource).toBe('https://r/mcp');
+    await second.close();
+    const third = await raw.open();
+    await third.close();
+    expect(await raw.snapshot()).toBe(afterFirst);
+  });
+
+  it('refuses a database a newer release has migrated', async () => {
+    const raw = await getRaw();
+    await (await raw.open()).close();
+    await raw.setMeta('min_compatible_release', '99.0.0');
+    const before = await raw.snapshot();
+    await expect(raw.open()).rejects.toThrow(/newer release.*99\.0\.0/);
+    expect(await raw.snapshot()).toBe(before);
+  });
+
+  it('warns and continues on a newer schema version that is still compatible', async () => {
+    const raw = await getRaw();
+    await (await raw.open()).close();
+    await raw.setMeta('schema_version', String(SCHEMA_VERSION + 5));
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await (await raw.open()).close();
+      expect(warn.mock.calls.some((c) => /schema version \d+ is newer/.test(String(c[0])))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await raw.getMeta('schema_version')).toBe(String(SCHEMA_VERSION + 5));
+  });
+
+  it('reads an unknown stored granted_scope as read-only', async () => {
+    const raw = await getRaw();
+    const storage = await raw.open();
+    try {
+      for (const scope of ['admin', 'READ-WRITE', '']) {
+        await raw.insertRawScopes(scope);
+        expect((await storage.getUser('raw-user'))?.grantedScope).toBe('read-only');
+        expect((await storage.takePendingAuth('raw-state'))?.grantedScope).toBe('read-only');
+        expect((await storage.takeAuthCode('raw-code'))?.grantedScope).toBe('read-only');
+        expect((await storage.getAccessToken('raw-at'))?.grantedScope).toBe('read-only');
+        expect((await storage.takeRefreshToken('raw-rt'))?.grantedScope).toBe('read-only');
+      }
+      await raw.insertRawScopes('read-write');
+      expect((await storage.getUser('raw-user'))?.grantedScope).toBe('read-write');
+      expect((await storage.takePendingAuth('raw-state'))?.grantedScope).toBe('read-write');
+      expect((await storage.takeAuthCode('raw-code'))?.grantedScope).toBe('read-write');
+      expect((await storage.getAccessToken('raw-at'))?.grantedScope).toBe('read-write');
+      expect((await storage.takeRefreshToken('raw-rt'))?.grantedScope).toBe('read-write');
+    } finally {
+      await storage.close();
+    }
+  });
+}
+
+/** Upserts for {@link RawDb.insertRawScopes}; valid SQL on SQLite and Postgres alike. */
+function rawScopeRows(scope: string, expiresAt: number): string[] {
+  const v = `'${scope.replace(/'/g, "''")}'`;
+  const upsert = (pk: string): string => ` ON CONFLICT (${pk}) DO UPDATE SET granted_scope = excluded.granted_scope`;
+  return [
+    `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at) VALUES ('raw-user', ${v}, 'enc', 1)${upsert('user_id')}`,
+    `INSERT INTO pending_auth (state, client_id, redirect_uri, code_challenge, scopes, granted_scope, expires_at) VALUES ('raw-state', 'c1', 'https://client/cb', 'chal', '[]', ${v}, ${expiresAt})${upsert('state')}`,
+    `INSERT INTO auth_codes (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at, granted_scope) VALUES ('raw-code', 'c1', 'raw-user', 'https://client/cb', 'chal', '[]', ${expiresAt}, ${v})${upsert('code')}`,
+    `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, granted_scope) VALUES ('raw-at', 'c1', 'raw-user', '[]', ${expiresAt}, ${v})${upsert('token')}`,
+    `INSERT INTO refresh_tokens (token, client_id, user_id, scopes, granted_scope) VALUES ('raw-rt', 'c1', 'raw-user', '[]', ${v})${upsert('token')}`,
+  ];
+}
+
+describe('MemoryStorage migrations', () => {
+  it('init() twice is a no-op that keeps the data', async () => {
+    const s = new MemoryStorage();
+    await s.init();
+    await s.saveAccessToken(makeAccessToken({ token: 'mem-at' }));
+    await s.init();
+    expect((await s.getAccessToken('mem-at'))?.token).toBe('mem-at');
+  });
+
+  it('reads an unexpected granted_scope as read-only', async () => {
+    const s = new MemoryStorage();
+    const bogus = 'admin' as unknown as 'read-write';
+    await s.upsertUser(makeUser({ userId: 'u', grantedScope: bogus }));
+    expect((await s.getUser('u'))?.grantedScope).toBe('read-only');
+    await s.savePendingAuth(makePending({ state: 'p', grantedScope: bogus }));
+    expect((await s.takePendingAuth('p'))?.grantedScope).toBe('read-only');
+    await s.saveAuthCode(makeAuthCode({ code: 'c', grantedScope: bogus }));
+    expect((await s.takeAuthCode('c'))?.grantedScope).toBe('read-only');
+    await s.saveAccessToken(makeAccessToken({ token: 'a', grantedScope: bogus }));
+    expect((await s.getAccessToken('a'))?.grantedScope).toBe('read-only');
+    await s.saveRefreshToken(makeRefreshToken({ token: 'r1', grantedScope: bogus }));
+    expect((await s.getRefreshToken('r1'))?.grantedScope).toBe('read-only');
+    await s.saveRefreshToken(makeRefreshToken({ token: 'r2', grantedScope: bogus }));
+    expect((await s.takeRefreshToken('r2'))?.grantedScope).toBe('read-only');
+  });
+
+  it('keeps read-write and a missing level as stored', async () => {
+    const s = new MemoryStorage();
+    await s.saveAccessToken(makeAccessToken({ token: 'rw', grantedScope: 'read-write' }));
+    expect((await s.getAccessToken('rw'))?.grantedScope).toBe('read-write');
+    await s.saveAccessToken(makeAccessToken({ token: 'none' }));
+    expect((await s.getAccessToken('none'))?.grantedScope).toBeUndefined();
+  });
+});
+
+describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage migrations', () => {
+  const sqliteFiles: string[] = [];
+
+  describe('migrations', () => {
+    checkMigrations(async () => {
+      const { SqliteStorage } = await import('../../../src/storage/sqlite.js');
+      const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3');
+      const file = join(tmpdir(), `ynab-mcp-sqlite-migrate-${randomUUID()}.db`);
+      sqliteFiles.push(file);
+      const withRaw = async <T>(fn: (db: import('better-sqlite3').Database) => T): Promise<T> => {
+        const db = new Database(file);
+        try {
+          return fn(db);
+        } finally {
+          db.close();
+        }
+      };
+      return {
+        open: async () => {
+          const s = new SqliteStorage({ path: file });
+          await s.init();
+          return s;
+        },
+        snapshot: () =>
+          withRaw((db) => {
+            const schema = db.prepare('SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY name').all();
+            const meta = db.prepare('SELECT key, value FROM schema_meta ORDER BY key').all();
+            return JSON.stringify({ schema, meta });
+          }),
+        getMeta: (key) =>
+          withRaw(
+            (db) => (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(key) as { value: string } | undefined)?.value
+          ),
+        setMeta: (key, value) =>
+          withRaw((db) => {
+            db.prepare('INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)').run(key, value);
+          }),
+        insertRawScopes: (scope) =>
+          withRaw((db) => {
+            for (const sql of rawScopeRows(scope, Date.now() + 3_600_000)) db.exec(sql);
+          }),
+      };
+    });
+  });
+  afterAll(() => {
+    for (const f of sqliteFiles) {
+      rmSync(f, { force: true });
+      rmSync(`${f}-wal`, { force: true });
+      rmSync(`${f}-shm`, { force: true });
+    }
+  });
+});
+
+describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage migrations', () => {
+  const pgMigrationCleanups: Array<() => Promise<void>> = [];
+  afterAll(async () => {
+    for (const cleanup of pgMigrationCleanups) await cleanup();
+  });
+
+  describe('migrations', () => {
+    checkMigrations(async () => {
+      const { PostgresStorage } = await import('../../../src/storage/postgres.js');
+      const pg = (await import('pg')).default;
+      const base = process.env.DATABASE_URL;
+      if (!base) throw new Error('DATABASE_URL not set');
+      // An isolated schema per test, so snapshots only see this test's tables.
+      const schema = `mig_${randomUUID().replace(/-/g, '')}`;
+      const url = new URL(base);
+      url.searchParams.set('options', `-c search_path=${schema}`);
+      const connectionString = url.toString();
+      const admin = new pg.Pool({ connectionString: base });
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      pgMigrationCleanups.push(async () => {
+        await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+        await admin.end();
+      });
+      const inSchema = async <T extends object>(sql: string, params: unknown[] = []): Promise<T[]> => {
+        const pool = new pg.Pool({ connectionString });
+        try {
+          return (await pool.query<T & import('pg').QueryResultRow>(sql, params)).rows;
+        } finally {
+          await pool.end();
+        }
+      };
+      return {
+        open: async () => {
+          const s = new PostgresStorage({ connectionString });
+          await s.init();
+          return s;
+        },
+        snapshot: async () => {
+          const columns = await admin.query(
+            'SELECT table_name, column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = $1 ORDER BY table_name, column_name',
+            [schema]
+          );
+          const indexes = await admin.query(
+            'SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1 ORDER BY indexname',
+            [schema]
+          );
+          const meta = await inSchema('SELECT key, value FROM schema_meta ORDER BY key');
+          return JSON.stringify({ columns: columns.rows, indexes: indexes.rows, meta });
+        },
+        getMeta: async (key) =>
+          (await inSchema<{ value: string }>('SELECT value FROM schema_meta WHERE key = $1', [key]))[0]?.value,
+        setMeta: async (key, value) => {
+          await inSchema(
+            'INSERT INTO schema_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+            [key, value]
+          );
+        },
+        insertRawScopes: async (scope) => {
+          for (const sql of rawScopeRows(scope, Date.now() + 3_600_000)) await inSchema(sql);
+        },
+      };
     });
   });
 });
