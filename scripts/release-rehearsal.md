@@ -420,5 +420,5 @@ first error line for any failure.
 |---|---|
 | 2. Tag off `main` | Verify refuses; nothing else runs; no approval requested |
 | 3. Tag on `main` | Two approvals (image, then npm); all jobs green; npm `--dry-run`; nothing on npmjs.com |
-| 4. Attestations | `SHA256SUMS` OK; provenance and SBOM verify for the tarball, zips and image; negative check refused |
+| 4. Attestations | `SHA256SUMS` OK; provenance verifies for every file in `SHA256SUMS` and the image; SBOM attestations verify for the tarball and image only; negative check refused |
 | 5. Dispatch | `dry_run=true` green with no approval; `dry_run=false` refused |
