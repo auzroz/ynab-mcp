@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Install ynab-mcp</title>
+  <meta name="description" content="Install ynab-mcp for Claude Desktop, Claude Code, Docker or a self-hosted HTTP server. Configuration reference and troubleshooting.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect class="b" width="32" height="32" rx="8"/><rect class="l" x="8" y="9" width="16" height="2.6" rx="1.3"/><rect class="l" x="8" y="14.7" width="11" height="2.6" rx="1.3"/><rect class="l" x="8" y="20.4" width="6" height="2.6" rx="1.3"/></svg>
+        <span>ynab-mcp <span class="brand-sub">for YNAB</span></span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" hidden>Menu</button>
+      <nav class="site-nav" id="site-nav" aria-label="Main">
+        <ul class="nav-list">
+          <li><a href="install.html" aria-current="page">Install</a></li>
+          <li><a href="examples.html">Examples</a></li>
+          <li><a href="tools.html">Tools</a></li>
+          <li><a href="self-hosting.html">Self-hosting</a></li>
+          <li><a href="security.html">Security</a></li>
+          <li><a href="https://github.com/auzroz/ynab-mcp">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="wrap page-head">
+      <span class="eyebrow">Install</span>
+      <h1>Set up ynab-mcp</h1>
+      <p class="lede">About five minutes: get a token from YNAB, add a few lines to your Claude configuration, restart.</p>
+    </div>
+
+    <div class="wrap with-toc">
+      <aside class="toc" aria-labelledby="toc-title">
+        <div>
+          <h2 id="toc-title">On this page</h2>
+          <ul>
+            <li><a href="#requirements">Requirements</a></li>
+            <li><a href="#token">Get a YNAB token</a></li>
+            <li><a href="#claude-desktop">Claude Desktop</a></li>
+            <li><a href="#claude-code">Claude Code</a></li>
+            <li><a href="#other-clients">Other MCP clients</a></li>
+            <li><a href="#from-source">From source</a></li>
+            <li><a href="#http">HTTP mode</a></li>
+            <li><a href="#write-mode">Read-only and write mode</a></li>
+            <li><a href="#configuration">Configuration reference</a></li>
+            <li><a href="#troubleshooting">Troubleshooting</a></li>
+          </ul>
+        </div>
+      </aside>
+
+      <div class="prose">
+        <section aria-labelledby="requirements">
+          <h2 id="requirements">Requirements</h2>
+          <ul>
+            <li>A YNAB account.</li>
+            <li><strong>Node.js 22.14.0 or later</strong> for the npx and source options. Check with <code>node -v</code>. Or use <strong>Docker</strong> instead, which needs no Node.js.</li>
+            <li>An MCP client: Claude Desktop, Claude Code, or another client that supports MCP servers.</li>
+          </ul>
+          <div class="callout note">
+            <span class="callout-title">Package name</span>
+            <p>The package is <code>ynab-mcp</code>. The npm package <code>ynab-mcp-server</code> is an unrelated project.</p>
+          </div>
+        </section>
+
+        <section aria-labelledby="token">
+          <h2 id="token">Get a YNAB personal access token</h2>
+          <ol class="steps">
+            <li>Sign in to YNAB on the web and open <a href="https://app.ynab.com/settings/developer">Account Settings, Developer Settings</a>.</li>
+            <li>Under <strong>Personal Access Tokens</strong>, choose <strong>New Token</strong> and confirm your password.</li>
+            <li>Copy the token. YNAB shows it only once. Treat it like a password: anyone holding it can read and change your budget.</li>
+          </ol>
+          <p>You can revoke the token on the same page at any time. A revoked token stops working immediately.</p>
+        </section>
+
+        <section aria-labelledby="claude-desktop">
+          <h2 id="claude-desktop">Claude Desktop</h2>
+          <p>Open the configuration file from the Claude menu (Settings, Developer, Edit Config), or edit it directly:</p>
+          <ul>
+            <li><strong>macOS:</strong> <code>~/Library/Application Support/Claude/claude_desktop_config.json</code></li>
+            <li><strong>Windows:</strong> <code>%APPDATA%\Claude\claude_desktop_config.json</code></li>
+          </ul>
+          <p>Add one of the following, replace <code>your_token_here</code>, save, and quit and reopen Claude Desktop. If the file already has an <code>mcpServers</code> section, add the <code>"ynab"</code> entry inside it.</p>
+
+          <h3 id="desktop-npx">Using npx (recommended)</h3>
+          <div class="code" data-label="npx config">
+<pre><code>{
+  "mcpServers": {
+    "ynab": {
+      "command": "npx",
+      "args": ["-y", "ynab-mcp"],
+      "env": {
+        "YNAB_ACCESS_TOKEN": "your_token_here"
+      }
+    }
+  }
+}</code></pre>
+          </div>
+
+          <h3 id="desktop-docker">Using Docker</h3>
+          <div class="code" data-label="Docker config">
+<pre><code>{
+  "mcpServers": {
+    "ynab": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "YNAB_ACCESS_TOKEN",
+        "ghcr.io/auzroz/ynab-mcp:latest"
+      ],
+      "env": {
+        "YNAB_ACCESS_TOKEN": "your_token_here"
+      }
+    }
+  }
+}</code></pre>
+          </div>
+          <p>The <code>-e YNAB_ACCESS_TOKEN</code> argument passes the value from <code>env</code> into the container without putting it on the command line. Image tags follow releases: <code>latest</code>, or a version such as <code>0.4.1</code>.</p>
+
+          <h3 id="desktop-local">Using a local build</h3>
+          <div class="code" data-label="local build config">
+<pre><code>{
+  "mcpServers": {
+    "ynab": {
+      "command": "node",
+      "args": ["/path/to/ynab-mcp/dist/index.js"],
+      "env": {
+        "YNAB_ACCESS_TOKEN": "your_token_here"
+      }
+    }
+  }
+}</code></pre>
+          </div>
+          <p>See <a href="#from-source">From source</a> for building it.</p>
+        </section>
+
+        <section aria-labelledby="claude-code">
+          <h2 id="claude-code">Claude Code</h2>
+          <p>These commands are for Bash or Zsh; on Windows, run them in WSL or Git Bash. Type this first command rather than copying it, so your token stays on the clipboard, then paste the token at its prompt, which doesn't echo it or keep it in shell history:</p>
+          <div class="code" data-label="token prompt" data-no-copy>
+<pre><code>read -rs YNAB_ACCESS_TOKEN</code></pre>
+          </div>
+          <p>Then register the server:</p>
+          <div class="code" data-label="Claude Code command">
+<pre><code>claude mcp add ynab -e YNAB_ACCESS_TOKEN="$YNAB_ACCESS_TOKEN" -- npx -y ynab-mcp
+unset YNAB_ACCESS_TOKEN</code></pre>
+          </div>
+          <p>This registers the server for you in the current project. Add <code>--scope user</code> to use it everywhere. Claude Code saves the token in its own configuration (<code>~/.claude.json</code>), as Claude Desktop does in its config file. Run <code>claude mcp list</code> to check it connected, or <code>/mcp</code> inside a session.</p>
+          <p>To add write access later, remove it with <code>claude mcp remove ynab</code> and add it again with <code>-e YNAB_READ_ONLY=false</code> as a second <code>-e</code> option.</p>
+        </section>
+
+        <section aria-labelledby="other-clients">
+          <h2 id="other-clients">Other MCP clients</h2>
+          <p>Any client that launches stdio MCP servers can run ynab-mcp. Give it this command and set <code>YNAB_ACCESS_TOKEN</code> in the server's environment:</p>
+          <div class="code" data-label="command">
+<pre><code>npx -y ynab-mcp</code></pre>
+          </div>
+          <p>Or with Docker (keep <code>-i</code>: stdio needs an open standard input):</p>
+          <div class="code" data-label="Docker command">
+<pre><code>docker run -i --rm -e YNAB_ACCESS_TOKEN ghcr.io/auzroz/ynab-mcp:latest</code></pre>
+          </div>
+        </section>
+
+        <section aria-labelledby="from-source">
+          <h2 id="from-source">From source</h2>
+          <div class="code" data-label="build from source">
+<pre><code># Clone the repository
+git clone https://github.com/auzroz/ynab-mcp.git
+cd ynab-mcp
+
+# Install dependencies and build
+npm install
+npm run build</code></pre>
+          </div>
+          <p>The server (stdio) needs your token in the environment. Type this command rather than copying it, so your token stays on the clipboard, then paste the token at its prompt, which doesn't echo it or keep it in history (Bash or Zsh; on Windows, WSL or Git Bash):</p>
+          <div class="code" data-label="token prompt" data-no-copy>
+<pre><code>read -rs YNAB_ACCESS_TOKEN</code></pre>
+          </div>
+          <p>Then start it:</p>
+          <div class="code" data-label="run the server">
+<pre><code>export YNAB_ACCESS_TOKEN
+npm start</code></pre>
+          </div>
+          <p>To try tools interactively without Claude, use MCP Inspector:</p>
+          <div class="code" data-label="MCP Inspector command">
+<pre><code>npx @modelcontextprotocol/inspector node dist/index.js</code></pre>
+          </div>
+          <p>Contributor setup, tests and standards are in <a href="https://github.com/auzroz/ynab-mcp/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.</p>
+        </section>
+
+        <section aria-labelledby="http">
+          <h2 id="http">HTTP mode</h2>
+          <p>By default the server speaks stdio to a client on the same machine. Set <code>MCP_TRANSPORT=http</code> to run it as a remote server over MCP's Streamable HTTP transport at <code>POST /mcp</code>, with <code>GET /health</code> for load balancers.</p>
+          <p>For a quick personal setup, header mode takes your YNAB token per request:</p>
+          <div class="code" data-label="HTTP header mode commands">
+<pre><code>MCP_TRANSPORT=http PORT=3000 YNAB_ACCESS_TOKEN=… npm start
+# connect an MCP client via the mcp-remote shim:
+npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: &lt;your-token&gt;"</code></pre>
+          </div>
+          <p>Serve it behind TLS. For claude.ai, for several people, or for anything reachable from the internet, use OAuth mode: see <a href="self-hosting.html">Self-hosting</a>.</p>
+        </section>
+
+        <section aria-labelledby="write-mode">
+          <h2 id="write-mode">Read-only and write mode</h2>
+          <p>ynab-mcp starts <strong>read-only</strong>. Claude can look at everything but change nothing: write tools are left out of the tool list, and the server refuses them even if a client calls one by name.</p>
+          <p>To let Claude create, update and delete, add <code>YNAB_READ_ONLY</code> to the server's environment and restart the client:</p>
+          <div class="code" data-label="write-enabled config">
+<pre><code>"env": {
+  "YNAB_ACCESS_TOKEN": "your_token_here",
+  "YNAB_READ_ONLY": "false"
+}</code></pre>
+          </div>
+          <ul>
+            <li>Accepted values are <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code> and <code>no</code>. Anything else, such as a typo, stops the server at startup rather than guessing.</li>
+            <li>Update and delete tools are marked destructive, because YNAB has no undo. Most clients ask before running them.</li>
+            <li>Every write is recorded in the audit log. Ask Claude to <q>show the audit log</q> to see what changed.</li>
+          </ul>
+          <p>A good habit: keep your everyday setup read-only, and turn writes on when you want Claude to do bookkeeping.</p>
+        </section>
+
+        <section aria-labelledby="configuration">
+          <h2 id="configuration">Configuration reference</h2>
+          <p>All settings are environment variables. Most people only need the first one.</p>
+
+          <h3 id="config-core">All modes</h3>
+          <div class="table-wrap">
+            <table class="env-table">
+              <thead><tr><th scope="col">Variable</th><th scope="col">Default</th><th scope="col">What it does</th></tr></thead>
+              <tbody>
+                <tr><td><code>YNAB_ACCESS_TOKEN</code></td><td>none</td><td>Your YNAB personal access token. Required for stdio. In HTTP header mode it is the fallback when a request has no <code>X-YNAB-Token</code>.</td></tr>
+                <tr><td><code>YNAB_BUDGET_ID</code></td><td><code>last-used</code></td><td>Budget to use when Claude doesn't name one. A budget UUID, <code>last-used</code> or <code>default</code>.</td></tr>
+                <tr><td><code>YNAB_READ_ONLY</code></td><td><code>true</code></td><td>Set to <code>false</code> to allow writes. See <a href="#write-mode">Read-only and write mode</a>.</td></tr>
+                <tr><td><code>CACHE_TTL_MS</code></td><td><code>300000</code></td><td>How long accounts, categories, payees and the budget list are cached, in milliseconds (5 minutes).</td></tr>
+                <tr><td><code>RATE_LIMIT_PER_HOUR</code></td><td><code>180</code></td><td>Requests per hour the server allows itself. YNAB's limit is 200; the default keeps a 10% margin.</td></tr>
+                <tr><td><code>LOG_LEVEL</code></td><td><code>info</code></td><td><code>debug</code>, <code>info</code>, <code>warn</code> or <code>error</code> (stdio mode).</td></tr>
+                <tr><td><code>MCP_TRANSPORT</code></td><td><code>stdio</code></td><td><code>stdio</code> for a local client, or <code>http</code> for a remote server.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3 id="config-http">HTTP mode</h3>
+          <div class="table-wrap">
+            <table class="env-table">
+              <thead><tr><th scope="col">Variable</th><th scope="col">Default</th><th scope="col">What it does</th></tr></thead>
+              <tbody>
+                <tr><td><code>PORT</code></td><td><code>3000</code></td><td>Port to listen on.</td></tr>
+                <tr><td><code>PUBLIC_URL</code></td><td>none</td><td>The public HTTPS address of your server, such as <code>https://ynab-mcp.example.com</code>. Required for OAuth mode, where it is also the OAuth issuer.</td></tr>
+                <tr><td><code>MCP_RESOURCE_URL</code></td><td><code>PUBLIC_URL</code> + <code>/mcp</code></td><td>The MCP endpoint's absolute URL, which tokens are bound to.</td></tr>
+                <tr><td><code>ALLOWED_HOSTS</code></td><td>the <code>PUBLIC_URL</code> host; localhost too when <code>PUBLIC_URL</code> is unset or loopback</td><td>Comma-separated <code>Host</code> header allowlist. An explicit list replaces the defaults.</td></tr>
+                <tr><td><code>ALLOWED_ORIGINS</code></td><td>the <code>PUBLIC_URL</code> origin; without <code>PUBLIC_URL</code>, <code>https://</code> for each allowed host, plus <code>http://</code> for localhost</td><td>Comma-separated <code>Origin</code> allowlist for <code>/mcp</code>. Requests with no <code>Origin</code> header aren't checked.</td></tr>
+                <tr><td><code>ENABLE_DNS_REBINDING_PROTECTION</code></td><td><code>true</code></td><td>Host and Origin checks. Leave on; behind a proxy, forward <code>Host</code> or set <code>ALLOWED_HOSTS</code>.</td></tr>
+                <tr><td><code>TRUST_PROXY</code></td><td><code>0</code></td><td>Number of reverse-proxy hops to trust for <code>X-Forwarded-*</code>, such as <code>1</code> behind a single Caddy or nginx. Set it only when the server is reachable solely through the proxy (publish no ports), or clients can spoof <code>X-Forwarded-For</code>.</td></tr>
+                <tr><td><code>MCP_MAX_SESSIONS</code></td><td><code>100</code></td><td>Maximum concurrent MCP sessions.</td></tr>
+                <tr><td><code>MCP_MAX_SESSIONS_PER_USER</code></td><td><code>10</code></td><td>Maximum sessions per user; past it the user's least recently used session closes. Must not exceed <code>MCP_MAX_SESSIONS</code>.</td></tr>
+                <tr><td><code>MCP_SESSION_IDLE_TIMEOUT_MS</code></td><td><code>1800000</code></td><td>Idle time before a session closes (30 minutes).</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3 id="config-oauth">OAuth mode (multi-user)</h3>
+          <p>OAuth mode turns on when <code>YNAB_OAUTH_CLIENT_ID</code>, <code>YNAB_OAUTH_CLIENT_SECRET</code>, <code>ENCRYPTION_KEY</code> and <code>PUBLIC_URL</code> are all set.</p>
+          <div class="table-wrap">
+            <table class="env-table">
+              <thead><tr><th scope="col">Variable</th><th scope="col">Default</th><th scope="col">What it does</th></tr></thead>
+              <tbody>
+                <tr><td><code>YNAB_OAUTH_CLIENT_ID</code></td><td>none</td><td>Client ID of your YNAB OAuth application.</td></tr>
+                <tr><td><code>YNAB_OAUTH_CLIENT_SECRET</code></td><td>none</td><td>Its client secret.</td></tr>
+                <tr><td><code>ENCRYPTION_KEY</code></td><td>none</td><td>32-byte key that encrypts stored YNAB tokens. Generate one with <code>openssl rand -base64 32</code> and keep it stable.</td></tr>
+                <tr><td><code>YNAB_OAUTH_ALLOW_WRITE</code></td><td><code>true</code></td><td>Offer read-write at the consent screen. <code>false</code> makes every connection read-only.</td></tr>
+                <tr><td><code>STORAGE_DRIVER</code></td><td><code>memory</code></td><td><code>memory</code> (lost on restart, for trying it out), <code>sqlite</code> or <code>postgres</code>.</td></tr>
+                <tr><td><code>SQLITE_PATH</code></td><td>none</td><td>Database file for <code>sqlite</code>, such as <code>/data/ynab-mcp.db</code>.</td></tr>
+                <tr><td><code>DATABASE_URL</code></td><td>none</td><td>Connection string for <code>postgres</code>.</td></tr>
+                <tr><td><code>MCP_ACCESS_TOKEN_TTL_SEC</code></td><td><code>3600</code></td><td>Lifetime of the access tokens the server issues to MCP clients.</td></tr>
+                <tr><td><code>MCP_AUTH_CODE_TTL_SEC</code></td><td><code>600</code></td><td>Lifetime of an authorization code and of the consent step.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>Numbers must be plain digits (<code>10ms</code> is rejected), and booleans must be one of the accepted words. The server stops with an error that names the variable but never echoes its value.</p>
+        </section>
+
+        <section aria-labelledby="troubleshooting">
+          <h2 id="troubleshooting">Troubleshooting</h2>
+
+          <h3 id="ts-not-showing">Claude doesn't show the YNAB tools</h3>
+          <ul>
+            <li>Quit Claude Desktop completely (not just the window) and reopen it.</li>
+            <li>Check the config file is valid JSON: a missing comma or a trailing comma stops every server from loading.</li>
+            <li>Read the server log. On macOS it is in <code>~/Library/Logs/Claude/</code> (<code>mcp-server-ynab.log</code>); on Windows in <code>%APPDATA%\Claude\logs\</code>.</li>
+            <li>Check <code>node -v</code> prints 22.14 or later. Claude Desktop may use a different Node.js than your terminal; if in doubt, use the Docker option.</li>
+          </ul>
+
+          <h3 id="ts-token">"YNAB_ACCESS_TOKEN is required"</h3>
+          <p>The token didn't reach the server. Make sure it is inside the <code>env</code> block of the <code>"ynab"</code> entry and spelled exactly <code>YNAB_ACCESS_TOKEN</code>. With Docker, both the <code>-e YNAB_ACCESS_TOKEN</code> argument and the <code>env</code> entry are needed.</p>
+
+          <h3 id="ts-unauthorized">Every request fails with an authentication error</h3>
+          <p>The token was revoked, mistyped or copied with extra spaces. Create a new one in YNAB's Developer Settings and paste it again.</p>
+
+          <h3 id="ts-writes">Claude says it can't add or change anything</h3>
+          <p>That's the read-only default working. See <a href="#write-mode">Read-only and write mode</a>.</p>
+
+          <h3 id="ts-boolean">"Invalid boolean value for YNAB_READ_ONLY"</h3>
+          <p>The value isn't one of <code>true</code>, <code>false</code>, <code>1</code>, <code>0</code>, <code>yes</code> or <code>no</code>. The server refuses to start rather than guess whether you meant to allow writes.</p>
+
+          <h3 id="ts-budget">Claude is looking at the wrong budget</h3>
+          <p>Without a budget named, the server uses the one you opened most recently in YNAB. Ask Claude to <q>list my budgets</q> and name the one you want, or set <code>YNAB_BUDGET_ID</code> to its ID.</p>
+
+          <h3 id="ts-rate">"Rate limit" errors</h3>
+          <p>YNAB allows 200 requests an hour per token, and the server stops at 180. Long analysis sessions can reach it; ask Claude to <q>check the rate limit status</q> to see when it resets. Caching and delta sync keep repeat questions cheap.</p>
+
+          <h3 id="ts-403">HTTP mode answers every request with 403</h3>
+          <p>The <code>Host</code> header isn't on the allowlist, usually because a reverse proxy rewrote it. Forward the original <code>Host</code>, or add the name to <code>ALLOWED_HOSTS</code> (include the public host too, as an explicit list replaces the defaults).</p>
+
+          <h3 id="ts-more">Still stuck?</h3>
+          <p>Ask Claude to <q>run a health check</q>, which tests the connection to YNAB. Then <a href="https://github.com/auzroz/ynab-mcp/issues">open an issue</a> with the version, how you run it, and what happened. Remove your token, budget names, payees and amounts from anything you paste.</p>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="https://github.com/auzroz/ynab-mcp">Source on GitHub</a></li>
+        <li><a href="https://www.npmjs.com/package/ynab-mcp">npm package</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/releases">Releases</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/LICENSE">MIT License</a></li>
+        <li><a href="security.html#reporting">Report a vulnerability</a></li>
+      </ul>
+      <p class="disclaimer">ynab-mcp is an independent open-source project. It is not affiliated with, endorsed by or sponsored by YNAB. YNAB is a trademark of YNAB LLC.</p>
+    </div>
+  </footer>
+</body>
+</html>
