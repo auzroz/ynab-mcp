@@ -146,9 +146,12 @@
         <section aria-labelledby="claude-code">
           <h2 id="claude-code">Claude Code</h2>
           <div class="code" data-label="Claude Code command">
-<pre><code>claude mcp add ynab -e YNAB_ACCESS_TOKEN=your_token_here -- npx -y ynab-mcp</code></pre>
+<pre><code># Paste the token at the prompt: it isn't echoed or kept in shell history
+read -rs YNAB_ACCESS_TOKEN
+claude mcp add ynab -e YNAB_ACCESS_TOKEN="$YNAB_ACCESS_TOKEN" -- npx -y ynab-mcp
+unset YNAB_ACCESS_TOKEN</code></pre>
           </div>
-          <p>This registers the server for the current project. Add <code>--scope user</code> to use it everywhere. Run <code>claude mcp list</code> to check it connected, or <code>/mcp</code> inside a session.</p>
+          <p>This registers the server for you in the current project. Add <code>--scope user</code> to use it everywhere. Claude Code saves the token in its own configuration (<code>~/.claude.json</code>), as Claude Desktop does in its config file. Run <code>claude mcp list</code> to check it connected, or <code>/mcp</code> inside a session.</p>
           <p>To add write access later, remove it with <code>claude mcp remove ynab</code> and add it again with <code>-e YNAB_READ_ONLY=false</code> as a second <code>-e</code> option.</p>
         </section>
 
@@ -175,7 +178,10 @@ cd ynab-mcp
 npm install
 npm run build
 
-# Run the server
+# Run the server (stdio). It needs your token in the environment:
+# paste it at the prompt, which doesn't echo it or keep it in history
+read -rs YNAB_ACCESS_TOKEN
+export YNAB_ACCESS_TOKEN
 npm start</code></pre>
           </div>
           <p>To try tools interactively without Claude, use MCP Inspector:</p>
@@ -244,7 +250,7 @@ npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: &lt;your-token&
                 <tr><td><code>PUBLIC_URL</code></td><td>none</td><td>The public HTTPS address of your server, such as <code>https://ynab-mcp.example.com</code>. Required for OAuth mode, where it is also the OAuth issuer.</td></tr>
                 <tr><td><code>MCP_RESOURCE_URL</code></td><td><code>PUBLIC_URL</code> + <code>/mcp</code></td><td>The MCP endpoint's absolute URL, which tokens are bound to.</td></tr>
                 <tr><td><code>ALLOWED_HOSTS</code></td><td>the <code>PUBLIC_URL</code> host; localhost too when <code>PUBLIC_URL</code> is unset or loopback</td><td>Comma-separated <code>Host</code> header allowlist. An explicit list replaces the defaults.</td></tr>
-                <tr><td><code>ALLOWED_ORIGINS</code></td><td>from <code>PUBLIC_URL</code></td><td>Comma-separated <code>Origin</code> allowlist for <code>/mcp</code>.</td></tr>
+                <tr><td><code>ALLOWED_ORIGINS</code></td><td>the <code>PUBLIC_URL</code> origin; without <code>PUBLIC_URL</code>, <code>https://</code> for each allowed host, plus <code>http://</code> for localhost</td><td>Comma-separated <code>Origin</code> allowlist for <code>/mcp</code>. Requests with no <code>Origin</code> header aren't checked.</td></tr>
                 <tr><td><code>ENABLE_DNS_REBINDING_PROTECTION</code></td><td><code>true</code></td><td>Host and Origin checks. Leave on; behind a proxy, forward <code>Host</code> or set <code>ALLOWED_HOSTS</code>.</td></tr>
                 <tr><td><code>TRUST_PROXY</code></td><td><code>0</code></td><td>Number of reverse-proxy hops to trust for <code>X-Forwarded-*</code>, such as <code>1</code> behind a single Caddy or nginx. Set it only when the server is reachable solely through the proxy (publish no ports), or clients can spoof <code>X-Forwarded-For</code>.</td></tr>
                 <tr><td><code>MCP_MAX_SESSIONS</code></td><td><code>100</code></td><td>Maximum concurrent MCP sessions.</td></tr>

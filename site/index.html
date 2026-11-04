@@ -122,7 +122,10 @@
           <h3 class="tab-title">Claude Code</h3>
           <p>One command registers the server. Add <code>--scope user</code> to make it available in every project.</p>
           <div class="code" data-label="Claude Code command">
-<pre><code>claude mcp add ynab -e YNAB_ACCESS_TOKEN=your_token_here -- npx -y ynab-mcp</code></pre>
+<pre><code># Paste the token at the prompt: it isn't echoed or kept in shell history
+read -rs YNAB_ACCESS_TOKEN
+claude mcp add ynab -e YNAB_ACCESS_TOKEN="$YNAB_ACCESS_TOKEN" -- npx -y ynab-mcp
+unset YNAB_ACCESS_TOKEN</code></pre>
           </div>
         </section>
 

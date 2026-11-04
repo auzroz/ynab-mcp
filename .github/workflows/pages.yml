@@ -9,8 +9,11 @@ on:
     paths:
       - 'site/**'
       - 'scripts/build-site.mjs'
-      - 'src/tools/**'
-      - 'src/prompts/**'
+      # The registry is imported from dist/, built from all of src/ against the
+      # locked dependencies (the ynab SDK's types shape the parameter lists).
+      - 'src/**'
+      - 'tsconfig.json'
+      - 'package-lock.json'
       - 'README.md'
       # tools.json carries the package version.
       - 'package.json'
@@ -19,8 +22,10 @@ on:
 
 permissions: {}
 
+# Main deploys queue in their own group, so a dispatch from another branch
+# (which builds but never deploys) can't replace a pending main run.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

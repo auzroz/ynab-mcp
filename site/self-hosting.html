@@ -65,7 +65,7 @@
             <li>to share one instance with a <strong>partner, family or small team</strong>, with nobody seeing anyone else's budget;</li>
             <li>to keep tokens off individual laptops.</li>
           </ul>
-          <p>There is no central ynab-mcp service. You run the instance, and your users' YNAB data flows only between your server and YNAB.</p>
+          <p>There is no central ynab-mcp service. You run the instance: it fetches each user's YNAB data from YNAB and sends tool results only to that user's MCP client, which passes them to Claude as part of the conversation. See <a href="security.html#data">Where your data goes</a>.</p>
         </section>
 
         <section aria-labelledby="how-it-works">

@@ -93,7 +93,8 @@ between users.
 |----------|-------------|
 | `MCP_TRANSPORT` | `stdio` (default) or `http` |
 | `PORT` | HTTP port (default `3000`) |
-| `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | Comma-separated allowlists for DNS-rebinding protection (default: the `PUBLIC_URL` host, plus localhost when `PUBLIC_URL` is unset or loopback) |
+| `ALLOWED_HOSTS` | Comma-separated `Host` allowlist for DNS-rebinding protection (default: the `PUBLIC_URL` host, plus localhost when `PUBLIC_URL` is unset or loopback). An explicit list replaces the defaults |
+| `ALLOWED_ORIGINS` | Comma-separated `Origin` allowlist for `/mcp` (default: the `PUBLIC_URL` origin; without `PUBLIC_URL`, `https://` for each allowed host, plus `http://` for localhost). Requests with no `Origin` header aren't checked |
 | `ENABLE_DNS_REBINDING_PROTECTION` | Origin/Host checks, on by default (0.4.0 breaking default; behind a proxy forward `Host` or set `ALLOWED_HOSTS`); `false` disables them (unsafe). See docs/REMOTE_HOSTING.md |
 | `MCP_RESOURCE_URL` | Resource URL (default `PUBLIC_URL`/mcp) |
 | `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` | Global cap on concurrent sessions (default 100; at the cap `initialize` gets `503` + `Retry-After`) and per-user cap (default 10; past it the user's least recently used session is closed). See docs/REMOTE_HOSTING.md |

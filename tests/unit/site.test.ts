@@ -3,13 +3,13 @@
  * variable names it mentions must exist in the code, and the build script
  * must produce a site whose links all resolve.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { tools } from '../../src/tools/index.js';
 import { prompts } from '../../src/prompts/index.js';
-import { buildSite, mapToolDirectories, parseDescription, stripComments } from '../../scripts/build-site.mjs';
+import { buildSite, checkSite, mapToolDirectories, parseDescription, stripComments } from '../../scripts/build-site.mjs';
 
 const root = resolve(__dirname, '../..');
 const siteDir = join(root, 'site');
@@ -239,5 +239,59 @@ describe('scripts/build-site.mjs', () => {
   it('strips comments that a first removal would join back together', () => {
     expect(stripComments('a<!-- x -->b')).toBe('ab');
     expect(stripComments('a<!<!-- x -->-- y -->b')).toBe('ab');
+  });});
+
+describe('checkSite rejects', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'ynab-mcp-check-'));
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+  let n = 0;
+
+  /** Problems for a fixture site: index.html (with <body> set to `body`), other.html and assets/x.css. */
+  function problemsFor(body: string, css = ''): string[] {
+    const dir = join(tmp, `case-${n++}`);
+    mkdirSync(join(dir, 'assets'), { recursive: true });
+    writeFileSync(join(dir, 'index.html'), `<!doctype html><html><body><h1 id="top">x</h1>${body}</body></html>`);
+    writeFileSync(join(dir, 'other.html'), '<!doctype html><html><body><h2 id="here">y</h2></body></html>');
+    writeFileSync(join(dir, 'assets', 'x.css'), css);
+    return checkSite(dir);
+  }
+
+  it('nothing on a clean fixture', () => {
+    expect(problemsFor('<a href="other.html#here">o</a><a href="#top">t</a><link href="assets/x.css">')).toEqual([]);
+  });
+
+  it('nothing for single-quoted ids and the references to them', () => {
+    expect(problemsFor("<div ID='pane'>p</div><button aria-controls='pane'>b</button><a href='#pane'>a</a>")).toEqual([]);
+    expect(problemsFor('<section aria-labelledby=" top ">s</section>')).toEqual([]);
+  });
+
+  it('nothing for srcset URLs that contain commas', () => {
+    expect(problemsFor('<img srcset="assets/x.css 1x,assets/x.css,  assets/x.css 2x">')).toEqual([]);
+  });
+
+  it.each([
+    ['a third-party script', '<script src="https://cdn.example/x.js"></script>', /another origin/],
+    ['a third-party stylesheet', '<link rel="stylesheet" href="https://cdn.example/x.css">', /another origin/],
+    ['an uppercase SRC', '<img SRC="https://cdn.example/x.png">', /another origin/],
+    ['a single-quoted src', "<img src='https://cdn.example/x.png'>", /another origin/],
+    ['an unquoted src', '<img src=https://cdn.example/x.png>', /another origin/],
+    ['a srcset candidate', '<img srcset="ok.png 1x, https://cdn.example/x.png 2x">', /another origin/],
+    ['a formaction', '<button formaction="https://cdn.example/f">b</button>', /another origin/],
+    ['an http: link', '<a href="http://example.com/">e</a>', /use https:/],
+    ['a protocol-relative URL', '<img src="//cdn.example/x.png">', /protocol-relative/],
+    ['a root-relative URL', '<a href="/other.html">o</a>', /root-relative/],
+    ['a missing page', '<a href="nope.html">n</a>', /does not exist/],
+    ['a missing fragment', '<a href="other.html#missing">m</a>', /no matching id/],
+    ['a link outside the site', '<a href="../x.html">x</a>', /outside the site/],
+    ['an aria-controls to a missing id', '<button aria-controls="gone">b</button>', /missing id "gone"/],
+    ["a single-quoted aria-controls", "<button aria-controls='gone'>b</button>", /missing id "gone"/],
+    ['a label for naming two ids', '<input id="a"><input id="b"><label for="a b">l</label>', /missing id "a b"/],
+  ])('%s', (_name, body, pattern) => {
+    expect(problemsFor(body).join('\n')).toMatch(pattern);
+  });
+
+  it('a CSS @import and a cross-origin url()', () => {
+    expect(problemsFor('', '@import "x.css";').join('\n')).toMatch(/@import is not allowed/);
+    expect(problemsFor('', 'a { background: url(https://cdn.example/x.png) }').join('\n')).toMatch(/another origin/);
   });
 });

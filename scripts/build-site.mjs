@@ -336,9 +336,92 @@ function listFiles(dir, base = dir) {
   return out;
 }
 
-const ID_RE = /\sid="([^"]+)"/g;
+const ID_RE = /\sid\s*=\s*(?:"([^"]+)"|'([^']+)')/gi;
+// aria-controls / aria-labelledby / aria-describedby / label[for], either quote style.
+const REF_RE = /\s(aria-controls|aria-labelledby|aria-describedby|for)\s*=\s*(?:"([^"]+)"|'([^']+)')/gi;
 const TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/g;
-const ATTR_RE = /\s(href|src|srcset|action|poster|data)="([^"]*)"/g;
+// Attributes that load or navigate to a URL. Names are case-insensitive, and a
+// value may be double-quoted, single-quoted or unquoted.
+const ATTR_RE =
+  /\s(href|src|srcset|imagesrcset|action|formaction|poster|data|ping|manifest|background)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+
+/**
+ * The URLs in a srcset value, tokenized as the HTML spec does: a URL is a run
+ * of non-whitespace (so it may contain commas), trailing commas end the
+ * candidate, and otherwise its descriptors run to the next comma outside
+ * parentheses.
+ */
+function srcsetUrls(value) {
+  const urls = [];
+  let i = 0;
+  while (i < value.length) {
+    while (i < value.length && /[\s,]/.test(value[i])) i++;
+    const start = i;
+    while (i < value.length && !/\s/.test(value[i])) i++;
+    let url = value.slice(start, i);
+    const ended = url.endsWith(',');
+    url = url.replace(/,+$/, '');
+    if (url) urls.push(url);
+    if (ended) continue;
+    let depth = 0;
+    for (; i < value.length; i++) {
+      if (value[i] === '(') depth++;
+      else if (value[i] === ')') depth = Math.max(0, depth - 1);
+      else if (value[i] === ',' && depth === 0) break;
+    }
+  }
+  return urls;
+}
+
+/** The URLs in one attribute value: srcset lists per the spec, ping lists space-separated. */
+function urlsIn(name, raw) {
+  if (name === 'srcset' || name === 'imagesrcset') return srcsetUrls(raw);
+  if (name === 'ping') return raw.split(/\s+/).filter(Boolean);
+  return [raw];
+}
+
+/** Check one URL from attribute `name` of a <tagName> on `page`; push any problem. */
+function checkUrl(problems, { fileSet, ids }, page, tagName, name, url) {
+  const value = url.replace(/&amp;/g, '&').trim();
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
+    const scheme = value.split(':')[0].toLowerCase();
+    const isNavigation = tagName === 'a' && name === 'href';
+    if (!isNavigation) {
+      problems.push(`${page}: <${tagName} ${name}="${value}"> loads a resource from another origin`);
+    } else if (scheme === 'http') {
+      problems.push(`${page}: link uses http: (${value}); use https:`);
+    } else if (scheme !== 'https' && scheme !== 'mailto') {
+      problems.push(`${page}: link uses an unexpected scheme (${value})`);
+    }
+    return;
+  }
+  if (value.startsWith('//')) {
+    problems.push(`${page}: protocol-relative URL ${value}`);
+    return;
+  }
+  if (value.startsWith('/')) {
+    // The site is served under /ynab-mcp/, so a root-relative URL 404s.
+    problems.push(`${page}: root-relative URL ${value}; use a relative path`);
+    return;
+  }
+  const [pathPart, fragment] = value.split('#');
+  let target = page;
+  if (pathPart) {
+    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(page), pathPart.split('?')[0]));
+    if (resolved.startsWith('..')) {
+      problems.push(`${page}: ${value} points outside the site`);
+      return;
+    }
+    target = resolved === '.' || resolved.endsWith('/') ? path.posix.join(resolved, 'index.html') : resolved;
+    if (!fileSet.has(target)) {
+      problems.push(`${page}: ${value} -> ${target} does not exist`);
+      return;
+    }
+  }
+  if (fragment && target.endsWith('.html') && !ids.get(target)?.has(decodeURIComponent(fragment))) {
+    problems.push(`${page}: ${value} -> #${fragment} has no matching id in ${target}`);
+  }
+}
 
 /** Remove HTML comments, repeating until none are left (a removal can join two halves of a new one). */
 export function stripComments(html) {
@@ -365,8 +448,9 @@ export function checkSite(outDir) {
   for (const [page, text] of html) {
     const set = new Set();
     for (const m of text.matchAll(ID_RE)) {
-      if (set.has(m[1])) problems.push(`${page}: duplicate id "${m[1]}"`);
-      set.add(m[1]);
+      const id = m[1] ?? m[2];
+      if (set.has(id)) problems.push(`${page}: duplicate id "${id}"`);
+      set.add(id);
     }
     ids.set(page, set);
   }
@@ -375,46 +459,18 @@ export function checkSite(outDir) {
     for (const tag of text.matchAll(TAG_RE)) {
       const tagName = tag[1].toLowerCase();
       for (const attr of tag[2].matchAll(ATTR_RE)) {
-        const [, name, raw] = attr;
-        const value = raw.replace(/&amp;/g, '&').trim();
-        if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
-          const scheme = value.split(':')[0].toLowerCase();
-          const isNavigation = tagName === 'a' && name === 'href';
-          if (!isNavigation) {
-            problems.push(`${page}: <${tagName} ${name}="${value}"> loads a resource from another origin`);
-          } else if (scheme === 'http') {
-            problems.push(`${page}: link uses http: (${value}); use https:`);
-          } else if (scheme !== 'https' && scheme !== 'mailto') {
-            problems.push(`${page}: link uses an unexpected scheme (${value})`);
-          }
-          continue;
-        }
-        if (value.startsWith('//')) {
-          problems.push(`${page}: protocol-relative URL ${value}`);
-          continue;
-        }
-        const [pathPart, fragment] = value.split('#');
-        let target = page;
-        if (pathPart) {
-          const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(page), pathPart.split('?')[0]));
-          if (resolved.startsWith('..')) {
-            problems.push(`${page}: ${value} points outside the site`);
-            continue;
-          }
-          target = resolved === '.' || resolved.endsWith('/') ? path.posix.join(resolved, 'index.html') : resolved;
-          if (!fileSet.has(target)) {
-            problems.push(`${page}: ${value} -> ${target} does not exist`);
-            continue;
-          }
-        }
-        if (fragment && target.endsWith('.html') && !ids.get(target)?.has(decodeURIComponent(fragment))) {
-          problems.push(`${page}: ${value} -> #${fragment} has no matching id in ${target}`);
+        const name = attr[1].toLowerCase();
+        for (const url of urlsIn(name, attr[2] ?? attr[3] ?? attr[4] ?? '')) {
+          checkUrl(problems, { fileSet, ids }, page, tagName, name, url);
         }
       }
     }
     // aria-controls / aria-labelledby / label[for] must point at ids on the same page.
-    for (const m of text.matchAll(/\s(?:aria-controls|aria-labelledby|aria-describedby|for)="([^"]+)"/g)) {
-      for (const ref of m[1].split(/\s+/)) {
+    for (const m of text.matchAll(REF_RE)) {
+      // ARIA attributes hold a space-separated list; a label's for is one id.
+      const value = m[2] ?? m[3];
+      const refs = m[1].toLowerCase() === 'for' ? [value] : value.split(/\s+/).filter(Boolean);
+      for (const ref of refs) {
         if (!ids.get(page).has(ref)) problems.push(`${page}: reference to missing id "${ref}"`);
       }
     }

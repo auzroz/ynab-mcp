@@ -137,14 +137,29 @@
       });
     });
 
-    container.insertBefore(list, panels[0]);
-    var initial = 0;
-    if (location.hash) {
-      panels.forEach(function (p, i) {
-        if ('#' + p.id === location.hash) initial = i;
-      });
+    // Show the panel that is, or contains, the element the URL fragment names,
+    // then scroll to that element: the browser can't scroll to a hidden one.
+    function showHash() {
+      var target = null;
+      try {
+        if (location.hash) target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+      } catch (e) {
+        target = null;
+      }
+      if (!target) return false;
+      for (var i = 0; i < panels.length; i++) {
+        if (panels[i].contains(target)) {
+          select(i, false);
+          target.scrollIntoView();
+          return true;
+        }
+      }
+      return false;
     }
-    select(initial, false);
+
+    container.insertBefore(list, panels[0]);
+    if (!showHash()) select(0, false);
+    window.addEventListener('hashchange', showHash);
   });
 
   // ---------- Tool filter ----------
