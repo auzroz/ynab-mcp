@@ -38,6 +38,8 @@ updates:
         update-types: ['version-update:semver-major']
       # ynab is pinned to ~5.0.0 on purpose; update manually.
       - dependency-name: ynab
+        # Minor and major are planned by hand; patch and security PRs still flow.
+        update-types: ['version-update:semver-minor', 'version-update:semver-major']
 
   - package-ecosystem: github-actions
     directory: /

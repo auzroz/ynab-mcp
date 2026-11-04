@@ -154,7 +154,7 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
 - **Breaking changes**, if any, for the CHANGELOG.
 - **A test plan:** what you ran, and how you checked behaviour against YNAB if you did.
 
-**Checks.** Every PR must pass these CI checks: Lint, Type Check, Test, Test (Node 22), Build, Docker Build, Gitleaks and Dependency Audit. Run `npm run typecheck && npm run lint && npm test` before pushing.
+**Checks.** Every PR must pass these CI checks: Lint, Type Check, Test, Test (Node 22), Build, Docker Build, Gitleaks and Dependency Audit. Dependency Audit also runs `node scripts/check-lockfile.mjs`, which rejects lockfile entries that don't come from `registry.npmjs.org` over https with a sha512 integrity hash. Run `npm run typecheck && npm run lint && npm test` before pushing.
 
 **Review.**
 - **CodeRabbit** reviews PRs automatically. Address each finding, or reply on its thread explaining why you disagree. Its review allowance is limited, so push your fixes together instead of one commit per finding, and avoid re-requesting reviews.
@@ -171,6 +171,32 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
   - npm, through trusted publishing with provenance;
   - multi-arch images to `ghcr.io/auzroz/ynab-mcp`;
   - a GitHub release.
+
+## Dependency advisories and triage
+
+Dependency changes (`package.json`, `package-lock.json`) are stated in the PR description and limited to what the PR needs; an advisory fix is a lockfile-only PR. When an advisory (Dependabot alert, `npm audit`, or a report) lands, classify it, then act within the target below. The clock starts when the maintainer sees it.
+
+| What is affected | Target |
+|---|---|
+| A runtime dependency (`dependencies`, `optionalDependencies`), critical or high | within 72 hours |
+| A runtime dependency, moderate | within 14 days |
+| A dev dependency that runs in a privileged job (one with secrets, `contents: write`, `id-token`, or that publishes) | treated as runtime: same targets as above |
+| A dev dependency only used in unprivileged jobs (lint, type check, test, build on pull requests) | within 30 days, or the next release if sooner |
+| Low severity, any dependency | next routine update |
+
+"Within" means a fixed version is merged, or the alert is dismissed with a written reason (for example the vulnerable code path isn't reachable). `npm audit --omit=dev --audit-level=moderate` must report nothing at release time.
+
+### Runtime advisory and a 0.4.2
+
+The fix always lands first on the active `release/x.y.z` branch (currently `release/0.5.0`) as a lockfile-only PR. Whether it also ships as a patch release of the previous line is the maintainer's call, made per advisory. The rule:
+
+1. The advisory is in a runtime dependency of the last 0.4.x release (v0.4.1), as resolved by that release's lockfile; **and**
+2. it is critical or high, or it is moderate and reachable from the server's code paths (stdio or HTTP); **and**
+3. the 0.4.x line is still inside its support window (until at least 2027-01-27, see [SECURITY.md](SECURITY.md)).
+
+If all three hold, the maintainer cuts `v0.4.2` from a `release/0.4.x` branch started at the `v0.4.1` tag. That release contains **only** the dependency bump, its lockfile, the version number and the CHANGELOG entry: no features, no other fixes, no migrations. It follows the normal release process (checks, tag, release workflow). Contributors and automation don't cut it, tag it or publish it. Dependabot PRs aimed at `main` while a release is in progress wait for the release tag.
+
+If the rule doesn't hold, the fix ships in the next 0.5.x release, and the advisory notes that 0.4.x users should upgrade.
 
 ## Reporting security issues
 
