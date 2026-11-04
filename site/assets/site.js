@@ -58,7 +58,8 @@
 
   document.querySelectorAll('.code').forEach(function (block) {
     var pre = block.querySelector('pre');
-    if (!pre) return;
+    // data-no-copy: a command typed by hand, so Copy can't overwrite a token on the clipboard.
+    if (!pre || block.hasAttribute('data-no-copy')) return;
     var btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'copy-btn';

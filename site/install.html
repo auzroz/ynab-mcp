@@ -145,8 +145,8 @@
 
         <section aria-labelledby="claude-code">
           <h2 id="claude-code">Claude Code</h2>
-          <p>These commands are for Bash or Zsh; on Windows, run them in WSL or Git Bash. First paste your token at the prompt, which doesn't echo it or keep it in shell history:</p>
-          <div class="code" data-label="token prompt">
+          <p>These commands are for Bash or Zsh; on Windows, run them in WSL or Git Bash. Type this first command rather than copying it, so your token stays on the clipboard, then paste the token at its prompt, which doesn't echo it or keep it in shell history:</p>
+          <div class="code" data-label="token prompt" data-no-copy>
 <pre><code>read -rs YNAB_ACCESS_TOKEN</code></pre>
           </div>
           <p>Then register the server:</p>
@@ -181,8 +181,8 @@ cd ynab-mcp
 npm install
 npm run build</code></pre>
           </div>
-          <p>The server (stdio) needs your token in the environment. Paste it at the prompt, which doesn't echo it or keep it in history (Bash or Zsh; on Windows, WSL or Git Bash):</p>
-          <div class="code" data-label="token prompt">
+          <p>The server (stdio) needs your token in the environment. Type this command rather than copying it, so your token stays on the clipboard, then paste the token at its prompt, which doesn't echo it or keep it in history (Bash or Zsh; on Windows, WSL or Git Bash):</p>
+          <div class="code" data-label="token prompt" data-no-copy>
 <pre><code>read -rs YNAB_ACCESS_TOKEN</code></pre>
           </div>
           <p>Then start it:</p>
