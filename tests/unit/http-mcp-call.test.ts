@@ -109,6 +109,8 @@ describe('mcp-call helper in oauth mode', () => {
         oauthClientId: 'cid',
         oauthClientSecret: 'sec',
         encryptionKey,
+        // Writes on server-wide, so only the grant can hide the write tools.
+        readOnly: false,
       })
     );
     const storage = created.storage!;
@@ -152,6 +154,9 @@ describe('mcp-call helper in oauth mode', () => {
     const mcp = await mcpConnect(app, bearer(tokens[0]!));
     expect((await mcp.request('ping', {}, { auth: bearer(tokens[1]!) })).status).toBe(404);
     expect((await mcp.request('ping')).status).toBe(200);
+    // A refused close keeps the session, so the owner can still close it.
+    expect((await mcp.close({ auth: bearer(tokens[1]!) }))?.status).toBe(404);
+    expect((await mcp.close())?.status).toBe(200);
   });
 
   it("reports the bearer check's refusal with its challenge", async () => {
@@ -159,9 +164,18 @@ describe('mcp-call helper in oauth mode', () => {
     const res = await mcpInitialize(app, bearer('not-a-token'));
     expect(res.status).toBe(401);
     expect(res.headers['www-authenticate']).toContain('error="invalid_token"');
-    await expect(mcpConnect(app, bearer('not-a-token'))).rejects.toThrow(
+    // The refused token is echoed nowhere: not in the body, the challenge or the helper's error.
+    expect(res.text).not.toContain('not-a-token');
+    expect(res.headers['www-authenticate']).not.toContain('not-a-token');
+    const err = await mcpConnect(app, bearer('not-a-token')).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(
       /^initialize refused: 401 .*invalid_token.*\(WWW-Authenticate: Bearer .*resource_metadata=/
     );
+    expect((err as Error).message).not.toContain('not-a-token');
     await expect(mcpConnect(app, anonymous)).rejects.toThrow(/^initialize refused: 401 .*WWW-Authenticate: Bearer/);
   });
 });

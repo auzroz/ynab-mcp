@@ -68,7 +68,7 @@ export interface McpConnection {
   listTools(options?: McpRequestOptions): Promise<string[]>;
   /** tools/call, as the result's error flag and its first text block. */
   callTool(name: string, args?: Json, options?: McpRequestOptions): Promise<{ isError: boolean; text: string; reply: McpReply }>;
-  /** End the connection (HTTP DELETE); a no-op once closed. */
+  /** End the connection (HTTP DELETE); a no-op once closed. A refused DELETE keeps the session, so it can be retried. */
   close(options?: McpRequestOptions): Promise<request.Response | undefined>;
 }
 
@@ -153,7 +153,7 @@ export async function mcpConnect(app: Express, auth: McpAuth, clientName = 'mcp-
         .set('Accept', MCP_ACCEPT)
         .set('mcp-session-id', sessionId)
         .set('mcp-protocol-version', MCP_PROTOCOL_VERSION);
-      sessionId = undefined;
+      if (res.status >= 200 && res.status < 300) sessionId = undefined;
       return res;
     },
   };
