@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>ynab-mcp tool reference</title>
+  <meta name="description" content="Every ynab-mcp tool and MCP prompt, grouped by resource, with read-only and destructive markers and parameters.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect class="b" width="32" height="32" rx="8"/><rect class="l" x="8" y="9" width="16" height="2.6" rx="1.3"/><rect class="l" x="8" y="14.7" width="11" height="2.6" rx="1.3"/><rect class="l" x="8" y="20.4" width="6" height="2.6" rx="1.3"/></svg>
+        <span>ynab-mcp <span class="brand-sub">for YNAB</span></span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" hidden>Menu</button>
+      <nav class="site-nav" id="site-nav" aria-label="Main">
+        <ul class="nav-list">
+          <li><a href="install.html">Install</a></li>
+          <li><a href="examples.html">Examples</a></li>
+          <li><a href="tools.html" aria-current="page">Tools</a></li>
+          <li><a href="self-hosting.html">Self-hosting</a></li>
+          <li><a href="security.html">Security</a></li>
+          <li><a href="https://github.com/auzroz/ynab-mcp">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="wrap page-head">
+      <span class="eyebrow">Reference</span>
+      <h1>Tools and prompts</h1>
+      <p class="lede"><span data-count="tools">69</span> tools and <span data-count="prompts">7</span> guided prompts, generated from the server's own definitions.</p>
+      <p class="prose">
+        <span class="badge badge-read">Read-only</span> tools only read.
+        <span class="badge badge-write">Write</span> tools add data and need write mode.
+        <span class="badge badge-destructive">Destructive</span> tools overwrite or delete data that YNAB can't restore.
+        In read-only mode the server hides every write tool. The same data is available as <a href="tools.json">tools.json</a>.
+      </p>
+    </div>
+
+    <div class="wrap">
+      <div class="tool-controls" role="search" hidden>
+        <div class="field">
+          <label for="tool-search">Search tools</label>
+          <input id="tool-search" type="search" placeholder="Try &ldquo;subscriptions&rdquo; or &ldquo;payee&rdquo;" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field field-narrow">
+          <label for="tool-kind">Show</label>
+          <select id="tool-kind">
+            <option value="all">All tools</option>
+            <option value="read">Read-only</option>
+            <option value="write">Writes (all)</option>
+            <option value="destructive">Destructive only</option>
+          </select>
+        </div>
+        <p class="tool-count" id="tool-count" role="status" aria-live="polite"></p>
+      </div>
+
+      <!-- BUILD:TOOLS -->
+      <p class="callout note">This list is generated when the site is built. Run <code>npm run build &amp;&amp; node scripts/build-site.mjs</code> and open <code>_site/tools.html</code>, or see the tool list in the <a href="https://github.com/auzroz/ynab-mcp#available-tools-69-total">README</a>.</p>
+      <!-- /BUILD:TOOLS -->
+
+      <p class="no-results" id="no-results" hidden>No tools match. Try a shorter search, or show all tools.</p>
+
+      <section class="tool-group" id="prompts" aria-labelledby="prompts-title">
+        <h2 id="prompts-title">Prompts</h2>
+        <p>Prompts are guided workflows grounded in YNAB's method. Each one runs several tools and walks through the results. Clients that support MCP prompts list them, often as slash commands.</p>
+        <!-- BUILD:PROMPTS -->
+        <p>The prompt list is generated when the site is built.</p>
+        <!-- /BUILD:PROMPTS -->
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="https://github.com/auzroz/ynab-mcp">Source on GitHub</a></li>
+        <li><a href="https://www.npmjs.com/package/ynab-mcp">npm package</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/releases">Releases</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/LICENSE">MIT License</a></li>
+        <li><a href="security.html#reporting">Report a vulnerability</a></li>
+      </ul>
+      <p class="disclaimer">ynab-mcp is an independent open-source project. It is not affiliated with, endorsed by or sponsored by YNAB. YNAB is a trademark of YNAB LLC.</p>
+    </div>
+  </footer>
+</body>
+</html>

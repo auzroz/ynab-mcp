@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>ynab-mcp examples</title>
+  <meta name="description" content="Example conversations with Claude and ynab-mcp: a monthly review, finding subscriptions, overspending, split transactions, net worth, cash flow and reconciliation.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect class="b" width="32" height="32" rx="8"/><rect class="l" x="8" y="9" width="16" height="2.6" rx="1.3"/><rect class="l" x="8" y="14.7" width="11" height="2.6" rx="1.3"/><rect class="l" x="8" y="20.4" width="6" height="2.6" rx="1.3"/></svg>
+        <span>ynab-mcp <span class="brand-sub">for YNAB</span></span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" hidden>Menu</button>
+      <nav class="site-nav" id="site-nav" aria-label="Main">
+        <ul class="nav-list">
+          <li><a href="install.html">Install</a></li>
+          <li><a href="examples.html" aria-current="page">Examples</a></li>
+          <li><a href="tools.html">Tools</a></li>
+          <li><a href="self-hosting.html">Self-hosting</a></li>
+          <li><a href="security.html">Security</a></li>
+          <li><a href="https://github.com/auzroz/ynab-mcp">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="wrap page-head">
+      <span class="eyebrow">Examples</span>
+      <h1>What a conversation looks like</h1>
+      <p class="lede">Seven everyday questions, the tools Claude calls to answer them, and an abridged reply. You never name a tool yourself; Claude picks them from what you ask.</p>
+      <div class="callout warn">
+        <span class="callout-title">All figures on this page are sample data</span>
+        <p>The budgets, payees and amounts below are invented for illustration. Claude's wording varies from run to run; tool names and response fields are real.</p>
+      </div>
+    </div>
+
+    <div class="wrap with-toc">
+      <aside class="toc" aria-labelledby="toc-title">
+        <div>
+          <h2 id="toc-title">Conversations</h2>
+          <ul>
+            <li><a href="#monthly-review">Monthly review</a></li>
+            <li><a href="#subscriptions">Find a subscription</a></li>
+            <li><a href="#overspending">Overspending check</a></li>
+            <li><a href="#split">Add a split transaction</a></li>
+            <li><a href="#net-worth">Net worth trend</a></li>
+            <li><a href="#cash-flow">Cash-flow forecast</a></li>
+            <li><a href="#reconcile">Reconcile an account</a></li>
+          </ul>
+        </div>
+      </aside>
+
+      <div>
+        <!-- 1. Monthly review -->
+        <article class="convo" aria-labelledby="monthly-review">
+          <h2 id="monthly-review">Monthly review</h2>
+          <p class="intro">An end-of-month check-in. Clients that support MCP prompts can also start this from the <code>ynab-monthly-review</code> prompt, which runs these steps and a few more.</p>
+
+          <div class="msg msg-user">
+            <span class="msg-who">You</span>
+            <p>Let's do my monthly review for October.</p>
+          </div>
+
+          <div class="msg msg-claude">
+            <span class="msg-who">Claude</span>
+            <ul class="calls" aria-label="Tools called">
+              <li><a href="tools.html#ynab_budget_vs_actuals"><code>ynab_budget_vs_actuals</code></a> <span>month: 2026-10-01</span></li>
+              <li><a href="tools.html#ynab_goal_progress"><code>ynab_goal_progress</code></a></li>
+              <li><a href="tools.html#ynab_income_expense"><code>ynab_income_expense</code></a> <span>months: 6</span></li>
+              <li><a href="tools.html#ynab_net_worth"><code>ynab_net_worth</code></a></li>
+              <li><a href="tools.html#ynab_budget_suggestions"><code>ynab_budget_suggestions</code></a></li>
+            </ul>
+            <p>October in one line: you spent <strong>$4,912</strong> of the <strong>$5,250</strong> you assigned, and kept <strong>$1,388</strong> of your income.<span class="sample-tag">Sample data</span></p>
+            <ul>
+              <li><strong>Over plan:</strong> Dining Out by $86 and Car Maintenance by $140 (the tyre repair).</li>
+              <li><strong>Goals:</strong> 9 of 11 are funded. Vacation and Holiday Gifts are behind; $120 more a month catches Holiday Gifts up by December.</li>
+              <li><strong>Savings rate:</strong> 22% this month, against a six-month average of 18%.</li>
+              <li><strong>Net worth:</strong> $48,310, up $1,205 since September.</li>
+            </ul>
+            <p>For November, your history suggests raising Groceries to $720 and lowering Entertainment to $90. Want me to go through the rest category by category?</p>
+            <details class="response-json">
+              <summary>Abridged <code>ynab_budget_vs_actuals</code> response</summary>
+              <div class="code" data-label="sample response">
+<pre><code>{
+  "month": "2026-10-01",
+  "summary": {
+    "total_budgeted": "$5,250.00",
+    "total_activity": "$4,912.40",
+    "budget_usage_percent": 94,
+    "overspent_categories": 2,
+    "on_track_categories": 31
+  },
+  "alerts": {
+    "overspent": [
+      { "category": "Car Maintenance", "group": "True Expenses", "overspent_by": "$140.00" },
+      { "category": "Dining Out", "group": "Quality of Life", "overspent_by": "$86.15" }
+    ]
+  }
+}</code></pre>
+              </div>
+            </details>
+          </div>
+        </article>
+
+        <!-- 2. Subscriptions -->
+        <article class="convo" aria-labelledby="subscriptions">
+          <h2 id="subscriptions">Find a subscription</h2>
+          <p class="intro">Recurring-charge detection looks for payees you pay at a steady rhythm, whether or not they are set up as scheduled transactions in YNAB.</p>
+
+          <div class="msg msg-user">
+            <span class="msg-who">You</span>
+            <p>What subscriptions am I paying for? I think there's one I forgot about.</p>
+          </div>
+
+          <div class="msg msg-claude">
+            <span class="msg-who">Claude</span>
+            <ul class="calls" aria-label="Tools called">
+              <li><a href="tools.html#ynab_detect_recurring"><code>ynab_detect_recurring</code></a> <span>months: 12</span></li>
+              <li><a href="tools.html#ynab_list_scheduled_transactions"><code>ynab_list_scheduled_transactions</code></a></li>
+            </ul>
+            <p>I found <strong>11 recurring charges</strong>, about <strong>$286 a month</strong> in total.<span class="sample-tag">Sample data</span> Three of them aren't scheduled in YNAB, so they're easy to forget:</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th scope="col">Payee</th><th scope="col">How often</th><th scope="col" class="num-cell">Amount</th><th scope="col">Next expected</th></tr></thead>
+                <tbody>
+                  <tr><td>Northwind Cloud Storage</td><td>Monthly</td><td class="num-cell">$9.99</td><td>Nov 14</td></tr>
+                  <tr><td>Lumen Fitness</td><td>Monthly</td><td class="num-cell">$34.00</td><td>Nov 3</td></tr>
+                  <tr><td>Paperleaf Magazine</td><td>Annual</td><td class="num-cell">$59.00</td><td>Feb 2027</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>Lumen Fitness has charged you every month since March, but there's no other activity tagged to fitness. Is that the one you forgot?</p>
+            <details class="response-json">
+              <summary>Abridged <code>ynab_detect_recurring</code> response</summary>
+              <div class="code" data-label="sample response">
+<pre><code>{
+  "recurring_transactions": [
+    {
+      "payee_name": "Lumen Fitness",
+      "category_name": "Subscriptions",
+      "frequency": "monthly",
+      "average_amount": "$34.00",
+      "last_date": "2026-10-03",
+      "next_expected": "2026-11-03",
+      "occurrence_count": 8,
+      "monthly_cost": "$34.00",
+      "confidence": "high"
+    }
+  ],
+  "summary": {
+    "total_recurring_found": 11,
+    "high_confidence_count": 9,
+    "estimated_monthly_total": "$286.42",
+    "analysis_period": "12 months"
+  }
+}</code></pre>
+              </div>
+            </details>
+          </div>
+        </article>
+
+        <!-- 3. Overspending -->
+        <article class="convo" aria-labelledby="overspending">
+          <h2 id="overspending">Overspending check</h2>
+          <p class="intro">A quick mid-month look. The <code>ynab-overspending-triage</code> prompt goes further and suggests where to move money from.</p>
+
+          <div class="msg msg-user">
+            <span class="msg-who">You</span>
+            <p>Am I overspending anywhere this month? And am I on pace overall?</p>
+          </div>
+
+          <div class="msg msg-claude">
+            <span class="msg-who">Claude</span>
+            <ul class="calls" aria-label="Tools called">
+              <li><a href="tools.html#ynab_overspending_alerts"><code>ynab_overspending_alerts</code></a></li>
+              <li><a href="tools.html#ynab_spending_pace"><code>ynab_spending_pace</code></a></li>
+            </ul>
+            <p>Two categories are over:<span class="sample-tag">Sample data</span></p>
+            <ul>
+              <li><strong>Groceries:</strong> $612 spent of $550 assigned, over by $62 (11%).</li>
+              <li><strong>Kids' Activities:</strong> $185 spent of $150, over by $35 (23%).</li>
+            </ul>
+            <p>Overall you're fine: 52% of the month is gone and you've spent 49% of what you assigned. At this pace you'll finish about $140 under plan. Dining Out has $96 left and only $40 of typical spending to come, so it could cover Groceries.</p>
+            <p>Moving that money is a write. If you turn on write mode, I can do it with <a href="tools.html#ynab_move_money"><code>ynab_move_money</code></a>.</p>
+            <details class="response-json">
+              <summary>Abridged <code>ynab_overspending_alerts</code> response</summary>
+              <div class="code" data-label="sample response">
+<pre><code>{
+  "month": "2026-11-01",
+  "summary": {
+    "overspent_categories": 2,
+    "total_overspent": "$97.00"
+  },
+  "alerts": [
+    { "category": "Groceries", "group": "Everyday", "budgeted": "$550.00",
+      "spent": "$612.00", "over_by": "$62.00", "percent_over": "11%" },
+    { "category": "Kids' Activities", "group": "Everyday", "budgeted": "$150.00",
+      "spent": "$185.00", "over_by": "$35.00", "percent_over": "23%" }
+  ]
+}</code></pre>
+              </div>
+            </details>
+          </div>
+        </article>
+
+        <!-- 4. Split transaction -->
+        <article class="convo" aria-labelledby="split">
+          <h2 id="split">Add a split transaction</h2>
+          <p class="intro">Adding data is a write, so the first answer is what you'll see on a fresh install.</p>
+
+          <div class="msg msg-user">
+            <span class="msg-who">You</span>
+            <p>I spent $142.67 at Costco on the Visa today: $96.40 was groceries and $46.27 household supplies. Can you add it?</p>
+          </div>
+
+          <div class="msg msg-claude">
+            <span class="msg-who">Claude, in read-only mode (the default)</span>
+            <p>I can't add transactions: this YNAB connection is read-only, so the tools that create or change data aren't available to me. If you'd like me to record it, turn on write mode and ask again. Until then, here's the split to enter in YNAB:<span class="sample-tag">Sample data</span></p>
+            <ul>
+              <li>Groceries: $96.40</li>
+              <li>Household Supplies: $46.27</li>
+            </ul>
+          </div>
+
+          <div class="callout">
+            <span class="callout-title">Turning on write mode</span>
+            <p>Add <code>"YNAB_READ_ONLY": "false"</code> to the <code>env</code> block of your configuration and restart your client. See <a href="install.html#write-mode">Read-only and write mode</a>. On a self-hosted OAuth server, choose read-write when you connect.</p>
+          </div>
+
+          <div class="msg msg-claude">
+            <span class="msg-who">Claude, with write mode on</span>
+            <ul class="calls" aria-label="Tools called">
+              <li><a href="tools.html#ynab_list_accounts"><code>ynab_list_accounts</code></a> <span>to find the Visa account</span></li>
+              <li><a href="tools.html#ynab_list_categories"><code>ynab_list_categories</code></a> <span>to find both categories</span></li>
+              <li><a href="tools.html#ynab_create_transaction"><code>ynab_create_transaction</code></a> <span>amount: -142.67, two subtransactions</span></li>
+            </ul>
+            <p>Done. I added a <strong>$142.67</strong> outflow at Costco on your Visa, dated today and uncleared, split into Groceries ($96.40) and Household Supplies ($46.27).<span class="sample-tag">Sample data</span> I can't edit a split after creating it (YNAB's API doesn't allow it), so let me know now if either amount is off and I'll delete and re-add it.</p>
+            <details class="response-json">
+              <summary>Abridged <code>ynab_create_transaction</code> arguments</summary>
+              <div class="code" data-label="sample arguments">
+<pre><code>{
+  "account_id": "…",
+  "date": "2026-11-03",
+  "amount": -142.67,
+  "payee_name": "Costco",
+  "subtransactions": [
+    { "amount": -96.40, "category_id": "…" },
+    { "amount": -46.27, "category_id": "…" }
+  ]
+}</code></pre>
+              </div>
+            </details>
+          </div>
+          <p>Amounts go in as dollars (negative for money out), and the server converts them to YNAB's integer milliunits exactly. Every write lands in the audit log, which you can ask about with <a href="tools.html#ynab_audit_log"><code>ynab_audit_log</code></a>.</p>
+        </article>
+
+        <!-- 5. Net worth -->
+        <article class="convo" aria-labelledby="net-worth">
+          <h2 id="net-worth">Net worth trend</h2>
+          <p class="intro">YNAB's API reports current balances, so Claude combines today's position with how much you kept each month.</p>
+
+          <div class="msg msg-user">
+            <span class="msg-who">You</span>
+            <p>How's my net worth doing? Is it actually going up?</p>
+          </div>
+
+          <div class="msg msg-claude">
+            <span class="msg-who">Claude</span>
+            <ul class="calls" aria-label="Tools called">
+              <li><a href="tools.html#ynab_net_worth"><code>ynab_net_worth</code></a></li>
+              <li><a href="tools.html#ynab_income_expense"><code>ynab_income_expense</code></a> <span>months: 12</span></li>
+            </ul>
+            <p>Your net worth is <strong>$48,310</strong>: $71,940 in assets against $23,630 in debts, most of it the car loan.<span class="sample-tag">Sample data</span></p>
+            <p>Yes, it's going up. You've kept money in 10 of the last 12 months, <strong>$9,840</strong> in total, an average of $820 a month. The two negative months were June (vacation) and August (insurance renewal). September and October are your strongest yet.</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th scope="col">Month</th><th scope="col" class="num-cell">Income</th><th scope="col" class="num-cell">Spent</th><th scope="col" class="num-cell">Kept</th></tr></thead>
+                <tbody>
+                  <tr><td>Aug</td><td class="num-cell">$6,300</td><td class="num-cell">$6,712</td><td class="num-cell">-$412</td></tr>
+                  <tr><td>Sep</td><td class="num-cell">$6,300</td><td class="num-cell">$5,205</td><td class="num-cell">$1,095</td></tr>
+                  <tr><td>Oct</td><td class="num-cell">$6,300</td><td class="num-cell">$4,912</td><td class="num-cell">$1,388</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </article>
+
+        <!-- 6. Cash flow -->
+        <article class="convo" aria-labelledby="cash-flow">
+          <h2 id="cash-flow">Cash-flow forecast</h2>
+          <p class="intro">The forecast walks your scheduled transactions forward day by day. The <code>ynab-age-of-money</code> prompt pairs it with your Age of Money and credit card float.</p>
+
+          <div class="msg msg-user">
+            <span class="msg-who">You</span>
+            <p>Rent and the car payment both come out before payday on the 15th. Will I be OK?</p>
+          </div>
+
+          <div class="msg msg-claude">
+            <span class="msg-who">Claude</span>
+            <ul class="calls" aria-label="Tools called">
+              <li><a href="tools.html#ynab_cash_flow_forecast"><code>ynab_cash_flow_forecast</code></a> <span>days: 21</span></li>
+              <li><a href="tools.html#ynab_age_of_money"><code>ynab_age_of_money</code></a></li>
+            </ul>
+            <p>Yes, with room to spare. Your budget accounts hold <strong>$5,120</strong> today.<span class="sample-tag">Sample data</span> Over the next 21 days, $3,760 of scheduled bills go out and $3,150 of pay comes in. The lowest point is <strong>$1,486 on November 12</strong>, after rent ($2,150), the car payment ($389) and your card payment ($1,095), three days before payday.</p>
+            <p>Your Age of Money is 34 days, so you're already spending last month's income. Nothing here needs moving.</p>
+            <details class="response-json">
+              <summary>Abridged <code>ynab_cash_flow_forecast</code> response</summary>
+              <div class="code" data-label="sample response">
+<pre><code>{
+  "forecast_period": { "start": "2026-11-03", "end": "2026-11-24", "days": 21 },
+  "current_position": { "cash_balance": "$5,120.00", "budget_accounts": 3 },
+  "projected": {
+    "end_balance": "$4,510.00",
+    "total_income": "$3,150.00",
+    "total_expenses": "$3,760.00",
+    "lowest_balance": "$1,486.00",
+    "lowest_balance_date": "2026-11-12"
+  },
+  "upcoming_expenses": [
+    { "date": "2026-11-05", "payee": "Maple Street Rentals", "amount": "-$2,150.00", "frequency": "Monthly" },
+    { "date": "2026-11-10", "payee": "Harbor Auto Finance", "amount": "-$389.00", "frequency": "Monthly" }
+  ]
+}</code></pre>
+              </div>
+            </details>
+          </div>
+        </article>
+
+        <!-- 7. Reconcile -->
+        <article class="convo" aria-labelledby="reconcile">
+          <h2 id="reconcile">Reconcile an account</h2>
+          <p class="intro">Reconciling means matching YNAB to your bank's statement. Claude finds the difference; marking transactions cleared is a write.</p>
+
+          <div class="msg msg-user">
+            <span class="msg-who">You</span>
+            <p>Help me reconcile checking. The bank says the balance is $2,431.18.</p>
+          </div>
+
+          <div class="msg msg-claude">
+            <span class="msg-who">Claude</span>
+            <ul class="calls" aria-label="Tools called">
+              <li><a href="tools.html#ynab_list_accounts"><code>ynab_list_accounts</code></a> <span>to find checking</span></li>
+              <li><a href="tools.html#ynab_reconciliation_helper"><code>ynab_reconciliation_helper</code></a> <span>account_id: checking</span></li>
+            </ul>
+            <p>YNAB's cleared balance for checking is <strong>$2,505.18</strong>, which is $74.00 more than the bank.<span class="sample-tag">Sample data</span> There are four uncleared transactions. Two of them add up to exactly $74.00 and are probably on your statement already:</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th scope="col">Date</th><th scope="col">Payee</th><th scope="col" class="num-cell">Amount</th><th scope="col">Pending</th></tr></thead>
+                <tbody>
+                  <tr><td>Oct 28</td><td>City Water</td><td class="num-cell">-$52.30</td><td>6 days</td></tr>
+                  <tr><td>Oct 30</td><td>Corner Pharmacy</td><td class="num-cell">-$21.70</td><td>4 days</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>If they are on the statement, the balances match once they're cleared. I can mark them cleared with <a href="tools.html#ynab_update_transactions"><code>ynab_update_transactions</code></a> if write mode is on; otherwise tick them in YNAB and finish the reconciliation there.</p>
+          </div>
+        </article>
+
+        <section class="section" aria-labelledby="try">
+          <h2 id="try">Try your own</h2>
+          <p class="prose">Ask in your own words; Claude reads each tool's description to decide what to call. The <a href="tools.html">tool reference</a> lists sample questions for every tool, and the seven guided prompts are at the bottom of that page.</p>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="https://github.com/auzroz/ynab-mcp">Source on GitHub</a></li>
+        <li><a href="https://www.npmjs.com/package/ynab-mcp">npm package</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/releases">Releases</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/LICENSE">MIT License</a></li>
+        <li><a href="security.html#reporting">Report a vulnerability</a></li>
+      </ul>
+      <p class="disclaimer">ynab-mcp is an independent open-source project. It is not affiliated with, endorsed by or sponsored by YNAB. YNAB is a trademark of YNAB LLC.</p>
+    </div>
+  </footer>
+</body>
+</html>

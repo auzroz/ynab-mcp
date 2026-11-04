@@ -11,6 +11,7 @@ import { formatCurrency } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { omitNull } from '../../utils/omit-null.js';
 
 // Input schema - accepts YYYY-MM-DD format or "current"
 const inputSchema = z.object({
@@ -136,7 +137,7 @@ export async function handleGetMonth(
         budgeted: formatCurrency(month.budgeted),
         activity: formatCurrency(month.activity),
         to_be_budgeted: formatCurrency(month.to_be_budgeted),
-        age_of_money: month.age_of_money,
+        ...omitNull({ age_of_money: month.age_of_money }),
       },
       category_count: month.categories.filter((c) => !c.hidden).length,
       categories_by_group: categoriesByGroup,

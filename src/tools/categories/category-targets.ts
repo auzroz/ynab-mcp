@@ -7,8 +7,7 @@
  *
  * Writable per the installed ynab SDK (NewCategory / SaveCategory):
  *   goal_target, goal_target_date, goal_needs_whole_amount.
- * goal_frequency (YNAB API 1.88) is also writable but the SDK drops it on
- * serialization, so YnabClient sends requests that carry it directly.
+ * goal_frequency (YNAB API 1.88) is also writable (serialized by the SDK since 5.0.0).
  * goal_target_month is deprecated and not written.
  *
  * Create requests accept values only; update requests additionally accept

@@ -84,7 +84,7 @@ These are the rules reviewers check, and most of them have tests that enforce th
 ### Calling YNAB
 - **All budget API requests go through `YnabClient`.** It acquires the rate limiter, applies the cache and delta sync, and maps errors.
 - **Write methods call `assertWriteAllowed()` and write an audit entry.** A new write path must do both.
-- **Check what the SDK actually sends.** The `ynab` SDK can drop fields it doesn't know. The pinned SDK 4.5 drops `goal_frequency`, so `YnabClient` sends those calls directly. If your change relies on a field reaching the API, add a test that inspects the outgoing request with a stubbed `fetch`. `tests/unit/services/ynab-client-transactions-wire.test.ts` shows the pattern.
+- **Check what the SDK actually sends.** The `ynab` SDK can drop fields it doesn't know. The generated SDK has dropped fields before (4.5 dropped `goal_frequency`; 5.0 sends it). If your change relies on a field reaching the API, add a test that inspects the outgoing request with a stubbed `fetch`. `tests/unit/services/ynab-client-transactions-wire.test.ts` shows the pattern.
 
 ### HTTP mode
 - **Keep users isolated.** A user's sessions share one rate limiter, cache and audit log, which are never shared between users.
@@ -154,7 +154,7 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
 - **Breaking changes**, if any, for the CHANGELOG.
 - **A test plan:** what you ran, and how you checked behaviour against YNAB if you did.
 
-**Checks.** Every PR must pass these CI checks: Lint, Type Check, Test, Test (Node 22), Build, Docker Build, Gitleaks and Dependency Audit. Run `npm run typecheck && npm run lint && npm test` before pushing.
+**Checks.** Every PR must pass these CI checks: Lint, Type Check, Test, Test (Node 22), Build, Docker Build, Gitleaks and Dependency Audit. Dependency Audit also runs `node scripts/check-lockfile.mjs`, which rejects lockfile entries that don't come from `registry.npmjs.org` over https with a sha512 integrity hash. Run `npm run typecheck && npm run lint && npm test` before pushing.
 
 **Review.**
 - **CodeRabbit** reviews PRs automatically. Address each finding, or reply on its thread explaining why you disagree. Its review allowance is limited, so push your fixes together instead of one commit per finding, and avoid re-requesting reviews.
@@ -215,6 +215,32 @@ The workflow can't enforce these itself. The maintainer sets them up following t
 
 - **ghcr images.** The image is pushed with the workflow's `GITHUB_TOKEN`. Any workflow run in this repository that is granted `packages: write` can push to `ghcr.io/auzroz/ynab-mcp`, with no tag and no approval, and GitHub doesn't tie that permission to an environment. So someone who can push a workflow file can push an image. The proof that an image came from a release is its attestation: verify it with `--signer-workflow auzroz/ynab-mcp/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z` as in step 6, rather than trusting a tag such as `latest`. Closing this (a package credential held only by the `production` environment) is tracked as part 62b of [#62](https://github.com/auzroz/ynab-mcp/issues/62).
 - **Tag signatures.** The workflow doesn't check that the tag is signed by an allowed key. That is a later part of #62 too.
+
+## Dependency advisories and triage
+
+Dependency changes (`package.json`, `package-lock.json`) are stated in the PR description and limited to what the PR needs; an advisory fix is a lockfile-only PR. When an advisory (Dependabot alert, `npm audit`, or a report) lands, classify it, then act within the target below. The clock starts when the maintainer sees it.
+
+| What is affected | Target |
+|---|---|
+| A runtime dependency (`dependencies`, `optionalDependencies`), critical or high | within 72 hours |
+| A runtime dependency, moderate | within 14 days |
+| A dev dependency that runs in a privileged job (one with secrets, `contents: write`, `id-token`, or that publishes) | treated as runtime: same targets as above |
+| A dev dependency only used in unprivileged jobs (lint, type check, test, build on pull requests) | within 30 days, or the next release if sooner |
+| Low severity, any dependency | next routine update |
+
+"Within" means a fixed version is merged, or the alert is dismissed with a written reason (for example the vulnerable code path isn't reachable). `npm audit --omit=dev --audit-level=moderate` must report nothing at release time.
+
+### Runtime advisory and a 0.4.2
+
+The fix always lands first on the active `release/x.y.z` branch (currently `release/0.5.0`) as a lockfile-only PR. Whether it also ships as a patch release of the previous line is the maintainer's call, made per advisory. The rule:
+
+1. The advisory is in a runtime dependency of the last 0.4.x release (v0.4.1), as resolved by that release's lockfile; **and**
+2. it is critical or high, or it is moderate and reachable from the server's code paths (stdio or HTTP); **and**
+3. the 0.4.x line is still inside its support window (until at least 2027-01-27, see [SECURITY.md](SECURITY.md)).
+
+If all three hold, the maintainer cuts `v0.4.2` from a `release/0.4.x` branch started at the `v0.4.1` tag. That release contains **only** the dependency bump, its lockfile, the version number and the CHANGELOG entry: no features, no other fixes, no migrations. It follows the normal release process (checks, tag, release workflow). Contributors and automation don't cut it, tag it or publish it. Dependabot PRs aimed at `main` while a release is in progress wait for the release tag.
+
+If the rule doesn't hold, the fix ships in the next 0.5.x release, and the advisory notes that 0.4.x users should upgrade.
 
 ## Reporting security issues
 

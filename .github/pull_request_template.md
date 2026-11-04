@@ -23,3 +23,5 @@
 - [ ] New or changed write paths call `assertWriteAllowed()` and write an audit entry
 - [ ] New tools have an entry in `src/tools/annotations.ts` and appear in the README tool list
 - [ ] Output changes only add fields (or are listed under Breaking changes)
+- [ ] Lockfile changes: `node scripts/check-lockfile.mjs` passes, and the diff only contains the packages this PR is meant to change (or this PR doesn't touch `package-lock.json`)
+- [ ] Workflow changes: no new or widened `permissions:`, no new secrets, and every new action is pinned to a full commit SHA (or this PR doesn't touch `.github/`)

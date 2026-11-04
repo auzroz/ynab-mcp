@@ -4,9 +4,9 @@
  * Holds: users (identified by their YNAB user id), each user's encrypted YNAB
  * refresh token + granted scope, dynamically-registered MCP clients, short-lived
  * MCP authorization codes, MCP access/refresh tokens, tombstones of rotated
- * refresh tokens (for reuse detection), and the short-lived "pending
- * authorization" records that bridge the MCP-authorize and YNAB-callback legs of
- * the federated flow.
+ * refresh tokens and of spent authorization codes (for reuse and replay
+ * detection), and the short-lived "pending authorization" records that bridge
+ * the MCP-authorize and YNAB-callback legs of the federated flow.
  *
  * All secrets (YNAB refresh tokens) are stored already-encrypted by the caller.
  */
@@ -117,6 +117,44 @@ export interface RefreshTokenRotation {
   refreshToken: RefreshTokenRecord;
 }
 
+/**
+ * Tombstone of an authorization code spent at the token endpoint, kept until
+ * `expiresAt` so a second use of the code can be recognized as a replay
+ * (RFC 9700 section 4.2.4, RFC 6749 section 4.1.2). Written in the same
+ * atomic step that spends the code, with the token family the code's tokens
+ * will join, before those tokens exist. Keyed by the plaintext code until codes are hashed at rest.
+ */
+export interface ConsumedAuthCodeRecord {
+  code: string;
+  clientId: string;
+  userId: string | undefined;
+  /** The family the code's tokens join, and that a replay of the code revokes. */
+  familyId: string;
+  expiresAt: number;
+  /**
+   * Set once a replay has revoked the family. Tokens are never saved for a
+   * revoked code, so a replay that lands between the code being spent and its
+   * tokens being saved leaves no live token.
+   */
+  revoked: boolean;
+}
+
+/** What {@link Storage.consumeAuthCode} records when it spends a code. */
+export interface AuthCodeConsumption {
+  /** The pre-allocated family of the tokens the code will be exchanged for. */
+  familyId: string;
+  /** When the code's tombstone expires. */
+  consumedUntil: number;
+}
+
+/** The token pair issued for a spent authorization code ({@link Storage.saveCodeTokens}). */
+export interface CodeTokens {
+  /** Must be the family recorded on the code's tombstone. */
+  familyId: string;
+  accessToken: AccessTokenRecord;
+  refreshToken: RefreshTokenRecord;
+}
+
 /** Bridges the MCP `/authorize` leg to the YNAB `/oauth/ynab/callback` leg. */
 export interface PendingAuthRecord {
   /** Opaque state we send to YNAB and expect back. */
@@ -162,9 +200,37 @@ export interface Storage {
   savePendingAuth(rec: PendingAuthRecord): Promise<void>;
   takePendingAuth(state: string): Promise<PendingAuthRecord | undefined>;
 
-  // MCP authorization codes, one-time
+  // MCP authorization codes, one-time. takeAuthCode is a bare atomic take for
+  // tests and maintenance: it leaves no tombstone, so the token endpoint must
+  // spend codes only through consumeAuthCode, or replay detection is bypassed.
   saveAuthCode(rec: AuthCodeRecord): Promise<void>;
   takeAuthCode(code: string): Promise<AuthCodeRecord | undefined>;
+  /**
+   * The atomic one-time use of a code at the token endpoint: take `code` and,
+   * only if it was live (present and unexpired), record its tombstone with the
+   * taken row's client and user and `consumption.familyId`, in one atomic step.
+   * So whoever finds the code gone after this also finds its tombstone. Also
+   * prunes expired tombstones. Returns the live row taken, or undefined
+   * (nothing recorded) when the code was unknown, already spent or expired.
+   */
+  consumeAuthCode(code: string, consumption: AuthCodeConsumption): Promise<AuthCodeRecord | undefined>;
+  /** A spent code's tombstone; undefined when there is none or it has expired. */
+  getConsumedAuthCode(code: string): Promise<ConsumedAuthCodeRecord | undefined>;
+  /**
+   * Handle a replay of a spent code: mark its live tombstone revoked and delete
+   * every access and refresh token of its family, atomically and under the
+   * family's lock (so a {@link saveCodeTokens} in flight either commits first
+   * and is deleted, or runs after and is refused). Returns the tombstone, now
+   * revoked, or undefined (nothing changed) when there is no live tombstone.
+   */
+  revokeConsumedAuthCode(code: string): Promise<ConsumedAuthCodeRecord | undefined>;
+  /**
+   * Save the token pair issued for a spent code, but only while its tombstone
+   * is live, not revoked, and names `tokens.familyId`; checked and written
+   * atomically under the family's lock. Returns false (nothing written)
+   * otherwise.
+   */
+  saveCodeTokens(code: string, tokens: CodeTokens): Promise<boolean>;
 
   // MCP access tokens
   saveAccessToken(rec: AccessTokenRecord): Promise<void>;

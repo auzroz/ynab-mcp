@@ -6,9 +6,27 @@
  */
 
 /**
+ * Bidirectional control characters that can reorder displayed text:
+ * ARABIC LETTER MARK (U+061C), LRM/RLM (U+200E-U+200F),
+ * LRE/RLE/PDF/LRO/RLO (U+202A-U+202E) and LRI/RLI/FSI/PDI (U+2066-U+2069).
+ */
+const BIDI_CONTROL_PATTERN = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+
+/**
+ * Remove bidirectional control characters from a string.
+ *
+ * Exported so other output paths (for example, field-level sanitizers) can
+ * reuse the same stripping rule.
+ */
+export function stripBidi(input: string): string {
+  return input.replace(BIDI_CONTROL_PATTERN, '');
+}
+
+/**
  * Sanitize a user-provided string for safe output.
  *
  * - Removes control characters (except common whitespace)
+ * - Removes bidirectional control characters (see stripBidi)
  * - Trims whitespace
  * - Enforces maximum length
  * - Returns null for null/undefined input
@@ -34,8 +52,11 @@ export function sanitizeString(
   // eslint-disable-next-line no-control-regex
   const cleaned = str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x80-\x9F\u200B-\u200F\u2028\u2029\uFEFF]/g, '');
 
+  // Strip bidi controls that can visually reorder budget text (see stripBidi)
+  const unbidied = stripBidi(cleaned);
+
   // Trim whitespace
-  const trimmed = cleaned.trim();
+  const trimmed = unbidied.trim();
 
   // Enforce max length (reserve space for ellipsis to stay within limit)
   if (trimmed.length > effectiveMaxLength) {

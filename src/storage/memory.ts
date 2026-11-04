@@ -15,8 +15,23 @@ import type {
   RefreshTokenRecord,
   RefreshTokenRotation,
   ConsumedRefreshTokenRecord,
+  ConsumedAuthCodeRecord,
+  AuthCodeConsumption,
+  CodeTokens,
   PendingAuthRecord,
+  GrantedScope,
 } from './types.js';
+import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
+
+/**
+ * The access level is checked at the read, as in the durable drivers, so an
+ * unexpected value (the types forbid one, but a caller may cast) reads as
+ * read-only. A missing level stays missing; callers treat it as read-only.
+ */
+function withOptionalScope<T extends { grantedScope?: GrantedScope | undefined }>(rec: T): T {
+  const grantedScope = parseOptionalGrantedScope(rec.grantedScope);
+  return grantedScope === undefined ? rec : { ...rec, grantedScope };
+}
 
 export class MemoryStorage implements Storage {
   private users = new Map<string, UserRecord>();
@@ -26,6 +41,7 @@ export class MemoryStorage implements Storage {
   private accessTokens = new Map<string, AccessTokenRecord>();
   private refreshTokens = new Map<string, RefreshTokenRecord>();
   private consumedRefreshTokens = new Map<string, ConsumedRefreshTokenRecord>();
+  private consumedAuthCodes = new Map<string, ConsumedAuthCodeRecord>();
 
   async init(): Promise<void> {
     // no-op
@@ -38,13 +54,15 @@ export class MemoryStorage implements Storage {
     this.accessTokens.clear();
     this.refreshTokens.clear();
     this.consumedRefreshTokens.clear();
+    this.consumedAuthCodes.clear();
   }
 
   async upsertUser(rec: UserRecord): Promise<void> {
     this.users.set(rec.userId, rec);
   }
   async getUser(userId: string): Promise<UserRecord | undefined> {
-    return this.users.get(userId);
+    const rec = this.users.get(userId);
+    return rec && { ...rec, grantedScope: parseGrantedScope(rec.grantedScope) };
   }
   async deleteUser(userId: string): Promise<void> {
     this.users.delete(userId);
@@ -64,7 +82,7 @@ export class MemoryStorage implements Storage {
     const rec = this.pending.get(state);
     this.pending.delete(state);
     if (!rec || rec.expiresAt < Date.now()) return undefined;
-    return rec;
+    return { ...rec, grantedScope: parseGrantedScope(rec.grantedScope) };
   }
 
   async saveAuthCode(rec: AuthCodeRecord): Promise<void> {
@@ -74,7 +92,58 @@ export class MemoryStorage implements Storage {
     const rec = this.authCodes.get(code);
     this.authCodes.delete(code);
     if (!rec || rec.expiresAt < Date.now()) return undefined;
+    return withOptionalScope(rec);
+  }
+
+  // Each of these runs to completion without an await, so it is atomic.
+  async consumeAuthCode(
+    code: string,
+    consumption: AuthCodeConsumption
+  ): Promise<AuthCodeRecord | undefined> {
+    const rec = this.authCodes.get(code);
+    this.authCodes.delete(code);
+    const now = Date.now();
+    for (const [key, consumed] of this.consumedAuthCodes) {
+      if (consumed.expiresAt < now) this.consumedAuthCodes.delete(key);
+    }
+    if (!rec || rec.expiresAt < now) return undefined;
+    // A code is spent once, so its tombstone is never overwritten.
+    if (!this.consumedAuthCodes.has(code)) {
+      this.consumedAuthCodes.set(code, {
+        code,
+        clientId: rec.clientId,
+        userId: rec.userId,
+        familyId: consumption.familyId,
+        expiresAt: consumption.consumedUntil,
+        revoked: false,
+      });
+    }
     return rec;
+  }
+
+  async getConsumedAuthCode(code: string): Promise<ConsumedAuthCodeRecord | undefined> {
+    const rec = this.consumedAuthCodes.get(code);
+    if (!rec || rec.expiresAt < Date.now()) return undefined;
+    return { ...rec };
+  }
+
+  async revokeConsumedAuthCode(code: string): Promise<ConsumedAuthCodeRecord | undefined> {
+    const rec = this.consumedAuthCodes.get(code);
+    if (!rec || rec.expiresAt < Date.now()) return undefined;
+    const revoked = { ...rec, revoked: true };
+    this.consumedAuthCodes.set(code, revoked);
+    this.deleteFamilySync(rec.familyId);
+    return { ...revoked };
+  }
+
+  async saveCodeTokens(code: string, tokens: CodeTokens): Promise<boolean> {
+    const rec = this.consumedAuthCodes.get(code);
+    if (!rec || rec.expiresAt < Date.now() || rec.revoked || rec.familyId !== tokens.familyId) {
+      return false;
+    }
+    this.accessTokens.set(tokens.accessToken.token, tokens.accessToken);
+    this.refreshTokens.set(tokens.refreshToken.token, tokens.refreshToken);
+    return true;
   }
 
   async saveAccessToken(rec: AccessTokenRecord): Promise<void> {
@@ -86,7 +155,7 @@ export class MemoryStorage implements Storage {
       this.accessTokens.delete(token);
       return undefined;
     }
-    return rec;
+    return rec && withOptionalScope(rec);
   }
   async deleteAccessToken(token: string): Promise<void> {
     this.accessTokens.delete(token);
@@ -96,12 +165,13 @@ export class MemoryStorage implements Storage {
     this.refreshTokens.set(rec.token, rec);
   }
   async getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
-    return this.refreshTokens.get(token);
+    const rec = this.refreshTokens.get(token);
+    return rec && withOptionalScope(rec);
   }
   async takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
     const rec = this.refreshTokens.get(token);
     this.refreshTokens.delete(token);
-    return rec;
+    return rec && withOptionalScope(rec);
   }
   async deleteRefreshToken(token: string): Promise<void> {
     this.refreshTokens.delete(token);
@@ -125,7 +195,7 @@ export class MemoryStorage implements Storage {
     });
     this.accessTokens.set(rotation.accessToken.token, rotation.accessToken);
     this.refreshTokens.set(rotation.refreshToken.token, rotation.refreshToken);
-    return rec;
+    return withOptionalScope(rec);
   }
 
   async getConsumedRefreshToken(token: string): Promise<ConsumedRefreshTokenRecord | undefined> {
@@ -135,6 +205,10 @@ export class MemoryStorage implements Storage {
   }
 
   async deleteTokenFamily(familyId: string): Promise<void> {
+    this.deleteFamilySync(familyId);
+  }
+
+  private deleteFamilySync(familyId: string): void {
     for (const [key, rec] of this.accessTokens) {
       if (rec.familyId === familyId) this.accessTokens.delete(key);
     }

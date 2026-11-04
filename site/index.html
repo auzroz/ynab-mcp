@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>ynab-mcp: talk to your YNAB budget with Claude</title>
+  <meta name="description" content="ynab-mcp is an open-source Model Context Protocol server that lets Claude read, analyze and, when you allow it, update your YNAB budget. 69 tools, read-only by default.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect class="b" width="32" height="32" rx="8"/><rect class="l" x="8" y="9" width="16" height="2.6" rx="1.3"/><rect class="l" x="8" y="14.7" width="11" height="2.6" rx="1.3"/><rect class="l" x="8" y="20.4" width="6" height="2.6" rx="1.3"/></svg>
+        <span>ynab-mcp <span class="brand-sub">for YNAB</span></span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" hidden>Menu</button>
+      <nav class="site-nav" id="site-nav" aria-label="Main">
+        <ul class="nav-list">
+          <li><a href="install.html">Install</a></li>
+          <li><a href="examples.html">Examples</a></li>
+          <li><a href="tools.html">Tools</a></li>
+          <li><a href="self-hosting.html">Self-hosting</a></li>
+          <li><a href="security.html">Security</a></li>
+          <li><a href="https://github.com/auzroz/ynab-mcp">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section class="wrap hero" aria-labelledby="hero-title">
+      <span class="eyebrow">Open-source MCP server</span>
+      <h1 id="hero-title">Talk to your budget.</h1>
+      <p class="lede">ynab-mcp is an open-source <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server that lets Claude read, analyze and, when you allow it, update your YNAB budget.</p>
+      <div class="actions">
+        <a class="button button-primary" href="install.html">Get started</a>
+        <a class="button button-secondary" href="examples.html">See example conversations</a>
+      </div>
+      <div class="hero-cmd">
+        <p class="code-label">Run it with Node.js 22.14 or later:</p>
+        <div class="code" data-label="install command">
+          <pre><code>npx -y ynab-mcp</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section" aria-labelledby="glance">
+      <h2 id="glance" class="visually-hidden">At a glance</h2>
+      <div class="stat-row">
+        <p class="stat"><span class="num" data-count="tools">69</span> <span class="label">tools across the YNAB API</span></p>
+        <p class="stat"><span class="num" data-count="analytics">23</span> <span class="label">analytics tools for trends and insights</span></p>
+        <p class="stat"><span class="num" data-count="prompts">7</span> <span class="label">guided review prompts</span></p>
+        <p class="stat"><span class="num">0</span> <span class="label">writes until you turn them on</span></p>
+      </div>
+    </section>
+
+    <section class="wrap section" aria-labelledby="ask">
+      <h2 id="ask">What you can ask</h2>
+      <p class="prose">Once it is connected, you talk to Claude the way you'd talk to a friend who knows your budget. Claude picks the tools; you see the answer.</p>
+      <ul class="asks">
+        <li><q>Am I overspending anywhere this month?</q><span class="via">Uses <a href="tools.html#ynab_overspending_alerts"><code>ynab_overspending_alerts</code></a></span></li>
+        <li><q>What subscriptions am I paying for?</q><span class="via">Uses <a href="tools.html#ynab_detect_recurring"><code>ynab_detect_recurring</code></a></span></li>
+        <li><q>Am I on track this month?</q><span class="via">Uses <a href="tools.html#ynab_spending_pace"><code>ynab_spending_pace</code></a></span></li>
+        <li><q>Will I have enough in checking before payday?</q><span class="via">Uses <a href="tools.html#ynab_cash_flow_forecast"><code>ynab_cash_flow_forecast</code></a></span></li>
+        <li><q>What's my net worth right now?</q><span class="via">Uses <a href="tools.html#ynab_net_worth"><code>ynab_net_worth</code></a></span></li>
+        <li><q>Where can I cut back?</q><span class="via">Uses <a href="tools.html#ynab_savings_opportunities"><code>ynab_savings_opportunities</code></a></span></li>
+      </ul>
+      <p><a href="examples.html">Read full example conversations</a></p>
+    </section>
+
+    <section class="wrap section" aria-labelledby="quick-start">
+      <h2 id="quick-start">Quick start</h2>
+      <p class="prose">You need a YNAB personal access token. Create one under <a href="https://app.ynab.com/settings/developer">Account Settings, Developer Settings</a> in YNAB, then pick how you run Claude. The <a href="install.html">install guide</a> covers each option in detail.</p>
+
+      <div class="tabs" data-tabs data-tabs-label="quick-start">
+        <section class="tab-panel" id="qs-desktop">
+          <h3 class="tab-title">Claude Desktop</h3>
+          <p>Add this to <code>claude_desktop_config.json</code> (Claude menu, Settings, Developer, Edit Config), replace the token, and restart Claude Desktop.</p>
+          <div class="code" data-label="Claude Desktop config">
+<pre><code>{
+  "mcpServers": {
+    "ynab": {
+      "command": "npx",
+      "args": ["-y", "ynab-mcp"],
+      "env": {
+        "YNAB_ACCESS_TOKEN": "your_token_here"
+      }
+    }
+  }
+}</code></pre>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="qs-docker">
+          <h3 class="tab-title">Docker</h3>
+          <p>No Node.js needed. The image is published for amd64 and arm64. In Claude Desktop:</p>
+          <div class="code" data-label="Claude Desktop config for Docker">
+<pre><code>{
+  "mcpServers": {
+    "ynab": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "YNAB_ACCESS_TOKEN",
+        "ghcr.io/auzroz/ynab-mcp:latest"
+      ],
+      "env": {
+        "YNAB_ACCESS_TOKEN": "your_token_here"
+      }
+    }
+  }
+}</code></pre>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="qs-code">
+          <h3 class="tab-title">Claude Code</h3>
+          <p>Run these in Bash or Zsh (on Windows, in WSL or Git Bash). Type this first command rather than copying it, so your token stays on the clipboard, then paste the token at its prompt; it isn't echoed or kept in shell history:</p>
+          <div class="code" data-label="token prompt" data-no-copy>
+<pre><code>read -rs YNAB_ACCESS_TOKEN</code></pre>
+          </div>
+          <p>Then one command registers the server. Add <code>--scope user</code> to make it available in every project.</p>
+          <div class="code" data-label="Claude Code command">
+<pre><code>claude mcp add ynab -e YNAB_ACCESS_TOKEN="$YNAB_ACCESS_TOKEN" -- npx -y ynab-mcp
+unset YNAB_ACCESS_TOKEN</code></pre>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="qs-remote">
+          <h3 class="tab-title">claude.ai (self-hosted)</h3>
+          <p>To use ynab-mcp from claude.ai or the Claude mobile apps, host it yourself in HTTP mode with YNAB OAuth, then add a custom connector pointing at your server:</p>
+          <div class="code" data-label="connector URL">
+<pre><code>https://YOUR_PUBLIC_URL/mcp</code></pre>
+          </div>
+          <p>Each person signs in with their own YNAB account and chooses read-only or read-write. See <a href="self-hosting.html">Self-hosting</a>.</p>
+        </section>
+      </div>
+    </section>
+
+    <section class="wrap section" aria-labelledby="how">
+      <h2 id="how">How it works</h2>
+      <p class="prose">ynab-mcp is a small program that runs next to Claude: on your computer, or on a server you control. Claude asks it for data in a standard way (the Model Context Protocol), and it calls the official YNAB API with your token. There is no ynab-mcp cloud service in between.</p>
+      <ol class="flow">
+        <li class="flow-node"><strong>Claude</strong><span>Desktop, Code, claude.ai, or any MCP client</span></li>
+        <li class="flow-link" aria-hidden="true"><svg viewBox="0 0 24 24" class="arrow-icon"><path d="M4 12h16M14 6l6 6-6 6"/></svg>MCP</li>
+        <li class="flow-node is-accent"><strong>ynab-mcp</strong><span>Runs on your machine or your server. Validates input, caches, limits requests, logs writes.</span></li>
+        <li class="flow-link" aria-hidden="true"><svg viewBox="0 0 24 24" class="arrow-icon"><path d="M4 12h16M14 6l6 6-6 6"/></svg>HTTPS</li>
+        <li class="flow-node"><strong>YNAB API</strong><span>api.ynab.com, with your personal access token or OAuth</span></li>
+      </ol>
+    </section>
+
+    <section class="wrap section" aria-labelledby="features">
+      <h2 id="features">What's inside</h2>
+      <div class="grid">
+        <div class="card">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g class="arrow-icon"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></g></svg>
+          <h3><span data-count="tools">69</span> tools</h3>
+          <p>Budgets, accounts, categories, payees, months, transactions, scheduled transactions and money movements, plus system tools. <a href="tools.html">Browse them all</a>.</p>
+        </div>
+        <div class="card">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g class="arrow-icon"><path d="M3 20h18"/><path d="M5 16l4-5 4 3 6-8"/></g></svg>
+          <h3>Analytics built in</h3>
+          <p>Recurring-charge detection, spending trends and pace, budget health, cash-flow forecasts, goal progress, net worth and reconciliation help.</p>
+        </div>
+        <div class="card">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g class="arrow-icon"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></g></svg>
+          <h3>Read-only by default</h3>
+          <p>Write tools are hidden and refused until you set <code>YNAB_READ_ONLY=false</code>. A typo in that setting stops the server instead of enabling writes.</p>
+        </div>
+        <div class="card">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g class="arrow-icon"><path d="M6 3h9l4 4v14H6z"/><path d="M9 11h7M9 15h7M9 7h3"/></g></svg>
+          <h3>Audit log</h3>
+          <p>Every write is recorded: what changed, when, and whether it worked. Names and memos are reduced to whether they were present, so the log never holds them.</p>
+        </div>
+        <div class="card">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g class="arrow-icon"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/></g></svg>
+          <h3>Delta sync and rate limiting</h3>
+          <p>Repeat reads fetch only what changed since last time, and requests stay under YNAB's limit of 200 an hour, with a 10% margin.</p>
+        </div>
+        <div class="card">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g class="arrow-icon"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9" r="2.4"/><path d="M15.5 14.2A4.5 4.5 0 0 1 21 18.5"/></g></svg>
+          <h3>Multi-user OAuth</h3>
+          <p>Host one instance for your household or team. Everyone connects their own YNAB account over OAuth and their data stays separate.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section" aria-labelledby="next">
+      <h2 id="next">Where next</h2>
+      <div class="grid">
+        <a class="card-link" href="install.html"><div class="card"><h3>Install</h3><p>Every client, every setting, and fixes for common problems.</p><span class="more">Install guide</span></div></a>
+        <a class="card-link" href="examples.html"><div class="card"><h3>Examples</h3><p>Seven realistic conversations, with the tools Claude calls.</p><span class="more">See examples</span></div></a>
+        <a class="card-link" href="tools.html"><div class="card"><h3>Tool reference</h3><p>All tools and prompts, searchable, with parameters.</p><span class="more">Browse tools</span></div></a>
+        <a class="card-link" href="security.html"><div class="card"><h3>Security</h3><p>How tokens, writes and your data are handled.</p><span class="more">Read more</span></div></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="https://github.com/auzroz/ynab-mcp">Source on GitHub</a></li>
+        <li><a href="https://www.npmjs.com/package/ynab-mcp">npm package</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/releases">Releases</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/LICENSE">MIT License</a></li>
+        <li><a href="security.html#reporting">Report a vulnerability</a></li>
+      </ul>
+      <p class="disclaimer">ynab-mcp is an independent open-source project. It is not affiliated with, endorsed by or sponsored by YNAB. YNAB is a trademark of YNAB LLC.</p>
+    </div>
+  </footer>
+</body>
+</html>

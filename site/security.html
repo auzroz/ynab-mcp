@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>ynab-mcp security</title>
+  <meta name="description" content="How ynab-mcp protects your budget: read-only by default, token handling, PII redaction, the audit log, output sanitization, and how to report a vulnerability.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect class="b" width="32" height="32" rx="8"/><rect class="l" x="8" y="9" width="16" height="2.6" rx="1.3"/><rect class="l" x="8" y="14.7" width="11" height="2.6" rx="1.3"/><rect class="l" x="8" y="20.4" width="6" height="2.6" rx="1.3"/></svg>
+        <span>ynab-mcp <span class="brand-sub">for YNAB</span></span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav" hidden>Menu</button>
+      <nav class="site-nav" id="site-nav" aria-label="Main">
+        <ul class="nav-list">
+          <li><a href="install.html">Install</a></li>
+          <li><a href="examples.html">Examples</a></li>
+          <li><a href="tools.html">Tools</a></li>
+          <li><a href="self-hosting.html">Self-hosting</a></li>
+          <li><a href="security.html" aria-current="page">Security</a></li>
+          <li><a href="https://github.com/auzroz/ynab-mcp">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="wrap page-head">
+      <span class="eyebrow">Security</span>
+      <h1>Careful with your money data</h1>
+      <p class="lede">Your budget is personal. ynab-mcp is built to change nothing unless you ask, keep your token to itself, and leave your details out of logs.</p>
+    </div>
+
+    <div class="wrap with-toc">
+      <aside class="toc" aria-labelledby="toc-title">
+        <div>
+          <h2 id="toc-title">On this page</h2>
+          <ul>
+            <li><a href="#read-only">Read-only by default</a></li>
+            <li><a href="#tokens">Your token</a></li>
+            <li><a href="#data">Where your data goes</a></li>
+            <li><a href="#audit">The audit log</a></li>
+            <li><a href="#privacy">Privacy in logs</a></li>
+            <li><a href="#sanitization">Input and output checks</a></li>
+            <li><a href="#remote">Remote servers</a></li>
+            <li><a href="#reporting">Reporting a vulnerability</a></li>
+          </ul>
+        </div>
+      </aside>
+
+      <div class="prose">
+        <section aria-labelledby="read-only">
+          <h2 id="read-only">Read-only by default</h2>
+          <p>A new install can read your budget and change nothing. Write tools are left out of the list Claude sees, and the server rejects them even if a client calls one by name. Writes need an explicit <code>YNAB_READ_ONLY=false</code>; a misspelled value stops the server instead of being read as "yes".</p>
+          <p>When writes are on, each tool carries MCP annotations that tell the client what kind of action it is. Updates and deletes are marked destructive, because YNAB has no undo, and most clients ask before running them. The <a href="tools.html">tool reference</a> shows these markers for every tool.</p>
+        </section>
+
+        <section aria-labelledby="tokens">
+          <h2 id="tokens">Your token</h2>
+          <ul>
+            <li>In local (stdio) mode the YNAB token comes only from the server's environment, never from tool arguments, so nothing in a conversation can supply or change it.</li>
+            <li>It is never written to logs or returned in tool responses. Errors from the YNAB API reach Claude as fixed, mapped messages, never YNAB's own text. Validation and not-found errors carry the server's own message, and any other error is returned with control characters and recognized secret patterns removed: bearer tokens, labeled values such as <code>token=</code>, <code>key=</code> or <code>password=</code>, connection strings and file paths. The detailed error is logged internally after the same redaction. Redaction works by pattern, so a secret with no recognizable label could still get through.</li>
+            <li>The health check shows IDs masked to their first and last four characters.</li>
+            <li>A personal access token can do anything you can do in YNAB, so keep it out of chats, issues and screenshots. Revoke it in YNAB's Developer Settings if it leaks.</li>
+          </ul>
+        </section>
+
+        <section aria-labelledby="data">
+          <h2 id="data">Where your data goes</h2>
+          <p>ynab-mcp talks to one service: the YNAB API at <code>api.ynab.com</code>, over HTTPS. It has no telemetry, no analytics and no central service. What Claude sees is what you'd expect: the tool results it asks for, which your MCP client sends to Claude as part of the conversation.</p>
+          <p>Caches stay in memory on the machine running the server and are dropped when it stops. This website makes no third-party requests and sets no cookies.</p>
+        </section>
+
+        <section aria-labelledby="audit">
+          <h2 id="audit">The audit log</h2>
+          <p>Every write through ynab-mcp, successful or not, is recorded with its time, tool, the kind of record and its ID. Ask Claude to <q>show the audit log</q> to review changes; the <a href="tools.html#ynab_audit_log"><code>ynab_audit_log</code></a> tool filters by operation, record type and outcome.</p>
+          <p>The log is kept in memory for the life of the server process (the most recent 1,000 entries). On a shared server, each user sees only their own entries.</p>
+        </section>
+
+        <section aria-labelledby="privacy">
+          <h2 id="privacy">Privacy in logs</h2>
+          <p>Audit entries record which fields were present, not what they said:</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Field</th><th scope="col">Recorded as</th></tr></thead>
+              <tbody>
+                <tr><td>Payee name</td><td><code>has_payee</code></td></tr>
+                <tr><td>Account or category name</td><td><code>has_name</code></td></tr>
+                <tr><td>Memo</td><td><code>has_memo</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>Error text in the audit log is redacted for secret-looking patterns and truncated.</p>
+        </section>
+
+        <section aria-labelledby="sanitization">
+          <h2 id="sanitization">Input and output checks</h2>
+          <ul>
+            <li><strong>Inputs:</strong> every tool argument is validated with a schema before anything is sent to YNAB, including ID formats, date formats and a length limit on every text field. Oversized or deeply nested arguments are refused up front.</li>
+            <li><strong>Outputs:</strong> names, memos and notes from your budget are cleaned of control characters and length-limited before they go into a response.</li>
+            <li><strong>Money:</strong> amounts are converted with exact decimal arithmetic, never floating point, so $0.10 + $0.20 is exactly $0.30.</li>
+            <li><strong>Rate limits:</strong> the server keeps itself under YNAB's 200 requests an hour, so a runaway conversation can't lock your token out.</li>
+          </ul>
+        </section>
+
+        <section aria-labelledby="remote">
+          <h2 id="remote">Remote servers</h2>
+          <p>On a <a href="self-hosting.html">self-hosted</a> server with OAuth, stored YNAB tokens are encrypted at rest, every user's cache, rate limit and audit log are kept separate, and each connection keeps the read-only or read-write level chosen at consent. Host and Origin checks are on by default. The <a href="https://github.com/auzroz/ynab-mcp/blob/main/docs/REMOTE_HOSTING.md">remote hosting guide</a> covers the details operators need.</p>
+        </section>
+
+        <section aria-labelledby="reporting">
+          <h2 id="reporting">Reporting a vulnerability</h2>
+          <p>Please report security problems privately through <a href="https://github.com/auzroz/ynab-mcp/security/advisories/new">GitHub's private vulnerability reporting</a> (the repository's Security tab, then "Report a vulnerability"). Don't open a public issue.</p>
+          <ul>
+            <li><strong>Include</strong> the affected version, how the server gets its YNAB credentials (stdio with a token, HTTP header mode, or HTTP OAuth mode), and steps to reproduce.</li>
+            <li><strong>Leave out</strong> real tokens, budget data, and working exploits against anyone else's instance.</li>
+          </ul>
+          <p>Fixes ship in the next appropriate release, and an advisory is published once the fix is available. Problems with the YNAB API or YNAB's own OAuth service are out of scope; report those to YNAB. The full policy is in <a href="https://github.com/auzroz/ynab-mcp/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="https://github.com/auzroz/ynab-mcp">Source on GitHub</a></li>
+        <li><a href="https://www.npmjs.com/package/ynab-mcp">npm package</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/releases">Releases</a></li>
+        <li><a href="https://github.com/auzroz/ynab-mcp/blob/main/LICENSE">MIT License</a></li>
+        <li><a href="security.html#reporting">Report a vulnerability</a></li>
+      </ul>
+      <p class="disclaimer">ynab-mcp is an independent open-source project. It is not affiliated with, endorsed by or sponsored by YNAB. YNAB is a trademark of YNAB LLC.</p>
+    </div>
+  </footer>
+</body>
+</html>

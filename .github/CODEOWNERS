@@ -1,0 +1,28 @@
+# Code owners. GitHub requests a review from the owner when a PR touches these paths.
+# "Require review from Code Owners" is deliberately off in the ruleset (single
+# maintainer; see CONTRIBUTING.md), so this file routes review requests and marks
+# the security-sensitive paths; it does not block merges.
+
+# CI, release and repository policy
+/.github/                 @auzroz
+/Dockerfile               @auzroz
+/scripts/                 @auzroz
+/SECURITY.md              @auzroz
+
+# Dependencies and supply chain
+/package.json             @auzroz
+/package-lock.json        @auzroz
+
+# Credentials, OAuth and storage
+/src/auth/                @auzroz
+/src/crypto.ts            @auzroz
+/src/storage/             @auzroz
+
+# HTTP sessions, read-only enforcement and per-user data isolation
+/src/http.ts                      @auzroz
+/src/config/environment.ts        @auzroz
+/src/services/ynab-client.ts      @auzroz
+/src/services/session-manager.ts  @auzroz
+/src/services/user-registry.ts    @auzroz
+/src/services/cache.ts            @auzroz
+/src/services/delta-cache.ts      @auzroz
