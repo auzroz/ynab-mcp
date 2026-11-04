@@ -223,7 +223,10 @@ jobs:
           npm pack --ignore-scripts --pack-destination release-dist
           tarball="release-dist/ynab-mcp-${VERSION}.tgz"
           test -f "$tarball"
-          tar -tzf "$tarball" | grep -qx 'package/dist/index.js'
+          # List to a file first: grep -q exits on the first match, and tar's
+          # SIGPIPE would then fail the step under pipefail.
+          tar -tzf "$tarball" > "$RUNNER_TEMP/pack-contents.txt"
+          grep -qx 'package/dist/index.js' "$RUNNER_TEMP/pack-contents.txt"
 
       # SBOM of the production dependency tree pinned by package-lock.json: the
       # tree the Docker image installs. npm consumers resolve their own tree
