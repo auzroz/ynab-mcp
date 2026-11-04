@@ -128,6 +128,25 @@ describe('checkLockfile', () => {
     expect(check(lock({ 'node_modules/foo': { resolved: 'packages/foo', link: true } })).join()).toMatch(/link entries/);
   });
 
+  it('never echoes credentials from a resolved URL', () => {
+    // Dummy value; the CI log is public, so no message may quote userinfo.
+    const secret = 's3cret-dummy';
+    const cases = [
+      `https://user:${secret}@registry.npmjs.org/foo/-/foo-1.0.0.tgz`,
+      `https://user:${secret}@host.example/foo/-/foo-1.0.0.tgz`,
+      `http://user:${secret}@registry.npmjs.org/foo/-/foo-1.0.0.tgz`,
+      `git+https://user:${secret}@github.com/x/foo.git`,
+    ];
+    for (const resolved of cases) {
+      const out = check(lock({ 'node_modules/foo': { ...good('foo'), resolved } })).join('\n');
+      expect(out, resolved).not.toBe('');
+      expect(out, resolved).not.toContain(secret);
+    }
+    const link = check(lock({ 'node_modules/foo': { link: true, resolved: `https://user:${secret}@host.example/x` } }));
+    expect(link.join('\n')).toMatch(/link entries/);
+    expect(link.join('\n')).not.toContain(secret);
+  });
+
   it('rejects unsupported lockfile versions and malformed input', () => {
     expect(check(lock({}, 1)).join()).toMatch(/lockfileVersion/);
     expect(check({ lockfileVersion: 3 }).join()).toMatch(/no "packages"/);

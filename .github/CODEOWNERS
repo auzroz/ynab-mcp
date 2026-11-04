@@ -17,3 +17,12 @@
 /src/auth/                @auzroz
 /src/crypto.ts            @auzroz
 /src/storage/             @auzroz
+
+# HTTP sessions, read-only enforcement and per-user data isolation
+/src/http.ts                      @auzroz
+/src/config/environment.ts        @auzroz
+/src/services/ynab-client.ts      @auzroz
+/src/services/session-manager.ts  @auzroz
+/src/services/user-registry.ts    @auzroz
+/src/services/cache.ts            @auzroz
+/src/services/delta-cache.ts      @auzroz

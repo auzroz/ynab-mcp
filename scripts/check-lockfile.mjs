@@ -52,7 +52,7 @@ export function checkLockfile(lock) {
     }
     if (entry.link === true) {
       // A symlink to a workspace or local path: the target has its own entry.
-      problems.push(`${key}: link entries are not allowed (resolved to ${String(entry.resolved)})`);
+      problems.push(`${key}: link entries are not allowed`);
       continue;
     }
     if (entry.inBundle === true) {
