@@ -323,10 +323,16 @@ export class YnabClient {
     deltaCache: DeltaCache = new DeltaCache()
   ) {
     // Every YNAB response passes this hook; a 429 marks the limiter exhausted.
+    // The SDK parses every error body as JSON, so a non-JSON one (a proxy's
+    // HTML error page) would surface as a SyntaxError quoting the body. Map
+    // those by status only.
     const middleware: ynab.Middleware[] = [
       {
         post: async ({ response }) => {
           if (response.status === 429) throw this.noteYnabRateLimited(response);
+          if (!response.ok && !/\bjson\b/i.test(response.headers.get('content-type') ?? '')) {
+            throw new YnabApiError('YNAB API request failed', String(response.status));
+          }
           return undefined;
         },
       },

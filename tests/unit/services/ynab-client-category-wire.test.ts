@@ -8,6 +8,7 @@ import { YnabClient } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
 import { Cache } from '../../../src/services/cache.js';
 import { AuditLog } from '../../../src/services/audit-log.js';
+import { YnabApiError } from '../../../src/utils/errors.js';
 
 const fetchMock = vi.fn<typeof fetch>();
 const BUDGET = 'budget-1';
@@ -76,8 +77,46 @@ describe('category write deadline', () => {
     ['createCategory', (c: YnabClient) => c.createCategory(BUDGET, { category: { name: 'X', category_group_id: 'g-1' } })],
     ['updateCategory', (c: YnabClient) => c.updateCategory(BUDGET, 'cat-1', { category: { name: 'X' } })],
   ])('%s passes an abort signal to fetch', async (_name, call) => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
     await call(makeClient());
     const [, init] = fetchMock.mock.calls[0]!;
     expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(timeout).toHaveBeenCalledWith(30_000);
+    expect(init?.signal).toBe(timeout.mock.results[0]?.value);
+  });
+});
+
+describe('non-JSON error responses', () => {
+  it.each([
+    ['createCategory', (c: YnabClient) => c.createCategory(BUDGET, { category: { name: 'X', category_group_id: 'g-1' } })],
+    ['updateCategory', (c: YnabClient) => c.updateCategory(BUDGET, 'cat-1', { category: { name: 'X' } })],
+  ])('%s maps a 502 HTML page by status, without its text', async (_name, call) => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('<html>upstream-secret-fragment</html>', {
+          status: 502,
+          headers: { 'Content-Type': 'text/html' },
+        })
+    );
+    const error = await call(makeClient()).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(error).toBeInstanceOf(YnabApiError);
+    expect((error as YnabApiError).code).toBe('502');
+    expect(String((error as Error).message)).not.toContain('upstream-secret-fragment');
+  });
+
+  it('still lets the SDK parse a JSON error body', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ error: { id: '404.2', name: 'resource_not_found', detail: 'Not found' } }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        })
+    );
+    await expect(makeClient().updateCategory(BUDGET, 'cat-1', { category: { name: 'X' } })).rejects.toMatchObject({
+      error: { id: '404.2' },
+    });
   });
 });
