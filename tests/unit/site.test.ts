@@ -9,13 +9,12 @@ import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { tools } from '../../src/tools/index.js';
 import { prompts } from '../../src/prompts/index.js';
-import { buildSite, mapToolDirectories, parseDescription } from '../../scripts/build-site.mjs';
+import { buildSite, mapToolDirectories, parseDescription, stripComments } from '../../scripts/build-site.mjs';
 
 const root = resolve(__dirname, '../..');
 const siteDir = join(root, 'site');
 const pages = readdirSync(siteDir).filter((f) => f.endsWith('.html'));
-const read = (file: string): string =>
-  readFileSync(join(siteDir, file), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+const read = (file: string): string => stripComments(readFileSync(join(siteDir, file), 'utf8'));
 
 const toolNames = new Set(tools.map((t) => t.name));
 const promptNames = new Set(prompts.map((p) => p.name));
@@ -54,9 +53,16 @@ function envReadsIn(source: string): string[] {
 
 /** Text of every <code> element on a page (inline and inside <pre>). */
 function codeTexts(html: string): string[] {
-  return [...html.matchAll(/<code\b[^>]*>([\s\S]*?)<\/code>/g)].map((m) =>
-    (m[1] as string).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-  );
+  return [...html.matchAll(/<code\b[^>]*>([\s\S]*?)<\/code>/g)].map((m) => {
+    let text = m[1] as string;
+    let previous;
+    do {
+      previous = text;
+      text = text.replace(/<[^>]+>/g, '');
+    } while (text !== previous);
+    // &amp; last, so "&amp;lt;" decodes to "&lt;" and not "<".
+    return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  });
 }
 
 /** Upper-case placeholders in examples that are not environment variables. */
@@ -223,5 +229,10 @@ describe('scripts/build-site.mjs', () => {
   it('splits a description into summary, sample questions and notes', () => {
     const parsed = parseDescription('Do a thing.\n\nUse when the user asks:\n- "One?"\n- "Two?"\n\nNeeds write mode.');
     expect(parsed).toEqual({ summary: 'Do a thing.', asks: ['One?', 'Two?'], notes: 'Needs write mode.' });
+  });
+
+  it('strips comments that a first removal would join back together', () => {
+    expect(stripComments('a<!-- x -->b')).toBe('ab');
+    expect(stripComments('a<!<!-- x -->-- y -->b')).toBe('ab');
   });
 });

@@ -340,8 +340,14 @@ const ID_RE = /\sid="([^"]+)"/g;
 const TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/g;
 const ATTR_RE = /\s(href|src|srcset|action|poster|data)="([^"]*)"/g;
 
-function stripComments(html) {
-  return html.replace(/<!--[\s\S]*?-->/g, '');
+/** Remove HTML comments, repeating until none are left (a removal can join two halves of a new one). */
+export function stripComments(html) {
+  let previous;
+  do {
+    previous = html;
+    html = html.replace(/<!--[\s\S]*?-->/g, '');
+  } while (html !== previous);
+  return html;
 }
 
 /**
