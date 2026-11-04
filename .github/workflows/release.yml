@@ -462,7 +462,8 @@ jobs:
       # edits the job guards) the publish is a dry run.
       - name: Publish to npm
         env:
-          TARBALL: release-dist/ynab-mcp-${{ env.VERSION }}.tgz
+          # The leading ./ matters: npm reads "dir/file.tgz" as a GitHub owner/repo shorthand.
+          TARBALL: ./release-dist/ynab-mcp-${{ env.VERSION }}.tgz
         run: |
           set -euo pipefail
           dist_tag=latest
