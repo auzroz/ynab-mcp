@@ -84,7 +84,7 @@ These are the rules reviewers check, and most of them have tests that enforce th
 ### Calling YNAB
 - **All budget API requests go through `YnabClient`.** It acquires the rate limiter, applies the cache and delta sync, and maps errors.
 - **Write methods call `assertWriteAllowed()` and write an audit entry.** A new write path must do both.
-- **Check what the SDK actually sends.** The `ynab` SDK can drop fields it doesn't know. The pinned SDK 4.5 drops `goal_frequency`, so `YnabClient` sends those calls directly. If your change relies on a field reaching the API, add a test that inspects the outgoing request with a stubbed `fetch`. `tests/unit/services/ynab-client-transactions-wire.test.ts` shows the pattern.
+- **Check what the SDK actually sends.** The `ynab` SDK can drop fields it doesn't know. The generated SDK has dropped fields before (4.5 dropped `goal_frequency`; 5.0 sends it). If your change relies on a field reaching the API, add a test that inspects the outgoing request with a stubbed `fetch`. `tests/unit/services/ynab-client-transactions-wire.test.ts` shows the pattern.
 
 ### HTTP mode
 - **Keep users isolated.** A user's sessions share one rate limiter, cache and audit log, which are never shared between users.

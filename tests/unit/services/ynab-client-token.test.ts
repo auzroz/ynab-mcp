@@ -1,7 +1,7 @@
 /**
  * YnabClient access-token sources, against the real ynab SDK with fetch stubbed:
  * a token function is called for every request, on both the SDK path and the
- * goal_frequency direct-fetch path; a fixed string token is sent as is.
+ * category write path (goal_frequency); a fixed string token is sent as is.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -54,7 +54,7 @@ describe('YnabClient token provider', () => {
     expect(bearerTokens()).toEqual(['Bearer token-1', 'Bearer token-2']);
   });
 
-  it('resolves the token per request on the direct-fetch path too', async () => {
+  it('resolves the token per request on category writes too', async () => {
     fetchMock.mockImplementation(async () => json({ data: { category: { id: 'cat-1' } } }));
     let n = 0;
     const client = makeClient(async () => `token-${++n}`);
@@ -87,10 +87,10 @@ describe('YnabClient token provider', () => {
     });
 
     const sdkError = await client.getUser().catch((e: unknown) => e);
-    const directError = await client.createCategory('budget-1', categoryWithFrequency).catch((e: unknown) => e);
+    const categoryError = await client.createCategory('budget-1', categoryWithFrequency).catch((e: unknown) => e);
 
     expect(sdkError).toBeInstanceOf(YnabAuthError);
-    expect(directError).toBeInstanceOf(YnabAuthError);
+    expect(categoryError).toBeInstanceOf(YnabAuthError);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(JSON.parse(formatErrorResponse(sdkError))).toEqual({
       error: true,

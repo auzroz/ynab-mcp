@@ -11,6 +11,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeFlagName } from './format.js';
 import { sanitizeName, sanitizeMemo, sanitizeString } from '../../utils/sanitize.js';
+import { omitNull } from '../../utils/omit-null.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -70,23 +71,25 @@ export async function handleGetTransaction(
         date: txn.date,
         amount: formatCurrency(txn.amount),
         memo: sanitizeMemo(txn.memo),
-        payee_id: txn.payee_id,
+        ...omitNull({ payee_id: txn.payee_id }),
         payee_name: sanitizeName(txn.payee_name),
-        category_id: txn.category_id,
+        ...omitNull({ category_id: txn.category_id }),
         category_name: sanitizeName(txn.category_name),
         account_id: txn.account_id,
         account_name: sanitizeName(txn.account_name),
         cleared: txn.cleared,
         approved: txn.approved,
-        flag_color: txn.flag_color,
+        ...omitNull({ flag_color: txn.flag_color }),
         flag_name: sanitizeFlagName(txn.flag_name),
         import_id: sanitizeString(txn.import_id, 36),
         import_payee_name: sanitizeName(txn.import_payee_name),
         import_payee_name_original: sanitizeName(txn.import_payee_name_original),
-        debt_transaction_type: txn.debt_transaction_type,
-        transfer_account_id: txn.transfer_account_id,
-        transfer_transaction_id: txn.transfer_transaction_id,
-        matched_transaction_id: txn.matched_transaction_id,
+        ...omitNull({
+          debt_transaction_type: txn.debt_transaction_type,
+          transfer_account_id: txn.transfer_account_id,
+          transfer_transaction_id: txn.transfer_transaction_id,
+          matched_transaction_id: txn.matched_transaction_id,
+        }),
         subtransactions:
           (txn.subtransactions ?? []).length > 0
             ? (txn.subtransactions ?? []).map((sub) => ({
@@ -94,12 +97,11 @@ export async function handleGetTransaction(
                 transaction_id: sub.transaction_id,
                 amount: formatCurrency(sub.amount),
                 memo: sanitizeMemo(sub.memo),
-                payee_id: sub.payee_id,
+                ...omitNull({ payee_id: sub.payee_id }),
                 payee_name: sanitizeName(sub.payee_name),
-                category_id: sub.category_id,
+                ...omitNull({ category_id: sub.category_id }),
                 category_name: sanitizeName(sub.category_name),
-                transfer_account_id: sub.transfer_account_id,
-                transfer_transaction_id: sub.transfer_transaction_id,
+                ...omitNull({ transfer_account_id: sub.transfer_account_id, transfer_transaction_id: sub.transfer_transaction_id }),
               }))
             : [],
       },

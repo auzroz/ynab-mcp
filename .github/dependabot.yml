@@ -36,7 +36,7 @@ updates:
         update-types: ['version-update:semver-major']
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
-      # ynab is pinned to ~4.5.0 on purpose; update manually.
+      # ynab is pinned to ~5.0.0 on purpose; update manually.
       - dependency-name: ynab
 
   - package-ecosystem: github-actions

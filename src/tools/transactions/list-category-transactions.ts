@@ -24,6 +24,7 @@ import {
   transactionTypeSchema,
   truncationSummary,
 } from './format.js';
+import { omitNull } from '../../utils/omit-null.js';
 
 const DEFAULT_RANGE_NOTE =
   'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.';
@@ -173,7 +174,7 @@ export async function handleListCategoryTransactions(
     account_name: sanitizeName(txn.account_name),
     cleared: txn.cleared,
     approved: txn.approved,
-    flag_color: txn.flag_color,
+    ...omitNull({ flag_color: txn.flag_color }),
     ...transactionChainFields(txn),
     // 'subtransaction' rows are splits of parent_transaction_id
     type: txn.type,

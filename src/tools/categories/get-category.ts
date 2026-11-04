@@ -11,6 +11,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { buildGoalDetail } from '../../utils/goals.js';
 import { formatCurrency } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { omitNull } from '../../utils/omit-null.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -78,7 +79,7 @@ export async function handleGetCategory(
         activity: formatCurrency(category.activity),
         balance: formatCurrency(category.balance),
         goal: buildGoalDetail(category),
-        original_category_group_id: category.original_category_group_id,
+        ...omitNull({ original_category_group_id: category.original_category_group_id }),
         deleted: category.deleted,
       },
     },
