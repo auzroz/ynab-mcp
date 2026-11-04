@@ -20,9 +20,9 @@ import type {
   RefreshTokenRotation,
   ConsumedRefreshTokenRecord,
   PendingAuthRecord,
-  GrantedScope,
 } from './types.js';
-import { ADDED_COLUMNS, ADDED_INDEXES } from './migrations.js';
+import { applyMigrations, type MigrationTx } from './migrations.js';
+import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 
 export interface SqliteStorageOptions {
   path: string;
@@ -99,11 +99,6 @@ function parseScopes(json: string): string[] {
   return parsed.filter((s): s is string => typeof s === 'string');
 }
 
-/** A per-grant access level column; NULL (pre-0.4.0) or anything unknown reads as undefined. */
-function parseGrantedScope(value: string | null): GrantedScope | undefined {
-  return value === 'read-only' || value === 'read-write' ? value : undefined;
-}
-
 function refreshTokenFromRow(row: RefreshTokenRow): RefreshTokenRecord {
   return {
     token: row.token,
@@ -111,29 +106,57 @@ function refreshTokenFromRow(row: RefreshTokenRow): RefreshTokenRecord {
     userId: row.user_id,
     scopes: parseScopes(row.scopes),
     resource: row.resource ?? undefined,
-    grantedScope: parseGrantedScope(row.granted_scope),
+    grantedScope: parseOptionalGrantedScope(row.granted_scope),
     familyId: row.family_id ?? undefined,
   };
 }
 
-/**
- * Apply {@link ADDED_COLUMNS} that are not present yet and create
- * {@link ADDED_INDEXES}, in one IMMEDIATE transaction (write lock taken up
- * front, so two processes opening the same file can't both decide a column is
- * missing).
- */
-function migrate(db: BetterSqlite3.Database): void {
-  db.transaction(() => {
-    for (const { table, column, type } of ADDED_COLUMNS) {
+/** The migration transaction's handle on this connection (`$1` placeholders become positional `?`). */
+function sqliteTx(db: BetterSqlite3.Database): MigrationTx {
+  // Positional `?`: placeholders must appear in parameter order, once each.
+  const toSqlite = (sql: string): string => sql.replace(/\$\d+/g, '?');
+  return {
+    dialect: 'sqlite',
+    async exec(sql, params = []) {
+      if (params.length === 0) db.exec(sql);
+      else db.prepare(toSqlite(sql)).run(...params);
+    },
+    async query<T extends object>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
+      return db.prepare(toSqlite(sql)).all(...params) as T[];
+    },
+    async addColumnIfMissing(table, column, sqlType) {
       const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
       if (!columns.some((c) => c.name === column)) {
-        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${sqlType}`);
       }
+    },
+  };
+}
+
+/**
+ * Create the base (0.3.x) tables, then apply the shared migrations
+ * ({@link applyMigrations}), in one IMMEDIATE transaction (write lock taken up
+ * front, so two processes opening the same file can't both decide a column is
+ * missing). The transaction is managed by hand because a backfill is async;
+ * every SQLite call is synchronous, so nothing else can run on this connection
+ * in between.
+ */
+async function migrate(db: BetterSqlite3.Database, baseSchema: string): Promise<void> {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // Captured once, with the write lock held, so it is when the migration really runs.
+    const now = Date.now();
+    db.exec(baseSchema);
+    await applyMigrations(sqliteTx(db), now);
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // the transaction already ended
     }
-    for (const { name, table, column } of ADDED_INDEXES) {
-      db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON ${table} (${column})`);
-    }
-  }).immediate();
+    throw err;
+  }
 }
 
 export class SqliteStorage implements Storage {
@@ -158,7 +181,7 @@ export class SqliteStorage implements Storage {
     const db = new Database(this.options.path);
     db.pragma('journal_mode = WAL');
 
-    db.exec(`
+    const baseSchema = `
       CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,
         granted_scope TEXT NOT NULL,
@@ -208,8 +231,13 @@ export class SqliteStorage implements Storage {
         family_id TEXT NOT NULL,
         expires_at INTEGER NOT NULL
       );
-    `);
-    migrate(db);
+    `;
+    try {
+      await migrate(db, baseSchema);
+    } catch (err) {
+      db.close();
+      throw err;
+    }
 
     this.db = db;
   }
@@ -248,7 +276,7 @@ export class SqliteStorage implements Storage {
     if (!row) return undefined;
     return {
       userId: row.user_id,
-      grantedScope: row.granted_scope as GrantedScope,
+      grantedScope: parseGrantedScope(row.granted_scope),
       encryptedRefreshToken: row.encrypted_refresh_token,
       updatedAt: row.updated_at,
     };
@@ -318,7 +346,7 @@ export class SqliteStorage implements Storage {
       codeChallenge: row.code_challenge,
       clientState: row.client_state ?? undefined,
       scopes: parseScopes(row.scopes),
-      grantedScope: row.granted_scope as GrantedScope,
+      grantedScope: parseGrantedScope(row.granted_scope),
       expiresAt: row.expires_at,
       resource: row.resource ?? undefined,
       browserBinding: row.browser_binding ?? undefined,
@@ -366,7 +394,7 @@ export class SqliteStorage implements Storage {
       scopes: parseScopes(row.scopes),
       expiresAt: row.expires_at,
       resource: row.resource ?? undefined,
-      grantedScope: parseGrantedScope(row.granted_scope),
+      grantedScope: parseOptionalGrantedScope(row.granted_scope),
     };
   }
 
@@ -410,7 +438,7 @@ export class SqliteStorage implements Storage {
       scopes: parseScopes(row.scopes),
       expiresAt: row.expires_at,
       resource: row.resource ?? undefined,
-      grantedScope: parseGrantedScope(row.granted_scope),
+      grantedScope: parseOptionalGrantedScope(row.granted_scope),
       familyId: row.family_id ?? undefined,
     };
   }

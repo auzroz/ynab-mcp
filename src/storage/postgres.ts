@@ -10,7 +10,7 @@
  */
 
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
-import type { Pool as PgPool, QueryResultRow } from 'pg';
+import type { Pool as PgPool, PoolClient, QueryResultRow } from 'pg';
 import type {
   Storage,
   UserRecord,
@@ -20,9 +20,9 @@ import type {
   RefreshTokenRotation,
   ConsumedRefreshTokenRecord,
   PendingAuthRecord,
-  GrantedScope,
 } from './types.js';
-import { ADDED_COLUMNS, ADDED_INDEXES } from './migrations.js';
+import { applyMigrations, type MigrationTx } from './migrations.js';
+import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 
 export interface PostgresStorageOptions {
   connectionString: string;
@@ -98,11 +98,6 @@ function parseScopes(json: string): string[] {
   return parsed.filter((s): s is string => typeof s === 'string');
 }
 
-/** A per-grant access level column; NULL (pre-0.4.0) or anything unknown reads as undefined. */
-function parseGrantedScope(value: string | null): GrantedScope | undefined {
-  return value === 'read-only' || value === 'read-write' ? value : undefined;
-}
-
 function refreshTokenFromRow(row: RefreshTokenRow): RefreshTokenRecord {
   return {
     token: row.token,
@@ -110,7 +105,7 @@ function refreshTokenFromRow(row: RefreshTokenRow): RefreshTokenRecord {
     userId: row.user_id,
     scopes: parseScopes(row.scopes),
     resource: row.resource ?? undefined,
-    grantedScope: parseGrantedScope(row.granted_scope),
+    grantedScope: parseOptionalGrantedScope(row.granted_scope),
     familyId: row.family_id ?? undefined,
   };
 }
@@ -166,17 +161,37 @@ const FAMILY_LOCK_SPACE = 0x666d6c79; // "fmly"
 /** Takes the family lock (`$1` = family id) until the transaction ends. */
 export const LOCK_FAMILY = `SELECT pg_advisory_xact_lock(${FAMILY_LOCK_SPACE}, hashtext($1))`;
 
+/** The migration transaction's handle on one pooled connection. */
+function pgTx(client: PoolClient): MigrationTx {
+  return {
+    dialect: 'postgres',
+    async exec(sql, params) {
+      await client.query(sql, params ? [...params] : undefined);
+    },
+    async query<T extends object>(sql: string, params?: readonly unknown[]): Promise<T[]> {
+      const res = await client.query<T & QueryResultRow>(sql, params ? [...params] : undefined);
+      return res.rows;
+    },
+    async addColumnIfMissing(table, column, sqlType) {
+      await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${sqlType}`);
+    },
+  };
+}
+
 /**
- * Create the base (0.3.x) tables and the tables added since, apply
- * {@link ADDED_COLUMNS} and create {@link ADDED_INDEXES}, in one transaction
- * under an advisory lock so concurrent replicas don't race. Postgres DDL is
- * transactional, so a failure leaves the schema unchanged.
+ * Create the base (0.3.x) tables, then apply the shared migrations
+ * ({@link applyMigrations}), in one transaction under an advisory lock so
+ * concurrent replicas don't race. Postgres DDL is transactional, so a failure
+ * (including a refusal because a newer release migrated the database) leaves
+ * the schema unchanged.
  */
 async function migrate(pool: PgPool): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1)', [SCHEMA_LOCK_KEY]);
+    // Captured once, after the lock is held, so a replica that waited stamps when it really ran.
+    const now = Date.now();
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,
@@ -228,12 +243,7 @@ async function migrate(pool: PgPool): Promise<void> {
         expires_at BIGINT NOT NULL
       );
     `);
-    for (const { table, column, type } of ADDED_COLUMNS) {
-      await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
-    }
-    for (const { name, table, column } of ADDED_INDEXES) {
-      await client.query(`CREATE INDEX IF NOT EXISTS ${name} ON ${table} (${column})`);
-    }
+    await applyMigrations(pgTx(client), now);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
@@ -303,7 +313,7 @@ export class PostgresStorage implements Storage {
     if (!row) return undefined;
     return {
       userId: row.user_id,
-      grantedScope: row.granted_scope as GrantedScope,
+      grantedScope: parseGrantedScope(row.granted_scope),
       encryptedRefreshToken: row.encrypted_refresh_token,
       updatedAt: toMillis(row.updated_at),
     };
@@ -372,7 +382,7 @@ export class PostgresStorage implements Storage {
       codeChallenge: row.code_challenge,
       clientState: row.client_state ?? undefined,
       scopes: parseScopes(row.scopes),
-      grantedScope: row.granted_scope as GrantedScope,
+      grantedScope: parseGrantedScope(row.granted_scope),
       expiresAt,
       resource: row.resource ?? undefined,
       browserBinding: row.browser_binding ?? undefined,
@@ -418,7 +428,7 @@ export class PostgresStorage implements Storage {
       scopes: parseScopes(row.scopes),
       expiresAt,
       resource: row.resource ?? undefined,
-      grantedScope: parseGrantedScope(row.granted_scope),
+      grantedScope: parseOptionalGrantedScope(row.granted_scope),
     };
   }
 
@@ -447,7 +457,7 @@ export class PostgresStorage implements Storage {
       scopes: parseScopes(row.scopes),
       expiresAt,
       resource: row.resource ?? undefined,
-      grantedScope: parseGrantedScope(row.granted_scope),
+      grantedScope: parseOptionalGrantedScope(row.granted_scope),
       familyId: row.family_id ?? undefined,
     };
   }
