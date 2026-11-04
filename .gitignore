@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+_site/
 *.tsbuildinfo
 
 # Environment files
