@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-11-04
+
+A documentation site and dependency updates. The server's code and tools are
+unchanged from 0.4.1, so there are no breaking changes.
+
+### Added
+
+- **Documentation site** at <https://auzroz.github.io/ynab-mcp/>: installation
+  for each client, example conversations, self-hosting, security, and a tool
+  reference generated from the built server's tool definitions.
+  `scripts/build-site.mjs` builds it and fails on a broken internal link or
+  fragment, or on anything loaded from another origin.
+  `.github/workflows/pages.yml` deploys it from `main`. The README links to it.
+
+### Security
+
+- `express-rate-limit` 8.5.2 → 8.7.2. It rate-limits the YNAB OAuth routes in
+  HTTP mode. 8.7.2 fixes GHSA-j3cq-92fq-qg5f, which only applies with
+  `skipFailedRequests` or `skipSuccessfulRequests`; ynab-mcp sets neither, so
+  it wasn't affected.
+- Development only: an npm override pins `minimatch` to `^11.0.1` for
+  GHSA-g3hv-75wg-m249, because ESLint and typescript-eslint still require
+  minimatch 10. minimatch isn't in the published package or the Docker image.
+  ESLint is also updated to 10.14.0.
+
+### Changed
+
+- The README lists `ALLOWED_HOSTS` and `ALLOWED_ORIGINS` separately, each with
+  its default. An explicit `ALLOWED_HOSTS` replaces the default list, and
+  requests with no `Origin` header aren't checked against `ALLOWED_ORIGINS`.
+- `CONTRIBUTING.md` describes how milestones track planned releases and links
+  the roadmap board.
+
 ## [0.4.1] - 2026-10-30
 
 Closes the API coverage gaps left after 0.4.0: split transactions, clearing
