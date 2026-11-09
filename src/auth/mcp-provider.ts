@@ -360,7 +360,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
 <p class="muted">After you approve, you will be returned to <code>${htmlEscape(params.redirectUri)}</code>. Continue only if you started this connection and recognize that address.</p>
 <a class="btn" href="${htmlEscape(roLink)}"><strong>Read-only</strong><br><span class="muted">View budgets, accounts, and transactions. No changes.</span></a>
 ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; write</strong><br><span class="muted">View and modify (create/update/delete) your budget data.</span></a>` : ''}
-<p class="muted">You'll be sent to YNAB to authorize. To end this access later, revoke this app in your YNAB settings at app.ynab.com/settings.</p>
+<p class="muted">You'll be sent to YNAB to authorize. To end this access later, open your YNAB settings at app.ynab.com/settings, find Authorized Applications, and choose Revoke next to this server's app. It's listed under the name its owner gave it when registering it with YNAB.</p>
 <p><a href="${htmlEscape(cancelLink)}">Cancel</a></p>
 </body></html>`);
   }
