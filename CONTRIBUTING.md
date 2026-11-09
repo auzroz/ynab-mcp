@@ -167,10 +167,54 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
 - **Planning:** each planned release has a [milestone](https://github.com/auzroz/ynab-mcp/milestones) named for its version (`0.5.0`). A milestone named `x.y.x` (`0.5.x`) holds follow-ups that are planned but not yet scheduled. When that release is planned, the milestone is renamed to the real version. An issue with no milestone is backlog. The maintainer sets milestones; a PR gets the milestone of the release it will ship in. The milestone is closed when its release is tagged. The [roadmap board](https://github.com/users/auzroz/projects/1) shows the same issues by status (Backlog, Planned, In progress, In review, Done), priority and size.
 - **Versioning:** [Semantic Versioning](https://semver.org/). Breaking changes go in a minor release while the project is 0.x, with a "Breaking" section in the CHANGELOG.
 - **CHANGELOG:** the maintainer writes `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/)) when preparing a release. Describe user-visible and breaking changes in your PR, and they'll be picked up.
-- **Publishing:** the maintainer tags a release, and the release workflow publishes:
+- **Publishing:** only the maintainer publishes, by pushing a `v*.*.*` tag. The release workflow (`.github/workflows/release.yml`) then publishes:
   - npm, through trusted publishing with provenance;
-  - multi-arch images to `ghcr.io/auzroz/ynab-mcp`;
-  - a GitHub release.
+  - multi-arch images (amd64 and arm64) to `ghcr.io/auzroz/ynab-mcp`;
+  - a GitHub release with the npm tarball, an SPDX SBOM, the skills zips and `SHA256SUMS`.
+
+### How a release runs
+
+1. **Release PR.** It bumps the version in `package.json`, `package-lock.json` and `server.json` and adds the CHANGELOG entry. It merges into `main`.
+2. **Dry run.** Run `gh workflow run release.yml --ref main -f dry_run=true` and wait for it to go green. A dispatch never publishes, and `dry_run=false` is refused.
+3. **Tag.** Tag the merge commit on `main` and push the tag: `git tag -a vX.Y.Z -m vX.Y.Z <sha> && git push origin vX.Y.Z`. `Release: Verify` refuses the tag unless:
+   - it matches the version in `package.json` (every run, including pull requests and the dry run, also checks that `package-lock.json` and `server.json` carry that version, so a mismatch shows up before the tag exists);
+   - the tagged commit is already on `main` or a `release/*` branch. That check is only as strong as the rulesets on those branches (see "Settings the gate relies on").
+4. **Checks before publishing.** These run with no environment, no `id-token` and read-only contents:
+   - lint, type check and tests;
+   - **build and pack:** `npm ci --ignore-scripts`, `npm audit --omit=dev --audit-level=moderate`, the build, `npm pack`, the SBOM, the skills zips and `SHA256SUMS`;
+   - the image built for amd64 and for arm64, with a check that better-sqlite3 loads in each.
+5. **Two approvals.** The publish jobs use the `production` environment, so the run stops twice for the maintainer's approval:
+   - first `Release: Publish image`: push, build provenance attestation, and an SBOM attestation of the production npm dependencies (the image's OS packages are only in its unsigned BuildKit SBOM);
+   - then `Release: Publish npm`: provenance attestation over every file in `SHA256SUMS`, SBOM attestation, `npm publish` of the packed tarball with no checkout and no install.
+
+   Only these jobs and `Release: MCP Registry` (which runs after both, if `PUBLISH_MCP_REGISTRY` is set) hold `id-token: write`.
+6. **GitHub release.** It is created after both publish jobs succeed. Verify the result:
+
+   ```bash
+   gh attestation verify oci://ghcr.io/auzroz/ynab-mcp:X.Y.Z -R auzroz/ynab-mcp \
+     --signer-workflow auzroz/ynab-mcp/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z
+   npm view ynab-mcp@X.Y.Z dist.attestations
+   ```
+
+**Pull requests that touch `release.yml`, `Dockerfile`, `.dockerignore` or `package*.json`** also run the release workflow's checks: verify, test, build and pack, and both image builds. They use no environment and no `id-token`, and they must be green before merge. Changes to the tag path are rehearsed first in a scratch repository, following [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md).
+
+**If a publish job fails.** Tags can't be moved or re-pushed, so re-run the failed jobs from the run page. Each re-run asks for approval again. The publish jobs need the run's `release-dist` artifact, which is kept for 90 days (an approval request expires after 30), so a run can't be finished after that. If npm still can't be published from the workflow, the maintainer has two ways out:
+- download the run's `release-dist` artifact, check `SHA256SUMS`, and run `npm publish ./ynab-mcp-X.Y.Z.tgz --tag latest` from their own terminal with 2FA, or `--tag next` for a prerelease (a version with a `-`), as the workflow does. This copy has no provenance;
+- cut the next patch version instead.
+
+### Settings the gate relies on
+
+The workflow can't enforce these itself. The maintainer sets them up following the admin checklist in [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md):
+
+- the `production` environment has the maintainer as required reviewer and accepts only tags matching `v*.*.*` (no branches);
+- the npm trusted publisher for `ynab-mcp` names `release.yml` **and** the `production` environment, so npm refuses an OIDC token from any job outside that environment;
+- `main` and `release/**` require a pull request and block force-pushes and deletion, and `release/**` also restricts creations to the maintainer;
+- the `v*` tag ruleset blocks updates and deletion and restricts creations to the maintainer.
+
+### What the gate does not cover
+
+- **ghcr images.** The image is pushed with the workflow's `GITHUB_TOKEN`. Any workflow run in this repository that is granted `packages: write` can push to `ghcr.io/auzroz/ynab-mcp`, with no tag and no approval, and GitHub doesn't tie that permission to an environment. So someone who can push a workflow file can push an image. The proof that an image came from a release is its attestation: verify it with `--signer-workflow auzroz/ynab-mcp/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z` as in step 6, rather than trusting a tag such as `latest`. Closing this (a package credential held only by the `production` environment) is tracked as part 62b of [#62](https://github.com/auzroz/ynab-mcp/issues/62).
+- **Tag signatures.** The workflow doesn't check that the tag is signed by an allowed key. That is a later part of #62 too.
 
 ## Reporting security issues
 
