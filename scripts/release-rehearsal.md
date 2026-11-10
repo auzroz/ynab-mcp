@@ -144,19 +144,24 @@ This can't limit pushes to the `production` environment: any workflow run in
 residual risk is documented in CONTRIBUTING.md ("What the gate does not
 cover") and tracked as 62b.
 
-### 6. Thu Nov 12: the scratch repository
+### 6. Optional: the scratch repository
 
-Do "Before you start" below.
+Only if you also want a scratch rehearsal (see the note at the top). Do "Before
+you start" below. 0.5.0 skips this step.
 
-### 7. Thu Dec 3: the rehearsal
+### 7. Thu Dec 10: the release candidate
 
-Do sections 1 to 6 below and send the report.
+Follow CONTRIBUTING.md "Release candidates" for `v0.5.0-rc.1` (#86). A
+scratch rehearsal (sections 1 to 6 below) can come first, but it doesn't
+replace the candidate: it runs npm in dry-run mode outside this repository, so
+it never exercises the real publish.
 
 ### 8. Fri Dec 18: the release
 
 Follow CONTRIBUTING.md "How a release runs": merge the REL PR into `main`,
 dispatch the dry run on `main` (G16d), tag, approve the two prompts (image,
-then npm), and run the step 6 checks (G16e).
+then npm), and run the step 6 checks (G16e). Then move npm's `next` tag off
+the candidate: `npm dist-tag add ynab-mcp@0.5.0 next`.
 
 ## Before you start (one time)
 
