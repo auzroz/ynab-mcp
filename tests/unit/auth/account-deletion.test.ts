@@ -130,6 +130,64 @@ for (const driver of testDrivers) {
         expect(user?.createdAt).toBe(created);
       });
 
+      // ADR review D4 (#91): the refresh used to write back the whole record it
+      // read first, so a read-only re-consent landing mid-refresh became read-write.
+      it('a read-only re-consent during a refresh (same YNAB token) stays read-only', async () => {
+        await connect('u', 'yr0'); // read-write
+        const before = await storage.getUser('u');
+        const held = holdNextRefresh('yr-rotated');
+        const resolving = resolver.resolve('u'); // reads the read-write row
+        await held.entered;
+        // Re-consent changes only the access level; the YNAB token stays as stored.
+        await storage.upsertUser({
+          userId: 'u',
+          grantedScope: 'read-only',
+          encryptedRefreshToken: before?.encryptedRefreshToken ?? '',
+          updatedAt: Date.now(),
+        });
+        held.release();
+
+        // The compare-and-set matches (same token): only the token is written.
+        await expect(resolving).resolves.toMatchObject({ accessToken: 'ya-yr-rotated', grantedScope: 'read-only' });
+        const after = await storage.getUser('u');
+        expect(after?.grantedScope).toBe('read-only');
+        expect(encryptor.decrypt(after?.encryptedRefreshToken ?? '')).toBe('yr-rotated');
+        expect(after?.createdAt).toBe(before?.createdAt);
+        expect(refreshMock).toHaveBeenCalledTimes(1);
+        // Later calls (from the cache) read the level from the row too.
+        await expect(resolver.resolve('u')).resolves.toMatchObject({ grantedScope: 'read-only' });
+      });
+
+      it('a read-only re-consent with a new YNAB token during a refresh stays read-only and wins', async () => {
+        await connect('u', 'yr0'); // read-write
+        const held = holdNextRefresh('yr-from-old-grant');
+        const resolving = resolver.resolve('u');
+        await held.entered;
+        await storage.upsertUser({
+          userId: 'u',
+          grantedScope: 'read-only',
+          encryptedRefreshToken: encryptor.encrypt('yr-read-only-grant'),
+          updatedAt: Date.now(),
+        });
+        refreshMock.mockResolvedValueOnce({
+          accessToken: 'ya-read-only-grant',
+          refreshToken: 'yr-rotated-read-only-grant',
+          expiresAt: Date.now() + 3_600_000,
+        });
+        held.release();
+
+        // The compare-and-set misses (the token changed): the newer grant wins and is refreshed.
+        await expect(resolving).resolves.toMatchObject({
+          accessToken: 'ya-read-only-grant',
+          grantedScope: 'read-only',
+        });
+        expect(refreshMock).toHaveBeenCalledTimes(2);
+        expect(refreshMock).toHaveBeenLastCalledWith({ clientId: 'cid', clientSecret: 'sec' }, 'yr-read-only-grant');
+        const after = await storage.getUser('u');
+        expect(after?.grantedScope).toBe('read-only');
+        expect(encryptor.decrypt(after?.encryptedRefreshToken ?? '')).toBe('yr-rotated-read-only-grant');
+      });
+
       it('a refresh racing an erase and a new connection does not use the new account', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
         await connect('u', 'yr0');

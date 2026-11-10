@@ -122,6 +122,16 @@ interface ConsumedAuthCodeRow {
   revoked: number;
 }
 
+function userFromRow(row: UserRow): UserRecord {
+  return {
+    userId: row.user_id,
+    grantedScope: parseGrantedScope(row.granted_scope),
+    encryptedRefreshToken: row.encrypted_refresh_token,
+    updatedAt: row.updated_at,
+    ...(row.created_at !== null ? { createdAt: row.created_at } : {}),
+  };
+}
+
 function consumedAuthCodeFromRow(row: ConsumedAuthCodeRow): ConsumedAuthCodeRecord {
   return {
     code: row.code,
@@ -338,24 +348,21 @@ export class SqliteStorage implements Storage {
     const row = this.database
       .prepare('SELECT * FROM users WHERE user_id = ?')
       .get(userId) as UserRow | undefined;
-    if (!row) return undefined;
-    return {
-      userId: row.user_id,
-      grantedScope: parseGrantedScope(row.granted_scope),
-      encryptedRefreshToken: row.encrypted_refresh_token,
-      updatedAt: row.updated_at,
-      ...(row.created_at !== null ? { createdAt: row.created_at } : {}),
-    };
+    return row ? userFromRow(row) : undefined;
   }
 
-  async updateUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
-    const res = this.database
+  async updateUserRefreshToken(
+    userId: string,
+    oldCiphertext: string,
+    newCiphertext: string
+  ): Promise<UserRecord | undefined> {
+    const row = this.database
       .prepare(
         `UPDATE users SET encrypted_refresh_token = ?, updated_at = ?
-         WHERE user_id = ? AND encrypted_refresh_token = ?`
+         WHERE user_id = ? AND encrypted_refresh_token = ? RETURNING *`
       )
-      .run(newCiphertext, Date.now(), userId, oldCiphertext);
-    return res.changes === 1;
+      .get(newCiphertext, Date.now(), userId, oldCiphertext) as UserRow | undefined;
+    return row ? userFromRow(row) : undefined;
   }
 
   async deleteUser(userId: string): Promise<void> {

@@ -112,11 +112,16 @@ export class MemoryStorage implements Storage {
     const rec = this.users.get(userId);
     return rec && { ...rec, grantedScope: parseGrantedScope(rec.grantedScope) };
   }
-  async updateUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
+  async updateUserRefreshToken(
+    userId: string,
+    oldCiphertext: string,
+    newCiphertext: string
+  ): Promise<UserRecord | undefined> {
     const rec = this.users.get(userId);
-    if (!rec || rec.encryptedRefreshToken !== oldCiphertext) return false;
-    this.users.set(userId, { ...rec, encryptedRefreshToken: newCiphertext, updatedAt: Date.now() });
-    return true;
+    if (!rec || rec.encryptedRefreshToken !== oldCiphertext) return undefined;
+    const updated = { ...rec, encryptedRefreshToken: newCiphertext, updatedAt: Date.now() };
+    this.users.set(userId, updated);
+    return { ...updated, grantedScope: parseGrantedScope(updated.grantedScope) };
   }
   async deleteUser(userId: string): Promise<void> {
     this.users.delete(userId);

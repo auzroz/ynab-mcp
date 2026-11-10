@@ -183,8 +183,10 @@ export class YnabTokenResolver {
     this.cache.set(user.userId, {
       accessToken: set.accessToken,
       expiresAt: set.expiresAt,
-      generation: generationOf(user),
+      generation: generationOf(stored),
     });
-    return { accessToken: set.accessToken, grantedScope: user.grantedScope, generation: generationOf(user) };
+    // The access level as stored now, not as read before the YNAB call: a
+    // re-consent that lowered it meanwhile (same YNAB token) applies at once.
+    return { accessToken: set.accessToken, grantedScope: stored.grantedScope, generation: generationOf(stored) };
   }
 }

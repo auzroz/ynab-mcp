@@ -277,10 +277,17 @@ export interface Storage {
    * Compare-and-set the user's YNAB refresh token: replace it with
    * `newCiphertext` (and stamp `updated_at`) only while the stored value is
    * still `oldCiphertext`. Never inserts, so a refresh that finishes after the
-   * user was deleted can't bring the row back. Returns false (nothing written)
-   * when the row is gone or holds another token.
+   * user was deleted can't bring the row back, and writes no other column, so
+   * a re-consent that changed the access level meanwhile keeps it. Returns the
+   * row as written (read the access level from it, not from the record the
+   * refresh started with), or undefined (nothing written) when the row is gone
+   * or holds another token.
    */
-  updateUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean>;
+  updateUserRefreshToken(
+    userId: string,
+    oldCiphertext: string,
+    newCiphertext: string
+  ): Promise<UserRecord | undefined>;
   /** Deletes the `users` row only. To erase an account, use {@link deleteUserData}. */
   deleteUser(userId: string): Promise<void>;
   /**

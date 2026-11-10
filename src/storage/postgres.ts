@@ -123,6 +123,16 @@ interface ConsumedAuthCodeRow extends QueryResultRow {
   revoked: boolean;
 }
 
+function userFromRow(row: UserRow): UserRecord {
+  return {
+    userId: row.user_id,
+    grantedScope: parseGrantedScope(row.granted_scope),
+    encryptedRefreshToken: row.encrypted_refresh_token,
+    updatedAt: toMillis(row.updated_at),
+    ...(row.created_at !== null ? { createdAt: toMillis(row.created_at) } : {}),
+  };
+}
+
 function consumedAuthCodeFromRow(row: ConsumedAuthCodeRow): ConsumedAuthCodeRecord {
   return {
     code: row.code,
@@ -394,24 +404,24 @@ export class PostgresStorage implements Storage {
   async getUser(userId: string): Promise<UserRecord | undefined> {
     const res = await this.db.query<UserRow>('SELECT * FROM users WHERE user_id = $1', [userId]);
     const row = res.rows[0];
-    if (!row) return undefined;
-    return {
-      userId: row.user_id,
-      grantedScope: parseGrantedScope(row.granted_scope),
-      encryptedRefreshToken: row.encrypted_refresh_token,
-      updatedAt: toMillis(row.updated_at),
-      ...(row.created_at !== null ? { createdAt: toMillis(row.created_at) } : {}),
-    };
+    return row ? userFromRow(row) : undefined;
   }
 
-  async updateUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
-    // An UPDATE, never an upsert: a refresh that lost to deleteUserData finds no row.
-    const res = await this.db.query(
+  async updateUserRefreshToken(
+    userId: string,
+    oldCiphertext: string,
+    newCiphertext: string
+  ): Promise<UserRecord | undefined> {
+    // An UPDATE, never an upsert: a refresh that lost to deleteUserData finds no
+    // row. It sets only the token, so a re-consent's access level is kept, and
+    // RETURNING hands back the level as stored.
+    const res = await this.db.query<UserRow>(
       `UPDATE users SET encrypted_refresh_token = $1, updated_at = $2
-       WHERE user_id = $3 AND encrypted_refresh_token = $4`,
+       WHERE user_id = $3 AND encrypted_refresh_token = $4 RETURNING *`,
       [newCiphertext, Date.now(), userId, oldCiphertext]
     );
-    return res.rowCount === 1;
+    const row = res.rows[0];
+    return row ? userFromRow(row) : undefined;
   }
 
   async deleteUser(userId: string): Promise<void> {

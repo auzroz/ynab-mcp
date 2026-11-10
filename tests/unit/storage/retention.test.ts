@@ -138,10 +138,11 @@ for (const driver of testDrivers) {
       it('replaces the token only while it is still the one the refresh started from', async () => {
         await seedUser(s, 'u', 'old');
         const before = await s.getUser('u');
-        expect(await s.updateUserRefreshToken('u', 'stale', 'new')).toBe(false);
+        expect(await s.updateUserRefreshToken('u', 'stale', 'new')).toBeUndefined();
         expect((await s.getUser('u'))?.encryptedRefreshToken).toBe('old');
-        expect(await s.updateUserRefreshToken('u', 'old', 'new')).toBe(true);
+        const written = await s.updateUserRefreshToken('u', 'old', 'new');
         const after = await s.getUser('u');
+        expect(written).toEqual(after);
         expect(after?.encryptedRefreshToken).toBe('new');
         expect(after?.createdAt).toBe(before?.createdAt);
         expect(after?.updatedAt).toBeGreaterThanOrEqual(before?.updatedAt ?? 0);
@@ -150,8 +151,16 @@ for (const driver of testDrivers) {
       it('never inserts: a write-back for an erased user leaves no row', async () => {
         await seedUser(s, 'u', 'old');
         await s.deleteUserData('u');
-        expect(await s.updateUserRefreshToken('u', 'old', 'new')).toBe(false);
+        expect(await s.updateUserRefreshToken('u', 'old', 'new')).toBeUndefined();
         expect(await s.getUser('u')).toBeUndefined();
+      });
+
+      it('writes only the token: an access level changed by a re-consent is kept and returned', async () => {
+        await seedUser(s, 'u', 'old'); // read-write
+        await s.upsertUser({ userId: 'u', grantedScope: 'read-only', encryptedRefreshToken: 'old', updatedAt: Date.now() });
+        const written = await s.updateUserRefreshToken('u', 'old', 'new');
+        expect(written).toMatchObject({ grantedScope: 'read-only', encryptedRefreshToken: 'new' });
+        expect((await s.getUser('u'))?.grantedScope).toBe('read-only');
       });
     });
 
@@ -720,7 +729,7 @@ describe.skipIf(!pgDriver?.enabled)('STOR-1 on Postgres: races on two pools', ()
       const write = track(other.storage.updateUserRefreshToken('u', 'old', 'new'));
       await blocked(h, other.app, write);
       await tx.end(true);
-      expect(await write.promise).toBe(false);
+      expect(await write.promise).toBeUndefined();
       expect(await h.storage.getUser('u')).toBeUndefined();
     } finally {
       await tx.end(false);
