@@ -9,6 +9,10 @@
  * the MCP-authorize and YNAB-callback legs of the federated flow.
  *
  * All secrets (YNAB refresh tokens) are stored already-encrypted by the caller.
+ * Tokens, codes and pending-auth state are stored and looked up by the keys
+ * the caller derives from them (`h1.` keys, src/auth/token-hash.ts), never by
+ * the values clients hold; to storage a key is an opaque string. DCR client
+ * secrets are stored as `client_secret_hash` (`s256.`) inside the client JSON.
  */
 
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
@@ -122,7 +126,7 @@ export interface RefreshTokenRotation {
  * `expiresAt` so a second use of the code can be recognized as a replay
  * (RFC 9700 section 4.2.4, RFC 6749 section 4.1.2). Written in the same
  * atomic step that spends the code, with the token family the code's tokens
- * will join, before those tokens exist. Keyed by the plaintext code until codes are hashed at rest.
+ * will join, before those tokens exist. Keyed by the code's storage key, like the code itself.
  */
 export interface ConsumedAuthCodeRecord {
   code: string;

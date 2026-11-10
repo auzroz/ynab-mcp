@@ -30,6 +30,9 @@
  * file's first version) is 1, and each later step bumps {@link SCHEMA_VERSION}.
  */
 
+import type { TokenKeyDeriver } from '../auth/token-hash.js';
+import { TOKEN_HASHING_BACKFILL } from './token-hashing-migration.js';
+
 export type Dialect = 'sqlite' | 'postgres';
 
 /**
@@ -71,6 +74,16 @@ export interface AddedIndex {
 export interface BackfillContext {
   now: number;
   tx: MigrationTx;
+  /**
+   * Derives the `h1.` keys and the pepper fingerprint (M3). Undefined only when
+   * a caller opened storage without one; M3 then refuses to run.
+   */
+  tokenKeys: TokenKeyDeriver | undefined;
+}
+
+/** What a driver hands {@link applyMigrations} besides the transaction. */
+export interface MigrationDeps {
+  tokenKeys?: TokenKeyDeriver | undefined;
 }
 
 /**
@@ -106,9 +119,9 @@ export interface MigrationTx {
 
 /**
  * The version of this release's schema: the highest step applied. Bump it with
- * each step (M1 is 2, and so on).
+ * each step (M1 is 2, and so on). M3 (#52) is 4; 3 is STOR-1's M2.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 4;
 
 /** The release these migrations ship in. A database stamped with a newer floor is refused. */
 export const STORAGE_RELEASE = '0.5.0';
@@ -191,7 +204,10 @@ export const ADDED_INDEXES: readonly AddedIndex[] = [
  * App-side data steps, run in `version` order under the migrate lock on every
  * startup; each must be idempotent (see {@link Backfill}). Empty at M0.
  */
-export const BACKFILLS: readonly Backfill[] = [];
+export const BACKFILLS: readonly Backfill[] = [
+  // M3 (#52): pepper check, eager rehash of 0.4.x keys, hashed client secrets.
+  TOKEN_HASHING_BACKFILL,
+];
 
 /** Everything {@link applyMigrations} applies; tests pass their own. */
 export interface MigrationPlan {
@@ -256,13 +272,14 @@ async function writeMeta(tx: MigrationTx, key: string, value: string): Promise<v
  * database is at a newer schema version but still compatible.
  *
  * `now` is captured once by the caller, after it holds the migrate lock, and
- * handed to every backfill.
+ * handed to every backfill, with `deps.tokenKeys` (M3 needs it).
  */
 export async function applyMigrations(
   tx: MigrationTx,
   now: number,
   plan: MigrationPlan = MIGRATION_PLAN,
-  warn: (message: string) => void = (m) => console.error(m)
+  warn: (message: string) => void = (m) => console.error(m),
+  deps: MigrationDeps = {}
 ): Promise<void> {
   for (const table of plan.tables) {
     await tx.exec(table.sql[tx.dialect]);
@@ -317,7 +334,7 @@ export async function applyMigrations(
     .filter((b) => b.version <= plan.schemaVersion)
     .sort((a, b) => a.version - b.version);
   for (const backfill of steps) {
-    await backfill.run({ now, tx });
+    await backfill.run({ now, tx, tokenKeys: deps.tokenKeys });
   }
 
   // Stamp only what changed, so a restart against a migrated database writes nothing.

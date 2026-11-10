@@ -22,6 +22,7 @@ import {
   type MigrationPlan,
   type MigrationTx,
 } from '../../../src/storage/migrations.js';
+import { TEST_TOKEN_HASHER } from '../helpers/token-hasher.js';
 
 /** Records every call and keeps `schema_meta` in a Map. */
 function fakeTx(dialect: Dialect = 'postgres', meta: Record<string, string> = {}) {
@@ -265,8 +266,10 @@ describe('applyMigrations', () => {
 
   it('stamps the real plan with the schema version and floor', async () => {
     const { tx, store } = fakeTx();
-    await applyMigrations(tx, 1, MIGRATION_PLAN);
+    await applyMigrations(tx, 1, MIGRATION_PLAN, undefined, { tokenKeys: TEST_TOKEN_HASHER });
     expect(store.get('schema_version')).toBe(String(SCHEMA_VERSION));
+    // M3 (#52) records the pepper fingerprint on a database that has none.
+    expect(store.get('token_pepper_fingerprint')).toBe(TEST_TOKEN_HASHER.fingerprint);
     expect(store.get('min_compatible_release')).toBe(MIN_COMPATIBLE_RELEASE);
   });
 });

@@ -26,6 +26,7 @@ import type {
 } from '../../../src/storage/types.js';
 import { MemoryStorage } from '../../../src/storage/memory.js';
 import { MIN_COMPATIBLE_RELEASE, SCHEMA_VERSION } from '../../../src/storage/migrations.js';
+import { TEST_TOKEN_HASHER } from '../helpers/token-hasher.js';
 
 function makeUser(overrides: Partial<UserRecord> = {}): UserRecord {
   return {
@@ -682,7 +683,7 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage suite', () =
     const { SqliteStorage } = await import('../../../src/storage/sqlite.js');
     const file = join(tmpdir(), `ynab-mcp-sqlite-${randomUUID()}.db`);
     sqliteFiles.push(file);
-    const s = new SqliteStorage({ path: file });
+    const s = new SqliteStorage({ path: file, tokenKeys: TEST_TOKEN_HASHER });
     await s.init();
     return s;
   });
@@ -699,7 +700,7 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage suite', () =
 
     await checkLegacyUpgrade(
       async () => {
-        const s = new SqliteStorage({ path: file });
+        const s = new SqliteStorage({ path: file, tokenKeys: TEST_TOKEN_HASHER });
         await s.init();
         return s;
       },
@@ -757,7 +758,7 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
 
       await checkLegacyUpgrade(
         async () => {
-          const s = new PostgresStorage({ connectionString });
+          const s = new PostgresStorage({ connectionString, tokenKeys: TEST_TOKEN_HASHER });
           await s.init();
           return s;
         },
@@ -788,7 +789,7 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
       await admin.query(`CREATE SCHEMA ${schema}`);
       const replicas = Array.from(
         { length: 4 },
-        () => new PostgresStorage({ connectionString: url.toString() })
+        () => new PostgresStorage({ connectionString: url.toString(), tokenKeys: TEST_TOKEN_HASHER })
       );
       await Promise.all(replicas.map((r) => r.init()));
       await replicas[0]?.saveAccessToken(makeAccessToken({ token: 'at-1', resource: 'https://r/mcp' }));
@@ -818,7 +819,7 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
       const pg = (await import('pg')).default;
       const connectionString = process.env.DATABASE_URL;
       if (!connectionString) throw new Error('DATABASE_URL not set');
-      const storage = new PostgresStorage({ connectionString });
+      const storage = new PostgresStorage({ connectionString, tokenKeys: TEST_TOKEN_HASHER });
       await storage.init();
       const raw = new pg.Pool({ connectionString });
       return { storage, raw, LOCK_FAMILY };
@@ -904,7 +905,7 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
     const { PostgresStorage } = await import('../../../src/storage/postgres.js');
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) throw new Error('DATABASE_URL not set');
-    const s = new PostgresStorage({ connectionString });
+    const s = new PostgresStorage({ connectionString, tokenKeys: TEST_TOKEN_HASHER });
     await s.init();
     return s;
   });
@@ -1111,7 +1112,7 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage code tombsto
 
   async function openSqlite(file: string): Promise<Storage> {
     const { SqliteStorage } = await import('../../../src/storage/sqlite.js');
-    const s = new SqliteStorage({ path: file });
+    const s = new SqliteStorage({ path: file, tokenKeys: TEST_TOKEN_HASHER });
     await s.init();
     return s;
   }
@@ -1217,7 +1218,7 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage c
     const { PostgresStorage } = await import('../../../src/storage/postgres.js');
     const url = connectionString ?? process.env.DATABASE_URL;
     if (!url) throw new Error('DATABASE_URL not set');
-    const s = new PostgresStorage({ connectionString: url });
+    const s = new PostgresStorage({ connectionString: url, tokenKeys: TEST_TOKEN_HASHER });
     await s.init();
     return s;
   }
@@ -1608,7 +1609,7 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage migrations',
       };
       return {
         open: async () => {
-          const s = new SqliteStorage({ path: file });
+          const s = new SqliteStorage({ path: file, tokenKeys: TEST_TOKEN_HASHER });
           await s.init();
           return s;
         },
@@ -1675,7 +1676,7 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage m
       };
       return {
         open: async () => {
-          const s = new PostgresStorage({ connectionString });
+          const s = new PostgresStorage({ connectionString, tokenKeys: TEST_TOKEN_HASHER });
           await s.init();
           return s;
         },

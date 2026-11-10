@@ -25,11 +25,14 @@ import type {
   CodeTokens,
   PendingAuthRecord,
 } from './types.js';
-import { applyMigrations, type MigrationTx } from './migrations.js';
+import { applyMigrations, MIGRATION_PLAN, type MigrationTx } from './migrations.js';
+import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 
 export interface SqliteStorageOptions {
   path: string;
+  /** Derives the `h1.` keys and pepper fingerprint for migration M3 (#52). Required: M3 refuses to run without it. */
+  tokenKeys: TokenKeyDeriver;
 }
 
 interface UserRow {
@@ -179,13 +182,13 @@ function sqliteTx(db: BetterSqlite3.Database): MigrationTx {
  * every SQLite call is synchronous, so nothing else can run on this connection
  * in between.
  */
-async function migrate(db: BetterSqlite3.Database, baseSchema: string): Promise<void> {
+async function migrate(db: BetterSqlite3.Database, baseSchema: string, tokenKeys: TokenKeyDeriver): Promise<void> {
   db.exec('BEGIN IMMEDIATE');
   try {
     // Captured once, with the write lock held, so it is when the migration really runs.
     const now = Date.now();
     db.exec(baseSchema);
-    await applyMigrations(sqliteTx(db), now);
+    await applyMigrations(sqliteTx(db), now, MIGRATION_PLAN, undefined, { tokenKeys });
     db.exec('COMMIT');
   } catch (err) {
     try {
@@ -271,7 +274,7 @@ export class SqliteStorage implements Storage {
       );
     `;
     try {
-      await migrate(db, baseSchema);
+      await migrate(db, baseSchema, this.options.tokenKeys);
     } catch (err) {
       db.close();
       throw err;

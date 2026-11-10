@@ -27,6 +27,7 @@ import { SessionManager } from './services/session-manager.js';
 import type { HttpConfig } from './config/environment.js';
 import { Encryptor } from './crypto.js';
 import { createStorage } from './storage/index.js';
+import { TokenHasher } from './auth/token-hash.js';
 import type { GrantedScope, Storage } from './storage/types.js';
 import { mountAuthorizationServer, type AuthorizationServer } from './auth/as-router.js';
 import { YnabTokenResolver } from './auth/user-session.js';
@@ -50,15 +51,21 @@ function jsonRpcError(code: number, message: string): unknown {
   return { jsonrpc: '2.0', error: { code, message }, id: null };
 }
 
-/** Select and initialize the configured storage driver. */
+/**
+ * Select and initialize the configured storage driver. A durable one gets the
+ * token hasher (TOKEN_PEPPER, else derived from ENCRYPTION_KEY), which its
+ * migration needs to check the pepper and hash 0.4.x tokens (#52).
+ */
 async function buildStorage(config: HttpConfig): ReturnType<typeof createStorage> {
+  const tokenKeys = (): TokenHasher =>
+    TokenHasher.fromSecrets({ tokenPepper: config.tokenPepper, encryptionKey: config.encryptionKey });
   switch (config.storageDriver) {
     case 'sqlite':
       if (!config.sqlitePath) throw new Error('SQLITE_PATH is required for the sqlite storage driver');
-      return createStorage({ driver: 'sqlite', path: config.sqlitePath });
+      return createStorage({ driver: 'sqlite', path: config.sqlitePath, tokenKeys: tokenKeys() });
     case 'postgres':
       if (!config.databaseUrl) throw new Error('DATABASE_URL is required for the postgres storage driver');
-      return createStorage({ driver: 'postgres', connectionString: config.databaseUrl });
+      return createStorage({ driver: 'postgres', connectionString: config.databaseUrl, tokenKeys: tokenKeys() });
     default:
       return createStorage({ driver: 'memory' });
   }
