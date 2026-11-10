@@ -40,6 +40,7 @@ Set these environment variables (see `.env.example`):
 | `YNAB_OAUTH_CLIENT_ID` | yes | From step 1 |
 | `YNAB_OAUTH_CLIENT_SECRET` | yes | From step 1 |
 | `ENCRYPTION_KEY` | yes | 32-byte key for at-rest token encryption — `openssl rand -base64 32` |
+| `TOKEN_PEPPER` | no | 32-byte secret (base64 or 64 hex characters) keying the hashes of stored MCP tokens, codes and state — `openssl rand -base64 32`. Default: derived from `ENCRYPTION_KEY`. Set it **before the first 0.5.0 start** if you want one; see "Hashed tokens and the pepper" |
 | `YNAB_OAUTH_ALLOW_WRITE` | no | Offer read-write at consent (default `true`; set `false` to force read-only) |
 | `STORAGE_DRIVER` | no | `memory` (default, **non-durable**), `sqlite`, or `postgres` |
 | `SQLITE_PATH` | if sqlite | e.g. `/data/ynab-mcp.db` |
@@ -320,7 +321,46 @@ indexes, and are safe to re-run. 0.4.0 adds a `resource` column to
 (spent refresh tokens, pruned after 30 days). Existing read-write users must reconnect once to get write
 access back (see "Access level per connection"). On Postgres the migration runs in one
 transaction under an advisory lock, so replicas that start together don't race.
-The previous release can still read a migrated database if you need to roll back.
+Before 0.5.0 the previous release could still read a migrated database if you
+needed to roll back; 0.5.0's token hashing is the exception (see below).
+
+### Hashed tokens and the pepper (0.5.0)
+
+0.5.0 stores MCP access tokens, refresh tokens, authorization codes and
+pending-authorization `state` only as keyed hashes (`h1.` + HMAC-SHA256), and
+DCR client secrets only as `s256.` + SHA-256. On the first start it rewrites the
+existing rows in place (the M3 migration, in the same transaction and lock as
+the rest), so connected clients keep working: the tokens they already hold are
+hashed the same way when presented. New tokens look like `ymcp1_…`.
+
+- **Back up first.** The rewrite can't be undone. Rolling back to 0.4.x after
+  it means every user reconnects (0.4.x can't look up hashed tokens), and
+  confidential DCR clients read as public clients on 0.4.x. No YNAB data is
+  lost.
+- **Choose the pepper before the first 0.5.0 start.** The hashes are keyed by
+  `TOKEN_PEPPER`, or, when it is unset, by a pepper derived from
+  `ENCRYPTION_KEY`. The database records the pepper's fingerprint on that first
+  start, and a later start with a different pepper (a new `TOKEN_PEPPER`,
+  setting or removing it, or a new `ENCRYPTION_KEY` when `TOKEN_PEPPER` is
+  unset) refuses to start with an error naming no value.
+- **Run one version at a time.** Rows that a 0.4.x process writes into a
+  migrated database aren't usable until the next 0.5.0 start converts them.
+
+### Changing TOKEN_PEPPER
+
+Changing the pepper logs every user out (every stored token stops matching).
+To do it deliberately: stop the server, back up, delete the fingerprint, and
+start with the new value. Clear the token tables too, since their rows can no
+longer be used:
+
+```sql
+DELETE FROM schema_meta WHERE key = 'token_pepper_fingerprint';
+DELETE FROM access_tokens; DELETE FROM refresh_tokens; DELETE FROM auth_codes;
+DELETE FROM pending_auth; DELETE FROM consumed_refresh_tokens; DELETE FROM consumed_auth_codes;
+```
+
+Users and their encrypted YNAB refresh tokens are kept; every client
+reconnects once.
 
 ## Prompts
 
@@ -342,6 +382,12 @@ any MCP client that supports the `prompts` capability:
 
 - YNAB refresh tokens are encrypted at rest with AES-256-GCM (`ENCRYPTION_KEY`).
   Keep that key secret and stable; rotating it invalidates stored connections.
+- MCP tokens, authorization codes and `state` are stored only as keyed hashes,
+  and DCR client secrets only as SHA-256 hashes, so a copy of the database holds
+  no usable MCP credential. A value that isn't a correctly tagged `ymcp1_` token
+  (or a 0.4.x-shaped one) is refused without a database read. `/token` and
+  `/revoke` verify client secrets behind a per-IP limit (50 per 15 minutes per
+  route).
 - Access is read-only or read-write **per connection**, per the consent choice
   for that client; the server also honors a global `YNAB_READ_ONLY=true`
   override.

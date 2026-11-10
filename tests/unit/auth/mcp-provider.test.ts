@@ -45,6 +45,16 @@ import {
   type McpProviderOptions,
 } from '../../../src/auth/mcp-provider.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
+import { TEST_TOKEN_HASHER, legacyToken, testKey } from '../helpers/token-hasher.js';
+
+// 0.4.x-shaped values (43 characters) that tests plant under their h1. keys, as M3 leaves them.
+const LEGACY_AT = legacyToken();
+const FOREIGN_AT = legacyToken();
+const LEGACY_RT = legacyToken();
+const STALE_RT = legacyToken();
+const SPENT_RT = legacyToken();
+const LEGACY_CODE = legacyToken();
+const LEGACY_STATE = legacyToken();
 
 const exchangeCodeMock = vi.mocked(ynabOauth.exchangeCode);
 const getYnabUserIdMock = vi.mocked(ynabOauth.getYnabUserId);
@@ -71,6 +81,7 @@ function makeProvider(overrides: Partial<McpProviderOptions> = {}): {
   const provider = new McpOAuthProvider({
     storage,
     encryptor,
+    tokenHasher: TEST_TOKEN_HASHER,
     ynab: { clientId: 'cid', clientSecret: 'sec' },
     publicUrl: 'https://mcp.example.com',
     allowWrite: true,
@@ -482,7 +493,7 @@ describe('McpOAuthProvider.revokeToken errors', () => {
     vi.spyOn(storage, 'deleteAccessToken').mockRejectedValueOnce(
       new Error('connect ECONNREFUSED postgres://admin:hunter2@db:5432')
     );
-    const err = await provider.revokeToken(client, { token: 't' }).catch((e: unknown) => e);
+    const err = await provider.revokeToken(client, { token: legacyToken() }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ServerError);
     expect((err as Error).message).toBe('Token revocation failed');
   });
@@ -572,7 +583,7 @@ describe('McpOAuthProvider resource binding: /authorize', () => {
       const saveCode = vi.spyOn(storage, 'saveAuthCode');
       const { tokens } = await driveToTokens(provider, { authorizeResource: resource });
       expect(saveCode.mock.calls[0]?.[0].resource).toBe(RESOURCE);
-      expect((await storage.getAccessToken(tokens.access_token))?.resource).toBe(RESOURCE);
+      expect((await storage.getAccessToken(testKey('access', tokens.access_token)))?.resource).toBe(RESOURCE);
       const info = await provider.verifyAccessToken(tokens.access_token);
       expect(info.resource?.href).toBe(RESOURCE);
     }
@@ -583,7 +594,7 @@ describe('McpOAuthProvider resource binding: /authorize', () => {
     const saveCode = vi.spyOn(storage, 'saveAuthCode');
     const { tokens } = await driveToTokens(provider);
     expect(saveCode.mock.calls[0]?.[0].resource).toBeUndefined();
-    expect((await storage.getAccessToken(tokens.access_token))?.resource).toBe(RESOURCE);
+    expect((await storage.getAccessToken(testKey('access', tokens.access_token)))?.resource).toBe(RESOURCE);
     expect((await provider.verifyAccessToken(tokens.access_token)).resource?.href).toBe(RESOURCE);
   });
 
@@ -637,7 +648,7 @@ describe('McpOAuthProvider resource binding: /token (authorization_code)', () =>
   it('accepts a resource first named at /token when /authorize sent none', async () => {
     const { provider, storage } = makeProvider();
     const { tokens } = await driveToTokens(provider, { tokenResource: RESOURCE });
-    expect((await storage.getAccessToken(tokens.access_token))?.resource).toBe(RESOURCE);
+    expect((await storage.getAccessToken(testKey('access', tokens.access_token)))?.resource).toBe(RESOURCE);
   });
 
   it('a mismatched resource burns the code (single use)', async () => {
@@ -662,7 +673,7 @@ describe('McpOAuthProvider resource binding: /token (authorization_code)', () =>
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
     await storage.saveAuthCode({
-      code: 'legacy-code',
+      code: testKey('code', LEGACY_CODE),
       clientId: client.client_id,
       userId: 'ynab-user-1',
       redirectUri: 'https://client/cb',
@@ -670,22 +681,23 @@ describe('McpOAuthProvider resource binding: /token (authorization_code)', () =>
       scopes: ['read-only'],
       expiresAt: Date.now() + 60_000,
     });
-    await provider.challengeForAuthorizationCode(client, 'legacy-code');
+    await provider.challengeForAuthorizationCode(client, LEGACY_CODE);
     const tokens = await provider.exchangeAuthorizationCode(
       client,
-      'legacy-code',
+      LEGACY_CODE,
       undefined,
       undefined,
       new URL(RESOURCE)
     );
-    expect((await storage.getAccessToken(tokens.access_token))?.resource).toBe(RESOURCE);
+    expect((await storage.getAccessToken(testKey('access', tokens.access_token)))?.resource).toBe(RESOURCE);
   });
 
   it('rejects a code bound to a resource this server no longer serves', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    const staleCode = legacyToken();
     await storage.saveAuthCode({
-      code: 'stale-code',
+      code: testKey('code', staleCode),
       clientId: client.client_id,
       userId: 'ynab-user-1',
       redirectUri: 'https://client/cb',
@@ -694,8 +706,8 @@ describe('McpOAuthProvider resource binding: /token (authorization_code)', () =>
       expiresAt: Date.now() + 60_000,
       resource: 'https://old.example.com/mcp',
     });
-    await provider.challengeForAuthorizationCode(client, 'stale-code');
-    await expect(provider.exchangeAuthorizationCode(client, 'stale-code')).rejects.toBeInstanceOf(
+    await provider.challengeForAuthorizationCode(client, staleCode);
+    await expect(provider.exchangeAuthorizationCode(client, staleCode)).rejects.toBeInstanceOf(
       InvalidGrantError
     );
   });
@@ -711,8 +723,8 @@ describe('McpOAuthProvider resource binding: /token (refresh_token)', () => {
       undefined,
       new URL(RESOURCE)
     );
-    expect((await storage.getAccessToken(rotated.access_token))?.resource).toBe(RESOURCE);
-    expect((await storage.takeRefreshToken(refreshOf(rotated)))?.resource).toBe(RESOURCE);
+    expect((await storage.getAccessToken(testKey('access', rotated.access_token)))?.resource).toBe(RESOURCE);
+    expect((await storage.takeRefreshToken(testKey('refresh', refreshOf(rotated))))?.resource).toBe(RESOURCE);
   });
 
   it('rejects a different resource on refresh and leaves the refresh token usable', async () => {
@@ -736,33 +748,33 @@ describe('McpOAuthProvider resource binding: /token (refresh_token)', () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
     await storage.saveRefreshToken({
-      token: 'legacy-rt',
+      token: testKey('refresh', LEGACY_RT),
       clientId: client.client_id,
       userId: 'ynab-user-1',
       scopes: ['read-only', 'read-write'],
     });
     const rotated = await provider.exchangeRefreshToken(
       client,
-      'legacy-rt',
+      LEGACY_RT,
       undefined,
       new URL(RESOURCE)
     );
     expect(rotated.scope).toBe('read-only read-write');
-    expect((await storage.getAccessToken(rotated.access_token))?.resource).toBe(RESOURCE);
-    expect((await storage.takeRefreshToken(refreshOf(rotated)))?.resource).toBe(RESOURCE);
+    expect((await storage.getAccessToken(testKey('access', rotated.access_token)))?.resource).toBe(RESOURCE);
+    expect((await storage.takeRefreshToken(testKey('refresh', refreshOf(rotated))))?.resource).toBe(RESOURCE);
   });
 
   it('rejects a refresh token bound to a resource this server no longer serves', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
     await storage.saveRefreshToken({
-      token: 'stale-rt',
+      token: testKey('refresh', STALE_RT),
       clientId: client.client_id,
       userId: 'ynab-user-1',
       scopes: [],
       resource: 'https://old.example.com/mcp',
     });
-    await expect(provider.exchangeRefreshToken(client, 'stale-rt')).rejects.toBeInstanceOf(
+    await expect(provider.exchangeRefreshToken(client, STALE_RT)).rejects.toBeInstanceOf(
       InvalidGrantError
     );
   });
@@ -816,7 +828,7 @@ describe('McpOAuthProvider refresh scope (never widened)', () => {
       'read-write',
     ]);
     expect(restored.scope).toBe('read-write');
-    expect((await storage.takeRefreshToken(refreshOf(restored)))?.scopes).toEqual([
+    expect((await storage.takeRefreshToken(testKey('refresh', refreshOf(restored))))?.scopes).toEqual([
       'read-only',
       'read-write',
     ]);
@@ -832,12 +844,12 @@ describe('McpOAuthProvider refresh downscoping (read-write implies read-only)', 
     const narrowed = await provider.exchangeRefreshToken(client, refreshOf(tokens), ['read-only']);
     expect(narrowed.scope).toBe('read-only');
     // The stored access level is read-only, not just the reported one.
-    expect((await storage.getAccessToken(narrowed.access_token))?.grantedScope).toBe('read-only');
+    expect((await storage.getAccessToken(testKey('access', narrowed.access_token)))?.grantedScope).toBe('read-only');
     const info = await provider.verifyAccessToken(narrowed.access_token);
     expect(info.scopes).toEqual(['read-only']);
     expect(info.extra?.['grantedScope']).toBe('read-only');
     // RFC 6749 section 6: the rotated refresh token carries the original grant.
-    expect(await storage.getRefreshToken(refreshOf(narrowed))).toMatchObject({
+    expect(await storage.getRefreshToken(testKey('refresh', refreshOf(narrowed)))).toMatchObject({
       scopes: ['read-write'],
       grantedScope: 'read-write',
     });
@@ -878,7 +890,7 @@ describe('McpOAuthProvider refresh validation (before the token is spent)', () =
     const { client, tokens } = await driveToTokens(provider, { scopes: ['read-only'] });
     const err = await errorOf(provider.exchangeRefreshToken(client, refreshOf(tokens), ['read-write']));
     expect(err).toBeInstanceOf(InvalidScopeError);
-    expect(await storage.getRefreshToken(refreshOf(tokens))).toBeDefined();
+    expect(await storage.getRefreshToken(testKey('refresh', refreshOf(tokens)))).toBeDefined();
     await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).resolves.toHaveProperty(
       'access_token'
     );
@@ -888,18 +900,18 @@ describe('McpOAuthProvider refresh validation (before the token is spent)', () =
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
     await storage.saveRefreshToken({
-      token: 'stale-rt',
+      token: testKey('refresh', STALE_RT),
       clientId: client.client_id,
       userId: 'ynab-user-1',
       scopes: [],
       resource: 'https://old.example.com/mcp',
     });
     const take = vi.spyOn(storage, 'rotateRefreshToken');
-    await expect(provider.exchangeRefreshToken(client, 'stale-rt')).rejects.toBeInstanceOf(
+    await expect(provider.exchangeRefreshToken(client, STALE_RT)).rejects.toBeInstanceOf(
       InvalidGrantError
     );
     expect(take).not.toHaveBeenCalled();
-    expect(await storage.getRefreshToken('stale-rt')).toBeDefined();
+    expect(await storage.getRefreshToken(testKey('refresh', STALE_RT))).toBeDefined();
   });
 
   it('a refresh token presented by another client is revoked', async () => {
@@ -910,7 +922,7 @@ describe('McpOAuthProvider refresh validation (before the token is spent)', () =
     expect(err).toBeInstanceOf(InvalidGrantError);
     // Generic: does not confirm the token is valid for some other client.
     expect((err as InvalidGrantError).message).toBe('Invalid refresh token');
-    expect(await storage.getRefreshToken(refreshOf(tokens))).toBeUndefined();
+    expect(await storage.getRefreshToken(testKey('refresh', refreshOf(tokens)))).toBeUndefined();
     // Not even its own client can use it any more.
     await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
       InvalidGrantError
@@ -956,13 +968,13 @@ describe('McpOAuthProvider.verifyAccessToken resource checks', () => {
   it('accepts a 0.3.x access token (no stored resource) and reports this resource', async () => {
     const { provider, storage } = makeProvider();
     await storage.saveAccessToken({
-      token: 'legacy-at',
+      token: testKey('access', LEGACY_AT),
       clientId: 'c1',
       userId: 'ynab-user-1',
       scopes: [],
       expiresAt: Date.now() + 60_000,
     });
-    const info = await provider.verifyAccessToken('legacy-at');
+    const info = await provider.verifyAccessToken(LEGACY_AT);
     expect(info.resource?.href).toBe(RESOURCE);
     expect(info.extra?.['userId']).toBe('ynab-user-1');
   });
@@ -970,14 +982,14 @@ describe('McpOAuthProvider.verifyAccessToken resource checks', () => {
   it('rejects an access token bound to another resource', async () => {
     const { provider, storage } = makeProvider();
     await storage.saveAccessToken({
-      token: 'foreign-at',
+      token: testKey('access', FOREIGN_AT),
       clientId: 'c1',
       userId: 'ynab-user-1',
       scopes: [],
       expiresAt: Date.now() + 60_000,
       resource: 'https://mcp.example.com/other',
     });
-    const err = await errorOf(provider.verifyAccessToken('foreign-at'));
+    const err = await errorOf(provider.verifyAccessToken(FOREIGN_AT));
     expect(err).toBeInstanceOf(InvalidTokenError);
     expect((err as Error).message).toBe('Invalid or expired access token');
   });
@@ -1109,7 +1121,7 @@ describe('McpOAuthProvider consent cookie', () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
     await storage.savePendingAuth({
-      state: 'legacy-state',
+      state: testKey('state', LEGACY_STATE),
       clientId: client.client_id,
       redirectUri: 'https://client/cb',
       codeChallenge: 'chal',
@@ -1118,7 +1130,7 @@ describe('McpOAuthProvider consent cookie', () => {
       grantedScope: 'read-write',
       expiresAt: Date.now() + 60_000,
     });
-    await expect(provider.handleYnabCallback('code', 'legacy-state', 'anything')).rejects.toBeInstanceOf(
+    await expect(provider.handleYnabCallback('code', LEGACY_STATE, 'anything')).rejects.toBeInstanceOf(
       InvalidGrantError
     );
     expect(exchangeCodeMock).not.toHaveBeenCalled();
@@ -1166,7 +1178,7 @@ describe('McpOAuthProvider per-grant access level', () => {
     // Refresh keeps A read-only, even with no scope requested.
     const rotated = await provider.exchangeRefreshToken(a.client, refreshOf(a.tokens));
     expect(await accessOf(provider, rotated.access_token)).toBe('read-only');
-    expect((await storage.takeRefreshToken(refreshOf(rotated)))?.grantedScope).toBe('read-only');
+    expect((await storage.takeRefreshToken(testKey('refresh', refreshOf(rotated))))?.grantedScope).toBe('read-only');
   });
 
   it('records the grant on the code and both tokens', async () => {
@@ -1174,8 +1186,8 @@ describe('McpOAuthProvider per-grant access level', () => {
     const save = vi.spyOn(storage, 'saveAuthCode');
     const { tokens } = await tokensFor(provider, 'read-write');
     expect(save.mock.calls[0]?.[0].grantedScope).toBe('read-write');
-    expect((await storage.getAccessToken(tokens.access_token))?.grantedScope).toBe('read-write');
-    expect((await storage.takeRefreshToken(refreshOf(tokens)))?.grantedScope).toBe('read-write');
+    expect((await storage.getAccessToken(testKey('access', tokens.access_token)))?.grantedScope).toBe('read-write');
+    expect((await storage.takeRefreshToken(testKey('refresh', refreshOf(tokens))))?.grantedScope).toBe('read-write');
   });
 
   it('a read-only grant reports a requested read-write scope as read-only', async () => {
@@ -1228,30 +1240,30 @@ describe('McpOAuthProvider per-grant access level', () => {
       updatedAt: Date.now(),
     });
     await storage.saveAccessToken({
-      token: 'legacy-at',
+      token: testKey('access', LEGACY_AT),
       clientId: 'c1',
       userId: 'ynab-user-1',
       scopes: ['read-write'],
       expiresAt: Date.now() + 60_000,
     });
-    expect(await accessOf(provider, 'legacy-at')).toBe('read-only');
+    expect(await accessOf(provider, LEGACY_AT)).toBe('read-only');
   });
 
   it('a pre-0.4.0 refresh token or code yields read-only tokens', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
     await storage.saveRefreshToken({
-      token: 'legacy-rt',
+      token: testKey('refresh', LEGACY_RT),
       clientId: client.client_id,
       userId: 'ynab-user-1',
       scopes: [],
     });
-    const fromRefresh = await provider.exchangeRefreshToken(client, 'legacy-rt');
+    const fromRefresh = await provider.exchangeRefreshToken(client, LEGACY_RT);
     expect(await accessOf(provider, fromRefresh.access_token)).toBe('read-only');
-    expect((await storage.takeRefreshToken(refreshOf(fromRefresh)))?.grantedScope).toBe('read-only');
+    expect((await storage.takeRefreshToken(testKey('refresh', refreshOf(fromRefresh))))?.grantedScope).toBe('read-only');
 
     await storage.saveAuthCode({
-      code: 'legacy-code',
+      code: testKey('code', LEGACY_CODE),
       clientId: client.client_id,
       userId: 'ynab-user-1',
       redirectUri: 'https://client/cb',
@@ -1259,8 +1271,8 @@ describe('McpOAuthProvider per-grant access level', () => {
       scopes: [],
       expiresAt: Date.now() + 60_000,
     });
-    await provider.challengeForAuthorizationCode(client, 'legacy-code');
-    const fromCode = await provider.exchangeAuthorizationCode(client, 'legacy-code');
+    await provider.challengeForAuthorizationCode(client, LEGACY_CODE);
+    const fromCode = await provider.exchangeAuthorizationCode(client, LEGACY_CODE);
     expect(await accessOf(provider, fromCode.access_token)).toBe('read-only');
   });
 });
@@ -1307,16 +1319,16 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
   it('tags every token of a grant, across refreshes, with one family; each code starts a new one', async () => {
     const { provider, storage } = makeProvider();
     const { client, tokens } = await driveToTokens(provider);
-    const familyId = (await storage.getAccessToken(tokens.access_token))?.familyId;
+    const familyId = (await storage.getAccessToken(testKey('access', tokens.access_token)))?.familyId;
     expect(familyId).toEqual(expect.any(String));
-    expect((await storage.getRefreshToken(refreshOf(tokens)))?.familyId).toBe(familyId);
+    expect((await storage.getRefreshToken(testKey('refresh', refreshOf(tokens))))?.familyId).toBe(familyId);
 
     const rotated = await provider.exchangeRefreshToken(client, refreshOf(tokens));
-    expect((await storage.getAccessToken(rotated.access_token))?.familyId).toBe(familyId);
-    expect((await storage.getRefreshToken(refreshOf(rotated)))?.familyId).toBe(familyId);
+    expect((await storage.getAccessToken(testKey('access', rotated.access_token)))?.familyId).toBe(familyId);
+    expect((await storage.getRefreshToken(testKey('refresh', refreshOf(rotated))))?.familyId).toBe(familyId);
 
     const second = await grantFor(provider, client);
-    const secondFamily = (await storage.getAccessToken(second.access_token))?.familyId;
+    const secondFamily = (await storage.getAccessToken(testKey('access', second.access_token)))?.familyId;
     expect(secondFamily).toEqual(expect.any(String));
     expect(secondFamily).not.toBe(familyId);
   });
@@ -1401,7 +1413,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     const { client, tokens } = await driveToTokens(provider);
     const rotatedAt = Date.now();
     const rotated = await provider.exchangeRefreshToken(client, refreshOf(tokens));
-    expect(await storage.getConsumedRefreshToken(refreshOf(tokens))).toMatchObject({
+    expect(await storage.getConsumedRefreshToken(testKey('refresh', refreshOf(tokens)))).toMatchObject({
       clientId: client.client_id,
       expiresAt: rotatedAt + REFRESH_TOKEN_REUSE_WINDOW_MS,
     });
@@ -1431,9 +1443,9 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     // Back inside the first tombstone's window it would still be readable, had
     // it not been pruned; the second tombstone is kept.
     vi.setSystemTime(t0);
-    expect(await storage.getConsumedRefreshToken(refreshOf(tokens))).toBeUndefined();
+    expect(await storage.getConsumedRefreshToken(testKey('refresh', refreshOf(tokens)))).toBeUndefined();
     vi.setSystemTime(t0 + REFRESH_TOKEN_REUSE_WINDOW_MS + 1);
-    expect(await storage.getConsumedRefreshToken(refreshOf(rotated))).toBeDefined();
+    expect(await storage.getConsumedRefreshToken(testKey('refresh', refreshOf(rotated)))).toBeDefined();
   });
 
   it('a refresh token presented by another client takes its family with it', async () => {
@@ -1476,18 +1488,18 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
     await storage.saveRefreshToken({
-      token: 'legacy-rt',
+      token: testKey('refresh', LEGACY_RT),
       clientId: client.client_id,
       userId: 'ynab-user-1',
       scopes: ['read-only'],
     });
-    const rotated = await provider.exchangeRefreshToken(client, 'legacy-rt');
-    const familyId = (await storage.getAccessToken(rotated.access_token))?.familyId;
+    const rotated = await provider.exchangeRefreshToken(client, LEGACY_RT);
+    const familyId = (await storage.getAccessToken(testKey('access', rotated.access_token)))?.familyId;
     expect(familyId).toEqual(expect.any(String));
-    expect((await storage.getRefreshToken(refreshOf(rotated)))?.familyId).toBe(familyId);
-    expect((await storage.getConsumedRefreshToken('legacy-rt'))?.familyId).toBe(familyId);
+    expect((await storage.getRefreshToken(testKey('refresh', refreshOf(rotated))))?.familyId).toBe(familyId);
+    expect((await storage.getConsumedRefreshToken(testKey('refresh', LEGACY_RT)))?.familyId).toBe(familyId);
 
-    await expect(provider.exchangeRefreshToken(client, 'legacy-rt')).rejects.toBeInstanceOf(InvalidGrantError);
+    await expect(provider.exchangeRefreshToken(client, LEGACY_RT)).rejects.toBeInstanceOf(InvalidGrantError);
     await expectRevoked(provider, client, rotated);
   });
 
@@ -1495,7 +1507,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
     const legacyAt = {
-      token: 'legacy-at',
+      token: testKey('access', LEGACY_AT),
       clientId: client.client_id,
       userId: 'ynab-user-1',
       scopes: [],
@@ -1503,16 +1515,16 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     };
     await storage.saveAccessToken(legacyAt);
     const del = vi.spyOn(storage, 'deleteTokenFamily');
-    await expect(provider.exchangeRefreshToken(client, 'spent-by-0.3.x')).rejects.toBeInstanceOf(
+    await expect(provider.exchangeRefreshToken(client, SPENT_RT)).rejects.toBeInstanceOf(
       InvalidGrantError
     );
     expect(del).not.toHaveBeenCalled();
 
-    await storage.saveRefreshToken({ token: 'legacy-rt', clientId: client.client_id, userId: 'ynab-user-1', scopes: [] });
-    await provider.revokeToken(client, { token: 'legacy-rt' });
-    expect(await storage.getRefreshToken('legacy-rt')).toBeUndefined();
+    await storage.saveRefreshToken({ token: testKey('refresh', LEGACY_RT), clientId: client.client_id, userId: 'ynab-user-1', scopes: [] });
+    await provider.revokeToken(client, { token: LEGACY_RT });
+    expect(await storage.getRefreshToken(testKey('refresh', LEGACY_RT))).toBeUndefined();
     expect(del).not.toHaveBeenCalled();
-    await expect(provider.verifyAccessToken('legacy-at')).resolves.toBeDefined();
+    await expect(provider.verifyAccessToken(LEGACY_AT)).resolves.toBeDefined();
   });
 });
 

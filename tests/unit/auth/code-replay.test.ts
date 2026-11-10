@@ -30,6 +30,7 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 import type { Storage, CodeTokens } from '../../../src/storage/types.js';
 import { MemoryStorage } from '../../../src/storage/memory.js';
 import { Encryptor } from '../../../src/crypto.js';
+import { TEST_TOKEN_HASHER, legacyToken, testKey } from '../helpers/token-hasher.js';
 import {
   McpOAuthProvider,
   AUTH_CODE_REPLAY_WINDOW_MS,
@@ -90,7 +91,7 @@ const drivers: Array<{ name: string; enabled: boolean; open: () => Promise<Stora
       const { SqliteStorage } = await import('../../../src/storage/sqlite.js');
       const file = join(tmpdir(), `ynab-mcp-code-replay-${randomUUID()}.db`);
       sqliteFiles.push(file);
-      const s = new SqliteStorage({ path: file });
+      const s = new SqliteStorage({ path: file, tokenKeys: TEST_TOKEN_HASHER });
       await s.init();
       return s;
     },
@@ -100,7 +101,7 @@ const drivers: Array<{ name: string; enabled: boolean; open: () => Promise<Stora
     enabled: Boolean(process.env.DATABASE_URL) || requireDbTests,
     open: async () => {
       const { PostgresStorage } = await import('../../../src/storage/postgres.js');
-      const s = new PostgresStorage({ connectionString: await postgresSchemaUrl() });
+      const s = new PostgresStorage({ connectionString: await postgresSchemaUrl(), tokenKeys: TEST_TOKEN_HASHER });
       await s.init();
       return s;
     },
@@ -172,6 +173,7 @@ for (const driver of drivers) {
       provider = new McpOAuthProvider({
         storage,
         encryptor: new Encryptor(randomBytes(32).toString('base64')),
+        tokenHasher: TEST_TOKEN_HASHER,
         ynab: { clientId: 'cid', clientSecret: 'sec' },
         publicUrl: 'https://mcp.example.com',
         allowWrite: true,
@@ -368,8 +370,10 @@ for (const driver of drivers) {
 
     it('a code from before the tombstones (no access level or resource) still redeems', async () => {
       const client = await newClient();
+      // A 0.4.x code: 43 characters, stored (after M3) under its h1. key.
+      const legacy = legacyToken();
       await storage.saveAuthCode({
-        code: 'legacy-code',
+        code: testKey('code', legacy),
         clientId: client.client_id,
         userId: 'legacy-user',
         redirectUri: 'https://client/cb',
@@ -377,12 +381,12 @@ for (const driver of drivers) {
         scopes: ['ynab'],
         expiresAt: Date.now() + 60_000,
       });
-      const tokens = await redeem(client, 'legacy-code');
+      const tokens = await redeem(client, legacy);
       await expect(provider.verifyAccessToken(tokens.access_token)).resolves.toMatchObject({
         extra: { userId: 'legacy-user', grantedScope: 'read-only' },
       });
       // And its replay is detected like any other.
-      await expect(provider.challengeForAuthorizationCode(client, 'legacy-code')).rejects.toBeInstanceOf(
+      await expect(provider.challengeForAuthorizationCode(client, legacy)).rejects.toBeInstanceOf(
         InvalidGrantError
       );
       await expectDead(client, tokens);
@@ -395,7 +399,7 @@ for (const driver of drivers) {
       const code = await codeFor(client);
       const spentAt = Date.now();
       const tokens = await redeem(client, code);
-      expect(await storage.getConsumedAuthCode(code)).toMatchObject({
+      expect(await storage.getConsumedAuthCode(testKey('code', code))).toMatchObject({
         clientId: client.client_id,
         expiresAt: spentAt + AUTH_CODE_REPLAY_WINDOW_MS,
         revoked: false,
@@ -418,13 +422,15 @@ for (const driver of drivers) {
       // A request that failed between challenge and exchange (e.g. the PKCE check).
       await provider.challengeForAuthorizationCode(client, stale);
       const pending = Reflect.get(provider, 'consumedCodes') as Map<string, unknown>;
-      expect(pending.has(stale)).toBe(true);
+      // Keyed by the code's storage key, never the code itself.
+      expect(pending.has(stale)).toBe(false);
+      expect(pending.has(testKey('code', stale))).toBe(true);
 
       vi.setSystemTime(Date.now() + CODE_EXCHANGE_WINDOW_MS + 1);
       const fresh = await codeFor(client);
       await provider.challengeForAuthorizationCode(client, fresh);
-      expect(pending.has(stale)).toBe(false);
-      expect(pending.has(fresh)).toBe(true);
+      expect(pending.has(testKey('code', stale))).toBe(false);
+      expect(pending.has(testKey('code', fresh))).toBe(true);
       const err = await errorOf(provider.exchangeAuthorizationCode(client, stale));
       expect((err as InvalidGrantError).toResponseObject()).toEqual(INVALID_CODE);
       await expect(provider.exchangeAuthorizationCode(client, fresh)).resolves.toHaveProperty('access_token');
