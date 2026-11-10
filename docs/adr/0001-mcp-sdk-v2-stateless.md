@@ -53,6 +53,12 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
   - GET and DELETE `/mcp` classify as legacy. That leg answers anything but POST with `405` and `Method not allowed.`, so G2's 405 comes from the SDK.
   - Today's session-based GET and DELETE routes (`http.ts:386-400`, which answer 400 without a session id) are deleted. `app.all` is what lets those methods reach the SDK: an `app.post` mount would leave them to Express's 404.
   - `legacy: 'stateless'` is already the SDK default. We pass it anyway, so a future default change can't silently switch us to `'reject'`.
+- **Known SDK defect (2.4.0):** typescript-sdk#3159, fixed by #3160, which is still open.
+  - A non-`initialize` request whose `params._meta` carries `io.modelcontextprotocol/protocolVersion` naming a *2025* revision is routed to the modern leg and rejected with 400: `-32022` with the full envelope, `-32602` with the key alone.
+  - The cause is `classifyRequestBody`: any envelope claim routes modern. Plain 2025-era clients don't send that key, so they aren't affected. A client that falls back to 2025 but keeps the 2026 envelope key is.
+  - WS7.4 adds a test pinning today's behaviour for that request shape, so the SDK fix shows up as a test change.
+  - WS7.9a checks whether any client in the interop set sends it.
+  - Whether to work around it before the fix ships is Q6.
 - **Why:**
   - It removes the process-local session state behind ABUSE-7 and ABUSE-22.
   - It removes the need for sticky sessions.
@@ -100,11 +106,22 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
   - OAuth mode: `config.readOnly || !config.allowWrite || tokenScope !== 'read-write' || grantedScope !== 'read-write'`, which is #56's line, carried unchanged.
   - Header mode: `config.readOnly`.
 - **Why:**
-  - Because the read-only flag is computed per request, a downgraded token or a flipped `YNAB_OAUTH_ALLOW_WRITE` takes effect on the very next request.
+  - Because the read-only flag is computed per request, a downgraded token or grant takes effect on the very next request.
   - Today the flag is frozen at `initialize` (`http.ts:270`), which is OAUTH-24.
+- **The write switch needs a restart:**
+  - `YNAB_OAUTH_ALLOW_WRITE` is read once, at startup (`loadHttpConfig()`, `environment.ts:245`, called from `index.ts:58`). Recomputing `readOnly` does not reload it.
+  - So changing the setting takes effect on the first request after a restart. With no sessions to outlive the restart, that first request is the very next one.
+  - WS7.7's upgrade notes and Breaking-change row 8 must say "restart", not "instant switch".
+- **A downgrade depends on STOR-1:**
+  - "The very next request" holds only if a YNAB token refresh can't put back an older grant.
+  - Today `YnabTokenResolver.refresh` writes back the whole `UserRecord` it read before refreshing (`user-session.ts`, `upsertUser({ ...user, … })`). A read-only re-consent that lands during the refresh is overwritten with the old read-write `grantedScope`.
+  - STOR-1 (WS8.25) replaces that write-back with the compare-and-set `updateUserRefreshToken(userId, oldCiphertext, newCiphertext)`. It writes only the refresh token and misses when the row has changed, which closes the race.
+  - WS7.4 relies on that change and must not merge ahead of it.
 - **Binds:**
   - WS7.4 carries #56's line verbatim, and the reviewer diffs it.
   - Protected tests: the downgrade test and the `ALLOW_WRITE=false` test.
+  - A test in STOR-1: a read-only re-consent during an in-flight refresh stays read-only on the next request.
+  - WS7.7: the restart wording.
 
 ### D5. Leases are released when the response has closed and all started work has settled
 
@@ -135,8 +152,18 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
   - **Caps:** a new `src/services/inflight-limiter.ts` keeps in-flight counters per user and per (client, user). Past either cap, the request gets 429 with `Retry-After` and a JSON-RPC error, before any server is built.
   - **The plan's numbers:** 4 per user and 8 per (client, user). As written, the second cap can never bind; see Q1.
   - **Header mode** has no client id, so only the per-user cap applies.
-  - **A process-wide cap (proposed; Q1):** header mode accepts any non-empty token as a new "user" (`http.ts:282-289`), so per-user caps alone don't bound total concurrency. `MCP_MAX_INFLIGHT` (proposed default 64) caps in-flight requests across all users, with the same 429 response. Today's global session cap is the thing it replaces. It is less exposed to starvation than the session cap was, because a slot comes free within the ceiling.
-  - **Ceiling:** `MCP_REQUEST_TIMEOUT_MS`, default 60 000. At the ceiling, a request whose response hasn't started gets a JSON-RPC error that echoes its id ("Request timed out", with no upstream text). A response that is already streaming is ended.
+  - **A process-wide cap (proposed; Q1):** header mode accepts any non-empty token as a new "user" (`http.ts:282-289`), so per-user caps alone don't bound total concurrency. `MCP_MAX_INFLIGHT` (proposed default 64) caps in-flight requests across all users, with the same 429 response. Today's global session cap is the thing it replaces.
+    - Slots are **not** guaranteed to free at the ceiling. Under D5, a slot is held until the request's started work settles, and that includes `resolver.resolve`.
+    - `resolve` awaits storage reads and an `upsertUser` write. #58's fetch timeout bounds the YNAB token refresh inside it, but nothing bounds the storage calls today: `postgres.ts` sets no statement, query or pool-acquire timeout.
+    - So requests that stall in storage hold their slots until the storage call returns, and enough of them can exhaust the cap with their responses already closed.
+    - Bounding storage work is Q7.
+    - Until it's bounded, the cap stops new work from piling onto a stalled database (429). It does not promise recovery within the ceiling.
+  - **Ceiling:** `MCP_REQUEST_TIMEOUT_MS`, default 60 000. At the ceiling, a request whose response hasn't started gets a JSON-RPC error that echoes its id ("Request timed out", with no upstream text).
+  - **Open SSE streams get the error in the stream:**
+    - In 2.4.0 the stateless legacy leg answers every request-bearing POST over SSE. `WebStandardStreamableHTTPServerTransport` defaults to `enableJsonResponse: false`, the fallback can't change that, and it writes the headers and a keepalive every 15 s straight away. So for 2025-era clients the response has always "started".
+    - Ending that stream without a result would leave a timed-out write with no outcome at all.
+    - **Requirement:** at the ceiling, a request on an open SSE stream first receives a JSON-RPC error for its id as an SSE `message` event: the unknown-outcome text below for write tools, "Request timed out" otherwise. Only then is the stream ended.
+    - **Proposed mechanism (Q8):** a deadline inside the `tools/call` handler (`server.ts`), a little earlier than `MCP_REQUEST_TIMEOUT_MS`. It returns the timeout as an `isError` tool result, and the SDK delivers that over whichever transport the request uses (JSON, modern SSE or legacy SSE). The HTTP-level ceiling stays as the backstop for stalled stages before the handler, and for non-tool methods.
   - **Settings:** `MCP_MAX_INFLIGHT_PER_USER`, `MCP_MAX_INFLIGHT_PER_CLIENT` and `MCP_REQUEST_TIMEOUT_MS`. All three are parsed strictly and bounds-checked like #56's settings.
 - **Why:**
   - These caps bound concurrency per principal instead of counting sessions.
@@ -154,7 +181,7 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
 - **Binds:**
   - WS7.4: `src/services/inflight-limiter.ts` (new) and `src/config/http/limits.ts` (owner C acks).
   - Gate G2: 429 per user and per (client, user), and the ceiling holds (including a stalled `resolve`).
-  - A test that a timed-out write tool gets the unknown-outcome message.
+  - A test that a timed-out write tool gets the unknown-outcome message, including a 2025-era (legacy SSE) write that times out after keepalives have started: the error event must arrive before the stream ends.
   - Breaking-change row 3.
 
 ### D7. No bearer-verification cache in 0.5.0
@@ -284,6 +311,9 @@ The stages are mounted with `mountStages` and named, so a stage-list test covers
 - If the ceiling fires before the body has been parsed, there is no JSON-RPC id yet. The ceiling then answers with a JSON-RPC error with `id: null` and closes the connection.
 - Cleanup for work that outlives the response: every stage after `request-ceiling` checks whether the response has already closed before it acts. Any lease or slot it took is released through D5's rule, so nothing taken after a timeout is kept.
 - The in-flight limiter runs before the request context, so a refused request costs no storage read. It answers 429 in both modes (D6).
+- Nothing bounds the *number* of requests that are still unauthenticated:
+  - Partial uploads and `verifyAccessToken` reads take no slot, because the caps key on identity. The ceiling bounds how long each one lasts, but not how many there are.
+  - A pre-authentication admission cap would close this, but it lets an unauthenticated flood lock out authenticated users. That trade-off is Q9.
 - Every authentication failure (`bearer`) and every `request-context` failure answers 401 with `resource_metadata` in OAuth mode, never 500 (gate G6). The 429 from `inflight-limit` is outside G6.
 
 ## Consequences
@@ -352,6 +382,32 @@ The stages are mounted with `mountStages` and named, so a stage-list test covers
 5. **Ceiling bounds and `Retry-After`.**
    - **Proposed:** `MCP_REQUEST_TIMEOUT_MS` from 5 000 to 300 000 (default 60 000); the in-flight caps from 1 to 64; `Retry-After: 1` on 429.
    - The final names and bounds go in WS7.4's `limits.ts`, as #58a did with its setting.
+6. **Work around the SDK's legacy-routing defect (D1)?**
+   - Options:
+     - (a) Accept it until typescript-sdk#3160 ships, and bump `server` then. A pinning test flags the change, and WS7.9a checks the real clients.
+     - (b) Before the handler, strip a 2025-revision `io.modelcontextprotocol/protocolVersion` claim from `params._meta` on non-`initialize` requests, so they classify legacy. This is about 15 lines; delete it after the fix.
+   - **Recommendation:** (a), unless WS7.9a finds a client that sends the shape. Then (b).
+7. **Bound storage work, so held slots always free (D6).**
+   - Options:
+     - (a) Bound storage calls on both sides:
+       - Postgres server side: `statement_timeout` and the pool's `connectionTimeoutMillis` (e.g. 10 s).
+       - Postgres client side: `pg`'s `query_timeout`. This also covers a reply lost in a network partition, which the server-side timeouts don't. A connection whose query timed out is discarded, not returned to the pool, and a timed-out write is treated as an unknown outcome: re-read before acting on it.
+       - SQLite: a bound `busy_timeout`.
+     - (b) An application-level timeout around `resolve`'s storage calls. A timed-out call is abandoned and its slot freed, but the write may still land.
+     - (c) No bound in 0.5.0; document that the process-wide cap may fill while storage is stalled.
+   - **Recommendation:** (a). It belongs to storage owner D (`postgres.ts`, `sqlite.ts`), fits P5-P6, and makes every storage call settle. A query that hits the timeout fails as a 401 or a mapped error, never a hang.
+8. **How a timed-out tool call reports (D6).**
+   - Options:
+     - (a) A handler-level deadline in `tools/call` returns the error as an `isError` result through the SDK, plus the HTTP ceiling as a backstop.
+     - (b) The HTTP ceiling writes its own SSE `message` frame into the stream `toNodeHandler` is piping, then ends it.
+   - **Recommendation:** (a). The SDK keeps the framing, it works on all three response shapes, and the model sees an ordinary tool error. (b) depends on the transport's frame boundaries.
+9. **A pre-authentication admission cap?**
+   - The in-flight caps key on identity, so requests still uploading or being verified count against nothing (pipeline section).
+   - Options:
+     - (a) A process-wide pre-auth cap (e.g. 128) acquired before `json-512kb` and held until verification settles.
+     - (b) Rely on the ceiling, Node's `server.headersTimeout` and `requestTimeout`, and a reverse proxy's connection limits, and document that.
+   - **Recommendation:** (b) for 0.5.0. A pre-auth cap is a lever an unauthenticated client can use to lock out every authenticated user.
+   - A per-IP limiter on `/mcp`, keyed the way #59 keys the AS limiters, is the better tool for unauthenticated load. It isn't planned today: #59 covers only the AS routes.
 
 ## Addenda
 
