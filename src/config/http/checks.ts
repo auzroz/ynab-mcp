@@ -58,9 +58,21 @@ const headerFallbackNeedsLoopback: HttpCheck = (config, problems) => {
   }
 };
 
+/** oauth mode initializes storage at startup, so a driver's location setting is needed up front. */
+const oauthStorageRequired: HttpCheck = (config, problems) => {
+  if (config.authMode !== 'oauth' || problems.failed('AUTH_MODE') || problems.failed('STORAGE_DRIVER')) return;
+  if (config.storageDriver === 'sqlite' && config.sqlitePath === undefined) {
+    problems.add('SQLITE_PATH', 'STORAGE_DRIVER=sqlite requires SQLITE_PATH.');
+  }
+  if (config.storageDriver === 'postgres' && config.databaseUrl === undefined) {
+    problems.add('DATABASE_URL', 'STORAGE_DRIVER=postgres requires DATABASE_URL.');
+  }
+};
+
 /** Append-only: one line per rule. */
 export const HTTP_CHECKS: readonly HttpCheck[] = [
   oauthRefusesStaticYnab,
   oauthIssuerScheme,
   headerFallbackNeedsLoopback,
+  oauthStorageRequired,
 ];

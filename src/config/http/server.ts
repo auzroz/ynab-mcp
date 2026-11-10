@@ -1,5 +1,6 @@
 /** Listener, Host/Origin validation, proxy trust and logging. */
 
+import { isIP } from 'node:net';
 import { LOOPBACK_HOSTNAMES, parseAbsoluteUrl, parseBoolean, parseBoundedInteger, parseList } from '../parse.js';
 import type { HttpLoader } from './types.js';
 
@@ -28,11 +29,29 @@ export interface ServerSettings {
   logLevel: LogLevel;
 }
 
+/**
+ * Validate `MCP_BIND_HOST` as something `listen()` accepts: an IP literal
+ * (IPv6 without brackets) or a plain hostname. A bracketed `[::1]` is URL
+ * syntax and would be resolved as a hostname, so it is refused with a hint.
+ * Throws a value-free message.
+ */
+export function parseBindHost(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (isIP(value) !== 0) return value;
+  if (value.startsWith('[') || value.endsWith(']')) {
+    throw new Error('Invalid MCP_BIND_HOST. Write an IPv6 address without brackets (for example ::1).');
+  }
+  if (!/^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$/.test(value)) {
+    throw new Error('Invalid MCP_BIND_HOST. Expected an IP address or a hostname.');
+  }
+  return value;
+}
+
 /** Whether a bind address only accepts connections from this machine. */
 export function isLoopbackBind(host: string | undefined): boolean {
   if (host === undefined) return false;
   const h = host.toLowerCase();
-  return LOOPBACK_HOSTNAMES.has(h) || h === '::1' || /^127(\.\d{1,3}){3}$/.test(h);
+  return h === 'localhost' || h === '::1' || (isIP(h) === 4 && h.startsWith('127.'));
 }
 
 export const loadServerSettings: HttpLoader<ServerSettings> = ({ env, problems }) => {
@@ -77,7 +96,7 @@ export const loadServerSettings: HttpLoader<ServerSettings> = ({ env, problems }
 
   return {
     port,
-    bindHost: env['MCP_BIND_HOST'] || undefined,
+    bindHost: problems.capture('MCP_BIND_HOST', () => parseBindHost(env['MCP_BIND_HOST']), undefined),
     publicUrl,
     allowedHosts,
     allowedOrigins,

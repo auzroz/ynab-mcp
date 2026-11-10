@@ -371,6 +371,7 @@ Serve behind TLS; this mode has no per-user isolation beyond the token you send.
 > `YNAB_ACCESS_TOKEN`.** The proxy connects over loopback, so the startup check
 > passes while every request through it without `X-YNAB-Token` acts as you.
 > Behind a proxy, omit `YNAB_ACCESS_TOKEN` or restrict access at the proxy.
+
 Tokens aren't validated at `initialize`, so anyone who can reach `/mcp` can use up
 `MCP_MAX_SESSIONS` (see [Sessions](#sessions)); keep it off the public internet or
 restrict access at the proxy.

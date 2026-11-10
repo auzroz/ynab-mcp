@@ -168,8 +168,19 @@ describe('header mode with YNAB_ACCESS_TOKEN (bind rule)', () => {
     expect(failure({ ...withToken, MCP_BIND_HOST: '0.0.0.0' })).toMatch(/not bound to loopback/);
     expect(failure({ ...withToken, MCP_BIND_HOST: '10.0.0.5' })).toMatch(/not bound to loopback/);
   });
-  it.each(['127.0.0.1', '127.1.2.3', 'localhost', '::1', '[::1]'])('accepts loopback bind %s', (host) => {
+  it.each(['127.0.0.1', '127.1.2.3', 'localhost', '::1'])('accepts loopback bind %s', (host) => {
     expect(loadHttpConfig({ ...withToken, MCP_BIND_HOST: host }).bindHost).toBe(host);
+  });
+  it('refuses a bracketed IPv6 bind (listen() would resolve it as a hostname) and junk, without echoing it', () => {
+    const msg = failure({ ...HEADER_ENV, MCP_BIND_HOST: '[::1]' });
+    expect(msg).toMatch(/MCP_BIND_HOST.*without brackets/);
+    const junk = failure({ ...HEADER_ENV, MCP_BIND_HOST: 'pa ss:word@host' });
+    expect(junk).toMatch(/MCP_BIND_HOST/);
+    expect(junk).not.toContain('pa ss');
+  });
+  it('accepts a hostname bind, which is not loopback unless localhost', () => {
+    expect(loadHttpConfig({ ...HEADER_ENV, MCP_BIND_HOST: 'app.internal' }).bindHost).toBe('app.internal');
+    expect(failure({ ...withToken, MCP_BIND_HOST: 'app.internal' })).toMatch(/not bound to loopback/);
   });
   it('accepts a non-loopback bind with MCP_ALLOW_ANONYMOUS_FALLBACK=true', () => {
     const c = loadHttpConfig({ ...withToken, MCP_ALLOW_ANONYMOUS_FALLBACK: 'true' });
@@ -187,6 +198,19 @@ describe('header mode with YNAB_ACCESS_TOKEN (bind rule)', () => {
     expect(isLoopbackBind('0.0.0.0')).toBe(false);
     expect(isLoopbackBind('::')).toBe(false);
     expect(isLoopbackBind('127.0.0.1')).toBe(true);
+  });
+});
+
+describe('storage location in oauth mode', () => {
+  it('sqlite needs SQLITE_PATH and postgres needs DATABASE_URL, listed with other problems', () => {
+    const msg = failure({ ...OAUTH_ENV, STORAGE_DRIVER: 'sqlite', RATE_LIMIT_PER_HOUR: '0' });
+    expect(msg).toContain('SQLITE_PATH');
+    expect(msg).toContain('RATE_LIMIT_PER_HOUR');
+    expect(failure({ ...OAUTH_ENV, STORAGE_DRIVER: 'postgres' })).toContain('DATABASE_URL');
+  });
+  it('accepts them when set, and header mode does not need them', () => {
+    expect(() => loadHttpConfig({ ...OAUTH_ENV, STORAGE_DRIVER: 'sqlite', SQLITE_PATH: '/data/x.db' })).not.toThrow();
+    expect(() => loadHttpConfig({ ...HEADER_ENV, STORAGE_DRIVER: 'sqlite' })).not.toThrow();
   });
 });
 

@@ -65,6 +65,16 @@ describe('HTTP transport (oauth mode)', () => {
     expect(res.body).toEqual({ status: 'ok' });
   });
 
+  it('POST /mcp with only an X-YNAB-Token header (header-mode credential) → 401 in oauth mode', async () => {
+    const app = await createHttpApp(makeConfig());
+    const res = await request(app)
+      .post('/mcp')
+      .set('Accept', 'application/json, text/event-stream')
+      .set('X-YNAB-Token', 'dummy-ynab-token')
+      .send(initializeBody);
+    expect(res.status).toBe(401);
+  });
+
   it('POST /mcp initialize without a bearer token → 401', async () => {
     const app = await createHttpApp(makeConfig());
     const res = await request(app)

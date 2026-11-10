@@ -154,7 +154,7 @@ volumes: { ynab-data: {} }</code></pre>
           </div>
           <div class="callout note">
             <span class="callout-title">Single-user header mode</span>
-            <p>Without the OAuth settings, HTTP mode takes a YNAB token per request in an <code>X-YNAB-Token</code> header. It is meant for a personal instance on a private network behind TLS. For anything shared or public, use OAuth mode.</p>
+            <p>With <code>AUTH_MODE=header</code>, HTTP mode takes a YNAB token per request in an <code>X-YNAB-Token</code> header. It is meant for a personal instance on a private network behind TLS. For anything shared or public, use OAuth mode.</p>
           </div>
         </section>
 
