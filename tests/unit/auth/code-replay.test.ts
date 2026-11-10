@@ -368,6 +368,7 @@ for (const driver of drivers) {
 
     it('a code from before the tombstones (no access level or resource) still redeems', async () => {
       const client = await newClient();
+      await storage.upsertUser({ userId: 'legacy-user', grantedScope: 'read-only', encryptedRefreshToken: 'x', updatedAt: Date.now() });
       await storage.saveAuthCode({
         code: 'legacy-code',
         clientId: client.client_id,

@@ -106,9 +106,9 @@ export interface MigrationTx {
 
 /**
  * The version of this release's schema: the highest step applied. Bump it with
- * each step (M1 is 2, and so on).
+ * each step (M1 is 2, M2 is 3, and so on).
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** The release these migrations ship in. A database stamped with a newer floor is refused. */
 export const STORAGE_RELEASE = '0.5.0';
@@ -172,6 +172,18 @@ export const ADDED_COLUMNS: readonly AddedColumn[] = [
   // 0.4.0: refresh-token family (RFC 9700 section 4.14.2) on tokens.
   { table: 'access_tokens', column: 'family_id', type: 'TEXT' },
   { table: 'refresh_tokens', column: 'family_id', type: 'TEXT' },
+  // M2 (#53, #54): retention clocks and deletion by user. Epoch ms from the
+  // storage clock. `users.created_at` is written only when a user row is
+  // inserted and is never backfilled (NULL reads as 0); the others are
+  // backfilled by `m2-retention-clocks`. `last_authorized_at` is the last
+  // completed code exchange of a client (the abandoned-registration rule).
+  { table: 'users', column: 'created_at', type: 'BIGINT' },
+  { table: 'access_tokens', column: 'issued_at', type: 'BIGINT' },
+  { table: 'refresh_tokens', column: 'issued_at', type: 'BIGINT' },
+  { table: 'refresh_tokens', column: 'family_created_at', type: 'BIGINT' },
+  { table: 'consumed_refresh_tokens', column: 'user_id', type: 'TEXT' },
+  { table: 'oauth_clients', column: 'created_at', type: 'BIGINT' },
+  { table: 'oauth_clients', column: 'last_authorized_at', type: 'BIGINT' },
 ];
 
 /** Indexes added since 0.3.x, created after {@link ADDED_COLUMNS}. */
@@ -185,13 +197,52 @@ export const ADDED_INDEXES: readonly AddedIndex[] = [
   // the code-replay revocation writes them in.
   { name: 'consumed_auth_codes_expires_at', table: 'consumed_auth_codes', column: 'expires_at' },
   { name: 'consumed_auth_codes_user_id', table: 'consumed_auth_codes', column: 'user_id' },
+  // M2: deletion by user, the expiry sweep, and refresh-token expiry. Every
+  // table here already had its lock taken by ADDED_COLUMNS above (an ALTER
+  // runs even when the column exists), so the lock order is unchanged.
+  { name: 'access_tokens_user_id', table: 'access_tokens', column: 'user_id' },
+  { name: 'refresh_tokens_user_id', table: 'refresh_tokens', column: 'user_id' },
+  { name: 'auth_codes_user_id', table: 'auth_codes', column: 'user_id' },
+  { name: 'consumed_refresh_tokens_user_id', table: 'consumed_refresh_tokens', column: 'user_id' },
+  { name: 'access_tokens_expires_at', table: 'access_tokens', column: 'expires_at' },
+  { name: 'auth_codes_expires_at', table: 'auth_codes', column: 'expires_at' },
+  { name: 'pending_auth_expires_at', table: 'pending_auth', column: 'expires_at' },
+  { name: 'refresh_tokens_issued_at', table: 'refresh_tokens', column: 'issued_at' },
+  { name: 'refresh_tokens_family_created_at', table: 'refresh_tokens', column: 'family_created_at' },
 ];
 
 /**
- * App-side data steps, run in `version` order under the migrate lock on every
- * startup; each must be idempotent (see {@link Backfill}). Empty at M0.
+ * M2: start the retention clocks of rows written before 0.5.0 (or since, by a
+ * 0.4.x replica) at one instant, the migration's `now`: so nobody is logged
+ * out by the upgrade, the 30- and 90-day clocks start at the upgrade, and the
+ * abandoned-registration sweep reaches registrations made before it. Only NULLs
+ * are touched, so a re-run writes nothing. `users.created_at` stays NULL: a
+ * user who existed before the upgrade has no generation to compare with.
+ * A client that holds a refresh token has completed an authorization, so it
+ * gets `last_authorized_at` too and is not mistaken for an abandoned one.
  */
-export const BACKFILLS: readonly Backfill[] = [];
+const M2_RETENTION_CLOCKS: Backfill = {
+  version: 3,
+  name: 'm2-retention-clocks',
+  async run({ now, tx }) {
+    await tx.exec('UPDATE access_tokens SET issued_at = $1 WHERE issued_at IS NULL', [now]);
+    await tx.exec('UPDATE refresh_tokens SET issued_at = $1 WHERE issued_at IS NULL', [now]);
+    await tx.exec('UPDATE refresh_tokens SET family_created_at = $1 WHERE family_created_at IS NULL', [now]);
+    await tx.exec('UPDATE oauth_clients SET created_at = $1 WHERE created_at IS NULL', [now]);
+    await tx.exec(
+      `UPDATE oauth_clients SET last_authorized_at = $1
+       WHERE last_authorized_at IS NULL
+         AND EXISTS (SELECT 1 FROM refresh_tokens r WHERE r.client_id = oauth_clients.client_id)`,
+      [now]
+    );
+  },
+};
+
+/**
+ * App-side data steps, run in `version` order under the migrate lock on every
+ * startup; each must be idempotent (see {@link Backfill}).
+ */
+export const BACKFILLS: readonly Backfill[] = [M2_RETENTION_CLOCKS];
 
 /** Everything {@link applyMigrations} applies; tests pass their own. */
 export interface MigrationPlan {

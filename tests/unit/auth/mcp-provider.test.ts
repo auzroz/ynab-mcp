@@ -82,6 +82,19 @@ function makeProvider(overrides: Partial<McpProviderOptions> = {}): {
   return { provider, storage, encryptor };
 }
 
+/**
+ * The user row a 0.3.x / 0.4.x token belongs to: consent creates it before any
+ * code or token, and storage reads a token without one as unknown.
+ */
+async function seedYnabUser(storage: MemoryStorage): Promise<void> {
+  await storage.upsertUser({
+    userId: 'ynab-user-1',
+    grantedScope: 'read-write',
+    encryptedRefreshToken: 'x',
+    updatedAt: Date.now(),
+  });
+}
+
 const clientMetadata: OAuthClientMetadata = {
   redirect_uris: ['https://client/cb'],
   client_name: 'Test Client',
@@ -661,6 +674,7 @@ describe('McpOAuthProvider resource binding: /token (authorization_code)', () =>
   it('exchanges a 0.3.x code (no stored resource) and binds the new tokens', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    await seedYnabUser(storage);
     await storage.saveAuthCode({
       code: 'legacy-code',
       clientId: client.client_id,
@@ -735,6 +749,7 @@ describe('McpOAuthProvider resource binding: /token (refresh_token)', () => {
   it('refreshes a 0.3.x refresh token (no stored resource) and binds the new tokens', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    await seedYnabUser(storage);
     await storage.saveRefreshToken({
       token: 'legacy-rt',
       clientId: client.client_id,
@@ -887,6 +902,7 @@ describe('McpOAuthProvider refresh validation (before the token is spent)', () =
   it('a stale resource binding is rejected without spending the refresh token', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    await seedYnabUser(storage);
     await storage.saveRefreshToken({
       token: 'stale-rt',
       clientId: client.client_id,
@@ -955,6 +971,7 @@ describe('McpOAuthProvider refresh validation (before the token is spent)', () =
 describe('McpOAuthProvider.verifyAccessToken resource checks', () => {
   it('accepts a 0.3.x access token (no stored resource) and reports this resource', async () => {
     const { provider, storage } = makeProvider();
+    await seedYnabUser(storage);
     await storage.saveAccessToken({
       token: 'legacy-at',
       clientId: 'c1',
@@ -1240,6 +1257,7 @@ describe('McpOAuthProvider per-grant access level', () => {
   it('a pre-0.4.0 refresh token or code yields read-only tokens', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    await seedYnabUser(storage);
     await storage.saveRefreshToken({
       token: 'legacy-rt',
       clientId: client.client_id,
@@ -1406,6 +1424,11 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
       expiresAt: rotatedAt + REFRESH_TOKEN_REUSE_WINDOW_MS,
     });
 
+    // The grant stays in use (a refresh token idle for the whole window would
+    // itself have expired, #54).
+    vi.setSystemTime(rotatedAt + REFRESH_TOKEN_REUSE_WINDOW_MS / 2);
+    const current = await provider.exchangeRefreshToken(client, refreshOf(rotated));
+
     // Past the window the replay is an unknown token: refused, nothing revoked.
     vi.setSystemTime(rotatedAt + REFRESH_TOKEN_REUSE_WINDOW_MS + 1);
     const del = vi.spyOn(storage, 'deleteTokenFamily');
@@ -1413,7 +1436,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
       InvalidGrantError
     );
     expect(del).not.toHaveBeenCalled();
-    await expect(provider.exchangeRefreshToken(client, refreshOf(rotated))).resolves.toHaveProperty(
+    await expect(provider.exchangeRefreshToken(client, refreshOf(current))).resolves.toHaveProperty(
       'access_token'
     );
   });
@@ -1424,16 +1447,20 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     const { client, tokens } = await driveToTokens(provider);
     const t0 = Date.now();
     const rotated = await provider.exchangeRefreshToken(client, refreshOf(tokens));
+    // Refreshed again mid-window, so no refresh token sits idle long enough to expire (#54).
+    vi.setSystemTime(t0 + REFRESH_TOKEN_REUSE_WINDOW_MS / 2);
+    const again = await provider.exchangeRefreshToken(client, refreshOf(rotated));
 
     vi.setSystemTime(t0 + REFRESH_TOKEN_REUSE_WINDOW_MS + 1);
-    await provider.exchangeRefreshToken(client, refreshOf(rotated));
+    await provider.exchangeRefreshToken(client, refreshOf(again));
 
     // Back inside the first tombstone's window it would still be readable, had
-    // it not been pruned; the second tombstone is kept.
+    // it not been pruned; the later tombstones are kept.
     vi.setSystemTime(t0);
     expect(await storage.getConsumedRefreshToken(refreshOf(tokens))).toBeUndefined();
     vi.setSystemTime(t0 + REFRESH_TOKEN_REUSE_WINDOW_MS + 1);
     expect(await storage.getConsumedRefreshToken(refreshOf(rotated))).toBeDefined();
+    expect(await storage.getConsumedRefreshToken(refreshOf(again))).toBeDefined();
   });
 
   it('a refresh token presented by another client takes its family with it', async () => {
@@ -1475,6 +1502,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
   it('a 0.3.x refresh token (no family) refreshes into a new family that its replay revokes', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    await seedYnabUser(storage);
     await storage.saveRefreshToken({
       token: 'legacy-rt',
       clientId: client.client_id,
@@ -1501,6 +1529,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
       scopes: [],
       expiresAt: Date.now() + 60_000,
     };
+    await seedYnabUser(storage);
     await storage.saveAccessToken(legacyAt);
     const del = vi.spyOn(storage, 'deleteTokenFamily');
     await expect(provider.exchangeRefreshToken(client, 'spent-by-0.3.x')).rejects.toBeInstanceOf(

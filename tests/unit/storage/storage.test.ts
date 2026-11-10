@@ -112,6 +112,8 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
 
     beforeEach(async () => {
       storage = await factory();
+      // The fixtures' tokens belong to user-1; a token without its user row reads as unknown.
+      await storage.upsertUser(makeUser({ userId: 'user-1' }));
     });
 
     afterAll(async () => {
@@ -124,7 +126,8 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
         await storage.upsertUser(user);
 
         const fetched = await storage.getUser(user.userId);
-        expect(fetched).toEqual(user);
+        expect(fetched).toEqual({ ...user, createdAt: expect.any(Number) });
+        const createdAt = fetched?.createdAt;
 
         const updated = makeUser({
           userId: user.userId,
@@ -132,8 +135,9 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
           encryptedRefreshToken: 'new-token',
           updatedAt: user.updatedAt + 1000,
         });
-        await storage.upsertUser(updated);
-        expect(await storage.getUser(user.userId)).toEqual(updated);
+        await storage.upsertUser({ ...updated, createdAt: 1 });
+        // An update keeps the insert's created_at, whatever the record says.
+        expect(await storage.getUser(user.userId)).toEqual({ ...updated, createdAt });
 
         await storage.deleteUser(user.userId);
         expect(await storage.getUser(user.userId)).toBeUndefined();
@@ -606,13 +610,18 @@ async function checkLegacyUpgrade(
     expect((await first.getAccessToken('legacy-at'))?.familyId).toBeUndefined();
 
     await first.saveAccessToken(
-      makeAccessToken({ token: 'new-at', resource: 'https://r.example/mcp', grantedScope: 'read-write' })
+      makeAccessToken({
+        token: 'new-at',
+        userId: 'legacy-user',
+        resource: 'https://r.example/mcp',
+        grantedScope: 'read-write',
+      })
     );
     const rotated = await first.rotateRefreshToken(
       'legacy-rt-2',
       makeRotation('legacy-family', {
-        accessToken: makeAccessToken({ token: 'family-at', familyId: 'legacy-family' }),
-        refreshToken: makeRefreshToken({ token: 'family-rt', familyId: 'legacy-family' }),
+        accessToken: makeAccessToken({ token: 'family-at', userId: 'legacy-user', familyId: 'legacy-family' }),
+        refreshToken: makeRefreshToken({ token: 'family-rt', userId: 'legacy-user', familyId: 'legacy-family' }),
       })
     );
     expect(rotated).toMatchObject({ token: 'legacy-rt-2', clientId: 'c1', familyId: undefined });
@@ -791,6 +800,7 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
         () => new PostgresStorage({ connectionString: url.toString() })
       );
       await Promise.all(replicas.map((r) => r.init()));
+      await replicas[0]?.upsertUser(makeUser({ userId: 'user-1' }));
       await replicas[0]?.saveAccessToken(makeAccessToken({ token: 'at-1', resource: 'https://r/mcp' }));
       expect((await replicas[1]?.getAccessToken('at-1'))?.resource).toBe('https://r/mcp');
       await Promise.all(replicas.map((r) => r.close()));
@@ -820,6 +830,7 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
       if (!connectionString) throw new Error('DATABASE_URL not set');
       const storage = new PostgresStorage({ connectionString });
       await storage.init();
+      await storage.upsertUser(makeUser({ userId: 'user-1' }));
       const raw = new pg.Pool({ connectionString });
       return { storage, raw, LOCK_FAMILY };
     }
@@ -918,11 +929,11 @@ function makeConsumption(familyId: string = randomUUID()): { familyId: string; c
 }
 
 /** The pair issued for a spent code, in `familyId`. */
-function makeCodeTokens(familyId: string) {
+function makeCodeTokens(familyId: string, userId = 'user-1') {
   return {
     familyId,
-    accessToken: makeAccessToken({ familyId }),
-    refreshToken: makeRefreshToken({ familyId }),
+    accessToken: makeAccessToken({ familyId, userId }),
+    refreshToken: makeRefreshToken({ familyId, userId }),
   };
 }
 
@@ -932,6 +943,8 @@ function runCodeTombstoneConformance(name: string, factory: () => Promise<Storag
 
     beforeEach(async () => {
       storage = await factory();
+      // The fixtures' tokens belong to user-1; a token without its user row reads as unknown.
+      await storage.upsertUser(makeUser({ userId: 'user-1' }));
     });
 
     afterEach(async () => {
@@ -1182,7 +1195,7 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage code tombsto
       expect(
         await s.consumeAuthCode('legacy-code', { familyId, consumedUntil: Date.now() + 600_000 })
       ).toMatchObject({ code: 'legacy-code', userId: 'legacy-user', grantedScope: undefined });
-      expect(await s.saveCodeTokens('legacy-code', makeCodeTokens(familyId))).toBe(true);
+      expect(await s.saveCodeTokens('legacy-code', makeCodeTokens(familyId, 'legacy-user'))).toBe(true);
     } finally {
       await s.close();
     }
@@ -1249,7 +1262,7 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage c
         expect(
           await s.consumeAuthCode('legacy-code', { familyId, consumedUntil: Date.now() + 600_000 })
         ).toMatchObject({ code: 'legacy-code', userId: 'legacy-user', grantedScope: undefined });
-        expect(await s.saveCodeTokens('legacy-code', makeCodeTokens(familyId))).toBe(true);
+        expect(await s.saveCodeTokens('legacy-code', makeCodeTokens(familyId, 'legacy-user'))).toBe(true);
       } finally {
         await s.close();
       }
@@ -1480,6 +1493,7 @@ function checkMigrations(getRaw: () => Promise<RawDb>): void {
   it('migrating twice is a no-op, and keeps the data', async () => {
     const raw = await getRaw();
     const first = await raw.open();
+    await first.upsertUser(makeUser({ userId: 'user-1' }));
     await first.saveAccessToken(makeAccessToken({ token: 'twice-at', resource: 'https://r/mcp' }));
     await first.close();
     const afterFirst = await raw.snapshot();
@@ -1558,6 +1572,7 @@ describe('MemoryStorage migrations', () => {
   it('init() twice is a no-op that keeps the data', async () => {
     const s = new MemoryStorage();
     await s.init();
+    await s.upsertUser(makeUser({ userId: 'user-1' }));
     await s.saveAccessToken(makeAccessToken({ token: 'mem-at' }));
     await s.init();
     expect((await s.getAccessToken('mem-at'))?.token).toBe('mem-at');
@@ -1565,6 +1580,7 @@ describe('MemoryStorage migrations', () => {
 
   it('reads an unexpected granted_scope as read-only', async () => {
     const s = new MemoryStorage();
+    await s.upsertUser(makeUser({ userId: 'user-1' }));
     const bogus = 'admin' as unknown as 'read-write';
     await s.upsertUser(makeUser({ userId: 'u', grantedScope: bogus }));
     expect((await s.getUser('u'))?.grantedScope).toBe('read-only');
@@ -1582,6 +1598,7 @@ describe('MemoryStorage migrations', () => {
 
   it('keeps read-write and a missing level as stored', async () => {
     const s = new MemoryStorage();
+    await s.upsertUser(makeUser({ userId: 'user-1' }));
     await s.saveAccessToken(makeAccessToken({ token: 'rw', grantedScope: 'read-write' }));
     expect((await s.getAccessToken('rw'))?.grantedScope).toBe('read-write');
     await s.saveAccessToken(makeAccessToken({ token: 'none' }));
