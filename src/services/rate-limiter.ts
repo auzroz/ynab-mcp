@@ -245,7 +245,7 @@ export class RateLimiter {
 
   private throwIfExhaustedByYnab(): void {
     const remaining = this.ynabExhaustedUntil - this.now();
-    if (remaining > 0) throw new RateLimitError(remaining);
+    if (remaining > 0) throw this.reject(remaining);
   }
 
   private reject(waitMs: number): RateLimitError {

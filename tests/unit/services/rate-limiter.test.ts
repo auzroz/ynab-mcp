@@ -172,6 +172,14 @@ describe('RateLimiter fail-fast acquire (fake timers)', () => {
     expect(() => new RateLimiter(10, Date.now, Number.NaN)).toThrow(/maxWaitMs/);
   });
 
+  it('counts refusals during a YNAB 429 lockout in rejectedLastHour', async () => {
+    const limiter = new RateLimiter(100, Date.now, 0);
+    limiter.markExhaustedByYnab('30');
+    await limiter.acquire().catch(() => undefined);
+    await limiter.acquire().catch(() => undefined);
+    expect(limiter.getStatus().rejectedLastHour).toBe(2);
+  });
+
   it('does not spend a token on a rejection, and counts usage and rejections in getStatus', async () => {
     const limiter = new RateLimiter(2, Date.now, 0);
     await limiter.acquire();

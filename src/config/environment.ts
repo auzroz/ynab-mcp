@@ -5,7 +5,11 @@
  */
 
 import { z } from 'zod';
-import { parseRateLimitMaxWaitMs } from './rate-limit.js';
+import {
+  parseRateLimitMaxWaitMs,
+  RATE_LIMIT_MAX_WAIT_DEFAULT_MS,
+  RATE_LIMIT_MAX_WAIT_MAX_MS,
+} from './rate-limit.js';
 import { budgetIdSentinel, ynabId } from '../utils/schemas.js';
 
 const configSchema = z.object({
@@ -14,7 +18,12 @@ const configSchema = z.object({
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   cacheTtlMs: z.number().int().positive().default(300000), // 5 minutes
   rateLimitPerHour: z.number().int().min(1).max(200).default(180),
-  rateLimitMaxWaitMs: z.number().int().min(0).max(60000).default(2000),
+  rateLimitMaxWaitMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(RATE_LIMIT_MAX_WAIT_MAX_MS)
+    .default(RATE_LIMIT_MAX_WAIT_DEFAULT_MS),
   readOnly: z.boolean().default(true), // Safety: read-only by default
 });
 
