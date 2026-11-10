@@ -5,6 +5,15 @@ scratch repository, so the first gated release of `auzroz/ynab-mcp` is not also
 the first time the workflow runs. It takes about an hour, most of it waiting for
 the image builds.
 
+**Optional since 0.5.0.** The maintainer proves the tag path with a release
+candidate instead (`v0.5.0-rc.1`, CONTRIBUTING.md "Release candidates"). It
+covers check 2 for real, and check 3 when section 4's commands are run against
+the candidate (`SCRATCH=auzroz/ynab-mcp`, without the negative check). It
+publishes npm under `next` instead of check 4's dry run. The `v*`
+tag ruleset now restricts tag creation to the maintainer, which covers most of
+check 1. The admin checklist below still applies. The scratch-repo steps remain
+for a tag-path change that should be tried without publishing anything.
+
 The rehearsal proves four things (plan gate G16b):
 
 1. **Ancestry check.** A tag on a commit that is not on `main` or a `release/*`

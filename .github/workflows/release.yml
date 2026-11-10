@@ -488,13 +488,15 @@ jobs:
 
   # Opt-in: claiming the io.github.auzroz namespace is the maintainer's decision.
   # Enable by setting the repository variable PUBLISH_MCP_REGISTRY=true.
+  # Skipped for a prerelease (a '-' in the tag), so a release candidate never
+  # becomes the version the registry lists.
   # Nothing else depends on this job, so a registry failure never blocks the GitHub release.
   mcp-registry:
     name: 'Release: MCP Registry'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [npm-publish, docker]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'auzroz/ynab-mcp' && vars.PUBLISH_MCP_REGISTRY == 'true'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'auzroz/ynab-mcp' && vars.PUBLISH_MCP_REGISTRY == 'true' && !contains(github.ref, '-')
     permissions:
       contents: read
       id-token: write

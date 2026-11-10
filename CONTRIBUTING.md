@@ -187,7 +187,7 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
    - first `Release: Publish image`: push, build provenance attestation, and an SBOM attestation of the production npm dependencies (the image's OS packages are only in its unsigned BuildKit SBOM);
    - then `Release: Publish npm`: provenance attestation over every file in `SHA256SUMS`, SBOM attestation, `npm publish` of the packed tarball with no checkout and no install.
 
-   Only these jobs and `Release: MCP Registry` (which runs after both, if `PUBLISH_MCP_REGISTRY` is set) hold `id-token: write`.
+   Only these jobs and `Release: MCP Registry` (which runs after both, if `PUBLISH_MCP_REGISTRY` is set and the version is not a prerelease) hold `id-token: write`.
 6. **GitHub release.** It is created after both publish jobs succeed. Verify the result:
 
    ```bash
@@ -196,7 +196,15 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
    npm view ynab-mcp@X.Y.Z dist.attestations
    ```
 
-**Pull requests that touch `release.yml`, `Dockerfile`, `.dockerignore` or `package*.json`** also run the release workflow's checks: verify, test, build and pack, and both image builds. They use no environment and no `id-token`, and they must be green before merge. Changes to the tag path are rehearsed first in a scratch repository, following [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md).
+**Release candidates.** A release with breaking changes, or the first release after a change to the tag path, goes out first as a candidate `X.Y.Z-rc.N`. Its release PR (the version bump only, no CHANGELOG entry) merges into `release/x.y.z`, not `main`. Run the dry run with `--ref release/x.y.z` and tag that merge commit: `Release: Verify` accepts a commit on a `release/*` branch. Both approvals still apply. A version with a `-`:
+- publishes to npm under the `next` dist-tag, so `npx ynab-mcp` keeps installing the last stable release, and testers use `npx -y ynab-mcp@next`;
+- pushes only the exact image tag `X.Y.Z-rc.N` (never `latest`, `X.Y` or `X`);
+- creates a GitHub prerelease;
+- skips the MCP Registry.
+
+Verify all of it, not only step 6: run the commands in section 4 of [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md) with `SCRATCH=auzroz/ynab-mcp`, `V=X.Y.Z-rc.N` and `WORK` set to an empty directory, leaving out the negative check at its end. They check `SHA256SUMS` against the downloaded release files, build provenance on every file in it, the SBOM attestation on the tarball, and provenance and SBOM attestations on the image. The final release then bumps to `X.Y.Z` and follows the steps above. Afterwards `next` still points at the candidate: move it with `npm dist-tag add ynab-mcp@X.Y.Z next` from your own terminal.
+
+**Pull requests that touch `release.yml`, `Dockerfile`, `.dockerignore` or `package*.json`** also run the release workflow's checks: verify, test, build and pack, and both image builds. They use no environment and no `id-token`, and they must be green before merge. A change to the tag path is proven by the next release candidate (above), or, without publishing anything, in a scratch repository following [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md).
 
 **If a publish job fails.** Tags can't be moved or re-pushed, so re-run **only the failed jobs** from the run page (not the whole run, which would rebuild `release-dist` under the published image). Each re-run asks for approval again. The npm job publishes stable versions as `latest`, so before re-running it, check `npm view ynab-mcp dist-tags.latest`: if a newer version already holds `latest`, don't re-run it, and finish by hand below with `--tag previous`. **Finish within 30 days of the original run:** GitHub allows re-runs only for 30 days, and an approval request also expires after 30. The `release-dist` artifact is kept for 90 days, but that doesn't extend the re-run window. If npm still can't be published from the workflow, the maintainer has two ways out:
 - cut the next patch version instead (preferred: the whole release then runs through the gate);
@@ -209,7 +217,7 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
    - `npm dist-tag ls ynab-mcp`: if a newer version already holds `latest`, use `--tag previous` in step 3 instead, so `latest` never moves backwards.
 3. Publish npm from your own terminal with 2FA: `npm publish ./release-dist/ynab-mcp-X.Y.Z.tgz --tag latest` (the `./` makes npm read it as a local file), or `--tag next` for a prerelease (a version with a `-`), as the workflow does. This copy has no npm provenance.
 4. Create the GitHub release from the same files: `gh release create vX.Y.Z release-dist/* --verify-tag --generate-notes`, adding `--prerelease` for a version with a `-`. Copy the install and verification text from the `Create GitHub Release` step in `release.yml` into the notes, replacing each `${{ ... }}` expression with its value (`env.VERSION` is `X.Y.Z`, `github.repository` is `auzroz/ynab-mcp`, `github.ref` is `refs/tags/vX.Y.Z`), and remove or correct any claim the run didn't fulfil: if the npm job failed before its provenance or SBOM attestation step, say which files lack that attestation and drop the matching verify command.
-5. If the `PUBLISH_MCP_REGISTRY` variable is `true` (the workflow's condition), publish `server.json` from the tagged commit with `mcp-publisher login github` and `mcp-publisher publish server.json` (the version the workflow pins, `MCP_PUBLISHER_VERSION` in `release.yml`).
+5. If the `PUBLISH_MCP_REGISTRY` variable is `true` and the version has no `-` (the workflow's condition), publish `server.json` from the tagged commit with `mcp-publisher login github` and `mcp-publisher publish server.json` (the version the workflow pins, `MCP_PUBLISHER_VERSION` in `release.yml`).
 
 ### Settings the gate relies on
 
