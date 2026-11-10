@@ -165,7 +165,13 @@ export function sanitizeErrorMessage(
 }
 
 /** Environment variables whose values are secrets (DATABASE_URL may hold a password). */
-const SECRET_ENV_VARS = ['YNAB_ACCESS_TOKEN', 'YNAB_OAUTH_CLIENT_SECRET', 'ENCRYPTION_KEY', 'DATABASE_URL'] as const;
+const SECRET_ENV_VARS = [
+  'YNAB_ACCESS_TOKEN',
+  'YNAB_OAUTH_CLIENT_SECRET',
+  'ENCRYPTION_KEY',
+  'TOKEN_PEPPER',
+  'DATABASE_URL',
+] as const;
 
 /**
  * Replace the exact values of secret environment variables in a message.

@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import { budgetIdSentinel, ynabId } from '../utils/schemas.js';
+import { loadTokenConfig } from './http/tokens.js';
 
 const configSchema = z.object({
   accessToken: z.string().min(1, 'YNAB_ACCESS_TOKEN is required'),
@@ -125,6 +126,8 @@ export interface HttpConfig {
   oauthClientId: string | undefined;
   oauthClientSecret: string | undefined;
   encryptionKey: string | undefined;
+  /** `TOKEN_PEPPER` (src/config/http/tokens.ts); undefined means derive it from ENCRYPTION_KEY. */
+  tokenPepper?: string | undefined;
   allowWrite: boolean;
   accessTokenTtlSec: number;
   authCodeTtlSec: number;
@@ -242,6 +245,7 @@ export function loadHttpConfig(): HttpConfig {
     oauthClientId,
     oauthClientSecret,
     encryptionKey,
+    ...loadTokenConfig(process.env),
     allowWrite: parseBoolean(process.env['YNAB_OAUTH_ALLOW_WRITE'], true, 'YNAB_OAUTH_ALLOW_WRITE'),
     accessTokenTtlSec: parseInteger(process.env['MCP_ACCESS_TOKEN_TTL_SEC'], 3600, 'MCP_ACCESS_TOKEN_TTL_SEC'),
     authCodeTtlSec: parseInteger(process.env['MCP_AUTH_CODE_TTL_SEC'], 600, 'MCP_AUTH_CODE_TTL_SEC'),
