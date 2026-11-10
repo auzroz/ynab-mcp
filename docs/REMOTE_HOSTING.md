@@ -39,7 +39,7 @@ Set these environment variables (see `.env.example`):
 | `PUBLIC_URL` | yes | Public HTTPS base URL, e.g. `https://ynab-mcp.example.com`. It is also the OAuth issuer, so for local http testing use `http://localhost` or `http://127.0.0.1`: the server refuses to start with `http://[::1]` in OAuth mode |
 | `YNAB_OAUTH_CLIENT_ID` | yes | From step 1 |
 | `YNAB_OAUTH_CLIENT_SECRET` | yes | From step 1 |
-| `ENCRYPTION_KEY` | yes | 32-byte key for at-rest token encryption — `openssl rand -base64 32` |
+| `ENCRYPTION_KEY` | yes | 32-byte key for at-rest token encryption — `openssl rand -base64 32`. Unless `TOKEN_PEPPER` is set, the token-hash pepper is derived from it, so changing it then also refuses to start (see "Hashed tokens and the pepper") |
 | `TOKEN_PEPPER` | no | 32-byte secret (base64 or 64 hex characters) keying the hashes of stored MCP tokens, codes and state — `openssl rand -base64 32`. Default: derived from `ENCRYPTION_KEY`. Set it **before the first 0.5.0 start** if you want one; see "Hashed tokens and the pepper" |
 | `YNAB_OAUTH_ALLOW_WRITE` | no | Offer read-write at consent (default `true`; set `false` to force read-only) |
 | `STORAGE_DRIVER` | no | `memory` (default, **non-durable**), `sqlite`, or `postgres` |
@@ -381,7 +381,10 @@ any MCP client that supports the `prompts` capability:
 ## Security notes
 
 - YNAB refresh tokens are encrypted at rest with AES-256-GCM (`ENCRYPTION_KEY`).
-  Keep that key secret and stable; rotating it invalidates stored connections.
+  Keep that key secret and stable; rotating it invalidates stored connections,
+  and when `TOKEN_PEPPER` is unset it also changes the token-hash pepper, so
+  the server refuses to start until you follow "Changing TOKEN_PEPPER". Setting
+  an independent `TOKEN_PEPPER` before the first 0.5.0 start decouples the two.
 - MCP tokens, authorization codes and `state` are stored only as keyed hashes,
   and DCR client secrets only as SHA-256 hashes, so a copy of the database holds
   no usable MCP credential. A value that isn't a correctly tagged `ymcp1_` token
