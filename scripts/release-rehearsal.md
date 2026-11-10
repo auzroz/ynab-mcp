@@ -115,12 +115,11 @@ branch run whose `release.yml` was edited to add `id-token: write`. With it
 set, npm accepts only a job in the `production` environment, which step 3
 limits to `v*.*.*` tags and your approval.
 
-**From this moment, `main`'s current `release.yml` (no environment) can't
-publish to npm.** Don't push a `v0.4.x` tag on `main` until this `release.yml`
-is on `main`. If an emergency 0.4.x is needed before Dec 18, first merge this
-`release.yml` and `Dockerfile` into `main` with a PR, then release as in
-CONTRIBUTING.md. Don't clear the Environment field to make the old workflow
-work.
+**From this moment, npm accepts only a `release.yml` that runs its publish
+job in `production`.** `main` and `release/0.5.0` both have one (#84 brought
+it to `main`), so a 0.4.x patch tagged on `main` releases as in
+CONTRIBUTING.md. Any other branch whose `release.yml` predates #76 can't
+publish. Don't clear the Environment field to make an old workflow work.
 
 To check, open the package's Settings page and confirm the trusted publisher
 shows `release.yml` and `production`.
@@ -176,13 +175,14 @@ These are the scratch-repo steps of admin checklist step 6.
 
 ## 1. Prepare a rehearsal copy
 
-`REF` is the branch under test: the 62a PR head before it merges,
-`release/0.5.0` after.
+`REF` is the branch under test. Before a change to the release path merges,
+use its PR branch. After it merges, use `release/0.5.0` for a 0.5.0
+rehearsal, or `main` for a 0.4.x one.
 
 ```bash
 export PATH=/opt/homebrew/bin:$PATH
 SCRATCH=auzroz/ynab-mcp-release-rehearsal
-REF=feature/ws8.03-release-gate
+REF=release/0.5.0   # the branch under test (see above)
 V=0.0.0-rehearsal.1
 WORK="$(mktemp -d)"
 
@@ -230,14 +230,20 @@ git switch rehearsal-main
 ```
 
 Push `main` first, make it the default branch (step 5 dispatches on it), then
-push the other branch:
+push the other branch. A later rehearsal starts from a fresh clone, so its
+commits don't descend from the previous rehearsal's, and a plain push would be
+rejected. Each push therefore replaces the scratch branch, but only if it is
+still at the SHA read just before (empty on the first rehearsal, which means
+the branch must not exist yet):
 
 ```bash
 git remote add scratch "https://github.com/$SCRATCH.git"
-git push scratch rehearsal-main:refs/heads/main
+OLD_MAIN="$(git ls-remote scratch refs/heads/main | cut -f1)"
+OLD_OFF="$(git ls-remote scratch refs/heads/feature/not-a-release | cut -f1)"
+git push --force-with-lease="refs/heads/main:$OLD_MAIN" scratch rehearsal-main:refs/heads/main
 gh repo edit "$SCRATCH" --default-branch main
 gh repo view "$SCRATCH" --json defaultBranchRef --jq .defaultBranchRef.name   # expect main
-git push scratch feature/not-a-release:refs/heads/feature/not-a-release
+git push --force-with-lease="refs/heads/feature/not-a-release:$OLD_OFF" scratch feature/not-a-release:refs/heads/feature/not-a-release
 
 MAIN_SHA="$(git rev-parse rehearsal-main)"
 OFF_SHA="$(git rev-parse feature/not-a-release)"
