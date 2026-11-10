@@ -5,6 +5,15 @@ scratch repository, so the first gated release of `auzroz/ynab-mcp` is not also
 the first time the workflow runs. It takes about an hour, most of it waiting for
 the image builds.
 
+**Optional since 0.5.0.** The maintainer proves the tag path with a release
+candidate instead (`v0.5.0-rc.1`, CONTRIBUTING.md "Release candidates"). It
+covers check 2 for real, and check 3 when section 4's commands are run against
+the candidate (`SCRATCH=auzroz/ynab-mcp`, without the negative check). It
+publishes npm under `next` instead of check 4's dry run. The `v*`
+tag ruleset now restricts tag creation to the maintainer, which covers most of
+check 1. The admin checklist below still applies. The scratch-repo steps remain
+for a tag-path change that should be tried without publishing anything.
+
 The rehearsal proves four things (plan gate G16b):
 
 1. **Ancestry check.** A tag on a commit that is not on `main` or a `release/*`
@@ -115,12 +124,11 @@ branch run whose `release.yml` was edited to add `id-token: write`. With it
 set, npm accepts only a job in the `production` environment, which step 3
 limits to `v*.*.*` tags and your approval.
 
-**From this moment, `main`'s current `release.yml` (no environment) can't
-publish to npm.** Don't push a `v0.4.x` tag on `main` until this `release.yml`
-is on `main`. If an emergency 0.4.x is needed before Dec 18, first merge this
-`release.yml` and `Dockerfile` into `main` with a PR, then release as in
-CONTRIBUTING.md. Don't clear the Environment field to make the old workflow
-work.
+**From this moment, npm accepts only a `release.yml` that runs its publish
+job in `production`.** `main` and `release/0.5.0` both have one (#84 brought
+it to `main`), so a 0.4.x patch tagged on `main` releases as in
+CONTRIBUTING.md. Any other branch whose `release.yml` predates #76 can't
+publish. Don't clear the Environment field to make an old workflow work.
 
 To check, open the package's Settings page and confirm the trusted publisher
 shows `release.yml` and `production`.
@@ -136,19 +144,24 @@ This can't limit pushes to the `production` environment: any workflow run in
 residual risk is documented in CONTRIBUTING.md ("What the gate does not
 cover") and tracked as 62b.
 
-### 6. Thu Nov 12: the scratch repository
+### 6. Optional: the scratch repository
 
-Do "Before you start" below.
+Only if you also want a scratch rehearsal (see the note at the top). Do "Before
+you start" below. 0.5.0 skips this step.
 
-### 7. Thu Dec 3: the rehearsal
+### 7. Thu Dec 10: the release candidate
 
-Do sections 1 to 6 below and send the report.
+Follow CONTRIBUTING.md "Release candidates" for `v0.5.0-rc.1` (#86). A
+scratch rehearsal (sections 1 to 6 below) can come first, but it doesn't
+replace the candidate: it runs npm in dry-run mode outside this repository, so
+it never exercises the real publish.
 
 ### 8. Fri Dec 18: the release
 
 Follow CONTRIBUTING.md "How a release runs": merge the REL PR into `main`,
 dispatch the dry run on `main` (G16d), tag, approve the two prompts (image,
-then npm), and run the step 6 checks (G16e).
+then npm), and run the step 6 checks (G16e). Then move npm's `next` tag off
+the candidate: `npm dist-tag add ynab-mcp@0.5.0 next`.
 
 ## Before you start (one time)
 
@@ -176,13 +189,14 @@ These are the scratch-repo steps of admin checklist step 6.
 
 ## 1. Prepare a rehearsal copy
 
-`REF` is the branch under test: the 62a PR head before it merges,
-`release/0.5.0` after.
+`REF` is the branch under test. Before a change to the release path merges,
+use its PR branch. After it merges, use `release/0.5.0` for a 0.5.0
+rehearsal, or `main` for a 0.4.x one.
 
 ```bash
 export PATH=/opt/homebrew/bin:$PATH
 SCRATCH=auzroz/ynab-mcp-release-rehearsal
-REF=feature/ws8.03-release-gate
+REF=release/0.5.0   # the branch under test (see above)
 V=0.0.0-rehearsal.1
 WORK="$(mktemp -d)"
 
@@ -230,14 +244,20 @@ git switch rehearsal-main
 ```
 
 Push `main` first, make it the default branch (step 5 dispatches on it), then
-push the other branch:
+push the other branch. A later rehearsal starts from a fresh clone, so its
+commits don't descend from the previous rehearsal's, and a plain push would be
+rejected. Each push therefore replaces the scratch branch, but only if it is
+still at the SHA read just before (empty on the first rehearsal, which means
+the branch must not exist yet):
 
 ```bash
 git remote add scratch "https://github.com/$SCRATCH.git"
-git push scratch rehearsal-main:refs/heads/main
+OLD_MAIN="$(git ls-remote scratch refs/heads/main | cut -f1)"
+OLD_OFF="$(git ls-remote scratch refs/heads/feature/not-a-release | cut -f1)"
+git push --force-with-lease="refs/heads/main:$OLD_MAIN" scratch rehearsal-main:refs/heads/main
 gh repo edit "$SCRATCH" --default-branch main
 gh repo view "$SCRATCH" --json defaultBranchRef --jq .defaultBranchRef.name   # expect main
-git push scratch feature/not-a-release:refs/heads/feature/not-a-release
+git push --force-with-lease="refs/heads/feature/not-a-release:$OLD_OFF" scratch feature/not-a-release:refs/heads/feature/not-a-release
 
 MAIN_SHA="$(git rev-parse rehearsal-main)"
 OFF_SHA="$(git rev-parse feature/not-a-release)"
