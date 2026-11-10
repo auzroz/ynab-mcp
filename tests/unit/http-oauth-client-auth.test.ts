@@ -33,6 +33,7 @@ import { buildHttpApp, type HttpApp } from '../../src/http.js';
 import { CLIENT_AUTH_ROUTE_RATE_LIMIT } from '../../src/auth/as-router.js';
 import { McpOAuthProvider } from '../../src/auth/mcp-provider.js';
 import { MemoryStorage } from '../../src/storage/memory.js';
+import { TokenHasher } from '../../src/auth/token-hash.js';
 import { Encryptor } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
@@ -107,6 +108,28 @@ function codeGrant(clientId: string, code: string, secret?: string): Record<stri
     ...(secret !== undefined ? { client_secret: secret } : {}),
   };
 }
+
+describe('one hasher', () => {
+  it('builds the token hasher once per app, for storage and the provider alike', async () => {
+    const fromSecrets = vi.spyOn(TokenHasher, 'fromSecrets');
+    try {
+      await buildHttpApp(
+        makeHttpConfig({
+          publicUrl: PUBLIC_URL,
+          resourceUrl: RESOURCE,
+          authMode: 'oauth',
+          oauthClientId: 'cid',
+          oauthClientSecret: 'sec',
+          encryptionKey: randomBytes(32).toString('base64'),
+          tokenPepper: TEST_TOKEN_PEPPER,
+        })
+      );
+      expect(fromSecrets).toHaveBeenCalledTimes(1);
+    } finally {
+      fromSecrets.mockRestore();
+    }
+  });
+});
 
 describe('hashed client secrets at registration', () => {
   it('returns the secret once and stores only its s256. hash', async () => {

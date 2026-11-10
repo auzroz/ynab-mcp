@@ -45,7 +45,7 @@ import type { Encryptor } from '../crypto.js';
 import type { Storage } from '../storage/types.js';
 import { McpOAuthProvider } from './mcp-provider.js';
 import { clientAuthentication } from './client-auth.js';
-import { TokenHasher } from './token-hash.js';
+import type { TokenHasher } from './token-hash.js';
 import type { YnabOAuthConfig } from './ynab-oauth.js';
 import { issOnAuthorizationRedirects } from '../middleware/iss-redirect.js';
 import {
@@ -92,6 +92,8 @@ export interface AuthorizationServerOptions {
   config: HttpConfig;
   storage: Storage;
   encryptor: Encryptor;
+  /** The hasher storage was opened with: the same instance, so the same pepper (#52). */
+  tokenHasher: TokenHasher;
   /** This server's YNAB OAuth application. */
   ynab: YnabOAuthConfig;
   /** Tests only: reports each stage as a request enters it (see StageObserver). */
@@ -177,7 +179,7 @@ export function mountAuthorizationServer(
   app: Router,
   options: AuthorizationServerOptions
 ): AuthorizationServer {
-  const { config, storage, encryptor, ynab, observeStage } = options;
+  const { config, storage, encryptor, tokenHasher, ynab, observeStage } = options;
   const publicUrl = config.publicUrl as string;
   // The protected resource (RFC 8707 audience) every token is bound to.
   const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
@@ -187,8 +189,7 @@ export function mountAuthorizationServer(
   const provider = new McpOAuthProvider({
     storage,
     encryptor,
-    // The same pepper http.ts handed storage (TOKEN_PEPPER, else from ENCRYPTION_KEY).
-    tokenHasher: TokenHasher.fromSecrets({ tokenPepper: config.tokenPepper, encryptionKey: config.encryptionKey }),
+    tokenHasher,
     ynab,
     publicUrl,
     issuer: issuerUrl.href,

@@ -53,19 +53,17 @@ function jsonRpcError(code: number, message: string): unknown {
 
 /**
  * Select and initialize the configured storage driver. A durable one gets the
- * token hasher (TOKEN_PEPPER, else derived from ENCRYPTION_KEY), which its
- * migration needs to check the pepper and hash 0.4.x tokens (#52).
+ * token hasher, which its migration needs to check the pepper and hash 0.4.x
+ * tokens (#52); it must be the instance the authorization server uses.
  */
-async function buildStorage(config: HttpConfig): ReturnType<typeof createStorage> {
-  const tokenKeys = (): TokenHasher =>
-    TokenHasher.fromSecrets({ tokenPepper: config.tokenPepper, encryptionKey: config.encryptionKey });
+async function buildStorage(config: HttpConfig, tokenKeys: TokenHasher): ReturnType<typeof createStorage> {
   switch (config.storageDriver) {
     case 'sqlite':
       if (!config.sqlitePath) throw new Error('SQLITE_PATH is required for the sqlite storage driver');
-      return createStorage({ driver: 'sqlite', path: config.sqlitePath, tokenKeys: tokenKeys() });
+      return createStorage({ driver: 'sqlite', path: config.sqlitePath, tokenKeys });
     case 'postgres':
       if (!config.databaseUrl) throw new Error('DATABASE_URL is required for the postgres storage driver');
-      return createStorage({ driver: 'postgres', connectionString: config.databaseUrl, tokenKeys: tokenKeys() });
+      return createStorage({ driver: 'postgres', connectionString: config.databaseUrl, tokenKeys });
     default:
       return createStorage({ driver: 'memory' });
   }
@@ -187,14 +185,27 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   let storage: Storage | undefined;
   let oauth: { as: AuthorizationServer; resolver: YnabTokenResolver } | undefined;
   if (config.authMode === 'oauth') {
-    storage = await buildStorage(config);
+    // One hasher (TOKEN_PEPPER, else derived from ENCRYPTION_KEY) for storage's
+    // migration and the provider's lookups, so the two can't use different peppers.
+    const tokenHasher = TokenHasher.fromSecrets({
+      tokenPepper: config.tokenPepper,
+      encryptionKey: config.encryptionKey,
+    });
+    storage = await buildStorage(config, tokenHasher);
     const encryptor = new Encryptor(config.encryptionKey);
     const ynab = {
       clientId: config.oauthClientId as string,
       clientSecret: config.oauthClientSecret as string,
     };
     oauth = {
-      as: mountAuthorizationServer(app, { config, storage, encryptor, ynab, observeStage: options.observeStage }),
+      as: mountAuthorizationServer(app, {
+        config,
+        storage,
+        encryptor,
+        tokenHasher,
+        ynab,
+        observeStage: options.observeStage,
+      }),
       resolver: new YnabTokenResolver(storage, encryptor, ynab),
     };
   }
