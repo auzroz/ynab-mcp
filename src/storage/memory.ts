@@ -65,6 +65,8 @@ interface StoredClient {
   client: OAuthClientInformationFull;
   createdAt: number;
   lastAuthorizedAt: number | undefined;
+  /** When an authorization of this client last reached the YNAB callback (takePendingAuth). */
+  lastSeenAt: number | undefined;
 }
 
 interface StoredConsumedRefreshToken {
@@ -148,6 +150,10 @@ export class MemoryStorage implements Storage {
       families.add(rec.familyId);
       this.consumedAuthCodes.delete(key);
     }
+    // A family whose live tokens are gone is still named by its tombstones.
+    for (const stored of this.consumedRefreshTokens.values()) {
+      if (stored.userId === userId) families.add(stored.rec.familyId);
+    }
     for (const [key, stored] of this.consumedRefreshTokens) {
       if (stored.userId === userId || families.has(stored.rec.familyId)) this.consumedRefreshTokens.delete(key);
     }
@@ -224,6 +230,7 @@ export class MemoryStorage implements Storage {
       client,
       createdAt: existing ? existing.createdAt : Date.now(),
       lastAuthorizedAt: existing?.lastAuthorizedAt,
+      lastSeenAt: existing?.lastSeenAt,
     });
   }
 
@@ -233,6 +240,9 @@ export class MemoryStorage implements Storage {
   async takePendingAuth(state: string): Promise<PendingAuthRecord | undefined> {
     const rec = this.pending.get(state);
     this.pending.delete(state);
+    // The client is in the middle of an authorization (see sweepExpired).
+    const client = rec && this.clients.get(rec.clientId);
+    if (client) client.lastSeenAt = Date.now();
     if (!rec || rec.expiresAt < Date.now()) return undefined;
     return { ...rec, grantedScope: parseGrantedScope(rec.grantedScope) };
   }
@@ -412,24 +422,25 @@ export class MemoryStorage implements Storage {
     deleted.orphanTokens =
       sweep(this.accessTokens, (s) => !this.userHolds(s.rec.userId, s.issuedAt)) +
       sweep(this.refreshTokens, (s) => !this.userHolds(s.rec.userId, s.issuedAt));
-    const hasGrant = (clientId: string): boolean =>
-      [this.pending, this.authCodes].some((m) => [...m.values()].some((r) => r.clientId === clientId)) ||
-      [this.accessTokens, this.refreshTokens].some((m) =>
-        [...m.values()].some((s) => s.rec.clientId === clientId)
+    // As CLIENT_HAS_NO_GRANT in retention.ts: nothing in flight, no tokens, and
+    // not seen at the YNAB callback within the abandoned-registration window.
+    const idle = (c: StoredClient): boolean => {
+      const clientId = c.client.client_id;
+      if (c.lastSeenAt !== undefined && c.lastSeenAt >= now - this.retention.abandonedClientMs) return false;
+      return !(
+        [this.pending, this.authCodes, this.consumedAuthCodes].some((m) =>
+          [...m.values()].some((r) => r.clientId === clientId)
+        ) ||
+        [this.accessTokens, this.refreshTokens].some((m) => [...m.values()].some((s) => s.rec.clientId === clientId))
       );
+    };
     deleted.abandonedClients = sweep(
       this.clients,
-      (c) =>
-        c.lastAuthorizedAt === undefined &&
-        c.createdAt < now - this.retention.abandonedClientMs &&
-        !hasGrant(c.client.client_id)
+      (c) => c.lastAuthorizedAt === undefined && c.createdAt < now - this.retention.abandonedClientMs && idle(c)
     );
     deleted.unusedClients = sweep(
       this.clients,
-      (c) =>
-        c.lastAuthorizedAt !== undefined &&
-        c.lastAuthorizedAt < now - this.retention.unusedClientMs &&
-        !hasGrant(c.client.client_id)
+      (c) => c.lastAuthorizedAt !== undefined && c.lastAuthorizedAt < now - this.retention.unusedClientMs && idle(c)
     );
     return { ran: true, deleted };
   }

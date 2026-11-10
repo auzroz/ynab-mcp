@@ -176,7 +176,10 @@ export const ADDED_COLUMNS: readonly AddedColumn[] = [
   // storage clock. `users.created_at` is written only when a user row is
   // inserted and is never backfilled (NULL reads as 0); the others are
   // backfilled by `m2-retention-clocks`. `last_authorized_at` is the last
-  // completed code exchange of a client (the abandoned-registration rule).
+  // completed code exchange of a client (the abandoned-registration rule);
+  // `last_seen_at` the last time one of its authorizations reached the YNAB
+  // callback, so the sweep never removes a client whose code exchange is in
+  // flight (it is not backfilled: NULL means not seen since 0.5.0).
   { table: 'users', column: 'created_at', type: 'BIGINT' },
   { table: 'access_tokens', column: 'issued_at', type: 'BIGINT' },
   { table: 'refresh_tokens', column: 'issued_at', type: 'BIGINT' },
@@ -184,6 +187,7 @@ export const ADDED_COLUMNS: readonly AddedColumn[] = [
   { table: 'consumed_refresh_tokens', column: 'user_id', type: 'TEXT' },
   { table: 'oauth_clients', column: 'created_at', type: 'BIGINT' },
   { table: 'oauth_clients', column: 'last_authorized_at', type: 'BIGINT' },
+  { table: 'oauth_clients', column: 'last_seen_at', type: 'BIGINT' },
 ];
 
 /** Indexes added since 0.3.x, created after {@link ADDED_COLUMNS}. */

@@ -345,6 +345,28 @@ for (const driver of testDrivers) {
         expect(await s.getAccessToken(fresh.access.token)).toBeDefined();
       });
 
+      // SQL only: memory has no 0.4.x rows (every tombstone carries its user).
+      if (driver.kind !== 'memory')
+        it(
+        "reaches a 0.4.x refresh tombstone of a family that only the user's own tombstones still name",
+        async () => {
+          const sql = h.sql as NonNullable<DriverHandle['sql']>;
+          await seedUser(s, 'u');
+          const g = await grant(s, 'u', 'c');
+          expect(await rotate(s, g.refresh)).toBeDefined(); // a 0.5.0 tombstone, with the user id
+          await sql(
+            'INSERT INTO consumed_refresh_tokens (token, client_id, family_id, expires_at) VALUES ($1, $2, $3, $4)',
+            ['legacy-tombstone', 'c', g.familyId, Date.now() + DAY]
+          );
+          // The family's live tokens and its code tombstone are gone (expired, swept).
+          await s.deleteTokenFamily(g.familyId);
+          await sql('DELETE FROM consumed_auth_codes WHERE family_id = $1', [g.familyId]);
+
+          await s.deleteUserData('u');
+          expect(await sql('SELECT token FROM consumed_refresh_tokens')).toEqual([]);
+        }
+      );
+
       it('is a no-op for an unknown user', async () => {
         await expect(s.deleteUserData('nobody')).resolves.toBeUndefined();
       });
@@ -538,6 +560,53 @@ for (const driver of testDrivers) {
         expect(again.ran).toBe(true);
         expect(Object.values(again.deleted).every((n) => n === 0)).toBe(true);
         expect(await s.takePendingAuth('live-state')).toBeDefined();
+      });
+
+      it('keeps a client whose authorization is completing: a spent code awaiting its exchange, or a YNAB exchange in flight', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        const T = Date.now();
+        const pending = (state: string, clientId: string) => ({
+          state,
+          clientId,
+          redirectUri: 'https://client.example/cb',
+          codeChallenge: 'chal',
+          clientState: undefined,
+          scopes: [],
+          grantedScope: 'read-only' as const,
+          expiresAt: Date.now() + 600_000,
+        });
+        // Registered 2 days ago and never authorized: abandoned unless in flight.
+        vi.setSystemTime(T - 2 * DAY);
+        await s.saveClient(client('mid-exchange'));
+        await s.saveClient(client('at-callback'));
+        // Authorized 100 days ago (that grant has expired), now authorizing again.
+        vi.setSystemTime(T - 100 * DAY);
+        await s.saveClient(client('returning'));
+        await seedUser(s, 'u');
+        await grant(s, 'u', 'returning');
+
+        vi.setSystemTime(T);
+        // Between consumeAuthCode and saveCodeTokens: only the code's tombstone.
+        const { code, familyId } = await spentCode(s, 'u', 'mid-exchange');
+        // Between takePendingAuth and saveAuthCode (the YNAB code exchange): no row at all.
+        await s.savePendingAuth(pending('state-1', 'at-callback'));
+        expect(await s.takePendingAuth('state-1')).toBeDefined();
+        await s.savePendingAuth(pending('state-2', 'returning'));
+        expect(await s.takePendingAuth('state-2')).toBeDefined();
+
+        const during = await s.sweepExpired();
+        expect(during.deleted).toMatchObject({ abandonedClients: 0, unusedClients: 0 });
+        for (const id of ['mid-exchange', 'at-callback', 'returning']) expect(await s.getClient(id), id).toBeDefined();
+        const pair = { familyId, accessToken: accessToken('u', 'mid-exchange', familyId), refreshToken: refreshToken('u', 'mid-exchange', familyId) };
+        expect(await s.saveCodeTokens(code, pair)).toBe(true);
+
+        // A day later, a callback that never produced a code no longer protects its client.
+        vi.setSystemTime(T + DAY + 1);
+        const later = await s.sweepExpired();
+        expect(later.deleted).toMatchObject({ abandonedClients: 1, unusedClients: 1 });
+        expect(await s.getClient('at-callback')).toBeUndefined();
+        expect(await s.getClient('returning')).toBeUndefined();
+        expect(await s.getClient('mid-exchange')).toBeDefined(); // authorized, with a live grant
       });
 
       it('uses the configured windows', async () => {
@@ -765,6 +834,7 @@ const M2_COLUMNS = new Set([
   'consumed_refresh_tokens.user_id',
   'oauth_clients.created_at',
   'oauth_clients.last_authorized_at',
+  'oauth_clients.last_seen_at',
 ]);
 const M2_INDEXES = new Set([
   'access_tokens_user_id',

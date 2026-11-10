@@ -619,9 +619,13 @@ export class PostgresStorage implements Storage {
   }
 
   async takePendingAuth(state: string): Promise<PendingAuthRecord | undefined> {
+    // One statement, so the client's last_seen_at is stamped as the pending row
+    // goes: a sweep never sees the client with neither (see sweepExpired).
     const res = await this.db.query<PendingRow>(
-      'DELETE FROM pending_auth WHERE state = $1 RETURNING *',
-      [state]
+      `WITH taken AS (DELETE FROM pending_auth WHERE state = $1 RETURNING *),
+       seen AS (UPDATE oauth_clients SET last_seen_at = $2 WHERE client_id IN (SELECT client_id FROM taken))
+       SELECT * FROM taken`,
+      [state, Date.now()]
     );
     const row = res.rows[0];
     if (!row) return undefined;

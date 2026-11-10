@@ -377,9 +377,10 @@ export class SqliteStorage implements Storage {
           .prepare(
             `SELECT family_id FROM access_tokens WHERE user_id = ? AND family_id IS NOT NULL
              UNION SELECT family_id FROM refresh_tokens WHERE user_id = ? AND family_id IS NOT NULL
-             UNION SELECT family_id FROM consumed_auth_codes WHERE user_id = ?`
+             UNION SELECT family_id FROM consumed_auth_codes WHERE user_id = ?
+             UNION SELECT family_id FROM consumed_refresh_tokens WHERE user_id = ?`
           )
-          .all(u, u, u) as Array<{ family_id: string }>
+          .all(u, u, u, u) as Array<{ family_id: string }>
       ).map((r) => r.family_id);
       db.prepare('DELETE FROM users WHERE user_id = ?').run(u);
       db.prepare('DELETE FROM auth_codes WHERE user_id = ?').run(u);
@@ -517,7 +518,13 @@ export class SqliteStorage implements Storage {
       const row = this.database.prepare('SELECT * FROM pending_auth WHERE state = ?').get(s) as
         | PendingRow
         | undefined;
-      if (row) this.database.prepare('DELETE FROM pending_auth WHERE state = ?').run(s);
+      if (row) {
+        this.database.prepare('DELETE FROM pending_auth WHERE state = ?').run(s);
+        // In the same transaction: the client is mid-authorization (see sweepExpired).
+        this.database
+          .prepare('UPDATE oauth_clients SET last_seen_at = ? WHERE client_id = ?')
+          .run(Date.now(), row.client_id);
+      }
       return row;
     });
     const row = take(state);

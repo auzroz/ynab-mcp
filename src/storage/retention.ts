@@ -153,10 +153,18 @@ interface SweepRule {
   params: readonly unknown[];
 }
 
-/** A client with nothing in flight and no tokens. */
+/**
+ * A client with nothing in flight and no tokens: no pending authorization, no
+ * code, no spent code waiting for its exchange (`consumed_auth_codes`, which a
+ * revoked or expired tombstone also keeps until the sweep removes it), and no
+ * token. The one gap these rows leave, the YNAB code exchange between
+ * `takePendingAuth` and `saveAuthCode`, is covered by `last_seen_at`, which
+ * `takePendingAuth` stamps in the same step.
+ */
 const CLIENT_HAS_NO_GRANT = `
   NOT EXISTS (SELECT 1 FROM pending_auth p WHERE p.client_id = c.client_id)
   AND NOT EXISTS (SELECT 1 FROM auth_codes a WHERE a.client_id = c.client_id)
+  AND NOT EXISTS (SELECT 1 FROM consumed_auth_codes k WHERE k.client_id = c.client_id)
   AND NOT EXISTS (SELECT 1 FROM access_tokens t WHERE t.client_id = c.client_id)
   AND NOT EXISTS (SELECT 1 FROM refresh_tokens r WHERE r.client_id = c.client_id)`;
 
@@ -196,18 +204,20 @@ function sweepRules(now: number, policy: RetentionPolicy): SweepRule[] {
       table: 'oauth_clients',
       key: 'client_id',
       select: `SELECT c.client_id FROM oauth_clients c
-        WHERE c.last_authorized_at IS NULL AND c.created_at < $1 AND ${CLIENT_HAS_NO_GRANT}
-        LIMIT $2 {lock:c}`,
-      params: [now - policy.abandonedClientMs],
+        WHERE c.last_authorized_at IS NULL AND c.created_at < $1
+          AND (c.last_seen_at IS NULL OR c.last_seen_at < $2) AND ${CLIENT_HAS_NO_GRANT}
+        LIMIT $3 {lock:c}`,
+      params: [now - policy.abandonedClientMs, now - policy.abandonedClientMs],
     },
     {
       counter: 'unusedClients',
       table: 'oauth_clients',
       key: 'client_id',
       select: `SELECT c.client_id FROM oauth_clients c
-        WHERE c.last_authorized_at < $1 AND ${CLIENT_HAS_NO_GRANT}
-        LIMIT $2 {lock:c}`,
-      params: [now - policy.unusedClientMs],
+        WHERE c.last_authorized_at < $1
+          AND (c.last_seen_at IS NULL OR c.last_seen_at < $2) AND ${CLIENT_HAS_NO_GRANT}
+        LIMIT $3 {lock:c}`,
+      params: [now - policy.unusedClientMs, now - policy.abandonedClientMs],
     },
   ];
 }
