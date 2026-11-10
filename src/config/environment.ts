@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { parseRateLimitMaxWaitMs } from './rate-limit.js';
 import { budgetIdSentinel, ynabId } from '../utils/schemas.js';
 
 const configSchema = z.object({
@@ -13,6 +14,7 @@ const configSchema = z.object({
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   cacheTtlMs: z.number().int().positive().default(300000), // 5 minutes
   rateLimitPerHour: z.number().int().min(1).max(200).default(180),
+  rateLimitMaxWaitMs: z.number().int().min(0).max(60000).default(2000),
   readOnly: z.boolean().default(true), // Safety: read-only by default
 });
 
@@ -118,6 +120,8 @@ export interface HttpConfig {
   readOnly: boolean;
   cacheTtlMs: number;
   rateLimitPerHour: number;
+  /** Longest a request waits for a rate-limit token (`RATE_LIMIT_MAX_WAIT_MS`); 0 = never wait. */
+  rateLimitMaxWaitMs: number;
 
   // Auth mode: `oauth` when the YNAB OAuth app + encryption key + public URL are
   // all configured, otherwise the interim `header` mode.
@@ -237,6 +241,7 @@ export function loadHttpConfig(): HttpConfig {
     readOnly: parseBoolean(process.env['YNAB_READ_ONLY'], true, 'YNAB_READ_ONLY'),
     cacheTtlMs: parseInteger(process.env['CACHE_TTL_MS'], 300000, 'CACHE_TTL_MS'),
     rateLimitPerHour: parseInteger(process.env['RATE_LIMIT_PER_HOUR'], 180, 'RATE_LIMIT_PER_HOUR'),
+    rateLimitMaxWaitMs: parseRateLimitMaxWaitMs(process.env['RATE_LIMIT_MAX_WAIT_MS']),
 
     authMode: oauthConfigured ? 'oauth' : 'header',
     oauthClientId,
@@ -259,6 +264,7 @@ export function loadConfig(): Config {
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
     cacheTtlMs: parseInteger(process.env['CACHE_TTL_MS'], 300000, 'CACHE_TTL_MS'),
     rateLimitPerHour: parseInteger(process.env['RATE_LIMIT_PER_HOUR'], 180, 'RATE_LIMIT_PER_HOUR'),
+    rateLimitMaxWaitMs: parseRateLimitMaxWaitMs(process.env['RATE_LIMIT_MAX_WAIT_MS']),
     // READ_ONLY defaults to true for safety - must explicitly set to false to enable writes
     readOnly: parseBoolean(process.env['YNAB_READ_ONLY'], true, 'YNAB_READ_ONLY'),
   };

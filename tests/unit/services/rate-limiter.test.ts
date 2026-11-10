@@ -103,6 +103,88 @@ describe('RateLimiter', () => {
   });
 });
 
+describe('RateLimiter fail-fast acquire (fake timers)', () => {
+  // 3600/hour = 1 token per second, so waits are easy to read.
+  const PER_HOUR = 3600;
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function drain(limiter: RateLimiter): Promise<void> {
+    for (let i = 0; i < PER_HOUR; i++) await limiter.acquire();
+  }
+
+  it('throws at once with the retry time when the next token is beyond the cap', async () => {
+    const limiter = new RateLimiter(PER_HOUR, Date.now, 500);
+    await drain(limiter);
+    // The next token is 1000 ms away, over the 500 ms cap.
+    await expect(limiter.acquire()).rejects.toMatchObject({ name: 'RateLimitError', retryAfterMs: 1000 });
+  });
+
+  it('waits for a token that arrives within the cap', async () => {
+    const limiter = new RateLimiter(PER_HOUR, Date.now, 2000);
+    await drain(limiter);
+    let done = false;
+    const p = limiter.acquire().then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await p;
+    expect(done).toBe(true);
+  });
+
+  it('allows one waiter; a second caller fails fast with the time after the waiter', async () => {
+    const limiter = new RateLimiter(PER_HOUR, Date.now, 2000);
+    await drain(limiter);
+    const waiter = limiter.acquire();
+    await expect(limiter.acquire()).rejects.toMatchObject({ name: 'RateLimitError', retryAfterMs: 2000 });
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(waiter).resolves.toBeUndefined();
+  });
+
+  it('a burst queues nothing: one waits, the rest are rejected immediately', async () => {
+    const limiter = new RateLimiter(PER_HOUR, Date.now, 2000);
+    await drain(limiter);
+    const results = Array.from({ length: 10 }, () => limiter.acquire().then(() => 'ok', (e: unknown) => e));
+    await vi.advanceTimersByTimeAsync(1000);
+    const settled = await Promise.all(results);
+    expect(settled.filter((r) => r === 'ok')).toHaveLength(1);
+    expect(settled.filter((r) => r instanceof RateLimitError)).toHaveLength(9);
+  });
+
+  it('maxWaitMs 0 never waits', async () => {
+    const limiter = new RateLimiter(PER_HOUR, Date.now, 0);
+    await drain(limiter);
+    await expect(limiter.acquire()).rejects.toMatchObject({ retryAfterMs: 1000 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('defaults to a 2 s cap and rejects an invalid cap', async () => {
+    const limiter = new RateLimiter(180); // one token per 20 s
+    for (let i = 0; i < 180; i++) await limiter.acquire();
+    await expect(limiter.acquire()).rejects.toMatchObject({ retryAfterMs: 20_000 });
+    expect(() => new RateLimiter(10, Date.now, -1)).toThrow(/maxWaitMs/);
+    expect(() => new RateLimiter(10, Date.now, Number.NaN)).toThrow(/maxWaitMs/);
+  });
+
+  it('does not spend a token on a rejection, and counts usage and rejections in getStatus', async () => {
+    const limiter = new RateLimiter(2, Date.now, 0);
+    await limiter.acquire();
+    await limiter.acquire();
+    await limiter.acquire().catch(() => undefined);
+    await limiter.acquire().catch(() => undefined);
+    const status = limiter.getStatus();
+    expect(status).toMatchObject({ sentLastHour: 2, rejectedLastHour: 2, maxWaitMs: 0, available: 0 });
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000 + 1);
+    expect(limiter.getStatus()).toMatchObject({ sentLastHour: 0, rejectedLastHour: 0 });
+  });
+});
+
 describe('RateLimiter exhaustion by YNAB (injected clock)', () => {
   const HOUR = 3_600_000;
   let clock = 1_000_000;

@@ -202,6 +202,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   });
   const registry = new UserRegistry({
     rateLimitPerHour: config.rateLimitPerHour,
+    rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
     cacheTtlMs: config.cacheTtlMs,
   });
   // Who a request is from, compared against the session's creator (set per mode).
@@ -269,6 +270,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
             defaultBudgetId: config.defaultBudgetId,
             readOnly: config.readOnly || tokenScope === 'read-only' || grantedScope === 'read-only',
             rateLimitPerHour: config.rateLimitPerHour,
+            rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
             cacheTtlMs: config.cacheTtlMs,
           },
           userKey: userId,
@@ -299,6 +301,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
           defaultBudgetId: config.defaultBudgetId,
           readOnly: config.readOnly,
           rateLimitPerHour: config.rateLimitPerHour,
+          rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
           cacheTtlMs: config.cacheTtlMs,
         },
         userKey: headerUserKey(token),

@@ -150,11 +150,12 @@ export function formatErrorResponse(error: unknown): string {
   if (error instanceof RateLimitError) {
     return JSON.stringify({
       error: true,
-      type: 'rate_limit',
+      type: 'rate_limited',
       message: 'Rate limit exceeded',
       retry_after_ms: error.retryAfterMs,
+      // At least 1: "0 seconds" would invite an immediate retry that fails again.
       retry_after_seconds:
-        error.retryAfterMs === undefined ? undefined : Math.ceil(error.retryAfterMs / 1000),
+        error.retryAfterMs === undefined ? undefined : Math.max(1, Math.ceil(error.retryAfterMs / 1000)),
       // Note: Server uses 180 req/hr budget (10% below YNAB's 200 limit) for safety margin
       suggestion: 'Wait before making more requests. Check ynab_rate_limit_status for current limits.',
     }, null, 2);

@@ -25,6 +25,23 @@ describe('handleRateLimitStatus', () => {
     expect(parsed.recommendations).toEqual([]);
   });
 
+  it('reports usage and the wait cap', async () => {
+    mockClient.getRateLimitStatus.mockReturnValue({
+      available: 10,
+      limit: 180,
+      used: 170,
+      percentUsed: 94,
+      canMakeRequest: true,
+      waitTimeMs: 0,
+      resetTimeMs: 1000,
+      sentLastHour: 170,
+      rejectedLastHour: 3,
+      maxWaitMs: 0,
+    });
+    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    expect(parsed.usage).toEqual({ requests_last_hour: 170, rejected_last_hour: 3, max_wait_ms: 0 });
+  });
+
   it('reports warning status between 50% and 80% usage', async () => {
     mockClient.getRateLimitStatus.mockReturnValue({
       available: 108,
