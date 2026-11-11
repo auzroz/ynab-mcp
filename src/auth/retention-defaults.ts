@@ -20,6 +20,14 @@ export const REFRESH_TOKEN_TTL_DAYS = 90;
 /** A registered client that never completed an authorization is swept this long after registering. */
 export const ABANDONED_CLIENT_HOURS = 24;
 
+/**
+ * The shortest abandoned-registration window accepted. A client's `last_seen_at`
+ * (set at the YNAB callback) protects it only for this window, and the callback's
+ * YNAB code exchange has no deadline of its own beyond Node fetch's 300-second
+ * header and body timeouts. One hour keeps the protection well past any exchange.
+ */
+export const MIN_ABANDONED_CLIENT_MS = 3_600_000;
+
 /** A client with no live grant is swept this long after its last authorization. */
 export const UNUSED_CLIENT_DAYS = 90;
 
@@ -32,7 +40,7 @@ export interface RetentionPolicy {
   refreshTokenIdleMs: number;
   /** Absolute limit of a grant family: time since its code exchange. */
   refreshTokenTtlMs: number;
-  /** Registered clients that never completed authorization are swept after this. */
+  /** Registered clients that never completed authorization are swept after this (at least {@link MIN_ABANDONED_CLIENT_MS}). */
   abandonedClientMs: number;
   /** Clients with no live grant are swept this long after their last authorization. */
   unusedClientMs: number;
@@ -52,6 +60,12 @@ export function retentionPolicy(overrides: Partial<RetentionPolicy> = {}): Reten
     if (!Number.isSafeInteger(value) || value <= 0) {
       throw new Error(`Retention window ${key} must be a positive integer number of milliseconds`);
     }
+  }
+  if (policy.abandonedClientMs < MIN_ABANDONED_CLIENT_MS) {
+    // A shorter window could sweep a client while its callback is still exchanging the YNAB code.
+    throw new Error(
+      `Retention window abandonedClientMs must be at least ${MIN_ABANDONED_CLIENT_MS} ms (1 hour)`
+    );
   }
   return policy;
 }

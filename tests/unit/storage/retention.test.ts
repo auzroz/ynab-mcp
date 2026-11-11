@@ -29,6 +29,7 @@ import { DEFAULT_RETENTION, retentionPolicy } from '../../../src/auth/retention-
 import { cleanupDrivers, testDrivers, type DriverHandle } from '../helpers/storage-drivers.js';
 
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
 const IDLE = DEFAULT_RETENTION.refreshTokenIdleMs;
 
 afterEach(async () => {
@@ -610,12 +611,12 @@ for (const driver of testDrivers) {
       });
 
       it('uses the configured windows', async () => {
-        await open({ retention: { abandonedClientMs: 1000, unusedClientMs: 5000 } });
+        await open({ retention: { abandonedClientMs: HOUR, unusedClientMs: 5000 } });
         vi.useFakeTimers({ toFake: ['Date'] });
         const T = Date.now();
         await s.saveClient(client('a'));
-        expect((await s.sweepExpired({ now: T + 1000 })).deleted.abandonedClients).toBe(0);
-        expect((await s.sweepExpired({ now: T + 1001 })).deleted.abandonedClients).toBe(1);
+        expect((await s.sweepExpired({ now: T + HOUR })).deleted.abandonedClients).toBe(0);
+        expect((await s.sweepExpired({ now: T + HOUR + 1 })).deleted.abandonedClients).toBe(1);
       });
     });
   });
@@ -635,6 +636,12 @@ describe('retentionPolicy', () => {
     for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => retentionPolicy({ refreshTokenIdleMs: bad })).toThrow(/positive integer/);
     }
+  });
+
+  it('refuses an abandoned-registration window under one hour', () => {
+    // last_seen_at protects a client mid-callback only for this window (the YNAB exchange has no deadline).
+    expect(() => retentionPolicy({ abandonedClientMs: HOUR - 1 })).toThrow(/at least 3600000 ms/);
+    expect(retentionPolicy({ abandonedClientMs: HOUR }).abandonedClientMs).toBe(HOUR);
   });
 });
 
