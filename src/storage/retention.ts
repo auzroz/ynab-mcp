@@ -159,7 +159,9 @@ interface SweepRule {
  * revoked or expired tombstone also keeps until the sweep removes it), and no
  * token. The one gap these rows leave, the YNAB code exchange between
  * `takePendingAuth` and `saveAuthCode`, is covered by `last_seen_at`, which
- * `takePendingAuth` stamps in the same step.
+ * `takePendingAuth` stamps in the same step. It protects the client for at
+ * least `MIN_ABANDONED_CLIENT_MS`, and a callback past the shorter
+ * `YNAB_CALLBACK_DEADLINE_MS` saves no code.
  */
 const CLIENT_HAS_NO_GRANT = `
   NOT EXISTS (SELECT 1 FROM pending_auth p WHERE p.client_id = c.client_id)

@@ -90,6 +90,7 @@ import { canonicalResource, isSameResource } from './resource.js';
 import { ConsentCookie, consentNonceMatches, newConsentNonce } from './consent-cookie.js';
 import { withIssuer } from '../middleware/iss-redirect.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
+import { YNAB_CALLBACK_DEADLINE_MS } from './retention-defaults.js';
 
 export interface McpProviderOptions {
   storage: Storage;
@@ -413,13 +414,22 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
    * Called by the `/oauth/ynab/callback` route once YNAB redirects back with a
    * code. Returns the MCP client redirect URL: our `code`, the client's `state`
    * and `iss` on success, or `error=server_error` (same `state` and `iss`) when
-   * the YNAB exchange or storage fails. Throws (before the YNAB code is
+   * the YNAB exchange or storage fails, or the callback runs past
+   * `YNAB_CALLBACK_DEADLINE_MS`. Throws (before the YNAB code is
    * exchanged) for an unknown `state` or a missing / wrong consent cookie.
    */
   async handleYnabCallback(code: string, state: string, browserNonce: string | undefined): Promise<string> {
+    // Taken before the pending row (which stamps the client's last_seen_at), so
+    // the deadline below is measured from no later than the stamp.
+    const startedAt = Date.now();
     const rec = await this.takeBoundPendingAuth(state, browserNonce);
 
     const mcpCode = newToken();
+    const checkDeadline = (): void => {
+      if (Date.now() - startedAt > YNAB_CALLBACK_DEADLINE_MS) {
+        throw new Error('YNAB callback passed its deadline');
+      }
+    };
     try {
       const tokens = await exchangeCode(this.opts.ynab, {
         code,
@@ -427,6 +437,9 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       });
       const userId = await getYnabUserId(tokens.accessToken, this.opts.ynab.endpoints);
 
+      // A callback that is already late changes nothing: not the user's stored
+      // grant (a failed authorization must not narrow it), and not the code.
+      checkDeadline();
       await this.opts.storage.upsertUser({
         userId,
         grantedScope: rec.grantedScope,
@@ -434,6 +447,9 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
         updatedAt: Date.now(),
       });
 
+      // The sweep spares this client for at least MIN_ABANDONED_CLIENT_MS after
+      // last_seen_at. Past the (shorter) deadline it may be gone, so save no code.
+      checkDeadline();
       await this.opts.storage.saveAuthCode({
         code: mcpCode,
         clientId: rec.clientId,

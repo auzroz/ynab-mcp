@@ -21,10 +21,17 @@ export const REFRESH_TOKEN_TTL_DAYS = 90;
 export const ABANDONED_CLIENT_HOURS = 24;
 
 /**
+ * Longest a YNAB callback may run, from taking its pending authorization (which
+ * stamps the client's `last_seen_at`) to saving the MCP authorization code. A
+ * callback past it saves no code and redirects `server_error`.
+ */
+export const YNAB_CALLBACK_DEADLINE_MS = 10 * 60_000;
+
+/**
  * The shortest abandoned-registration window accepted. A client's `last_seen_at`
- * (set at the YNAB callback) protects it only for this window, and the callback's
- * YNAB code exchange has no deadline of its own beyond Node fetch's 300-second
- * header and body timeouts. One hour keeps the protection well past any exchange.
+ * protects it from the sweep only for this window, so it must outlast
+ * {@link YNAB_CALLBACK_DEADLINE_MS}: a callback that saves its code always finds
+ * its client still registered.
  */
 export const MIN_ABANDONED_CLIENT_MS = 3_600_000;
 

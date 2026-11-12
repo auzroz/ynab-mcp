@@ -38,6 +38,7 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 });
 
 import { MemoryStorage } from '../../../src/storage/memory.js';
+import { MIN_ABANDONED_CLIENT_MS, YNAB_CALLBACK_DEADLINE_MS } from '../../../src/auth/retention-defaults.js';
 import { Encryptor } from '../../../src/crypto.js';
 import {
   McpOAuthProvider,
@@ -380,6 +381,70 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('ynabcode');
     errorSpy.mockRestore();
+  });
+
+  it('a callback past its deadline saves no user or code and redirects server_error', async () => {
+    // A slow YNAB exchange could outlast the client's sweep protection (last_seen_at).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { provider, storage } = makeProvider();
+    const { state, nonce } = await pendingState(provider);
+    const saveAuthCode = vi.spyOn(storage, 'saveAuthCode');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      exchangeCodeMock.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS + 1);
+        return { accessToken: 'ya', refreshToken: 'yr', expiresAt: Date.now() + 7200_000 };
+      });
+      const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+      expect(url.searchParams.get('error')).toBe('server_error');
+      expect(url.searchParams.has('code')).toBe(false);
+      expect(saveAuthCode).not.toHaveBeenCalled();
+      expect(await storage.getUser('ynab-user-1')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('a callback that passes its deadline while saving the user saves no code', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { provider, storage } = makeProvider();
+    const { state, nonce } = await pendingState(provider);
+    const saveAuthCode = vi.spyOn(storage, 'saveAuthCode');
+    const upsertUser = storage.upsertUser.bind(storage);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.spyOn(storage, 'upsertUser').mockImplementationOnce(async (user) => {
+        await upsertUser(user);
+        vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS + 1);
+      });
+      const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+      expect(url.searchParams.get('error')).toBe('server_error');
+      expect(saveAuthCode).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('a callback just inside its deadline still completes', async () => {
+    const { provider } = makeProvider();
+    const { state, nonce } = await pendingState(provider);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      exchangeCodeMock.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS);
+        return { accessToken: 'ya', refreshToken: 'yr', expiresAt: Date.now() + 7200_000 };
+      });
+      const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+      expect(url.searchParams.has('code')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the deadline is shorter than the shortest sweep protection', () => {
+    expect(YNAB_CALLBACK_DEADLINE_MS).toBeLessThan(MIN_ABANDONED_CLIENT_MS);
   });
 });
 
