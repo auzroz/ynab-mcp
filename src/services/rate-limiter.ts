@@ -4,6 +4,10 @@
  * Token bucket algorithm to enforce YNAB's API rate limits.
  * YNAB allows 200 requests/hour; we default to 180 for safety margin.
  *
+ * acquire() fails fast: when the bucket is empty it waits at most maxWaitMs
+ * (RATE_LIMIT_MAX_WAIT_MS, default 2 s, 0 = never wait) and only one caller may
+ * wait at a time; everyone else gets a RateLimitError carrying the retry time.
+ *
  * It also tracks the sent requests of the last hour and, when YNAB itself
  * answers 429, can be marked exhausted until YNAB's window would reset so the
  * server stops sending requests it knows will fail (see markExhaustedByYnab).
@@ -17,6 +21,10 @@ const MIN_EXHAUSTION_MS = 1000;
 const MAX_EXHAUSTION_MS = HOUR_MS;
 /** Used when YNAB gives no Retry-After and no request is recorded to expire. */
 const DEFAULT_EXHAUSTION_MS = 60 * 1000;
+/** Default for how long acquire() may wait for a token before failing. */
+export const DEFAULT_MAX_WAIT_MS = 2000;
+/** Cap on remembered rejections so a flood cannot grow memory. */
+const MAX_TRACKED_REJECTIONS = 1000;
 
 /** A 429 from YNAB, as the limiter remembers it. */
 export interface YnabExhaustion {
@@ -35,7 +43,10 @@ export class RateLimiter {
   private lastRefill: number;
   private readonly maxTokens: number;
   private readonly refillRate: number; // tokens per millisecond
-  private acquireLock: Promise<void> = Promise.resolve();
+  private readonly maxWaitMs: number;
+  /** True while one caller sleeps for a token; a second caller fails fast. */
+  private waiterActive = false;
+  private rejectedAt: number[] = [];
   private readonly now: () => number;
   // Send times (ms) of requests in the last hour, oldest first. Lets a 429 from
   // YNAB be mapped to "when the oldest request leaves YNAB's rolling window".
@@ -45,11 +56,19 @@ export class RateLimiter {
 
   // `now` is injectable so callers that reason about refill time (the HTTP
   // user registry's eviction check) can be tested on a fake clock.
-  constructor(requestsPerHour: number = 180, now: () => number = Date.now) {
+  constructor(
+    requestsPerHour: number = 180,
+    now: () => number = Date.now,
+    maxWaitMs: number = DEFAULT_MAX_WAIT_MS
+  ) {
     // Validate requestsPerHour to prevent rate-limit bypass
     if (!Number.isFinite(requestsPerHour) || requestsPerHour <= 0) {
       throw new Error(`Invalid requestsPerHour: must be a positive finite number, got ${requestsPerHour}`);
     }
+    if (!Number.isFinite(maxWaitMs) || maxWaitMs < 0) {
+      throw new Error(`Invalid maxWaitMs: must be a finite number >= 0, got ${maxWaitMs}`);
+    }
+    this.maxWaitMs = maxWaitMs;
     this.maxTokens = requestsPerHour;
     this.now = now;
     this.tokens = requestsPerHour;
@@ -59,42 +78,42 @@ export class RateLimiter {
   }
 
   /**
-   * Acquire a token, waiting if necessary.
+   * Acquire a token. Fails fast: with a token available it returns at once; if
+   * one arrives within maxWaitMs and nobody else is waiting, it waits for it;
+   * otherwise it throws a RateLimitError with the time until a token is free.
+   * At most one caller waits at a time, so a burst cannot queue up.
    * Call this before making any API request.
-   * Uses a mutex to prevent race conditions with concurrent callers.
    */
   async acquire(): Promise<void> {
-    // Chain onto the existing lock to ensure sequential execution
-    const previousLock = this.acquireLock;
-    let releaseLock: () => void;
-    this.acquireLock = new Promise((resolve) => {
-      releaseLock = resolve;
-    });
+    // YNAB said 429: fail fast instead of queueing a request known to fail.
+    this.throwIfExhaustedByYnab();
+    this.refill();
 
-    try {
-      // Wait for previous acquire to complete
-      await previousLock;
-
-      // YNAB said 429: fail fast instead of queueing a request known to fail.
-      this.throwIfExhaustedByYnab();
-
-      this.refill();
-
-      if (this.tokens < 1) {
-        // Calculate wait time to get at least 1 token
-        const waitTime = Math.ceil((1 - this.tokens) / this.refillRate);
-        await this.sleep(waitTime);
-        this.refill();
+    if (this.tokens < 1 || this.waiterActive) {
+      // A waiting caller will take the next token, so a second caller needs the one after it.
+      const needed = this.waiterActive ? 2 - this.tokens : 1 - this.tokens;
+      const waitMs = Math.ceil(needed / this.refillRate);
+      if (this.waiterActive || this.maxWaitMs === 0 || waitMs > this.maxWaitMs) {
+        throw this.reject(waitMs);
       }
-
-      // The wait above can span a 429 noted by another request.
+      this.waiterActive = true;
+      try {
+        await this.sleep(waitMs);
+      } finally {
+        this.waiterActive = false;
+      }
+      // The wait can span a 429 noted by another request.
       this.throwIfExhaustedByYnab();
-
-      this.tokens -= 1;
-      this.recordSent();
-    } finally {
-      releaseLock!();
+      this.refill();
+      // Tolerate float rounding / an early timer: the wait covered the shortfall.
+      if (this.tokens < 1 - 1e-6) {
+        // A release/refill race took the token: report the time to the next one.
+        throw this.reject(Math.ceil((1 - this.tokens) / this.refillRate));
+      }
     }
+
+    this.tokens = Math.max(0, this.tokens - 1);
+    this.recordSent();
   }
 
   /**
@@ -143,6 +162,12 @@ export class RateLimiter {
     canMakeRequest: boolean;
     waitTimeMs: number;
     resetTimeMs: number;
+    /** Requests sent in the last hour (this limiter's own record, not YNAB's). */
+    sentLastHour: number;
+    /** Calls refused by acquire() in the last hour (capped). */
+    rejectedLastHour: number;
+    /** How long acquire() may wait for a token before failing (ms). */
+    maxWaitMs: number;
     /** Set once YNAB has answered 429 to this limiter's requests; absent before that. */
     ynabExhausted?: YnabExhaustion;
   } {
@@ -159,8 +184,15 @@ export class RateLimiter {
     const tokensNeeded = this.maxTokens - this.tokens;
     const resetTimeMs = tokensNeeded > 0 ? Math.ceil(tokensNeeded / this.refillRate) : 0;
 
+    const nowMs = this.now();
+    this.pruneSent(nowMs);
+    this.pruneRejected(nowMs);
+
     return {
       available,
+      sentLastHour: this.sentAt.length,
+      rejectedLastHour: this.rejectedAt.length,
+      maxWaitMs: this.maxWaitMs,
       limit: this.maxTokens,
       used,
       percentUsed,
@@ -213,7 +245,21 @@ export class RateLimiter {
 
   private throwIfExhaustedByYnab(): void {
     const remaining = this.ynabExhaustedUntil - this.now();
-    if (remaining > 0) throw new RateLimitError(remaining);
+    if (remaining > 0) throw this.reject(remaining);
+  }
+
+  private reject(waitMs: number): RateLimitError {
+    const now = this.now();
+    this.pruneRejected(now);
+    if (this.rejectedAt.length < MAX_TRACKED_REJECTIONS) this.rejectedAt.push(now);
+    return new RateLimitError(Math.max(1, waitMs));
+  }
+
+  private pruneRejected(now: number): void {
+    const cutoff = now - HOUR_MS;
+    let i = 0;
+    while (i < this.rejectedAt.length && this.rejectedAt[i]! <= cutoff) i++;
+    if (i > 0) this.rejectedAt.splice(0, i);
   }
 
   private recordSent(): void {

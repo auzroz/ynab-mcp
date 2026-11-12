@@ -8,6 +8,11 @@
 import { z } from 'zod';
 import { budgetIdSentinel, ynabId } from '../utils/schemas.js';
 import { parseBoolean, parseInteger } from './parse.js';
+import {
+  parseRateLimitMaxWaitMs,
+  RATE_LIMIT_MAX_WAIT_DEFAULT_MS,
+  RATE_LIMIT_MAX_WAIT_MAX_MS,
+} from './rate-limit.js';
 
 export { loadHttpConfig } from './http/index.js';
 export type { HttpConfig, HttpAuthMode, StorageDriver } from './http/index.js';
@@ -18,6 +23,12 @@ const configSchema = z.object({
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   cacheTtlMs: z.number().int().positive().default(300000), // 5 minutes
   rateLimitPerHour: z.number().int().min(1).max(200).default(180),
+  rateLimitMaxWaitMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(RATE_LIMIT_MAX_WAIT_MAX_MS)
+    .default(RATE_LIMIT_MAX_WAIT_DEFAULT_MS),
   readOnly: z.boolean().default(true), // Safety: read-only by default
 });
 
@@ -30,6 +41,7 @@ export function loadConfig(): Config {
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
     cacheTtlMs: parseInteger(process.env['CACHE_TTL_MS'], 300000, 'CACHE_TTL_MS'),
     rateLimitPerHour: parseInteger(process.env['RATE_LIMIT_PER_HOUR'], 180, 'RATE_LIMIT_PER_HOUR'),
+    rateLimitMaxWaitMs: parseRateLimitMaxWaitMs(process.env['RATE_LIMIT_MAX_WAIT_MS']),
     // READ_ONLY defaults to true for safety - must explicitly set to false to enable writes
     readOnly: parseBoolean(process.env['YNAB_READ_ONLY'], true, 'YNAB_READ_ONLY'),
   };

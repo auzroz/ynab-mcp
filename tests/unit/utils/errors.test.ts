@@ -73,7 +73,7 @@ describe('formatErrorResponse', () => {
     const result = JSON.parse(formatErrorResponse(error));
 
     expect(result.error).toBe(true);
-    expect(result.type).toBe('rate_limit');
+    expect(result.type).toBe('rate_limited');
     expect(result.retry_after_ms).toBe(10000);
     expect(result.retry_after_seconds).toBe(10);
   });

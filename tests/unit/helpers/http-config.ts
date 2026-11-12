@@ -20,6 +20,7 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     readOnly: true,
     cacheTtlMs: 300000,
     rateLimitPerHour: 180,
+    rateLimitMaxWaitMs: 2000,
     authMode: 'header',
     oauthClientId: undefined,
     oauthClientSecret: undefined,

@@ -74,7 +74,7 @@ describe('YnabClient 429 handling', () => {
     const blocked = await client.getUser().catch((e: unknown) => e);
     expect(blocked).toBeInstanceOf(RateLimitError);
     expect(JSON.parse(formatErrorResponse(blocked))).toMatchObject({
-      type: 'rate_limit',
+      type: 'rate_limited',
       retry_after_ms: 45_000,
       retry_after_seconds: 45,
     });

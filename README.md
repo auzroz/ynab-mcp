@@ -80,6 +80,7 @@ The server is configured via environment variables:
 | `YNAB_ACCESS_TOKEN` | Yes | Your YNAB Personal Access Token |
 | `YNAB_BUDGET_ID` | No | Default budget UUID (uses "last-used" if not set) |
 | `YNAB_READ_ONLY` | No | Set to `false` to enable write operations (default: `true`) |
+| `RATE_LIMIT_MAX_WAIT_MS` | No | Longest a request waits for a YNAB rate-limit token, in ms (integer 0-60000, default `2000`). `0` never waits. When the budget is used up, tools return `rate_limited` with `retry_after_seconds` instead of queueing. Applies to stdio and HTTP |
 
 ### Remote / HTTP mode
 

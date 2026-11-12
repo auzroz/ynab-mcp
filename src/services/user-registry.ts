@@ -33,11 +33,11 @@ export interface UserComponents {
 
 /** Build a fresh set of per-user components. */
 export function createUserComponents(
-  limits: { rateLimitPerHour: number; cacheTtlMs: number },
+  limits: { rateLimitPerHour: number; rateLimitMaxWaitMs?: number | undefined; cacheTtlMs: number },
   now: () => number = Date.now
 ): UserComponents {
   return {
-    rateLimiter: new RateLimiter(limits.rateLimitPerHour, now),
+    rateLimiter: new RateLimiter(limits.rateLimitPerHour, now, limits.rateLimitMaxWaitMs),
     cache: new Cache(limits.cacheTtlMs),
     deltaCache: new DeltaCache({ now }),
     auditLog: new AuditLog(),
@@ -62,6 +62,7 @@ export interface UserLease {
 
 export interface UserRegistryOptions {
   rateLimitPerHour: number;
+  rateLimitMaxWaitMs?: number | undefined;
   cacheTtlMs: number;
   /** Minimum time an entry without sessions is kept. Defaults to the rate-limit window. */
   idleEvictionMs?: number;
@@ -87,13 +88,13 @@ interface Entry {
 
 export class UserRegistry {
   private readonly entries = new Map<string, Entry>();
-  private readonly limits: { rateLimitPerHour: number; cacheTtlMs: number };
+  private readonly limits: { rateLimitPerHour: number; rateLimitMaxWaitMs?: number | undefined; cacheTtlMs: number };
   private readonly idleEvictionMs: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
 
   constructor(opts: UserRegistryOptions) {
-    this.limits = { rateLimitPerHour: opts.rateLimitPerHour, cacheTtlMs: opts.cacheTtlMs };
+    this.limits = { rateLimitPerHour: opts.rateLimitPerHour, rateLimitMaxWaitMs: opts.rateLimitMaxWaitMs, cacheTtlMs: opts.cacheTtlMs };
     this.idleEvictionMs = opts.idleEvictionMs ?? RATE_LIMIT_WINDOW_MS;
     this.maxEntries = opts.maxEntries ?? DEFAULT_MAX_USER_ENTRIES;
     this.now = opts.now ?? Date.now;
