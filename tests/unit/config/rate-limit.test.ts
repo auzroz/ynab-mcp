@@ -4,7 +4,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { parseRateLimitMaxWaitMs } from '../../../src/config/rate-limit.js';
-import { loadConfig } from '../../../src/config/environment.js';
+import { loadConfig, loadHttpConfig } from '../../../src/config/environment.js';
 
 describe('parseRateLimitMaxWaitMs', () => {
   it('defaults to 2000 when unset or empty', () => {
@@ -40,5 +40,14 @@ describe('loadConfig RATE_LIMIT_MAX_WAIT_MS', () => {
     expect(loadConfig().rateLimitMaxWaitMs).toBe(0);
     process.env['RATE_LIMIT_MAX_WAIT_MS'] = '2s';
     expect(() => loadConfig()).toThrow(/RATE_LIMIT_MAX_WAIT_MS/);
+  });
+});
+
+describe('loadHttpConfig RATE_LIMIT_MAX_WAIT_MS', () => {
+  const header = { AUTH_MODE: 'header' };
+  it('is read into rateLimitMaxWaitMs, and a bad value is a listed config problem', () => {
+    expect(loadHttpConfig(header).rateLimitMaxWaitMs).toBe(2000);
+    expect(loadHttpConfig({ ...header, RATE_LIMIT_MAX_WAIT_MS: '0' }).rateLimitMaxWaitMs).toBe(0);
+    expect(() => loadHttpConfig({ ...header, RATE_LIMIT_MAX_WAIT_MS: '60001' })).toThrow(/RATE_LIMIT_MAX_WAIT_MS/);
   });
 });

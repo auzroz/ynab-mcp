@@ -200,9 +200,9 @@ npm start</code></pre>
         <section aria-labelledby="http">
           <h2 id="http">HTTP mode</h2>
           <p>By default the server speaks stdio to a client on the same machine. Set <code>MCP_TRANSPORT=http</code> to run it as a remote server over MCP's Streamable HTTP transport at <code>POST /mcp</code>, with <code>GET /health</code> for load balancers.</p>
-          <p>For a quick personal setup, header mode takes your YNAB token per request:</p>
+          <p>HTTP mode needs <code>AUTH_MODE=oauth</code> or <code>AUTH_MODE=header</code>; it refuses to start without one, and lists every configuration problem in one message. For a quick personal setup, header mode takes your YNAB token per request. A loopback bind does not protect <code>YNAB_ACCESS_TOKEN</code> behind a reverse proxy on the same host (the proxy connects over loopback): there, omit the token or restrict access at the proxy.</p>
           <div class="code" data-label="HTTP header mode commands">
-<pre><code>MCP_TRANSPORT=http PORT=3000 YNAB_ACCESS_TOKEN=… npm start
+<pre><code>MCP_TRANSPORT=http AUTH_MODE=header MCP_BIND_HOST=127.0.0.1 PORT=3000 YNAB_ACCESS_TOKEN=… npm start
 # connect an MCP client via the mcp-remote shim:
 npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: &lt;your-token&gt;"</code></pre>
           </div>
@@ -243,6 +243,9 @@ npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: &lt;your-token&
                 <tr><td><code>RATE_LIMIT_PER_HOUR</code></td><td><code>180</code></td><td>Requests per hour the server allows itself. YNAB's limit is 200; the default keeps a 10% margin.</td></tr>
                 <tr><td><code>RATE_LIMIT_MAX_WAIT_MS</code></td><td><code>2000</code></td><td>Longest a request waits for a rate-limit token, in milliseconds (0 to 60000). <code>0</code> never waits. When the budget is used up, tools return <code>rate_limited</code> with <code>retry_after_seconds</code> at once.</td></tr>
                 <tr><td><code>LOG_LEVEL</code></td><td><code>info</code></td><td><code>debug</code>, <code>info</code>, <code>warn</code> or <code>error</code> (stdio mode).</td></tr>
+                <tr><td><code>AUTH_MODE</code></td><td>none</td><td>Required in HTTP mode: <code>oauth</code> (multi-user) or <code>header</code> (a YNAB token per request). Header mode logs a warning at startup.</td></tr>
+                <tr><td><code>MCP_BIND_HOST</code></td><td>all interfaces</td><td>Address to listen on, such as <code>127.0.0.1</code>.</td></tr>
+                <tr><td><code>MCP_ALLOW_ANONYMOUS_FALLBACK</code></td><td><code>false</code></td><td>Header mode with <code>YNAB_ACCESS_TOKEN</code> refuses to start unless bound to loopback; <code>true</code> accepts that requests without an <code>X-YNAB-Token</code> act as you.</td></tr>
                 <tr><td><code>MCP_TRANSPORT</code></td><td><code>stdio</code></td><td><code>stdio</code> for a local client, or <code>http</code> for a remote server.</td></tr>
               </tbody>
             </table>
@@ -268,7 +271,7 @@ npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: &lt;your-token&
           </div>
 
           <h3 id="config-oauth">OAuth mode (multi-user)</h3>
-          <p>OAuth mode turns on when <code>YNAB_OAUTH_CLIENT_ID</code>, <code>YNAB_OAUTH_CLIENT_SECRET</code>, <code>ENCRYPTION_KEY</code> and <code>PUBLIC_URL</code> are all set.</p>
+          <p>Set <code>AUTH_MODE=oauth</code>; it also needs <code>YNAB_OAUTH_CLIENT_ID</code>, <code>YNAB_OAUTH_CLIENT_SECRET</code>, <code>ENCRYPTION_KEY</code> and <code>PUBLIC_URL</code>. It refuses to start when <code>YNAB_ACCESS_TOKEN</code> or <code>YNAB_BUDGET_ID</code> is set.</p>
           <div class="table-wrap">
             <table class="env-table">
               <thead><tr><th scope="col">Variable</th><th scope="col">Default</th><th scope="col">What it does</th></tr></thead>
@@ -276,7 +279,7 @@ npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: &lt;your-token&
                 <tr><td><code>YNAB_OAUTH_CLIENT_ID</code></td><td>none</td><td>Client ID of your YNAB OAuth application.</td></tr>
                 <tr><td><code>YNAB_OAUTH_CLIENT_SECRET</code></td><td>none</td><td>Its client secret.</td></tr>
                 <tr><td><code>ENCRYPTION_KEY</code></td><td>none</td><td>32-byte key that encrypts stored YNAB tokens. Generate one with <code>openssl rand -base64 32</code> and keep it stable.</td></tr>
-                <tr><td><code>YNAB_OAUTH_ALLOW_WRITE</code></td><td><code>true</code></td><td>Offer read-write at the consent screen. <code>false</code> makes every connection read-only.</td></tr>
+                <tr><td><code>YNAB_OAUTH_ALLOW_WRITE</code></td><td><code>false</code></td><td>Allow writes. Checked on every request: unless <code>true</code>, no connection can write, including one granted read-write earlier. <code>YNAB_READ_ONLY=false</code> is also needed.</td></tr>
                 <tr><td><code>STORAGE_DRIVER</code></td><td><code>memory</code></td><td><code>memory</code> (lost on restart, for trying it out), <code>sqlite</code> or <code>postgres</code>.</td></tr>
                 <tr><td><code>SQLITE_PATH</code></td><td>none</td><td>Database file for <code>sqlite</code>, such as <code>/data/ynab-mcp.db</code>.</td></tr>
                 <tr><td><code>DATABASE_URL</code></td><td>none</td><td>Connection string for <code>postgres</code>.</td></tr>

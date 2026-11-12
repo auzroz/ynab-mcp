@@ -93,6 +93,10 @@ between users.
 | Variable | Description |
 |----------|-------------|
 | `MCP_TRANSPORT` | `stdio` (default) or `http` |
+| `AUTH_MODE` | **Required in HTTP mode:** `oauth` or `header`. The server refuses to start without it, and lists every configuration problem in one message |
+| `MCP_BIND_HOST` | Address to listen on (default: all interfaces) |
+| `MCP_ALLOW_ANONYMOUS_FALLBACK` | Header mode with `YNAB_ACCESS_TOKEN` refuses a non-loopback bind unless this is `true` |
+| `YNAB_OAUTH_ALLOW_WRITE` | OAuth mode: default `false`, enforced on every request; connections can write only when `true` (and `YNAB_READ_ONLY=false`) |
 | `PORT` | HTTP port (default `3000`) |
 | `ALLOWED_HOSTS` | Comma-separated `Host` allowlist for DNS-rebinding protection (default: the `PUBLIC_URL` host, plus localhost when `PUBLIC_URL` is unset or loopback). An explicit list replaces the defaults |
 | `ALLOWED_ORIGINS` | Comma-separated `Origin` allowlist for `/mcp` (default: the `PUBLIC_URL` origin; without `PUBLIC_URL`, `https://` for each allowed host, plus `http://` for localhost). Requests with no `Origin` header aren't checked |
@@ -101,7 +105,7 @@ between users.
 | `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` | Global cap on concurrent sessions (default 100; at the cap `initialize` gets `503` + `Retry-After`) and per-user cap (default 10; past it the user's least recently used session is closed). See docs/REMOTE_HOSTING.md |
 | `MCP_SESSION_IDLE_TIMEOUT_MS` | Idle time before a session is closed (default 30 min); a session with an open request or SSE stream is not idle |
 
-**Multi-user (YNAB OAuth).** Configure a YNAB OAuth app + `ENCRYPTION_KEY` +
+**Multi-user (YNAB OAuth).** Set `AUTH_MODE=oauth` and configure a YNAB OAuth app + `ENCRYPTION_KEY` +
 `PUBLIC_URL` and the server becomes an OAuth 2.1 Authorization Server federated to
 YNAB: many users connect their own YNAB accounts to one instance, each isolated,
 choosing read-only or read-write for each connection at consent. See
@@ -110,12 +114,12 @@ choosing read-only or read-write for each connection at consent. See
 URL (RFC 8707). **Back up your SQLite/Postgres database before upgrading**: the
 schema is migrated in place on startup (see the guide's *Upgrading* section).
 
-> **Single-user (header auth).** If the OAuth variables aren't all set, HTTP mode
+> **Single-user (header auth).** With `AUTH_MODE=header`, HTTP mode
 > takes the YNAB token per request via the `X-YNAB-Token` header (falling back to
 > `YNAB_ACCESS_TOKEN` for one user). **Serve behind TLS.**
 
 ```bash
-MCP_TRANSPORT=http PORT=3000 YNAB_ACCESS_TOKEN=… npm start
+MCP_TRANSPORT=http AUTH_MODE=header MCP_BIND_HOST=127.0.0.1 PORT=3000 YNAB_ACCESS_TOKEN=… npm start
 # connect an MCP client via the mcp-remote shim:
 npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: <your-token>"
 ```
