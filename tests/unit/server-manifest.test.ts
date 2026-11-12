@@ -65,9 +65,8 @@ describe('server.json manifest', () => {
     }
   });
 
-  it('ships the ynab-mcp bin, keeping ynab-mcp-server as an alias for one release', () => {
+  it('ships only the ynab-mcp bin (the ynab-mcp-server alias was removed in 0.5.0)', () => {
     // npx runs the bin named after the package, so `npx -y ynab-mcp` keeps working.
-    expect(pkg.bin['ynab-mcp']).toBe('dist/index.js');
-    expect(pkg.bin['ynab-mcp-server']).toBe(pkg.bin['ynab-mcp']);
+    expect(pkg.bin).toEqual({ 'ynab-mcp': 'dist/index.js' });
   });
 });
