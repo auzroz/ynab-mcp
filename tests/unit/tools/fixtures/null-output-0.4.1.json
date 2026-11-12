@@ -1728,6 +1728,11 @@
         "used_requests": 0,
         "percent_used": 0
       },
+      "usage": {
+        "requests_last_hour": 0,
+        "rejected_last_hour": 0,
+        "max_wait_ms": 2000
+      },
       "timing": {
         "can_make_request_now": true,
         "wait_time_seconds": 0,

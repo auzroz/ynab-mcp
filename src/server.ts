@@ -44,6 +44,8 @@ export interface UserContext {
   defaultBudgetId?: string | undefined;
   readOnly: boolean;
   rateLimitPerHour: number;
+  /** Longest wait for a rate-limit token in ms (default 2000; 0 = never wait). */
+  rateLimitMaxWaitMs?: number | undefined;
   cacheTtlMs: number;
 }
 
@@ -174,6 +176,7 @@ export function createServer(config: Config): Server {
     defaultBudgetId: config.defaultBudgetId,
     readOnly: config.readOnly,
     rateLimitPerHour: config.rateLimitPerHour,
+    rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
     cacheTtlMs: config.cacheTtlMs,
   });
 }

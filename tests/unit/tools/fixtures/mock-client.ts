@@ -12,6 +12,9 @@ const defaultRateLimitStatus = {
   canMakeRequest: true,
   waitTimeMs: 0,
   resetTimeMs: 0,
+  sentLastHour: 0,
+  rejectedLastHour: 0,
+  maxWaitMs: 2000,
 };
 
 export function createMockClient() {

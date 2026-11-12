@@ -27,8 +27,7 @@ describe('HTTP transport', () => {
     const app = await createHttpApp(makeConfig());
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe('ok');
-    expect(res.body.transport).toBe('http');
+    expect(res.body).toEqual({ status: 'ok' });
   });
 
   it('defaults to not trusting any reverse proxy hop', async () => {

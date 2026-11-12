@@ -8,7 +8,7 @@ const KEYS = [
   // Also read by loadHttpConfig (directly or through loadConfig); cleared so an
   // ambient value can't make a test that expects success throw.
   'TRUST_PROXY', 'YNAB_OAUTH_ALLOW_WRITE', 'MCP_ACCESS_TOKEN_TTL_SEC', 'MCP_AUTH_CODE_TTL_SEC',
-  'STORAGE_DRIVER', 'SQLITE_PATH', 'DATABASE_URL',
+  'STORAGE_DRIVER', 'SQLITE_PATH', 'DATABASE_URL', 'AUTH_MODE', 'MCP_BIND_HOST', 'MCP_ALLOW_ANONYMOUS_FALLBACK',
   'YNAB_ACCESS_TOKEN', 'YNAB_BUDGET_ID', 'YNAB_READ_ONLY', 'CACHE_TTL_MS', 'RATE_LIMIT_PER_HOUR', 'LOG_LEVEL',
 ];
 
@@ -17,6 +17,7 @@ describe('loadHttpConfig', () => {
   beforeEach(() => {
     saved = { ...process.env };
     for (const k of KEYS) delete process.env[k];
+    process.env['AUTH_MODE'] = 'header';
   });
   afterEach(() => {
     process.env = saved;
@@ -74,6 +75,7 @@ describe('loadHttpConfig', () => {
 
   describe('OAuth issuer (PUBLIC_URL)', () => {
     function enableOAuth(): void {
+      process.env['AUTH_MODE'] = 'oauth';
       process.env['YNAB_OAUTH_CLIENT_ID'] = 'cid';
       process.env['YNAB_OAUTH_CLIENT_SECRET'] = 'sec';
       process.env['ENCRYPTION_KEY'] = 'k'.repeat(44);

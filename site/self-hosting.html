@@ -91,7 +91,7 @@
           <ol class="steps">
             <li><strong>Register a YNAB OAuth application</strong> in YNAB's <a href="https://app.ynab.com/settings/developer">Developer Settings</a>, with the redirect URI <code>https://YOUR_PUBLIC_URL/oauth/ynab/callback</code>.</li>
             <li><strong>Generate an encryption key</strong> with <code>openssl rand -base64 32</code> and keep it somewhere safe. It must stay the same across restarts.</li>
-            <li><strong>Set the environment:</strong> <code>MCP_TRANSPORT=http</code>, <code>PUBLIC_URL</code>, <code>YNAB_OAUTH_CLIENT_ID</code>, <code>YNAB_OAUTH_CLIENT_SECRET</code>, <code>ENCRYPTION_KEY</code>, and a durable <code>STORAGE_DRIVER</code>. OAuth mode turns on when the four OAuth settings are all present.</li>
+            <li><strong>Set the environment:</strong> <code>MCP_TRANSPORT=http</code>, <code>AUTH_MODE=oauth</code>, <code>PUBLIC_URL</code>, <code>YNAB_OAUTH_CLIENT_ID</code>, <code>YNAB_OAUTH_CLIENT_SECRET</code>, <code>ENCRYPTION_KEY</code>, and a durable <code>STORAGE_DRIVER</code>. The server refuses to start if <code>AUTH_MODE</code> or any of those four OAuth settings is missing, and lists every problem at once.</li>
             <li><strong>Put it behind TLS.</strong> OAuth needs HTTPS. A reverse proxy such as Caddy, Traefik or nginx in front of the container is the usual way. Set <code>TRUST_PROXY=1</code> for a single proxy hop, but only when the server is reachable solely through the proxy (publish no ports). Otherwise clients can spoof <code>X-Forwarded-For</code> and dodge the per-IP rate limits.</li>
             <li><strong>Connect a client</strong> to <code>https://YOUR_PUBLIC_URL/mcp</code>.</li>
           </ol>
@@ -102,6 +102,7 @@
     image: ghcr.io/auzroz/ynab-mcp:latest
     environment:
       MCP_TRANSPORT: http
+      AUTH_MODE: oauth
       PUBLIC_URL: https://ynab-mcp.example.com
       YNAB_OAUTH_CLIENT_ID: ${YNAB_OAUTH_CLIENT_ID}
       YNAB_OAUTH_CLIENT_SECRET: ${YNAB_OAUTH_CLIENT_SECRET}
@@ -136,7 +137,7 @@ volumes: { ynab-data: {} }</code></pre>
           <p>Read-only or read-write is chosen <strong>per connection</strong> at the consent screen. Someone can connect their phone read-only and their laptop read-write, and each keeps its own level; a token refresh never widens it.</p>
           <p>As the operator you can narrow it further:</p>
           <ul>
-            <li><code>YNAB_OAUTH_ALLOW_WRITE=false</code> offers only read-only at consent.</li>
+            <li><code>YNAB_OAUTH_ALLOW_WRITE</code> defaults to <code>false</code>: nobody can write until you set it to <code>true</code>. It is checked on every request, so setting it back to <code>false</code> stops all writes at once.</li>
             <li><code>YNAB_READ_ONLY=true</code> (the default) keeps the whole server read-only, whatever people choose. Set it to <code>false</code> to allow read-write connections at all.</li>
           </ul>
         </section>
@@ -153,7 +154,7 @@ volumes: { ynab-data: {} }</code></pre>
           </div>
           <div class="callout note">
             <span class="callout-title">Single-user header mode</span>
-            <p>Without the OAuth settings, HTTP mode takes a YNAB token per request in an <code>X-YNAB-Token</code> header. It is meant for a personal instance on a private network behind TLS. For anything shared or public, use OAuth mode.</p>
+            <p>With <code>AUTH_MODE=header</code>, HTTP mode takes a YNAB token per request in an <code>X-YNAB-Token</code> header. It is meant for a personal instance on a private network behind TLS. For anything shared or public, use OAuth mode.</p>
           </div>
         </section>
 

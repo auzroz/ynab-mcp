@@ -36,11 +36,12 @@ Set these environment variables (see `.env.example`):
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `MCP_TRANSPORT` | yes | `http` |
+| `AUTH_MODE` | yes | `oauth` here (`header` is the interim single-user mode below). Required: HTTP mode refuses to start without it. All configuration problems are listed in one startup message, without values |
 | `PUBLIC_URL` | yes | Public HTTPS base URL, e.g. `https://ynab-mcp.example.com`. It is also the OAuth issuer, so for local http testing use `http://localhost` or `http://127.0.0.1`: the server refuses to start with `http://[::1]` in OAuth mode |
 | `YNAB_OAUTH_CLIENT_ID` | yes | From step 1 |
 | `YNAB_OAUTH_CLIENT_SECRET` | yes | From step 1 |
 | `ENCRYPTION_KEY` | yes | 32-byte key for at-rest token encryption — `openssl rand -base64 32` |
-| `YNAB_OAUTH_ALLOW_WRITE` | no | Offer read-write at consent (default `true`; set `false` to force read-only) |
+| `YNAB_OAUTH_ALLOW_WRITE` | no | Allow writes (default `false`). Checked on every request, not only at consent: unless `true`, no connection can write, including one granted read-write earlier, so setting it back to `false` is an instant switch. Writes also need `YNAB_READ_ONLY=false`. `YNAB_ACCESS_TOKEN` and `YNAB_BUDGET_ID` must not be set in OAuth mode |
 | `STORAGE_DRIVER` | no | `memory` (default, **non-durable**), `sqlite`, or `postgres` |
 | `SQLITE_PATH` | if sqlite | e.g. `/data/ynab-mcp.db` |
 | `DATABASE_URL` | if postgres | `postgres://user:pass@host:5432/db` |
@@ -50,10 +51,13 @@ Set these environment variables (see `.env.example`):
 | `MCP_MAX_SESSIONS` | no | Global cap on concurrent MCP sessions (integer >= 1, default `100`). At the cap an `initialize` is refused with `503` and `Retry-After`. See "Sessions" |
 | `MCP_MAX_SESSIONS_PER_USER` | no | Cap on one user's concurrent sessions (integer >= 1 and at most `MCP_MAX_SESSIONS`, default `10` or `MCP_MAX_SESSIONS` if smaller). Past it the user's least recently used session is closed to make room. Set it below `MCP_MAX_SESSIONS` so one user can't take every slot. See "Sessions" |
 | `MCP_SESSION_IDLE_TIMEOUT_MS` | no | Idle time before a session is closed (integer >= 1, default `1800000`, 30 min). See "Sessions" |
+| `RATE_LIMIT_MAX_WAIT_MS` | no | Longest a request waits for a per-user YNAB rate-limit token (integer 0-60000, default `2000`). `0` never waits. Past that, or when another request is already waiting, the tool returns `rate_limited` with `retry_after_seconds` at once, so a burst can't pile up behind the limiter |
 | `TRUST_PROXY` | if behind a reverse proxy | Hop count to trust for `X-Forwarded-*` (e.g. `1` behind a single Traefik/Caddy/nginx). Without it, every client behind the proxy shares one rate limit on the OAuth endpoints, so one client can lock out the others. Set it only when the app is reachable solely through the proxy, or clients can spoof `X-Forwarded-For` |
 
-OAuth mode activates automatically once `YNAB_OAUTH_CLIENT_ID`,
-`YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL` are all set. Use a
+OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
+`YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL`; startup is refused if any is missing.
+Numeric settings are bounds-checked (for example `RATE_LIMIT_PER_HOUR` 1-195,
+`MCP_ACCESS_TOKEN_TTL_SEC` 60-3600, `MCP_AUTH_CODE_TTL_SEC` 30-600); an out-of-range value is refused, naming the variable and range. Use a
 **durable** driver (`sqlite`/`postgres`) in production — `memory` loses all
 sessions and connected accounts on restart.
 
@@ -76,6 +80,7 @@ services:
     image: ghcr.io/auzroz/ynab-mcp:latest
     environment:
       MCP_TRANSPORT: http
+      AUTH_MODE: oauth
       PUBLIC_URL: https://ynab-mcp.example.com
       YNAB_OAUTH_CLIENT_ID: ${YNAB_OAUTH_CLIENT_ID}
       YNAB_OAUTH_CLIENT_SECRET: ${YNAB_OAUTH_CLIENT_SECRET}
@@ -352,16 +357,22 @@ any MCP client that supports the `prompts` capability:
 
 ## Interim header mode (single-user)
 
-If you don't set the OAuth variables, HTTP mode falls back to **header auth**: the
+With `AUTH_MODE=header`, HTTP mode uses **header auth**: the
 YNAB token is supplied per request via `X-YNAB-Token` (or the `YNAB_ACCESS_TOKEN`
 env for a single user). This is handy for a personal remote instance:
 
 ```bash
-MCP_TRANSPORT=http YNAB_ACCESS_TOKEN=… npm start
+MCP_TRANSPORT=http AUTH_MODE=header MCP_BIND_HOST=127.0.0.1 YNAB_ACCESS_TOKEN=… npm start
 npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: <token>"
 ```
 
 Serve behind TLS; this mode has no per-user isolation beyond the token you send.
+
+> **Behind a reverse proxy on the same host, a loopback bind does not protect
+> `YNAB_ACCESS_TOKEN`.** The proxy connects over loopback, so the startup check
+> passes while every request through it without `X-YNAB-Token` acts as you.
+> Behind a proxy, omit `YNAB_ACCESS_TOKEN` or restrict access at the proxy.
+
 Tokens aren't validated at `initialize`, so anyone who can reach `/mcp` can use up
 `MCP_MAX_SESSIONS` (see [Sessions](#sessions)); keep it off the public internet or
 restrict access at the proxy.
