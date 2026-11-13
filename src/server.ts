@@ -198,7 +198,7 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
       // Reject oversized/deeply nested arguments before any zod parsing
       // (defense in depth against resource exhaustion).
       assertSafeToolInput(args ?? {});
-      // A tool hidden from a read-only session's list is rejected here too, so
+      // A tool hidden from a read-only caller's list is rejected here too, so
       // calling it by name gets the same read-only error even when its handler
       // would not reach the client's write guard (the deprecated no-op import).
       if (ynabClient.isReadOnly() && writeToolNames.has(name)) {

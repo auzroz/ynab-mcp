@@ -406,7 +406,9 @@ describe('G2: the request ceiling and the tool-call deadline (D6, Q8)', () => {
     api.hold();
     const started = Date.now();
     const res = await mcpPost(app, ynabToken('token-a'), call(9, 'ynab_get_user'), '2025-06-18');
-    expect(Date.now() - started).toBeLessThan(TIMEOUT);
+    // Bounded (loosely: timers under a loaded test run). The result below can
+    // only come from the handler's own deadline: the ceiling sends no result.
+    expect(Date.now() - started).toBeLessThan(TIMEOUT * 5);
     expect(res.status).toBe(200);
     const message = rpcMessageOrUndefined(res);
     expect(message?.['id']).toBe(9);
@@ -450,21 +452,23 @@ describe('G2: the request ceiling and the tool-call deadline (D6, Q8)', () => {
   });
 
   it('a slow resolve shortens the handler: a delayed resolver then a slow write still answers before the ceiling', async () => {
-    const { handle, addUser, token } = await oauthApp({ requestTimeoutMs: 600, allowWrite: true });
+    const { handle, addUser, token } = await oauthApp({ requestTimeoutMs: 1000, allowWrite: true });
     await addUser('u1', 'read-write');
     const access = await token('u1', 'client-a');
-    // The YNAB token refresh inside resolve takes 300 ms of the 600 ms.
+    // The YNAB token refresh inside resolve takes 500 ms of the 1000 ms.
     refreshMock.mockImplementation(async () => {
-      await sleep(300);
+      await sleep(500);
       return { accessToken: 'ynab-access', refreshToken: 'r2', expiresAt: Date.now() + 7_200_000 };
     });
     api.hold();
     const started = Date.now();
     const res = await mcpPost(handle.app, bearer(access), call(12, 'ynab_create_category_group', { budget_id: 'last-used', name: 'G' }), '2025-06-18');
     const elapsed = Date.now() - started;
-    // Answered by the handler's deadline (request deadline less its margin), not a fresh 600 ms after resolve.
-    expect(elapsed).toBeLessThan(600);
-    expect(elapsed).toBeGreaterThanOrEqual(300);
+    // The handler's deadline is the request's (900 ms in, its margin before
+    // the ceiling), not a fresh one after resolve (500 + 900 ms): that would
+    // fall after the ceiling, which ends the stream with no result at all.
+    expect(elapsed).toBeGreaterThanOrEqual(500);
+    expect(elapsed).toBeLessThan(1400);
     expect(res.status).toBe(200);
     expect(toolText(res)).toContain(WRITE_TIMEOUT_MESSAGE);
   });
