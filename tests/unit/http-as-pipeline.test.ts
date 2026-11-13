@@ -122,7 +122,11 @@ describe('G21: AS stage list per route', () => {
   it('runs no AS stage for /mcp or /health', async () => {
     const mcp = await traced(() => request(handle.app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' }));
     expect(mcp.res.status).toBe(401);
-    expect(mcp.stages).toEqual(['host-validation']);
+    // /mcp runs its own pipeline (ADR-0001; http-mcp-pipeline.test.ts), up to
+    // the bearer stage that refuses this request, and none of the AS's.
+    expect(mcp.stages).toEqual(['host-validation', 'origin-validation', 'request-ceiling', 'json-512kb', 'reject-batch', 'bearer']);
+    const asOnly = new Set(EXPECTED.flatMap((e) => e.stages).filter((s) => s !== 'host-validation'));
+    expect(mcp.stages.filter((s) => asOnly.has(s))).toEqual([]);
     const health = await traced(() => request(handle.app).get('/health'));
     expect(health.res.status).toBe(200);
     // Host validation skips /health inside its stage; no AS stage runs.

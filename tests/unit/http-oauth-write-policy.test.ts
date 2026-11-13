@@ -94,7 +94,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const h of handles.splice(0)) await h.sessions.close();
+  for (const h of handles.splice(0)) await h.mcp.close();
   await shared.storage?.close();
   shared.storage = undefined;
   vi.unstubAllGlobals();
@@ -158,12 +158,13 @@ function rpc(res: request.Response): Record<string, any> {
   return JSON.parse(data as string) as Record<string, any>;
 }
 
-function post(app: Express, access: string, sessionId?: string): request.Test {
+function post(app: Express, access: string, protocolVersion?: string): request.Test {
   let req = request(app).post('/mcp').set('Authorization', `Bearer ${access}`).set('Accept', ACCEPT);
-  if (sessionId) req = req.set('mcp-session-id', sessionId).set('mcp-protocol-version', '2025-06-18');
+  if (protocolVersion) req = req.set('mcp-protocol-version', protocolVersion);
   return req;
 }
 
+/** Initialize and acknowledge as a 2025 client does; returns the negotiated version (stateless: no session id). */
 async function openSession(app: Express, access: string): Promise<string> {
   const init = await post(app, access).send({
     jsonrpc: '2.0',
@@ -172,18 +173,19 @@ async function openSession(app: Express, access: string): Promise<string> {
     params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } },
   });
   expect(init.status, `${JSON.stringify(init.body)} ${String(init.headers['www-authenticate'])}`).toBe(200);
-  const sessionId = init.headers['mcp-session-id'] as string;
-  await post(app, access, sessionId).send({ jsonrpc: '2.0', method: 'notifications/initialized' });
-  return sessionId;
+  expect(init.headers['mcp-session-id']).toBeUndefined();
+  const protocolVersion = rpc(init)['result']['protocolVersion'] as string;
+  await post(app, access, protocolVersion).send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  return protocolVersion;
 }
 
-async function listToolNames(app: Express, access: string, sessionId: string): Promise<string[]> {
-  const res = await post(app, access, sessionId).send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+async function listToolNames(app: Express, access: string, protocolVersion: string): Promise<string[]> {
+  const res = await post(app, access, protocolVersion).send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   return (rpc(res)['result']['tools'] as Array<{ name: string }>).map((t) => t.name);
 }
 
-async function tryWrite(app: Express, access: string, sessionId: string): Promise<{ isError: boolean; text: string }> {
-  const res = await post(app, access, sessionId).send({
+async function tryWrite(app: Express, access: string, protocolVersion: string): Promise<{ isError: boolean; text: string }> {
+  const res = await post(app, access, protocolVersion).send({
     jsonrpc: '2.0',
     id: 3,
     method: 'tools/call',
