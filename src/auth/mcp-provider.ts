@@ -490,28 +490,31 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
 
       // A callback that is already late changes nothing: not the user's stored
       // grant (a failed authorization must not narrow it), and not the code.
-      checkDeadline();
-      await this.opts.storage.upsertUser({
-        userId,
-        grantedScope: rec.grantedScope,
-        encryptedRefreshToken: this.opts.encryptor.encrypt(tokens.refreshToken),
-        updatedAt: Date.now(),
-      });
-
       // The sweep spares this client for at least MIN_ABANDONED_CLIENT_MS after
-      // last_seen_at. Past the (shorter) deadline it may be gone, so save no code.
+      // last_seen_at, longer than the deadline, and the completion below checks
+      // that the client is still registered, in the same step as both writes.
       checkDeadline();
-      await this.opts.storage.saveAuthCode({
-        code: mcpCodeKey,
-        clientId: rec.clientId,
-        userId,
-        redirectUri: rec.redirectUri,
-        codeChallenge: rec.codeChallenge,
-        scopes: grantScopes(rec.scopes, rec.grantedScope),
-        expiresAt: Date.now() + this.opts.authCodeTtlSec * 1000,
-        resource: rec.resource,
-        grantedScope: rec.grantedScope,
+      const completed = await this.opts.storage.completeAuthorization({
+        user: {
+          userId,
+          grantedScope: rec.grantedScope,
+          encryptedRefreshToken: this.opts.encryptor.encrypt(tokens.refreshToken),
+          updatedAt: Date.now(),
+        },
+        code: {
+          code: mcpCodeKey,
+          clientId: rec.clientId,
+          userId,
+          redirectUri: rec.redirectUri,
+          codeChallenge: rec.codeChallenge,
+          scopes: grantScopes(rec.scopes, rec.grantedScope),
+          expiresAt: Date.now() + this.opts.authCodeTtlSec * 1000,
+          resource: rec.resource,
+          grantedScope: rec.grantedScope,
+        },
       });
+      // The client was removed meanwhile: nothing was written.
+      if (!completed) throw new Error('OAuth client is no longer registered');
     } catch (err) {
       // Logged sanitized and internally only; the client gets a fixed description.
       console.error('[OAuth] YNAB authorization could not be completed:', sanitizeErrorMessage(err));

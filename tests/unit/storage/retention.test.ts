@@ -1162,3 +1162,222 @@ for (const { name, enabled, raw: makeRaw } of sqlDrivers) {
     });
   });
 }
+
+// --- completeAuthorization (#94): the user and the code in one transaction ---
+
+function authCode(clientId: string, userId: string, code = `code-${randomUUID()}`) {
+  return {
+    code,
+    clientId,
+    userId,
+    redirectUri: 'https://client.example/cb',
+    codeChallenge: 'chal',
+    scopes: ['ynab'],
+    expiresAt: Date.now() + 600_000,
+    grantedScope: 'read-write' as const,
+  };
+}
+
+function consentFor(userId: string, token: string, grantedScope: 'read-only' | 'read-write' = 'read-write') {
+  return { userId, grantedScope, encryptedRefreshToken: token, updatedAt: Date.now() };
+}
+
+for (const driver of testDrivers) {
+  describe.skipIf(!driver.enabled)(`completeAuthorization (#94): ${driver.name}`, () => {
+    let h: DriverHandle;
+    let s: Storage;
+    beforeEach(async () => {
+      h = await driver.open();
+      s = h.storage;
+    });
+
+    it('writes the user and the code, and the code redeems', async () => {
+      await s.saveClient(client('c'));
+      const code = authCode('c', 'u');
+      expect(await s.completeAuthorization({ user: consentFor('u', 'enc-new'), code })).toBe(true);
+      expect(await s.getUser('u')).toMatchObject({ encryptedRefreshToken: 'enc-new', grantedScope: 'read-write' });
+      const consumed = await s.consumeAuthCode(code.code, { familyId: randomUUID(), consumedUntil: Date.now() + 600_000 });
+      expect(consumed).toMatchObject({ clientId: 'c', userId: 'u', grantedScope: 'read-write' });
+    });
+
+    it('keeps the account generation when the user already exists', async () => {
+      await s.saveClient(client('c'));
+      await seedUser(s, 'u', 'enc-old');
+      const before = await s.getUser('u');
+      expect(await s.completeAuthorization({ user: consentFor('u', 'enc-new'), code: authCode('c', 'u') })).toBe(true);
+      const after = await s.getUser('u');
+      expect(after?.encryptedRefreshToken).toBe('enc-new');
+      expect(after?.createdAt).toBe(before?.createdAt);
+    });
+
+    it('a client deleted before completion: false, no user and no code', async () => {
+      const code = authCode('gone', 'u');
+      expect(await s.completeAuthorization({ user: consentFor('u', 'enc-new'), code })).toBe(false);
+      expect(await s.getUser('u')).toBeUndefined();
+      expect(await s.takeAuthCode(code.code)).toBeUndefined();
+      expect(Object.values(await h.userRows('u')).every((n) => n === 0)).toBe(true);
+    });
+
+    it('a client removed by the sweep: false, and an existing user is unchanged', async () => {
+      await s.saveClient(client('c'));
+      await seedUser(s, 'u', 'enc-old');
+      const before = await s.getUser('u');
+      expect((await s.sweepExpired({ now: Date.now() + 400 * DAY })).deleted.abandonedClients).toBe(1);
+      const code = authCode('c', 'u');
+      expect(await s.completeAuthorization({ user: consentFor('u', 'enc-new', 'read-only'), code })).toBe(false);
+      expect(await s.getUser('u')).toEqual(before);
+      expect(await s.takeAuthCode(code.code)).toBeUndefined();
+    });
+
+    // Memory overwrites a duplicate code, so only the SQL drivers can fail the second write.
+    if (driver.kind !== 'memory') {
+      it('a write that fails leaves the user unchanged', async () => {
+        await s.saveClient(client('c'));
+        expect(await s.completeAuthorization({ user: consentFor('u', 'enc-mid'), code: authCode('c', 'u', 'dup') })).toBe(true);
+        // The same code again violates its primary key; the user write rolls back with it.
+        await expect(
+          s.completeAuthorization({ user: consentFor('u', 'enc-second'), code: authCode('c', 'u', 'dup') })
+        ).rejects.toThrow();
+        expect((await s.getUser('u'))?.encryptedRefreshToken).toBe('enc-mid');
+      });
+    }
+  });
+}
+
+describe.skipIf(!pgDriver?.enabled)('completeAuthorization (#94) on Postgres: a sweep racing it', () => {
+  type PgPool = import('pg').Pool;
+  type PgClient = import('pg').PoolClient;
+
+  async function replica(h: DriverHandle): Promise<{ storage: Storage; app: string }> {
+    const { PostgresStorage } = await import('../../../src/storage/postgres.js');
+    const app = `auth94-${randomUUID().slice(0, 8)}`;
+    const url = new URL(h.connectionString as string);
+    url.searchParams.set('application_name', app);
+    const storage = new PostgresStorage({ connectionString: url.toString(), tokenKeys: TEST_TOKEN_HASHER });
+    await storage.init();
+    return { storage, app };
+  }
+
+  function track<T>(p: Promise<T>): { promise: Promise<T>; settled: () => boolean } {
+    let done = false;
+    const promise = p.finally(() => {
+      done = true;
+    });
+    return { promise, settled: () => done };
+  }
+
+  async function blocked(h: DriverHandle, app: string, p: { settled: () => boolean }): Promise<void> {
+    const sql = h.sql as NonNullable<DriverHandle['sql']>;
+    for (;;) {
+      if (p.settled()) throw new Error('the operation did not wait for the lock');
+      const rows = await sql(
+        `SELECT 1 FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock'`,
+        [app]
+      );
+      if (rows.length > 0) return;
+    }
+  }
+
+  /**
+   * Holds `storage`'s transactions open right after their `UPDATE oauth_clients`
+   * (the completion's client check) until `release()`. `reached` resolves once a
+   * transaction is held there.
+   */
+  function holdAfterClientUpdate(storage: Storage): { reached: Promise<void>; release: () => void } {
+    let release!: () => void;
+    let reachedResolve!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reached = new Promise<void>((resolve) => {
+      reachedResolve = resolve;
+    });
+    const pool = (storage as unknown as { pool: PgPool }).pool;
+    const connect = pool.connect.bind(pool) as () => Promise<PgClient>;
+    (pool as unknown as { connect: () => Promise<PgClient> }).connect = async () => {
+      const c = await connect();
+      const query = c.query.bind(c) as (...args: unknown[]) => Promise<unknown>;
+      (c as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = async (...args) => {
+        const result = await query(...args);
+        if (typeof args[0] === 'string' && args[0].includes('UPDATE oauth_clients')) {
+          reachedResolve();
+          await gate;
+        }
+        return result;
+      };
+      return c;
+    };
+    return { reached, release };
+  }
+
+  let h: DriverHandle;
+  let other: { storage: Storage; app: string };
+  beforeEach(async () => {
+    h = await (pgDriver as NonNullable<typeof pgDriver>).open();
+    other = await replica(h);
+    // A registration the sweep would delete right now: old, never authorized, not seen.
+    await h.storage.saveClient(client('c'));
+    await (h.sql as NonNullable<DriverHandle['sql']>)(
+      'UPDATE oauth_clients SET created_at = 0, last_seen_at = NULL WHERE client_id = $1',
+      ['c']
+    );
+  });
+  afterEach(async () => {
+    await other.storage.close();
+  });
+
+  it('a sweep during the completion skips the client, and the sign-in completes', async () => {
+    await seedUser(h.storage, 'u', 'enc-old');
+    const hold = holdAfterClientUpdate(other.storage);
+    const code = authCode('c', 'u');
+    const completion = track(other.storage.completeAuthorization({ user: consentFor('u', 'enc-new'), code }));
+    await hold.reached;
+    try {
+      // The sweep would delete 'c' (nothing but the stamp protects it), but the row is locked.
+      const swept = await h.storage.sweepExpired();
+      expect(swept.deleted).toMatchObject({ abandonedClients: 0, unusedClients: 0 });
+    } finally {
+      hold.release();
+    }
+    expect(await completion.promise).toBe(true);
+    expect(await h.storage.getClient('c')).toBeDefined();
+    expect((await h.storage.getUser('u'))?.encryptedRefreshToken).toBe('enc-new');
+    expect(
+      await h.storage.consumeAuthCode(code.code, { familyId: randomUUID(), consumedUntil: Date.now() + 600_000 })
+    ).toBeDefined();
+  });
+
+  it('a sweep that holds the client first wins: the completion waits, returns false and writes nothing', async () => {
+    await seedUser(h.storage, 'u', 'enc-old');
+    const before = await h.storage.getUser('u');
+    const pg = (await import('pg')).default;
+    const pool = new pg.Pool({ connectionString: h.connectionString });
+    const tx = await pool.connect();
+    try {
+      await tx.query('BEGIN');
+      await tx.query("SET LOCAL lock_timeout = '10s'");
+      await tx.query('DELETE FROM oauth_clients WHERE client_id = $1', ['c']);
+      const code = authCode('c', 'u');
+      const completion = track(other.storage.completeAuthorization({ user: consentFor('u', 'enc-new', 'read-only'), code }));
+      await blocked(h, other.app, completion);
+      await tx.query('COMMIT');
+      expect(await completion.promise).toBe(false);
+      expect(await h.storage.getClient('c')).toBeUndefined();
+      expect(await h.storage.getUser('u')).toEqual(before);
+      expect(await h.storage.takeAuthCode(code.code)).toBeUndefined();
+    } finally {
+      await tx.query('ROLLBACK').catch(() => undefined);
+      tx.release();
+      await pool.end();
+    }
+  });
+
+  it('a sweep that commits before the completion starts: false, and nothing is written', async () => {
+    const swept = await h.storage.sweepExpired();
+    expect(swept.deleted.abandonedClients).toBe(1);
+    const code = authCode('c', 'u');
+    expect(await other.storage.completeAuthorization({ user: consentFor('u', 'enc-new'), code })).toBe(false);
+    expect(await h.storage.getUser('u')).toBeUndefined();
+    expect(await h.storage.takeAuthCode(code.code)).toBeUndefined();
+  });
+});

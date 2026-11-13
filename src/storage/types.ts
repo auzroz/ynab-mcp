@@ -337,6 +337,17 @@ export interface Storage {
   // tests and maintenance: it leaves no tombstone, so the token endpoint must
   // spend codes only through consumeAuthCode, or replay detection is bypassed.
   saveAuthCode(rec: AuthCodeRecord): Promise<void>;
+  /**
+   * Finish an OAuth sign-in in one transaction: check that `code.clientId` is
+   * still registered, upsert `user` (as {@link Storage.upsertUser}), and insert
+   * `code` (as {@link Storage.saveAuthCode}). Returns false, having written
+   * nothing, when the client is gone (the cleanup sweep removed it), so a
+   * failed sign-in changes no stored grant. A write that fails throws and
+   * leaves nothing behind either. On Postgres the client row is updated
+   * (`last_seen_at`), not only read, so a sweep racing the transaction either
+   * skips the client or deletes it first and completes the sign-in as false.
+   */
+  completeAuthorization(input: { user: UserRecord; code: AuthCodeRecord }): Promise<boolean>;
   takeAuthCode(code: string): Promise<AuthCodeRecord | undefined>;
   /**
    * The atomic one-time use of a code at the token endpoint: take `code` and,

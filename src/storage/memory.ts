@@ -106,7 +106,10 @@ export class MemoryStorage implements Storage {
   // Users + YNAB tokens
 
   async upsertUser(rec: UserRecord): Promise<void> {
-    // created_at is set by the insert only, from the storage clock.
+    this.putUser(rec);
+  }
+  /** created_at is set by the insert only, from the storage clock. */
+  private putUser(rec: UserRecord): void {
     const existing = this.users.get(rec.userId);
     this.users.set(rec.userId, { ...rec, createdAt: existing ? existing.createdAt : Date.now() });
   }
@@ -249,6 +252,15 @@ export class MemoryStorage implements Storage {
 
   async saveAuthCode(rec: AuthCodeRecord): Promise<void> {
     this.authCodes.set(rec.code, rec);
+  }
+  async completeAuthorization(input: { user: UserRecord; code: AuthCodeRecord }): Promise<boolean> {
+    // Synchronous from the check to the last write, so nothing interleaves.
+    const client = this.clients.get(input.code.clientId);
+    if (!client) return false;
+    client.lastSeenAt = Date.now();
+    this.putUser(input.user);
+    this.authCodes.set(input.code.code, input.code);
+    return true;
   }
   async takeAuthCode(code: string): Promise<AuthCodeRecord | undefined> {
     const rec = this.authCodes.get(code);

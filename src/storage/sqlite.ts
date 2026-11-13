@@ -328,7 +328,11 @@ export class SqliteStorage implements Storage {
   // Users + YNAB tokens
 
   async upsertUser(rec: UserRecord): Promise<void> {
-    // created_at is written by the insert only (the account's generation).
+    this.putUser(rec);
+  }
+
+  /** created_at is written by the insert only (the account's generation). */
+  private putUser(rec: UserRecord): void {
     this.database
       .prepare(
         `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at, created_at)
@@ -549,6 +553,10 @@ export class SqliteStorage implements Storage {
   // MCP authorization codes (one-time)
 
   async saveAuthCode(rec: AuthCodeRecord): Promise<void> {
+    this.insertAuthCode(rec);
+  }
+
+  private insertAuthCode(rec: AuthCodeRecord): void {
     this.database
       .prepare(
         `INSERT INTO auth_codes
@@ -566,6 +574,21 @@ export class SqliteStorage implements Storage {
         resource: rec.resource ?? null,
         grantedScope: rec.grantedScope ?? null,
       });
+  }
+
+  async completeAuthorization(input: { user: UserRecord; code: AuthCodeRecord }): Promise<boolean> {
+    // IMMEDIATE takes the write lock first, so the client check and both writes
+    // are one step against the sweep and other processes sharing the file.
+    const complete = this.database.transaction((i: { user: UserRecord; code: AuthCodeRecord }): boolean => {
+      const seen = this.database
+        .prepare('UPDATE oauth_clients SET last_seen_at = ? WHERE client_id = ?')
+        .run(Date.now(), i.code.clientId);
+      if (seen.changes === 0) return false;
+      this.putUser(i.user);
+      this.insertAuthCode(i.code);
+      return true;
+    });
+    return complete.immediate(input);
   }
 
   async takeAuthCode(code: string): Promise<AuthCodeRecord | undefined> {
