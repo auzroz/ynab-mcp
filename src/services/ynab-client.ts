@@ -334,6 +334,7 @@ export class YnabClient {
   // feed then starts at the budget's first month (see transactionChangeFeed).
   // Per user in HTTP mode (UserComponents), so it outlives this client.
   private readonly feedState: TransactionFeedState;
+  private readonly breaker: CircuitBreaker | undefined;
 
   // Track server knowledge for delta sync. Keyed by budget, resource and any
   // request parameters that change the result set (see knowledgeKey), because a
@@ -420,6 +421,7 @@ export class YnabClient {
     this.auditLog = auditLog;
     this.deltaCache = deltaCache;
     this.feedState = feedState;
+    this.breaker = options.breaker;
   }
 
   // The fan-out reservation of the current async call chain, if any.
@@ -484,6 +486,17 @@ export class YnabClient {
    */
   getRateLimitStatus(): ReturnType<RateLimiter['getStatus']> {
     return this.rateLimiter.getStatus();
+  }
+
+  /**
+   * How this user's YNAB traffic is doing: the circuit breaker's state and what
+   * the user's caches hold against their byte budget (#58).
+   */
+  getUpstreamStatus(): {
+    circuit: ReturnType<CircuitBreaker['status']> | undefined;
+    cache: { bytes: number; maxBytes: number } | undefined;
+  } {
+    return { circuit: this.breaker?.status(), cache: this.cache.byteUsage() };
   }
 
   /**

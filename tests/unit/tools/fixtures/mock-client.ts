@@ -23,6 +23,7 @@ export function createMockClient() {
     getDefaultBudgetId: vi.fn(() => 'test-budget-id'),
     isReadOnly: vi.fn(() => true),
     getRateLimitStatus: vi.fn(() => ({ ...defaultRateLimitStatus })),
+    getUpstreamStatus: vi.fn(() => ({ circuit: undefined, cache: undefined })),
     getServerKnowledge: vi.fn((): number | undefined => undefined),
     updateServerKnowledge: vi.fn(),
 

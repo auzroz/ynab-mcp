@@ -18,10 +18,14 @@ import { Cache } from './cache.js';
 import { DeltaCache } from './delta-cache.js';
 import { AuditLog } from './audit-log.js';
 import { CircuitBreaker } from './circuit-breaker.js';
+import { ByteBudget, DEFAULT_USER_CACHE_BYTES } from './byte-budget.js';
 import type { TransactionFeedState } from './ynab-client.js';
 
 /** The rate limiter's refill window: an idle hour refills any bucket completely. */
 export const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+
+/** How often the idle sweep also prunes expired cache entries (#58). */
+export const CACHE_PRUNE_INTERVAL_MS = 60 * 1000;
 
 /** Default bound on retained users (see UserRegistryOptions.maxEntries). */
 export const DEFAULT_MAX_USER_ENTRIES = 10_000;
@@ -44,13 +48,22 @@ export interface UserComponents {
 
 /** Build a fresh set of per-user components. */
 export function createUserComponents(
-  limits: { rateLimitPerHour: number; rateLimitMaxWaitMs?: number | undefined; cacheTtlMs: number },
+  limits: {
+    rateLimitPerHour: number;
+    rateLimitMaxWaitMs?: number | undefined;
+    cacheTtlMs: number;
+    /** Cap on the serialized size of the user's cache and snapshots together (default 8 MiB). */
+    cacheMaxBytes?: number | undefined;
+  },
   now: () => number = Date.now
 ): UserComponents {
+  // One byte budget for both stores, so a user's snapshots and cached
+  // responses together stay under it (#58).
+  const budget = new ByteBudget(limits.cacheMaxBytes ?? DEFAULT_USER_CACHE_BYTES);
   return {
     rateLimiter: new RateLimiter(limits.rateLimitPerHour, now, limits.rateLimitMaxWaitMs),
-    cache: new Cache(limits.cacheTtlMs),
-    deltaCache: new DeltaCache({ now }),
+    cache: new Cache(limits.cacheTtlMs, budget),
+    deltaCache: new DeltaCache({ now, budget }),
     auditLog: new AuditLog(),
     breaker: new CircuitBreaker({ now }),
     feedState: { sinceDateRejected: false },
@@ -77,6 +90,8 @@ export interface UserRegistryOptions {
   rateLimitPerHour: number;
   rateLimitMaxWaitMs?: number | undefined;
   cacheTtlMs: number;
+  /** Per-user cap on cached bytes (see createUserComponents); defaults to 8 MiB. */
+  cacheMaxBytes?: number | undefined;
   /** Minimum time an entry without leases is kept. Defaults to the rate-limit window. */
   idleEvictionMs?: number;
   /**
@@ -101,13 +116,24 @@ interface Entry {
 
 export class UserRegistry {
   private readonly entries = new Map<string, Entry>();
-  private readonly limits: { rateLimitPerHour: number; rateLimitMaxWaitMs?: number | undefined; cacheTtlMs: number };
+  private readonly limits: {
+    rateLimitPerHour: number;
+    rateLimitMaxWaitMs?: number | undefined;
+    cacheTtlMs: number;
+    cacheMaxBytes?: number | undefined;
+  };
   private readonly idleEvictionMs: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
+  private lastPrunedAt = 0;
 
   constructor(opts: UserRegistryOptions) {
-    this.limits = { rateLimitPerHour: opts.rateLimitPerHour, rateLimitMaxWaitMs: opts.rateLimitMaxWaitMs, cacheTtlMs: opts.cacheTtlMs };
+    this.limits = {
+      rateLimitPerHour: opts.rateLimitPerHour,
+      rateLimitMaxWaitMs: opts.rateLimitMaxWaitMs,
+      cacheTtlMs: opts.cacheTtlMs,
+      cacheMaxBytes: opts.cacheMaxBytes,
+    };
     this.idleEvictionMs = opts.idleEvictionMs ?? RATE_LIMIT_WINDOW_MS;
     this.maxEntries = opts.maxEntries ?? DEFAULT_MAX_USER_ENTRIES;
     this.now = opts.now ?? Date.now;
@@ -155,9 +181,18 @@ export class UserRegistry {
    * user a fresh rate limiter on the next one; the full-bucket check
    * additionally keeps an entry whose limiter is still refilling, so evicting
    * never grants capacity. Lazy (run on acquire): entries only accumulate as
-   * new requests arrive.
+   * new requests arrive. The same sweep prunes expired cache entries and idle
+   * snapshots (at most once a CACHE_PRUNE_INTERVAL_MS), so a user's expired
+   * data does not sit in memory until their next read.
    */
   private sweep(now: number): void {
+    if (now - this.lastPrunedAt >= CACHE_PRUNE_INTERVAL_MS) {
+      this.lastPrunedAt = now;
+      for (const entry of this.entries.values()) {
+        entry.components.cache.prune();
+        entry.components.deltaCache.prune();
+      }
+    }
     for (const [key, entry] of this.entries) {
       if (entry.liveLeases > 0 || now - entry.lastUsedAt < this.idleEvictionMs) continue;
       const status = entry.components.rateLimiter.getStatus();

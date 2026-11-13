@@ -23,7 +23,9 @@ Use when you need to:
 
 YNAB allows 200 requests per hour. This server uses 180 as a safety margin. If YNAB itself has answered 429 (too many requests), ynab_exhausted shows when that happened and when requests are allowed again; until then requests fail fast.
 
-When the budget is used up, tool calls fail at once with a rate_limited error and retry_after_seconds (they wait at most max_wait_ms for a token, and only one call waits at a time). In HTTP mode each user has their own budget, shared by that user's sessions; usage shows this user's requests and refusals over the last hour.`,
+When the budget is used up, tool calls fail at once with a rate_limited error and retry_after_seconds (they wait at most max_wait_ms for a token, and only one call waits at a time). In HTTP mode each user has their own budget, shared by that user's sessions; usage shows this user's requests and refusals over the last hour.
+
+upstream.circuit is the circuit breaker: after 20 consecutive YNAB 5xx responses or timeouts within 60 seconds it opens for 30 seconds, and tool calls fail at once with an upstream_unavailable error and retry_after_seconds. cache shows the bytes this user's cache holds against its budget (8 MiB).`,
   inputSchema: {
     type: 'object',
     properties: {},
@@ -43,6 +45,7 @@ export async function handleRateLimitStatus(
   inputSchema.parse(args);
 
   const status = client.getRateLimitStatus();
+  const upstream = client.getUpstreamStatus();
 
   // Calculate human-readable times
   const waitTimeSeconds = Math.ceil(status.waitTimeMs / 1000);
@@ -95,6 +98,17 @@ export async function handleRateLimitStatus(
         rejected_last_hour: status.rejectedLastHour,
         max_wait_ms: status.maxWaitMs,
       },
+      // The circuit breaker (#58): after repeated YNAB failures or timeouts, calls fail fast for a while.
+      upstream: {
+        circuit: upstream.circuit?.state ?? 'closed',
+        consecutive_failures: upstream.circuit?.consecutiveFailures ?? 0,
+        ...(upstream.circuit && upstream.circuit.retryAfterMs > 0
+          ? { retry_after_seconds: Math.ceil(upstream.circuit.retryAfterMs / 1000) }
+          : {}),
+      },
+      cache: upstream.cache
+        ? { bytes: upstream.cache.bytes, max_bytes: upstream.cache.maxBytes }
+        : null,
       timing: {
         can_make_request_now: status.canMakeRequest,
         wait_time_seconds: waitTimeSeconds,

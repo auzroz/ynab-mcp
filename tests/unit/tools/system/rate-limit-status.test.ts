@@ -42,6 +42,22 @@ describe('handleRateLimitStatus', () => {
     expect(parsed.usage).toEqual({ requests_last_hour: 170, rejected_last_hour: 3, max_wait_ms: 0 });
   });
 
+  it('reports a closed circuit and no cache figures by default', async () => {
+    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    expect(parsed.upstream).toEqual({ circuit: 'closed', consecutive_failures: 0 });
+    expect(parsed.cache).toBeNull();
+  });
+
+  it('reports an open circuit with its retry time, and the cache bytes', async () => {
+    mockClient.getUpstreamStatus.mockReturnValue({
+      circuit: { state: 'open', consecutiveFailures: 20, retryAfterMs: 12_500, trips: 1 },
+      cache: { bytes: 1024, maxBytes: 8_388_608 },
+    });
+    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    expect(parsed.upstream).toEqual({ circuit: 'open', consecutive_failures: 20, retry_after_seconds: 13 });
+    expect(parsed.cache).toEqual({ bytes: 1024, max_bytes: 8_388_608 });
+  });
+
   it('reports warning status between 50% and 80% usage', async () => {
     mockClient.getRateLimitStatus.mockReturnValue({
       available: 108,
