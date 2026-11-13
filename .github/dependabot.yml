@@ -12,6 +12,10 @@ updates:
         patterns:
           - vitest
           - '@vitest/*'
+      # The MCP SDK v2 packages bump together, so core stays one version.
+      mcp-sdk:
+        patterns:
+          - '@modelcontextprotocol/*'
       npm-minor-patch:
         update-types:
           - minor
@@ -36,6 +40,10 @@ updates:
         update-types: ['version-update:semver-major']
       # ynab is pinned to ~5.0.0 on purpose; update manually.
       - dependency-name: ynab
+        # Minor and major are planned by hand; patch and security PRs still flow.
+        update-types: ['version-update:semver-minor', 'version-update:semver-major']
+      # server-legacy is pinned ~2.4.0 (ADR-0001 D14) and core must resolve to one version.
+      - dependency-name: '@modelcontextprotocol/*'
         # Minor and major are planned by hand; patch and security PRs still flow.
         update-types: ['version-update:semver-minor', 'version-update:semver-major']
 
