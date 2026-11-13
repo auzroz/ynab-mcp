@@ -571,7 +571,7 @@ export class YnabClient {
       id = await this.fetchPlanId(alias, ALIAS_PROBE_KNOWLEDGE);
     } catch (error) {
       // Should YNAB reject that cursor, fall back to the full budget.
-      if (!(error instanceof ynab.ResponseError) || error.response.status !== 400) throw error;
+      if (!isBadRequest(error)) throw error;
     }
     id ??= await this.fetchPlanId(alias, undefined);
     if (id === undefined) throw new YnabApiError('YNAB did not identify the budget', 'budget_not_found');
@@ -580,10 +580,14 @@ export class YnabClient {
   }
 
   private async fetchPlanId(alias: string, knowledge: number | undefined): Promise<string | undefined> {
-    await this.takeToken();
-    const response = await this.api.plans.getPlanById(alias, knowledge);
-    const id: unknown = response.data.plan?.id;
-    return typeof id === 'string' && id.length > 0 ? id : undefined;
+    // Outside any fan-out reservation: the tool's reserved count covers its
+    // own reads, and this lookup (a cache miss only) takes its own token.
+    return this.fanOut.exit(async () => {
+      await this.takeToken();
+      const response = await this.api.plans.getPlanById(alias, knowledge);
+      const id: unknown = response.data.plan?.id;
+      return typeof id === 'string' && id.length > 0 ? id : undefined;
+    });
   }
 
   /**

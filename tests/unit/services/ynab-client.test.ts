@@ -7,7 +7,6 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as ynab from 'ynab';
 import { YnabClient, BUDGET_ALIAS_TTL_MS } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
 import { handleGetBudget } from '../../../src/tools/budgets/get-budget.js';
@@ -1270,11 +1269,23 @@ describe('budget alias resolution (#66)', () => {
   it('falls back to the full budget when YNAB rejects the probe cursor with a 400', async () => {
     const client = makeClient(true);
     asMock(mockApi.plans.getPlanById)
-      .mockRejectedValueOnce(new ynab.ResponseError(new Response('{}', { status: 400 })))
+      .mockRejectedValueOnce({ error: { id: '400', name: 'bad_request', detail: 'bad request' } })
       .mockResolvedValueOnce(planResponse(U1));
 
     await expect(client.resolveBudgetId()).resolves.toBe(U1);
     expect(asMock(mockApi.plans.getPlanById).mock.calls[1]).toEqual(['last-used', undefined]);
+  });
+
+  it('takes its token outside a fan-out reservation, leaving the tool its full count', async () => {
+    const limiter = new RateLimiter(180);
+    const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+    setResolve(mockApi.plans.getPlanById, planResponse(U1));
+    const before = limiter.getStatus().available;
+    await client.withFanOut(2, async () => {
+      await client.resolveBudgetId();
+    });
+    // The lookup cost one token of its own; the unused two came back.
+    expect(before - limiter.getStatus().available).toBe(1);
   });
 
   it('fails when YNAB names no budget, and caches nothing', async () => {
