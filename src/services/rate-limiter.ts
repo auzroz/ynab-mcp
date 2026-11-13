@@ -120,9 +120,11 @@ export class RateLimiter {
    * Take `count` tokens at once or none: a fan-out reservation (#58). Never
    * waits; when the bucket holds fewer than `count` it throws a RateLimitError
    * carrying the time until `count` tokens are free, so a multi-request tool
-   * refuses up front instead of failing after some of its calls were sent. A
-   * `count` beyond the bucket size is clamped to it (the whole budget). Give
-   * back what goes unused with release(n). Returns the number taken.
+   * refuses up front instead of failing after some of its calls were sent. Give
+   * back what goes unused with release(n). Returns the number taken. A
+   * `count` beyond the bucket size can never be satisfied, so it is refused
+   * (with the time until the bucket is full, the best case) instead of being
+   * cut down to what a part-way failure would leave.
    */
   acquireMany(count: number): number {
     if (!Number.isInteger(count) || count < 1) {
@@ -130,10 +132,10 @@ export class RateLimiter {
     }
     this.throwIfExhaustedByYnab();
     this.refill();
-    const needed = Math.min(count, this.maxTokens);
+    const needed = count;
     // Tolerate float rounding, as acquire() does.
-    if (this.tokens < needed - 1e-6) {
-      throw this.reject(Math.ceil((needed - this.tokens) / this.refillRate));
+    if (this.tokens < needed - 1e-6 || needed > this.maxTokens) {
+      throw this.reject(Math.ceil((Math.min(needed, this.maxTokens) - this.tokens) / this.refillRate));
     }
     // A caller already waiting for a token has the next one; this reservation must not jump it.
     if (this.waiterActive && this.tokens < needed + 1) {
