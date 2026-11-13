@@ -23,8 +23,8 @@
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
-import { InvalidClientError, ServerError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { InvalidClientError, ServerError } from '@modelcontextprotocol/server-legacy/auth';
+import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/server-legacy/auth';
 import { verifyClientSecret } from './token-hash.js';
 
 function refuse(res: Response, description: string): void {

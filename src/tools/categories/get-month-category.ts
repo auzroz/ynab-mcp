@@ -7,7 +7,7 @@
 import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { buildGoalDetail } from '../../utils/goals.js';
 import { formatCurrency } from '../../utils/milliunits.js';

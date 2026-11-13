@@ -5,7 +5,7 @@
  * money from categories with slack, plus surfaces discretionary cuts.
  */
 
-import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { Prompt, PromptMessage } from '@modelcontextprotocol/server';
 
 export const overspendingTriagePrompt: Prompt = {
   name: 'ynab-overspending-triage',
