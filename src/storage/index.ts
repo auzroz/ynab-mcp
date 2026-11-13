@@ -12,13 +12,20 @@
 
 import type { Storage, StorageDriverOptions } from './types.js';
 import { MemoryStorage } from './memory.js';
+import type { TokenKeyDeriver } from '../auth/token-hash.js';
 
-/** Which driver to build; every driver also takes the retention windows (#54b passes its settings here). */
+/**
+ * Which driver to build; every driver also takes the retention windows (#54b
+ * passes its settings here). The durable drivers also take the token hasher:
+ * their migration M3 (#52) checks the pepper fingerprint and rewrites 0.4.x
+ * keys with it. Memory storage holds nothing from an earlier process, so it
+ * needs none.
+ */
 export type StorageOptions = StorageDriverOptions &
   (
     | { driver?: 'memory' }
-    | { driver: 'sqlite'; path: string }
-    | { driver: 'postgres'; connectionString: string }
+    | { driver: 'sqlite'; path: string; tokenKeys: TokenKeyDeriver }
+    | { driver: 'postgres'; connectionString: string; tokenKeys: TokenKeyDeriver }
   );
 
 /**
@@ -35,11 +42,15 @@ async function buildStorage(opts: StorageOptions): Promise<Storage> {
   switch (opts.driver) {
     case 'sqlite': {
       const { SqliteStorage } = await import('./sqlite.js');
-      return new SqliteStorage({ path: opts.path, retention: opts.retention });
+      return new SqliteStorage({ path: opts.path, tokenKeys: opts.tokenKeys, retention: opts.retention });
     }
     case 'postgres': {
       const { PostgresStorage } = await import('./postgres.js');
-      return new PostgresStorage({ connectionString: opts.connectionString, retention: opts.retention });
+      return new PostgresStorage({
+        connectionString: opts.connectionString,
+        tokenKeys: opts.tokenKeys,
+        retention: opts.retention,
+      });
     }
     default:
       return new MemoryStorage({ retention: opts.retention });

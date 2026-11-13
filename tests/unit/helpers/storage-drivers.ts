@@ -13,6 +13,7 @@ import { rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { Storage, StorageDriverOptions } from '../../../src/storage/types.js';
 import { MemoryStorage } from '../../../src/storage/memory.js';
+import { TEST_TOKEN_HASHER } from './token-hasher.js';
 
 export type DriverKind = 'memory' | 'sqlite' | 'postgres';
 
@@ -101,7 +102,7 @@ const sqliteDriver: TestDriver = {
     const file = join(tmpdir(), `ynab-mcp-retention-${randomUUID()}.db`);
     const opened: Storage[] = [];
     const openOne = async (opts?: StorageDriverOptions): Promise<Storage> => {
-      const s = new SqliteStorage({ path: file, ...opts });
+      const s = new SqliteStorage({ path: file, tokenKeys: TEST_TOKEN_HASHER, ...opts });
       await s.init();
       opened.push(s);
       return s;
@@ -171,7 +172,7 @@ const postgresDriver: TestDriver = {
       await admin(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     });
     const openOne = async (opts?: StorageDriverOptions): Promise<Storage> => {
-      const s = new PostgresStorage({ connectionString, ...opts });
+      const s = new PostgresStorage({ connectionString, tokenKeys: TEST_TOKEN_HASHER, ...opts });
       await s.init();
       opened.push(s);
       return s;

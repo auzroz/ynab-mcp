@@ -22,11 +22,13 @@ import {
   ADDED_INDEXES,
   ADDED_TABLES,
   applyMigrations,
+  SCHEMA_VERSION,
   type MigrationTx,
   type MigrationPlan,
 } from '../../../src/storage/migrations.js';
 import { DEFAULT_RETENTION, retentionPolicy } from '../../../src/auth/retention-defaults.js';
 import { cleanupDrivers, testDrivers, type DriverHandle } from '../helpers/storage-drivers.js';
+import { TEST_TOKEN_HASHER } from '../helpers/token-hasher.js';
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -656,7 +658,7 @@ describe.skipIf(!pgDriver?.enabled)('STOR-1 on Postgres: races on two pools', ()
     const app = `stor1-${randomUUID().slice(0, 8)}`;
     const url = new URL(h.connectionString as string);
     url.searchParams.set('application_name', app);
-    const storage = new PostgresStorage({ connectionString: url.toString() });
+    const storage = new PostgresStorage({ connectionString: url.toString(), tokenKeys: TEST_TOKEN_HASHER });
     await storage.init();
     return { storage, app };
   }
@@ -954,7 +956,7 @@ async function sqliteRaw(): Promise<RawMigrationDb> {
     },
     sql,
     async open() {
-      const s = new SqliteStorage({ path: file });
+      const s = new SqliteStorage({ path: file, tokenKeys: TEST_TOKEN_HASHER });
       await s.init();
       opened.push(s);
       return s;
@@ -1014,7 +1016,7 @@ async function postgresRaw(): Promise<RawMigrationDb> {
     },
     sql,
     async open() {
-      const s = new PostgresStorage({ connectionString: url.toString() });
+      const s = new PostgresStorage({ connectionString: url.toString(), tokenKeys: TEST_TOKEN_HASHER });
       await s.init();
       opened.push(s);
       return s;
@@ -1086,7 +1088,7 @@ for (const { name, enabled, raw: makeRaw } of sqlDrivers) {
       };
     }
 
-    it('adds the M2 columns and indexes and stamps schema version 3', async () => {
+    it('adds the M2 columns and indexes and stamps the current schema version', async () => {
       const before = await raw.columns();
       for (const c of M2_COLUMNS) expect(before.has(c), c).toBe(false);
       await (await raw.open()).close();
@@ -1094,7 +1096,9 @@ for (const { name, enabled, raw: makeRaw } of sqlDrivers) {
       for (const c of M2_COLUMNS) expect(cols.has(c), c).toBe(true);
       const idx = await raw.indexes();
       for (const i of M2_INDEXES) expect(idx.has(i), i).toBe(true);
-      expect((await raw.sql("SELECT value FROM schema_meta WHERE key = 'schema_version'"))[0]?.['value']).toBe('3');
+      expect((await raw.sql("SELECT value FROM schema_meta WHERE key = 'schema_version'"))[0]?.['value']).toBe(
+        String(SCHEMA_VERSION)
+      );
     });
 
     it('backfills one instant even when the clock moves between statements, leaves users.created_at NULL, and logs nobody out', async () => {

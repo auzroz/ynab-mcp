@@ -38,6 +38,7 @@ import { createHttpApp } from '../../src/http.js';
 import { McpOAuthProvider } from '../../src/auth/mcp-provider.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { cookieHeaderFrom } from './helpers/consent-cookie.js';
+import { legacyToken } from './helpers/token-hasher.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
 const RESOURCE = 'https://mcp.example.com/mcp';
@@ -341,27 +342,25 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('/mcp with shared SQLite st
   it('a 0.3.x access token (no stored resource) is still accepted', async () => {
     const file = join(tmpdir(), `ynab-mcp-resource-${randomUUID()}.db`);
     files.push(file);
-    const app = await createHttpApp(sqliteConfig(file));
-    // Create the YNAB user through the normal flow, then plant a legacy token for it.
-    await issueTokens(app);
-    const { SqliteStorage } = await import('../../src/storage/sqlite.js');
-    const storage = new SqliteStorage({ path: file });
-    await storage.init();
+    // Create the YNAB user through the normal flow, then plant a 0.3.x row for
+    // it: a 43-character plaintext key with no resource. The next start's M3
+    // rehash (#52) turns its key into the h1. form the lookup uses.
+    await issueTokens(await createHttpApp(sqliteConfig(file)));
+    const legacy = legacyToken();
+    const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3');
+    const raw = new Database(file);
     try {
-      await storage.saveAccessToken({
-        token: 'legacy-access-token',
-        clientId: 'legacy-client',
-        userId: 'ynab-user-1',
-        scopes: [],
-        expiresAt: Date.now() + 3_600_000,
-      });
+      raw
+        .prepare('INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at) VALUES (?, ?, ?, ?, ?)')
+        .run(legacy, 'legacy-client', 'ynab-user-1', '[]', Date.now() + 3_600_000);
     } finally {
-      await storage.close();
+      raw.close();
     }
+    const app = await createHttpApp(sqliteConfig(file));
 
     const res = await request(app)
       .post('/mcp')
-      .set('Authorization', 'Bearer legacy-access-token')
+      .set('Authorization', `Bearer ${legacy}`)
       .set('Accept', 'application/json, text/event-stream')
       .send(initializeBody);
     expect(res.status).toBe(200);

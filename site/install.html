@@ -279,6 +279,7 @@ npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: &lt;your-token&
                 <tr><td><code>YNAB_OAUTH_CLIENT_ID</code></td><td>none</td><td>Client ID of your YNAB OAuth application.</td></tr>
                 <tr><td><code>YNAB_OAUTH_CLIENT_SECRET</code></td><td>none</td><td>Its client secret.</td></tr>
                 <tr><td><code>ENCRYPTION_KEY</code></td><td>none</td><td>32-byte key that encrypts stored YNAB tokens. Generate one with <code>openssl rand -base64 32</code> and keep it stable.</td></tr>
+                <tr><td><code>TOKEN_PEPPER</code></td><td>derived from <code>ENCRYPTION_KEY</code></td><td>Optional 32-byte secret (base64 or 64 hex characters) that keys the hashes of stored MCP tokens, codes and state. Set it before the first 0.5.0 start if you want one; changing it later, or changing <code>ENCRYPTION_KEY</code> while it is unset, makes the server refuse to start.</td></tr>
                 <tr><td><code>YNAB_OAUTH_ALLOW_WRITE</code></td><td><code>false</code></td><td>Allow writes. Checked on every request: unless <code>true</code>, no connection can write, including one granted read-write earlier. <code>YNAB_READ_ONLY=false</code> is also needed.</td></tr>
                 <tr><td><code>STORAGE_DRIVER</code></td><td><code>memory</code></td><td><code>memory</code> (lost on restart, for trying it out), <code>sqlite</code> or <code>postgres</code>.</td></tr>
                 <tr><td><code>SQLITE_PATH</code></td><td>none</td><td>Database file for <code>sqlite</code>, such as <code>/data/ynab-mcp.db</code>.</td></tr>

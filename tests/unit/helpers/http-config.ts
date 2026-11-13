@@ -25,6 +25,7 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     oauthClientId: undefined,
     oauthClientSecret: undefined,
     encryptionKey: undefined,
+    tokenPepper: undefined,
     // Tests that exercise writes need them on; the loader's own default is false.
     allowWrite: true,
     allowAnonymousFallback: false,

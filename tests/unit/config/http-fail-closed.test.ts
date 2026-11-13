@@ -242,7 +242,7 @@ describe('loadHttpConfig composition', () => {
       'authMode', 'bindHost', 'cacheTtlMs', 'databaseUrl', 'defaultBudgetId', 'enableDnsRebindingProtection',
       'encryptionKey', 'fallbackAccessToken', 'logLevel', 'maxSessions', 'maxSessionsPerUser', 'oauthClientId',
       'oauthClientSecret', 'port', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour', 'readOnly', 'resourceUrl', 'sessionIdleTimeoutMs',
-      'sqlitePath', 'storageDriver', 'trustProxy',
+      'sqlitePath', 'storageDriver', 'tokenPepper', 'trustProxy',
     ]);
   });
 });

@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
 import type { Storage } from '../../src/storage/types.js';
 
 vi.mock('../../src/auth/ynab-oauth.js', async () => {
@@ -109,6 +110,8 @@ describe('mcp-call helper in oauth mode', () => {
         oauthClientId: 'cid',
         oauthClientSecret: 'sec',
         encryptionKey,
+        // The shared test pepper, so the tokens below can be planted under their h1. keys.
+        tokenPepper: TEST_TOKEN_PEPPER,
         // Writes on server-wide, so only the grant can hide the write tools.
         readOnly: false,
       })
@@ -122,9 +125,9 @@ describe('mcp-call helper in oauth mode', () => {
     });
     const tokens: string[] = [];
     for (const clientId of clients) {
-      const token = randomBytes(24).toString('base64url');
+      const { value: token, key } = TEST_TOKEN_HASHER.issue('access');
       await storage.saveAccessToken({
-        token,
+        token: key,
         clientId,
         userId: USER,
         scopes: ['read-only'],

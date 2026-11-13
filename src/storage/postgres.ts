@@ -29,7 +29,8 @@ import type {
   SweepOptions,
   SweepResult,
 } from './types.js';
-import { applyMigrations, type MigrationTx } from './migrations.js';
+import { applyMigrations, MIGRATION_PLAN, type MigrationTx } from './migrations.js';
+import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 import { retentionPolicy, type RetentionPolicy } from '../auth/retention-defaults.js';
 import {
@@ -45,6 +46,8 @@ import {
 
 export interface PostgresStorageOptions extends StorageDriverOptions {
   connectionString: string;
+  /** Derives the `h1.` keys and pepper fingerprint for migration M3 (#52). Required: M3 refuses to run without it. */
+  tokenKeys: TokenKeyDeriver;
 }
 
 interface UserRow extends QueryResultRow {
@@ -274,7 +277,7 @@ function pgTx(client: PoolClient): MigrationTx {
  * (including a refusal because a newer release migrated the database) leaves
  * the schema unchanged.
  */
-async function migrate(pool: PgPool): Promise<void> {
+async function migrate(pool: PgPool, tokenKeys: TokenKeyDeriver): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -332,7 +335,7 @@ async function migrate(pool: PgPool): Promise<void> {
         expires_at BIGINT NOT NULL
       );
     `);
-    await applyMigrations(pgTx(client), now);
+    await applyMigrations(pgTx(client), now, MIGRATION_PLAN, undefined, { tokenKeys });
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
@@ -368,7 +371,7 @@ export class PostgresStorage implements Storage {
     const pool = new Pool({ connectionString: this.options.connectionString });
 
     try {
-      await migrate(pool);
+      await migrate(pool, this.options.tokenKeys);
     } catch (err) {
       await pool.end();
       throw err;

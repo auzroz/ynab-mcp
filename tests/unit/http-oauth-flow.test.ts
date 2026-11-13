@@ -52,6 +52,7 @@ import { exchangeCode, getYnabUserId, refreshAccessToken } from '../../src/auth/
 import { tools } from '../../src/tools/index.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { cookieHeaderFrom } from './helpers/consent-cookie.js';
+import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
 
 const PUBLIC_URL = 'https://mcp.example.com';
 const RESOURCE = `${PUBLIC_URL}/mcp`;
@@ -111,6 +112,8 @@ beforeEach(async () => {
       oauthClientId: 'ynab-client-id',
       oauthClientSecret: 'ynab-client-secret',
       encryptionKey: randomBytes(32).toString('base64'),
+      // The shared test pepper, so this test can plant rows under their h1. keys.
+      tokenPepper: TEST_TOKEN_PEPPER,
       // Longer than the clock jump below, so only the YNAB token expires.
       accessTokenTtlSec: 24 * 3600,
       sessionIdleTimeoutMs: 24 * 3600_000,
@@ -538,9 +541,10 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     // next to a twin that differs only in its resource.
     const good = await connect('read-write');
     expect(created.storage).toBeDefined();
-    const planted = (token: string, resource: string) =>
-      created.storage!.saveAccessToken({
-        token,
+    const planted = async (resource: string): Promise<string> => {
+      const { value, key } = TEST_TOKEN_HASHER.issue('access');
+      await created.storage!.saveAccessToken({
+        token: key,
         clientId: good.clientId,
         userId: ynabUserId,
         scopes: ['read-only', 'read-write'],
@@ -548,8 +552,10 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
         resource,
         grantedScope: 'read-write',
       });
-    await planted('foreign-access-token', 'https://other.example.com/mcp');
-    await planted('twin-access-token', RESOURCE);
+      return value;
+    };
+    const foreignToken = await planted('https://other.example.com/mcp');
+    const twinToken = await planted(RESOURCE);
 
     const init = {
       jsonrpc: '2.0',
@@ -557,16 +563,16 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
       method: 'initialize',
       params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '0' } },
     };
-    const res = await mcp('post', 'foreign-access-token').send(init);
+    const res = await mcp('post', foreignToken).send(init);
     expect(res.status).toBe(401);
     expect(res.headers['www-authenticate']).toContain('error="invalid_token"');
     expect(res.headers['www-authenticate']).toContain(`resource_metadata="${METADATA_URL}"`);
-    expect(JSON.stringify(res.body)).not.toContain('foreign-access-token');
+    expect(JSON.stringify(res.body)).not.toContain(foreignToken);
     expect(handle.sessions.size).toBe(0);
 
     // The twin with this server's resource is accepted, so the resource is the
     // only difference between the 401 and the 200.
-    expect((await mcp('post', 'twin-access-token').send(init)).status).toBe(200);
+    expect((await mcp('post', twinToken).send(init)).status).toBe(200);
     // And so is the grant's real token.
     expect((await mcp('post', good.access).send(init)).status).toBe(200);
   });

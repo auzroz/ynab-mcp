@@ -11,9 +11,10 @@
  *                      /oauth legs' oauth-leg-limiter; #55a adds an AS-wide
  *                      as-limiter ahead of it on every route)
  *   bounded-parser     the request-body parser, with its size limit
- *   ...slots           route-specific checks (iss-redirect today; later the
- *                      route limiter, client authentication, the /authorize
- *                      and DCR validators)
+ *   ...slots           route-specific checks: iss-redirect on /authorize; on
+ *                      /token and /revoke the route limiter and then client
+ *                      authentication (#52); later the /authorize and DCR
+ *                      validators
  *   router             the handler that answers: the SDK's (sdk-router), the
  *                      metadata document, or the YNAB federation legs
  *
@@ -29,6 +30,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
+import { TooManyRequestsError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import {
   createOAuthMetadata,
   getOAuthProtectedResourceMetadataUrl,
@@ -42,6 +44,8 @@ import type { HttpConfig } from '../config/environment.js';
 import type { Encryptor } from '../crypto.js';
 import type { Storage } from '../storage/types.js';
 import { McpOAuthProvider } from './mcp-provider.js';
+import { clientAuthentication } from './client-auth.js';
+import type { TokenHasher } from './token-hash.js';
 import type { YnabOAuthConfig } from './ynab-oauth.js';
 import { issOnAuthorizationRedirects } from '../middleware/iss-redirect.js';
 import {
@@ -55,6 +59,13 @@ import {
 
 /** Requests per client IP per 15 minutes on the YNAB OAuth legs, matching the SDK's /authorize. */
 export const OAUTH_LEG_RATE_LIMIT = 100;
+
+/**
+ * Requests per client IP per 15 minutes on /token and on /revoke (each its own
+ * budget): the SDK's per-route default, now applied by the route-limiter stage
+ * ahead of client authentication instead of inside the SDK handler.
+ */
+export const CLIENT_AUTH_ROUTE_RATE_LIMIT = 50;
 
 /** One AS route. The positions are fixed; routePipeline() puts them in order. */
 interface AsRoute {
@@ -81,6 +92,8 @@ export interface AuthorizationServerOptions {
   config: HttpConfig;
   storage: Storage;
   encryptor: Encryptor;
+  /** The hasher storage was opened with: the same instance, so the same pepper (#52). */
+  tokenHasher: TokenHasher;
   /** This server's YNAB OAuth application. */
   ynab: YnabOAuthConfig;
   /** Tests only: reports each stage as a request enters it (see StageObserver). */
@@ -166,7 +179,7 @@ export function mountAuthorizationServer(
   app: Router,
   options: AuthorizationServerOptions
 ): AuthorizationServer {
-  const { config, storage, encryptor, ynab, observeStage } = options;
+  const { config, storage, encryptor, tokenHasher, ynab, observeStage } = options;
   const publicUrl = config.publicUrl as string;
   // The protected resource (RFC 8707 audience) every token is bound to.
   const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
@@ -176,6 +189,7 @@ export function mountAuthorizationServer(
   const provider = new McpOAuthProvider({
     storage,
     encryptor,
+    tokenHasher,
     ynab,
     publicUrl,
     issuer: issuerUrl.href,
@@ -216,6 +230,16 @@ export function mountAuthorizationServer(
   // earlier parser read, so the global parser after this router doesn't
   // parse it twice.
   const boundedParser = (): Stage => stage('bounded-parser', express.json({ limit: MAX_JSON_BODY }));
+  // /token and /revoke take form bodies, which client authentication reads
+  // before the SDK handler does: the SDK's own form parser (extended: false,
+  // its default 100kb) moves into this stage, and the SDK's then skips the
+  // already-read body.
+  const boundedFormParser = (): Stage =>
+    stage(
+      'bounded-parser',
+      express.json({ limit: MAX_JSON_BODY }),
+      express.urlencoded({ extended: false })
+    );
   const metadata = (doc: Parameters<typeof metadataHandler>[0]): Stage => stage('metadata', metadataHandler(doc));
   const sdkRouter = (handler: express.RequestHandler): Stage => stage('sdk-router', handler);
 
@@ -237,15 +261,45 @@ export function mountAuthorizationServer(
     })
   );
 
+  // /token and /revoke: the SDK's per-route limit (50 per 15 minutes per IP),
+  // moved ahead of client authentication so wrong-secret attempts are counted
+  // and refused with 429 past it (G21). IP-keyed until #59. The SDK handler's
+  // own limiter is turned off, so each request is counted once.
+  const routeLimiter = (what: string): Stage =>
+    stage(
+      'route-limiter',
+      rateLimit({
+        windowMs: 15 * 60 * 1000,
+        limit: CLIENT_AUTH_ROUTE_RATE_LIMIT,
+        standardHeaders: true,
+        legacyHeaders: false,
+        // Only POSTs carry credentials. The SDK's own limiter ran after its
+        // CORS handler, so preflights were never counted; they still aren't.
+        skip: (req) => req.method !== 'POST',
+        message: new TooManyRequestsError(`You have exceeded the rate limit for ${what} requests`).toResponseObject(),
+      })
+    );
+  const clientAuth = (): Stage => stage('client-auth', clientAuthentication(provider.clientsStore));
+  // The SDK's handlers send `Access-Control-Allow-Origin: *` (its cors()
+  // default) from inside sdk-router. The route-limiter and client-auth stages
+  // can answer a POST before that, so this sets the same header first; a
+  // browser client can then read their 429 and invalid_client errors.
+  // Preflights pass through to the SDK, which answers them.
+  const corsOrigin = (): Stage =>
+    stage('cors-origin', (req, res, next) => {
+      if (req.method !== 'OPTIONS') res.setHeader('Access-Control-Allow-Origin', '*');
+      next();
+    });
+
   // The SDK's handlers are mounted one per route, exactly as its mcpAuthRouter
   // composes them (it mounts /register and /revoke only when the provider
   // supports them), without its own metadata routes, which the ones here
   // replace. Each SDK handler still applies its own CORS, method check, form
-  // parser and per-route rate limit inside the sdk-router stage.
-  // The limiters position on these routes is empty for now: their only
-  // limits are the SDK's own, inside sdk-router, after its form parser (#55a
-  // adds an as-limiter ahead of the parser on every route, /oauth included,
-  // where it goes before oauth-leg-limiter).
+  // parser and (except on /token and /revoke, whose limit is the route-limiter
+  // stage) per-route rate limit inside the sdk-router stage.
+  // The limiters position on these routes is empty for now (#55a adds an
+  // as-limiter ahead of the parser on every route, /oauth included, where it
+  // goes before oauth-leg-limiter).
   const routes: AsRoute[] = [
     { path: pathOf(resourceMetadataUrl), parser: boundedParser(), router: metadata(protectedResourceMetadata) },
     // Root alias for clients that probe the non-path-aware location.
@@ -259,7 +313,12 @@ export function mountAuthorizationServer(
       slots: [stage('iss-redirect', issOnAuthorizationRedirects(oauthMetadata.issuer))],
       router: sdkRouter(authorizationHandler({ provider })),
     },
-    { path: pathOf(oauthMetadata.token_endpoint), parser: boundedParser(), router: sdkRouter(tokenHandler({ provider })) },
+    {
+      path: pathOf(oauthMetadata.token_endpoint),
+      parser: boundedFormParser(),
+      slots: [corsOrigin(), routeLimiter('token'), clientAuth()],
+      router: sdkRouter(tokenHandler({ provider, rateLimit: false })),
+    },
   ];
   if (oauthMetadata.registration_endpoint) {
     routes.push({
@@ -271,8 +330,9 @@ export function mountAuthorizationServer(
   if (oauthMetadata.revocation_endpoint) {
     routes.push({
       path: pathOf(oauthMetadata.revocation_endpoint),
-      parser: boundedParser(),
-      router: sdkRouter(revocationHandler({ provider })),
+      parser: boundedFormParser(),
+      slots: [corsOrigin(), routeLimiter('token revocation'), clientAuth()],
+      router: sdkRouter(revocationHandler({ provider, rateLimit: false })),
     });
   }
   routes.push({

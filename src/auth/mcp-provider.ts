@@ -50,9 +50,20 @@
  * while the tombstone is live and not revoked, so a replay that lands between
  * the code being spent and its tokens being saved leaves no live token. Unknown,
  * expired and replayed codes all get the same `invalid_grant`.
+ *
+ * Hashed at rest (#52): tokens, codes and `state` are issued by the
+ * {@link TokenHasher} and stored only under the `h1.` keys derived from them.
+ * Every value a client presents goes through `TokenHasher.keyFor` first, which
+ * refuses anything but a correctly tagged value of the expected kind or a
+ * 0.4.x-shaped one before any storage read; a refused value fails exactly like
+ * an unknown one. DCR client secrets are stored as `client_secret_hash`
+ * (`s256.`), and `getClient` returns that hash as `client_secret`, so the SDK's
+ * own comparison fails closed: only the client-auth middleware (client-auth.ts),
+ * which verifies the presented secret against the hash, lets a confidential
+ * client through.
  */
 
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { Response } from 'express';
 import type {
   OAuthServerProvider,
@@ -80,6 +91,7 @@ import type {
   RefreshTokenRecord,
 } from '../storage/types.js';
 import type { Encryptor } from '../crypto.js';
+import { hashClientSecret, isClientSecretHash, type TokenHasher, type TokenKind } from './token-hash.js';
 import {
   buildAuthorizeUrl,
   exchangeCode,
@@ -95,6 +107,8 @@ import { YNAB_CALLBACK_DEADLINE_MS } from './retention-defaults.js';
 export interface McpProviderOptions {
   storage: Storage;
   encryptor: Encryptor;
+  /** Issues tokens, codes and state, and derives their storage keys (#52). */
+  tokenHasher: TokenHasher;
   ynab: YnabOAuthConfig;
   /** Public base URL (no trailing slash), e.g. https://ynab-mcp.example.com */
   publicUrl: string;
@@ -117,8 +131,34 @@ export interface McpProviderOptions {
   authCodeTtlSec: number;
 }
 
-function newToken(): string {
-  return randomBytes(32).toString('base64url');
+/** A stored client: the DCR metadata plus, for a confidential client, its secret's hash. */
+type StoredClient = OAuthClientInformationFull & { client_secret_hash?: unknown };
+
+/**
+ * What storage keeps of a registered client: the secret replaced by its
+ * `s256.` hash under `client_secret_hash` (0.4.x reading it sees a public client).
+ */
+function clientForStorage(client: OAuthClientInformationFull): OAuthClientInformationFull {
+  const { client_secret: secret, ...rest } = client;
+  if (typeof secret !== 'string' || secret === '') return rest;
+  return { ...rest, client_secret_hash: hashClientSecret(secret) } as OAuthClientInformationFull;
+}
+
+/**
+ * A stored client as the SDK sees it: a confidential client's `client_secret`
+ * is its stored hash, which nothing a client presents can equal (client-auth.ts
+ * refuses hash-format input), so without the client-auth middleware every
+ * confidential client is refused. A plaintext secret written by 0.4.x after M3
+ * ran is hashed here, so it never reaches the SDK's comparison either.
+ */
+function clientFromStorage(stored: StoredClient): OAuthClientInformationFull {
+  const { client_secret_hash: hash, ...client } = stored;
+  if (typeof hash === 'string' && hash !== '') return { ...client, client_secret: hash };
+  const secret = client.client_secret;
+  if (typeof secret === 'string' && secret !== '') {
+    return { ...client, client_secret: isClientSecretHash(secret) ? secret : hashClientSecret(secret) };
+  }
+  return client;
 }
 
 /** Split, trim and de-duplicate a requested scope list; empty entries are dropped. */
@@ -245,7 +285,9 @@ export class McpOAuthProvider implements OAuthServerProvider {
     state: string,
     browserNonce: string | undefined
   ): Promise<PendingAuthRecord> {
-    const rec = await this.opts.storage.takePendingAuth(state);
+    const key = this.keyFor('state', state);
+    if (key === undefined) throw new InvalidGrantError(EXPIRED_OR_INVALID);
+    const rec = await this.opts.storage.takePendingAuth(key);
     if (!rec || !consentNonceMatches(browserNonce, rec.browserBinding)) {
       throw new InvalidGrantError(EXPIRED_OR_INVALID);
     }
@@ -285,6 +327,11 @@ export class McpOAuthProvider implements OAuthServerProvider {
     return bound;
   }
 
+  /** The storage key for a presented value, or undefined to refuse it without a storage read. */
+  private keyFor(kind: TokenKind, presented: string): string | undefined {
+    return this.opts.tokenHasher.keyFor(kind, presented);
+  }
+
   private get callbackUrl(): string {
     return `${this.opts.publicUrl}/oauth/ynab/callback`;
   }
@@ -292,14 +339,18 @@ export class McpOAuthProvider implements OAuthServerProvider {
   get clientsStore(): OAuthRegisteredClientsStore {
     const storage = this.opts.storage;
     return {
-      getClient: (clientId: string) => storage.getClient(clientId),
+      getClient: async (clientId: string) => {
+        const stored = await storage.getClient(clientId);
+        return stored ? clientFromStorage(stored) : undefined;
+      },
       registerClient: async (client) => {
         const full: OAuthClientInformationFull = {
           ...client,
           client_id: randomUUID(),
           client_id_issued_at: Math.floor(Date.now() / 1000),
         };
-        await storage.saveClient(full);
+        await storage.saveClient(clientForStorage(full));
+        // The plaintext secret goes back to the registering client once, here.
         return full;
       },
     };
@@ -320,11 +371,11 @@ export class McpOAuthProvider implements OAuthServerProvider {
     if (params.resource !== undefined && !isSameResource(params.resource, this.resource)) {
       throw new InvalidTargetError(FOREIGN_RESOURCE);
     }
-    const state = newToken();
+    const { value: state, key: stateKey } = this.opts.tokenHasher.issue('state');
     const { nonce, hash } = newConsentNonce();
     const scopes = params.scopes ?? [];
     await this.opts.storage.savePendingAuth({
-      state,
+      state: stateKey,
       clientId: client.client_id,
       redirectUri: params.redirectUri,
       codeChallenge: params.codeChallenge,
@@ -424,7 +475,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     const startedAt = Date.now();
     const rec = await this.takeBoundPendingAuth(state, browserNonce);
 
-    const mcpCode = newToken();
+    const { value: mcpCode, key: mcpCodeKey } = this.opts.tokenHasher.issue('code');
     const checkDeadline = (): void => {
       if (Date.now() - startedAt > YNAB_CALLBACK_DEADLINE_MS) {
         throw new Error('YNAB callback passed its deadline');
@@ -451,7 +502,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       // last_seen_at. Past the (shorter) deadline it may be gone, so save no code.
       checkDeadline();
       await this.opts.storage.saveAuthCode({
-        code: mcpCode,
+        code: mcpCodeKey,
         clientId: rec.clientId,
         userId,
         redirectUri: rec.redirectUri,
@@ -489,19 +540,21 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     for (const [code, pending] of this.consumedCodes) {
       if (now - pending.consumedAt > CODE_EXCHANGE_WINDOW_MS) this.consumedCodes.delete(code);
     }
+    const codeKey = this.keyFor('code', authorizationCode);
+    if (codeKey === undefined) throw new InvalidGrantError(INVALID_AUTHORIZATION_CODE);
     // Each code exchange starts a new token family.
     const familyId = randomUUID();
-    const rec = await storage.consumeAuthCode(authorizationCode, {
+    const rec = await storage.consumeAuthCode(codeKey, {
       familyId,
       consumedUntil: now + AUTH_CODE_REPLAY_WINDOW_MS,
     });
     if (!rec) {
-      if (await storage.revokeConsumedAuthCode(authorizationCode)) {
+      if (await storage.revokeConsumedAuthCode(codeKey)) {
         console.error('[OAuth] Authorization code replay detected; revoked its token family');
       }
       throw new InvalidGrantError(INVALID_AUTHORIZATION_CODE);
     }
-    this.consumedCodes.set(authorizationCode, {
+    this.consumedCodes.set(codeKey, {
       clientId: rec.clientId,
       userId: rec.userId,
       redirectUri: rec.redirectUri,
@@ -523,8 +576,10 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     redirectUri?: string,
     resource?: URL
   ): Promise<OAuthTokens> {
-    const rec = this.consumedCodes.get(authorizationCode);
-    this.consumedCodes.delete(authorizationCode);
+    const codeKey = this.keyFor('code', authorizationCode);
+    if (codeKey === undefined) throw new InvalidGrantError(INVALID_AUTHORIZATION_CODE);
+    const rec = this.consumedCodes.get(codeKey);
+    this.consumedCodes.delete(codeKey);
     if (!rec || Date.now() - rec.consumedAt > CODE_EXCHANGE_WINDOW_MS) {
       throw new InvalidGrantError(INVALID_AUTHORIZATION_CODE);
     }
@@ -546,7 +601,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     // Saved only while the code's tombstone is live and not revoked: a replay
     // that arrived after the code was spent has revoked it (or revokes the pair
     // right after it is saved), so no token issued here outlives a replay.
-    const saved = await this.opts.storage.saveCodeTokens(authorizationCode, {
+    const saved = await this.opts.storage.saveCodeTokens(codeKey, {
       familyId: rec.familyId,
       accessToken: pair.accessToken,
       refreshToken: pair.refreshToken,
@@ -570,9 +625,11 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     if (resource !== undefined && !isSameResource(resource, this.resource)) {
       throw new InvalidTargetError(FOREIGN_RESOURCE);
     }
+    const refreshKey = this.keyFor('refresh', refreshToken);
+    if (refreshKey === undefined) throw new InvalidGrantError(INVALID_REFRESH_TOKEN);
     const storage = this.opts.storage;
-    const rec = await storage.getRefreshToken(refreshToken);
-    if (!rec) return this.rejectRefreshToken(refreshToken);
+    const rec = await storage.getRefreshToken(refreshKey);
+    if (!rec) return this.rejectRefreshToken(refreshKey);
     if (rec.clientId !== client.client_id) {
       // A refresh token presented by a client it was not issued to has likely
       // leaked: revoke it and its family (OAuth 2.1 section 4.3.1, RFC 9700
@@ -611,13 +668,13 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     // is the row taken. Nothing taken means a concurrent request spent it first;
     // that is reuse like any other (RFC 9700) and revokes the family, including
     // the pair the winner just saved.
-    const taken = await storage.rotateRefreshToken(refreshToken, {
+    const taken = await storage.rotateRefreshToken(refreshKey, {
       familyId,
       consumedUntil: Date.now() + REFRESH_TOKEN_REUSE_WINDOW_MS,
       accessToken: pair.accessToken,
       refreshToken: pair.refreshToken,
     });
-    if (!taken) return this.rejectRefreshToken(refreshToken);
+    if (!taken) return this.rejectRefreshToken(refreshKey);
     return pair.tokens;
   }
 
@@ -625,10 +682,11 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
    * Fail a refresh with a token that is not live. A tombstone means the token
    * was already rotated and is being replayed: revoke its family. Either way the
    * client gets the same `invalid_grant` as for a token never issued.
+   * `refreshKey` is the token's storage key.
    */
-  private async rejectRefreshToken(refreshToken: string): Promise<never> {
+  private async rejectRefreshToken(refreshKey: string): Promise<never> {
     const storage = this.opts.storage;
-    const consumed = await storage.getConsumedRefreshToken(refreshToken);
+    const consumed = await storage.getConsumedRefreshToken(refreshKey);
     if (consumed) {
       await storage.deleteTokenFamily(consumed.familyId);
       console.error('[OAuth] Refresh token reuse detected; revoked its token family');
@@ -643,7 +701,8 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
   }
 
   /**
-   * Mint a new access / refresh token pair for a grant (the caller saves it).
+   * Mint a new access / refresh token pair for a grant (the caller saves the
+   * records, which carry the storage keys; `tokens` carries the values).
    * The refresh token keeps the grant's scopes and access level; the access
    * token's level is lowered to read-only when its own scopes say so (a refresh
    * narrowed to `read-only`), so the stored level never claims more than the
@@ -658,8 +717,10 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
     grantedScope: GrantedScope,
     familyId: string
   ): { accessToken: AccessTokenRecord; refreshToken: RefreshTokenRecord; tokens: OAuthTokens } {
+    const access = this.opts.tokenHasher.issue('access');
+    const refresh = this.opts.tokenHasher.issue('refresh');
     const accessToken: AccessTokenRecord = {
-      token: newToken(),
+      token: access.key,
       clientId,
       userId,
       scopes: accessScopes,
@@ -669,7 +730,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       familyId,
     };
     const refreshToken: RefreshTokenRecord = {
-      token: newToken(),
+      token: refresh.key,
       clientId,
       userId,
       scopes: grantScopes,
@@ -681,10 +742,10 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
       accessToken,
       refreshToken,
       tokens: {
-        access_token: accessToken.token,
+        access_token: access.value,
         token_type: 'bearer',
         expires_in: this.opts.accessTokenTtlSec,
-        refresh_token: refreshToken.token,
+        refresh_token: refresh.value,
         scope: accessScopes.join(' '),
       },
     };
@@ -700,7 +761,9 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
    * and read-only for tokens written before 0.4.0.
    */
   async verifyAccessToken(token: string): Promise<AuthInfo> {
-    const rec = await this.opts.storage.getAccessToken(token);
+    const key = this.keyFor('access', token);
+    if (key === undefined) throw new InvalidTokenError('Invalid or expired access token');
+    const rec = await this.opts.storage.getAccessToken(key);
     if (!rec) throw new InvalidTokenError('Invalid or expired access token');
     const resource = rec.resource ?? this.resource;
     if (resource !== this.resource) throw new InvalidTokenError('Invalid or expired access token');
@@ -720,14 +783,18 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
   /**
    * RFC 7009 revocation. An access token is deleted on its own; a refresh token
    * takes its whole family (every access and refresh token of the grant) with it.
+   * A value neither kind accepts (a stored key, a malformed value) touches no
+   * storage and, as RFC 7009 section 2.2 asks for an invalid token, succeeds.
    */
   async revokeToken(
     _client: OAuthClientInformationFull,
     request: OAuthTokenRevocationRequest
   ): Promise<void> {
+    const accessKey = this.keyFor('access', request.token);
+    const refreshKey = this.keyFor('refresh', request.token);
     try {
-      await this.opts.storage.deleteAccessToken(request.token);
-      const refresh = await this.opts.storage.getRefreshToken(request.token);
+      if (accessKey !== undefined) await this.opts.storage.deleteAccessToken(accessKey);
+      const refresh = refreshKey !== undefined ? await this.opts.storage.getRefreshToken(refreshKey) : undefined;
       if (refresh) await this.revokeRefreshToken(refresh);
     } catch {
       // Generic on purpose: storage errors can carry connection details.

@@ -25,6 +25,7 @@ import { YnabAuthError } from '../../../src/utils/errors.js';
 import { DEFAULT_RETENTION } from '../../../src/auth/retention-defaults.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
 import { cleanupDrivers, testDrivers, type DriverHandle } from '../helpers/storage-drivers.js';
+import { TEST_TOKEN_HASHER } from '../helpers/token-hasher.js';
 
 const refreshMock = vi.mocked(ynabOauth.refreshAccessToken);
 
@@ -256,6 +257,7 @@ for (const driver of testDrivers) {
           globalReadOnly: false,
           accessTokenTtlSec: 3600,
           authCodeTtlSec: 600,
+          tokenHasher: TEST_TOKEN_HASHER,
         });
         client = await provider.clientsStore.registerClient!({
           redirect_uris: ['https://client/cb'],
@@ -264,9 +266,10 @@ for (const driver of testDrivers) {
       });
 
       async function issueCode(userId: string): Promise<string> {
-        const code = `code-${randomUUID()}`;
+        // Stored under its h1. key, as the provider looks it up (#52).
+        const { value, key } = TEST_TOKEN_HASHER.issue('code');
         await storage.saveAuthCode({
-          code,
+          code: key,
           clientId: client.client_id,
           userId,
           redirectUri: 'https://client/cb',
@@ -275,7 +278,7 @@ for (const driver of testDrivers) {
           expiresAt: Date.now() + 600_000,
           grantedScope: 'read-write',
         });
-        return code;
+        return value;
       }
 
       it('a code exchange in flight during the erase leaves no usable token, even after re-consent', async () => {

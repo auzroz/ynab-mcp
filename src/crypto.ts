@@ -2,8 +2,9 @@
  * At-rest encryption for the users' YNAB refresh tokens (`users.encrypted_refresh_token`).
  *
  * This is the only thing encrypted at rest. MCP access tokens, refresh tokens,
- * authorization codes and pending-auth state are stored as-is (as plaintext keys)
- * in the storage backend, so protect that database accordingly.
+ * authorization codes, pending-auth state and DCR client secrets are not
+ * encrypted but hashed: storage holds only keys derived from them (see
+ * src/auth/token-hash.ts), so a copy of the database holds no usable credential.
  *
  * AES-256-GCM using a deployer-provided key. The key comes from `ENCRYPTION_KEY`
  * as base64 (32 bytes) or a 64-char hex string. Ciphertext is serialized as
@@ -20,10 +21,13 @@ const IV_BYTES = 12;
 const TAG_BYTES = 16;
 const VERSION = 'v1';
 
-/** Parse and validate the encryption key from an env value. */
-export function parseEncryptionKey(raw: string | undefined): Buffer {
+/**
+ * Parse a 32-byte secret from an env value: 64 hex characters, or base64 that
+ * decodes to exactly 32 bytes. Errors name `varName` and never echo the value.
+ */
+export function parseKey32(raw: string | undefined, varName: string): Buffer {
   if (!raw || raw.trim() === '') {
-    throw new Error('ENCRYPTION_KEY is required in HTTP/multi-user mode (32-byte base64 or 64-char hex)');
+    throw new Error(`${varName} is required in HTTP/multi-user mode (32-byte base64 or 64-char hex)`);
   }
   const value = raw.trim();
   let key: Buffer;
@@ -34,10 +38,15 @@ export function parseEncryptionKey(raw: string | undefined): Buffer {
   }
   if (key.length !== 32) {
     throw new Error(
-      `ENCRYPTION_KEY must decode to 32 bytes (got ${key.length}); use a base64 32-byte or 64-char hex key`
+      `${varName} must decode to 32 bytes (got ${key.length}); use a base64 32-byte or 64-char hex key`
     );
   }
   return key;
+}
+
+/** Parse and validate the encryption key from an env value. */
+export function parseEncryptionKey(raw: string | undefined): Buffer {
+  return parseKey32(raw, 'ENCRYPTION_KEY');
 }
 
 /** Encrypt a UTF-8 string; returns a versioned, self-describing token. */
