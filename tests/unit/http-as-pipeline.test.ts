@@ -222,6 +222,8 @@ describe('G21: what each position does', () => {
       expect(res.status).toBe(413);
       expect(res.body).toEqual({ error: 'invalid_request', error_description: 'Request body too large' });
       expect(res.headers['cache-control']).toBe('no-store');
+      // Readable by a browser client although cors-origin comes later.
+      expect(res.headers['access-control-allow-origin']).toBe('*');
       const all = stagesOf(route);
       expect(stages).toEqual(all.slice(0, all.indexOf('bounded-parser') + 1));
     }
@@ -271,6 +273,8 @@ describe('G21: what each position does', () => {
     );
     expect(res.status).toBe(429);
     expect(res.body.error).toBe('too_many_requests');
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+    expect(res.headers['retry-after']).toBeDefined();
     expect(stages).toEqual(['host-validation', 'as-limiter']);
     // The metadata documents and the /oauth legs are not on it.
     expect((await request(handle.app).get('/.well-known/oauth-authorization-server').set('Host', HOST)).status).toBe(200);

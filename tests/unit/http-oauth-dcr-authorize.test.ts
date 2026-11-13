@@ -309,6 +309,16 @@ describe('/authorize bounds (55a)', () => {
     expectErrorRedirect(await authorize(clientId, CALLBACK, { scope: 'a b c d e f' }, verified), CALLBACK, 'invalid_scope');
   });
 
+  it('a storage failure looking up the client is a generic 500, never a redirect', async () => {
+    const clientId = await register([CALLBACK]);
+    vi.spyOn(storage(), 'getClient').mockRejectedValueOnce(new Error('connect ECONNREFUSED db.internal:5432'));
+    const res = await authorize(clientId, CALLBACK);
+    expect(res.status).toBe(500);
+    expect(res.headers['location']).toBeUndefined();
+    expect(res.body).toEqual({ error: 'server_error', error_description: 'Internal Server Error' });
+    expect(res.text).not.toContain('db.internal');
+  });
+
   it('leaves the handler 400 JSON for an unknown client and an unregistered redirect URI', async () => {
     const unknown = await authorize('no-such-client', CALLBACK);
     expect(unknown.status).toBe(400);

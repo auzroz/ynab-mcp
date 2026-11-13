@@ -136,6 +136,41 @@ through, which proxies do by default. The consent page can't be framed
 in progress during an upgrade to 0.4.0 has no binding, so the user has to
 start it again.
 
+Since 0.5.0 the consent page shows the host the browser returns to in bold.
+A client whose redirect URI isn't on `MCP_VERIFIED_REDIRECT_URIS` appears as
+"an application at *host* that calls itself *name*", and a loopback address
+is labelled as one on the user's own device. The page loads nothing (a strict
+`Content-Security-Policy`), isn't cached, and strips bidi and invisible
+characters from the client's name.
+
+### Client registration and authorization errors
+
+`/register` accepts only what this server uses: 1 to 5 redirect URIs of at
+most 512 characters, each `https://`, `http://` to `localhost`, `127.0.0.1` or
+`[::1]`, or a private-use scheme on `MCP_DCR_PRIVATE_USE_SCHEMES`, with no
+userinfo or fragment; a `client_name` of 1 to 100 printable characters; and a
+few short fields (`token_endpoint_auth_method`, `grant_types`,
+`response_types`, `scope`, `application_type`, `software_id`,
+`software_version`). Other fields (`jwks`, `contacts`, `logo_uri`,
+`software_statement` and so on) are dropped. A refusal is `400` with
+`invalid_redirect_uri` or `invalid_client_metadata`. Every authorization
+server route refuses a body over 8 KB (`413`), and the four endpoints share a
+per-IP limit of 220 requests per 15 minutes, checked before the body is read.
+
+`/authorize` refuses a `state` over 512 characters, a `code_challenge` that
+isn't 43 base64url characters, and more than 5 scopes; unknown scopes are
+ignored. An error found once the client and redirect URI are known is
+redirected back to the client only when that redirect URI is verified
+(`MCP_VERIFIED_REDIRECT_URIS`, or loopback while `MCP_TRUST_LOOPBACK_REDIRECTS`
+is on). For any other client the error is shown on this server's own page,
+with a link back the user can choose to follow, so a crafted link can't use
+your server to bounce a browser to an arbitrary site.
+
+Clients registered before 0.5.0 keep working, with one exception: a client
+with an `http://` redirect URI to a host other than loopback is refused at
+`/authorize` and has to register again. The server logs, once per client, any
+other rule an older registration breaks.
+
 ### Access level per connection
 
 The read-only / read-write choice belongs to each connection (each client

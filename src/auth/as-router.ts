@@ -76,9 +76,10 @@ export const CLIENT_AUTH_ROUTE_RATE_LIMIT = 50;
 /**
  * Requests per client IP per 15 minutes across /authorize, /token, /register
  * and /revoke together (#55a), counted by the as-limiter stage before any body
- * is read. The sum of those routes' own limits (100 + 50 + 20 + 50), so it
- * never refuses a client that each route's limit would let through, but a
- * flood across the routes is cut off before parsing. Preflights aren't counted.
+ * is read. It is the sum of those routes' own limits (100 + 50 + 20 + 50), so
+ * a client that stays within each route's limit stays within this one, while
+ * a flood across the routes is cut off before parsing. Preflights aren't
+ * counted.
  */
 export const AS_RATE_LIMIT = 220;
 
@@ -97,7 +98,9 @@ interface AsRoute {
  * Wrap a body parser so its failures answer as OAuth errors (RFC 6749 section
  * 5.2 shape) instead of reaching the app's JSON-RPC error handler: 413 with
  * `invalid_request` for a body over the limit, 400 (or the parser's own 4xx)
- * for a body that doesn't parse. Nothing from the body is echoed.
+ * for a body that doesn't parse. Nothing from the body is echoed. The parser
+ * runs before cors-origin, so the answer carries `Access-Control-Allow-Origin:
+ * *` itself and a browser client can read it (no credentials ride on it).
  */
 function oauthShapedParseErrors(parse: express.RequestHandler): express.RequestHandler {
   return (req, res, next) => {
@@ -108,6 +111,7 @@ function oauthShapedParseErrors(parse: express.RequestHandler): express.RequestH
       }
       const e = err as { type?: unknown; status?: unknown };
       res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Access-Control-Allow-Origin', '*');
       if (e.type === 'entity.too.large') {
         res.status(413).json({ error: 'invalid_request', error_description: 'Request body too large' });
         return;
@@ -226,6 +230,8 @@ export function mountAuthorizationServer(
   // The issuer identifier: published in AS metadata and sent as `iss` on every
   // authorization response (RFC 9207), so both must use this exact string.
   const issuerUrl = new URL(publicUrl);
+  // #55: how registrations, authorization errors and the consent page treat redirect URIs.
+  const redirectPolicy = redirectPolicyFrom(config);
   const provider = new McpOAuthProvider({
     storage,
     encryptor,
@@ -238,7 +244,7 @@ export function mountAuthorizationServer(
     globalReadOnly: config.readOnly,
     accessTokenTtlSec: config.accessTokenTtlSec,
     authCodeTtlSec: config.authCodeTtlSec,
-    redirectPolicy: redirectPolicyFrom(config),
+    redirectPolicy,
   });
 
   // Protected-resource metadata (RFC 9728) describes the MCP endpoint, so it is
@@ -266,8 +272,6 @@ export function mountAuthorizationServer(
     authorization_response_iss_parameter_supported: true,
   };
   const pathOf = (endpoint: string): string => new URL(endpoint).pathname;
-  // #55: how registrations and authorization errors treat redirect URIs.
-  const redirectPolicy = redirectPolicyFrom(config);
 
   // One body parser per route, at AS_MAX_BODY (8kb, #55a): no OAuth request
   // comes near it. express.json and express.urlencoded skip a body that an
@@ -329,6 +333,12 @@ export function mountAuthorizationServer(
     standardHeaders: true,
     legacyHeaders: false,
     skip: (req) => req.method === 'OPTIONS',
+    // It runs before cors-origin, so its 429 carries the CORS header itself,
+    // readable by a browser client like every other OAuth error here.
+    handler: (_req, res, _next, options) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.status(options.statusCode).json(options.message);
+    },
     message: new TooManyRequestsError('You have exceeded the rate limit for authorization server requests').toResponseObject(),
   });
   const asLimiter = (): Stage => stage('as-limiter', asLimiterHandler);

@@ -140,6 +140,7 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
       client = (await clients.getClient(clientId)) as Record<string, unknown> | undefined;
     } catch {
       // Generic on purpose: storage errors can carry connection details.
+      res.setHeader('Cache-Control', 'no-store');
       res.status(500).json({ error: 'server_error', error_description: 'Internal Server Error' });
       return;
     }
