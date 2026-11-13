@@ -17,6 +17,13 @@ import type { NextFunction, Request, RequestHandler, Response, Router } from 'ex
  */
 export const MAX_JSON_BODY = '512kb';
 
+/**
+ * Max request body on the authorization server's routes (#55a), JSON or form.
+ * A registration with five 512-character redirect URIs and every kept field
+ * at its bound is under 4kb; a token or revocation request is far smaller.
+ */
+export const AS_MAX_BODY = '8kb';
+
 /** One named step of a route's pipeline. */
 export interface Stage {
   readonly name: string;

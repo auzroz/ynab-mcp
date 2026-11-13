@@ -18,6 +18,7 @@ import { loadSessionSettings } from './sessions.js';
 import { loadStorageSettings } from './storage.js';
 import { loadTokenSettings } from './tokens.js';
 import { loadYnabSettings } from './ynab.js';
+import { loadDcrSettings } from './dcr.js';
 
 export type { HttpAuthMode, AuthSettings } from './auth.js';
 export type { LogLevel, ServerSettings } from './server.js';
@@ -25,6 +26,7 @@ export type { SessionSettings } from './sessions.js';
 export type { StorageDriver, StorageSettings } from './storage.js';
 export type { TokenSettings } from './tokens.js';
 export type { YnabSettings } from './ynab.js';
+export type { DcrSettings } from './dcr.js';
 
 /** Append-only: one line per topic. */
 const LOADERS = [
@@ -34,6 +36,7 @@ const LOADERS = [
   loadAuthSettings,
   loadStorageSettings,
   loadTokenSettings,
+  loadDcrSettings,
 ] as const;
 
 type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (k: infer I) => void ? I : never;

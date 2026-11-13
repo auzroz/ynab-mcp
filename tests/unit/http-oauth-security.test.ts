@@ -192,7 +192,10 @@ describe('consent cannot be skipped (browser binding)', () => {
     expect(set).toContain('Path=/');
     expect(res.text).toContain(CALLBACK);
     expect(res.headers['x-frame-options']).toBe('DENY');
-    expect(res.headers['content-security-policy']).toBe("frame-ancestors 'none'");
+    // #55: a strict CSP that still forbids framing.
+    expect(res.headers['content-security-policy']).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    );
     expect(res.headers['cache-control']).toBe('no-store');
   });
 

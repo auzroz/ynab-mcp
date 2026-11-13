@@ -286,6 +286,7 @@ npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: &lt;your-token&
                 <tr><td><code>DATABASE_URL</code></td><td>none</td><td>Connection string for <code>postgres</code>.</td></tr>
                 <tr><td><code>MCP_ACCESS_TOKEN_TTL_SEC</code></td><td><code>3600</code></td><td>Lifetime of the access tokens the server issues to MCP clients.</td></tr>
                 <tr><td><code>MCP_AUTH_CODE_TTL_SEC</code></td><td><code>600</code></td><td>Lifetime of an authorization code and of the consent step.</td></tr>
+                <tr><td><code>MCP_DCR_PRIVATE_USE_SCHEMES</code></td><td>none</td><td>Comma-separated private-use URI schemes, such as <code>com.example.app</code>, that a registering native app may use for its redirect URI. Otherwise only <code>https</code>, and <code>http</code> to loopback, are accepted.</td></tr>
               </tbody>
             </table>
           </div>

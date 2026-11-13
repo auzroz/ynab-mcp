@@ -34,6 +34,8 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     storageDriver: 'memory',
     sqlitePath: undefined,
     databaseUrl: undefined,
+    // The loader's default (#55).
+    privateUseSchemes: [],
     ...overrides,
   };
 }
