@@ -388,7 +388,8 @@ describe('each request has its own token\'s access level', () => {
     expect(lastContext().user.readOnly).toBe(false);
   });
 
-  it('a token downscoped on refresh is read-only on its next request and refuses writes', async () => {
+  // Title kept from 0.4 (WS7.4 protected list): "session" is now the token's next request.
+  it('a token downscoped on refresh initializes a read-only session that refuses writes', async () => {
     const app = await createHttpApp(makeConfig());
     const rw = await connect(app, 'read-write', 'read-write');
     const ro = await refresh(app, rw.clientId, rw.refresh, 'read-only');
