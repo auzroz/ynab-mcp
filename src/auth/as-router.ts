@@ -207,7 +207,7 @@ export function mountAuthorizationServer(
   // metadataHandler (CORS: any origin, GET/OPTIONS only).
   const scopesSupported = ['read-only', 'read-write'];
   const resourceName = 'YNAB MCP Server';
-  // getOAuthProtectedResourceMetadataUrl: still the server-legacy copy; WS7.3 moves it to @modelcontextprotocol/express.
+  // Still server-legacy's helper: v2's keeps a query and drops a trailing slash (pinned in http-bearer-auth.test.ts); #47 decides.
   const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceServerUrl);
   const protectedResourceMetadata = {
     resource: resourceServerUrl.href,

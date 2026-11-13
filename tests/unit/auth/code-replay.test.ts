@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { Response } from 'express';
-import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/server-legacy/auth';
+import { InvalidGrantError } from '@modelcontextprotocol/server-legacy/auth';
 import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/server';
 
 vi.mock('../../../src/auth/ynab-oauth.js', async () => {
@@ -31,6 +31,7 @@ import type { Storage, CodeTokens } from '../../../src/storage/types.js';
 import { MemoryStorage } from '../../../src/storage/memory.js';
 import { Encryptor } from '../../../src/crypto.js';
 import { TEST_TOKEN_HASHER, legacyToken, testKey } from '../helpers/token-hasher.js';
+import { expectInvalidToken } from '../helpers/invalid-token.js';
 import {
   McpOAuthProvider,
   AUTH_CODE_REPLAY_WINDOW_MS,
@@ -218,7 +219,7 @@ for (const driver of drivers) {
     }
 
     async function expectDead(client: OAuthClientInformationFull, tokens: OAuthTokens): Promise<void> {
-      await expect(provider.verifyAccessToken(tokens.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+      await expectInvalidToken(provider.verifyAccessToken(tokens.access_token));
       await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
         InvalidGrantError
       );
@@ -242,7 +243,7 @@ for (const driver of drivers) {
       const err = await errorOf(provider.challengeForAuthorizationCode(client, code));
       expect((err as InvalidGrantError).toResponseObject()).toEqual(INVALID_CODE);
 
-      await expect(provider.verifyAccessToken(tokens.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+      await expectInvalidToken(provider.verifyAccessToken(tokens.access_token));
       await expectDead(client, rotated);
       expect(errorSpy).toHaveBeenCalledWith('[OAuth] Authorization code replay detected; revoked its token family');
       expect(errorSpy.mock.calls.flat().join(' ')).not.toContain(code);
