@@ -43,8 +43,8 @@ export const FAN_OUT: Readonly<Record<string, (args: Args) => number>> = {
   ynab_spending_pace: () => 2,
   // categories and each month
   ynab_spending_trends: (args) => 1 + monthsArg(args, 6),
-  // transactions, categories and accounts, plus the budget's first month for an until_date alone
-  ynab_transaction_search: () => 4,
+  // transactions, categories and accounts, plus up to two requests for the budget's first month (until_date alone)
+  ynab_transaction_search: () => 5,
   ynab_unused_categories: () => 2,
 };
 

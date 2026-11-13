@@ -89,6 +89,27 @@ describe('RateLimiter.acquireMany', () => {
     }
   });
 
+  it('counts the active waiter\'s token in the retry time of a short reservation', async () => {
+    vi.useFakeTimers();
+    try {
+      const limiter = new RateLimiter(3600, Date.now, 2000);
+      limiter.acquireMany(3600);
+      const waiter = limiter.acquire(); // takes the token due in 1 s
+      let retryMs = 0;
+      try {
+        limiter.acquireMany(2);
+      } catch (e) {
+        retryMs = (e as RateLimitError).retryAfterMs ?? 0;
+      }
+      // Two for the reservation plus one for the waiter, at one token per second.
+      expect(retryMs).toBe(3000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await waiter;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rejects a non-positive or fractional count', () => {
     const { limiter } = fakeClockLimiter(10);
     expect(() => limiter.acquireMany(0)).toThrow();
@@ -224,6 +245,7 @@ describe('fan-out table', () => {
     expect(fanOutFor('ynab_budget_suggestions', {})).toBe(5);
     expect(fanOutFor('ynab_budget_suggestions', { months: 6 })).toBe(8);
     expect(fanOutFor('ynab_budget_vs_actuals', { include_previous: true })).toBe(3);
+    expect(fanOutFor('ynab_transaction_search', {})).toBe(5);
     expect(fanOutFor('ynab_list_accounts', {})).toBe(1);
     expect(fanOutFor('constructor', {})).toBe(1);
   });

@@ -133,13 +133,11 @@ export class RateLimiter {
     this.throwIfExhaustedByYnab();
     this.refill();
     const needed = count;
-    // Tolerate float rounding, as acquire() does.
-    if (this.tokens < needed - 1e-6 || needed > this.maxTokens) {
-      throw this.reject(Math.ceil((Math.min(needed, this.maxTokens) - this.tokens) / this.refillRate));
-    }
     // A caller already waiting for a token has the next one; this reservation must not jump it.
-    if (this.waiterActive && this.tokens < needed + 1) {
-      throw this.reject(Math.ceil((needed + 1 - this.tokens) / this.refillRate));
+    const required = Math.min(needed, this.maxTokens) + (this.waiterActive ? 1 : 0);
+    // Tolerate float rounding, as acquire() does.
+    if (this.tokens < required - 1e-6 || needed > this.maxTokens) {
+      throw this.reject(Math.ceil((required - this.tokens) / this.refillRate));
     }
     this.tokens = Math.max(0, this.tokens - needed);
     for (let i = 0; i < needed; i++) this.recordSent();
