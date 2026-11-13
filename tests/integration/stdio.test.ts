@@ -45,6 +45,8 @@ describe.each<Era>(['2025-11-25', '2026-07-28'])('stdio server, %s', (era) => {
   it('initializes with serverInfo and the untrusted-text instructions', async () => {
     const { client, close } = await connect(era, true);
     try {
+      // G3: each run really negotiated its era (the client's default is the 2025 handshake).
+      expect(client.getNegotiatedProtocolVersion()).toBe(era);
       expect(client.getServerVersion()).toMatchObject({ name: 'ynab-mcp', version: pkg.version });
       expect(client.getInstructions()).toBe(UNTRUSTED_TEXT_NOTE);
       const caps = client.getServerCapabilities();
