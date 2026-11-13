@@ -10,13 +10,16 @@
  * the selected driver's dependency needs to be installed.
  */
 
-import type { Storage } from './types.js';
+import type { Storage, StorageDriverOptions } from './types.js';
 import { MemoryStorage } from './memory.js';
 
-export type StorageOptions =
-  | { driver?: 'memory' }
-  | { driver: 'sqlite'; path: string }
-  | { driver: 'postgres'; connectionString: string };
+/** Which driver to build; every driver also takes the retention windows (#54b passes its settings here). */
+export type StorageOptions = StorageDriverOptions &
+  (
+    | { driver?: 'memory' }
+    | { driver: 'sqlite'; path: string }
+    | { driver: 'postgres'; connectionString: string }
+  );
 
 /**
  * Construct and `init()` a Storage adapter for the requested driver.
@@ -32,18 +35,16 @@ async function buildStorage(opts: StorageOptions): Promise<Storage> {
   switch (opts.driver) {
     case 'sqlite': {
       const { SqliteStorage } = await import('./sqlite.js');
-      return new SqliteStorage({ path: opts.path });
+      return new SqliteStorage({ path: opts.path, retention: opts.retention });
     }
     case 'postgres': {
       const { PostgresStorage } = await import('./postgres.js');
-      return new PostgresStorage({ connectionString: opts.connectionString });
+      return new PostgresStorage({ connectionString: opts.connectionString, retention: opts.retention });
     }
-    case 'memory':
-    case undefined:
-      return new MemoryStorage();
     default:
-      return new MemoryStorage();
+      return new MemoryStorage({ retention: opts.retention });
   }
 }
 
-export type { Storage } from './types.js';
+export type { Storage, AccountStore } from './types.js';
+export { createAccountStore } from './account-store.js';
