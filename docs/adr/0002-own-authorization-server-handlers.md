@@ -209,7 +209,7 @@ Also considered and ruled out:
 
 - **What:**
   - #47-2 removes `@modelcontextprotocol/server-legacy` (B's hunk). After that, `pkce-challenge` stays in the tree only under the dev-only v2 client.
-  - The port imports `@modelcontextprotocol/core` and `cors` directly, so both become direct dependencies: `core` with the same range as `server` (`^2.4.0`), and `cors` with `@types/cors`. Both are already in the tree (`server` depends on `core`, the express adapter on `cors`), so the lockfile gains no package. When the change lands is Q5.
+  - The port imports `@modelcontextprotocol/core` and `cors` directly, so both become direct dependencies: `core` with the same range as `server` (`^2.4.0`), and `cors` with `@types/cors`. Both are already in the tree (`server` depends on `core`, the express adapter on `cors`), so the lockfile gains no package. They are declared in #47-1 (B's hunk): WS7.2 (#97) merged on Nov 13 without them (Q5).
   - #47-2 rewrites D14's guard test (added by WS7.2). It then asserts that server-legacy is absent from `package.json` and the lockfile, that nothing in `src` or `tests` imports it, and that `core` still resolves to one version.
   - G1's "server-legacy pinned `~2.4.0`" becomes "server-legacy absent" (the lead updates the plan). The advisory trigger ends with the pin.
   - When #47-2 merges, ADR-0001 gets a dated addendum saying that D14 is complete.
@@ -220,7 +220,7 @@ Also considered and ruled out:
 - **What:**
   - Each ported file starts with a header that names its source package, version and path, and says the file was modified. `tsconfig.json` doesn't set `removeComments`, so the headers survive into `dist`.
   - A new `THIRD_PARTY_NOTICES.md` holds the license text.
-  - `package.json` adds it to `files` (B's hunk), so the npm package ships it.
+  - `package.json` adds it to `files` in #47-1 (B's hunk), so the npm package ships it.
   - The Docker image copies only `dist`, `node_modules` and `package.json` today, so it carries neither `LICENSE` nor the notices. The `Dockerfile` (O) copies both.
   - Which source and which license: Q2.
 - **Why:** both candidate licenses require the notice to travel with the code.
@@ -237,7 +237,7 @@ Also considered and ruled out:
   - `tests/unit/auth/mcp-provider.test.ts` (`AuthorizationParams`; `InvalidGrantError`, `InvalidScopeError`, `InvalidTargetError`, `ServerError`);
   - `tests/unit/auth/code-replay.test.ts`, `tests/unit/auth/account-deletion.test.ts` and `tests/unit/storage/token-hashing-migration.test.ts` (`InvalidGrantError`).
 
-  WS7.3 has already moved their `InvalidTokenError` assertions to v2's `OAuthError`. If WS7.2 maps the type-only imports (`OAuthClientInformationFull`, `OAuthTokens`) to server-legacy rather than `@modelcontextprotocol/server`, `token-hash-provider.test.ts` and the storage tests join this list.
+  WS7.3 has already moved their `InvalidTokenError` assertions to v2's `OAuthError`. WS7.2 (#97) mapped the type-only imports (`OAuthClientInformationFull`, `OAuthTokens`) to `@modelcontextprotocol/server`, so no other test file joins this list.
 - **Changed on purpose:**
   - `http-oauth-client-auth.test.ts`: the fail-closed test imports our `tokenHandler` (its import and its mount line). It gains one case: without the stage, a public client also gets `invalid_client` (D4).
   - The D14 guard test (D7).
@@ -252,14 +252,14 @@ Also considered and ruled out:
 | PR | What | Files (owner) | Author | Size | Built | Packet |
 |---|---|---|---|---|---|---|
 | ADR-0002 | This document | `docs/adr/` (P) | P | S | Nov 13 | Signed off Wed Nov 18 (P5, batch 3) |
-| **#47-1** Port the handlers | D1, the `errors.ts` part of D3, D4's `authenticated-client.ts`, D8, and the differential and unit tests. New files, plus the two `Dockerfile` lines and, if Q5 puts it here, B's hunk. Nothing mounts the new code yet. | `src/auth/oauth-server/**` (new; O owns it after the merge), `THIRD_PARTY_NOTICES.md`, `tests/unit/auth/oauth-server/**`; two `COPY` lines in `Dockerfile` (O acks) | S | M (2 sessions) | Thu Nov 19-Mon Nov 23 | **P7, Tue Nov 24**; P8 if P7 is full |
+| **#47-1** Port the handlers | D1, the `errors.ts` part of D3, D4's `authenticated-client.ts`, D8, and the differential and unit tests. New files, plus the two `Dockerfile` lines and B's `package.json` hunk: the `files` entry for `THIRD_PARTY_NOTICES.md` and the direct `@modelcontextprotocol/core`, `cors` and `@types/cors` dependencies. Nothing mounts the new code yet. | `src/auth/oauth-server/**` (new; O owns it after the merge), `THIRD_PARTY_NOTICES.md`, `tests/unit/auth/oauth-server/**`; `package.json` and the lockfile (B's hunk; B acks); two `COPY` lines in `Dockerfile` (O acks) | S | M (2 sessions) | Thu Nov 19-Mon Nov 23 | **P7, Tue Nov 24**; P8 if P7 is full |
 | **#47-2** Cut over and remove server-legacy | D3-D5, D7 and D9. Stacked on #47-1, rebased on #59 after P7. | `mcp-provider.ts` and `client-auth.ts` (S); `as-router.ts` (O acks); `package.json` and the lockfile (B's hunk); the test files in D9 | S | S (1 session) | Tue Nov 24-Tue Dec 1 | **P8, Wed Dec 2: the cut date** |
 
 - **The per-file chains (plan §5) become:**
   - `as-router.ts`: … → #59 (P7) → #47-2 (P8) → #55 (P9).
   - `mcp-provider.ts` and its test file: … → WS7.3 (P5) → #47-2 (P8) → #55 (P9) → #64a (P10).
   - `client-auth.ts`: #52 → #47-2.
-  - The lockfile: … → WS7.2 (P4) → #47-2 (P8) → REL.
+  - The lockfile: … → WS7.2 (P4) → #47-1 (P7) → #47-2 (P8) → REL.
   - P8 also carries WS7.4, which touches none of these files.
 - **No `http.ts` change.** After WS7.3, `http.ts` imports only v2 packages, and the port doesn't change `mountAuthorizationServer`'s signature. If something does turn out to need `http.ts`, it waits until WS7.4 merges and goes through P. The port is independent of the Dec 4 WS7.4 cut.
 - **Rebases after the cut-over.** #55 (O, P9) and #64a (S, P10) are built against server-legacy's imports, so both rebase onto #47-2. The rebase is mechanical: error imports move to `./oauth-server/errors.js`, and #55's stages sit next to the handler constructors that #47-2 changed.
@@ -325,7 +325,7 @@ Also considered and ruled out:
 **Negative:**
 - We maintain about 500 lines of security-relevant code ourselves, with no upstream fixes. Until v1.x support ends (about 2027-01-27), fixes to the v1.x and server-legacy handlers must be watched for and ported by hand.
 - Two more PRs land on `mcp-provider.ts` and `as-router.ts` ahead of #55 and #64a, which rebase onto them.
-- There is one more lockfile write after WS7.2.
+- There are two more lockfile writes after WS7.2: #47-1 declares `core` and `cors` (no new package in the tree), and #47-2 removes server-legacy.
 
 **Neutral:**
 - Nothing changes on the wire or in storage: no migration and no new setting.
@@ -339,7 +339,7 @@ Also considered and ruled out:
 - **Packet hours in P7 and P8.** P7 falls in Thanksgiving week, and P8 is WS7.4's packet. Mitigation: Q6's fallback order. #47-1 touches no file in an open per-file chain (the `Dockerfile`'s only planned PR, 62a, merged as #76), so it can take any packet with room.
 - **#46 has no slot.** Even with the port on time, #46's provider hunk would share P10 with #64a. The lead decides #46's packet separately: stacked on #64a, or 0.5.1.
 - **Upstream fixes stop reaching us.** A security fix to the v1.x or server-legacy handlers no longer arrives through `npm update`. Mitigation: watch the typescript-sdk advisories for the `server/auth` code until v1.x support ends. SECURITY.md lists the AS as ours.
-- **WS7.2 maps imports differently.** This ADR assumes WS7.2 maps the AS imports to server-legacy and the type imports to `@modelcontextprotocol/server`. If it doesn't, only D9's list of import-only files changes.
+- **WS7.2 maps imports differently.** Resolved: WS7.2 (#97, merged Nov 13) maps the AS imports to server-legacy and the type imports to `@modelcontextprotocol/server`, as assumed. On release/0.5.0 the server-legacy importers are exactly the files D9 lists, plus `http.ts` (WS7.3 moves it) and the D14 guard test.
 
 ## Alternatives considered
 
@@ -363,7 +363,7 @@ Each question has a recommendation. As in plan §10, a missed answer means the r
    *Recommendation: (a), one license and the same as ours.*
 3. **Error classes.** Either thin named subclasses of v2's `OAuthError` with an `errorCode` alias (D3), or a bare `new OAuthError(code, …)` everywhere, which means rewriting about 60 test assertions to check `code`. *Recommendation: the subclasses.*
 4. **The `sdk-router` stage name.** Keep it through 0.5.0 (D5), or rename it to `as-handler` in #47-2. A rename changes `EXPECTED` in `http-as-pipeline.test.ts` and one assertion in `http-oauth-client-auth.test.ts`. *Recommendation: keep it, and rename in 0.5.1.*
-5. **Where the dependency changes go.** If WS7.2 hasn't merged when this is answered (it is due Sat Nov 14), add `@modelcontextprotocol/core` (`^2.4.0`), `cors` and `@types/cors` in WS7.2's lockfile write; this adds no package to the tree. Otherwise they go in #47-1 as B's hunk. #47-2 removes server-legacy. *Recommendation: as written.*
+5. **Where the dependency changes go.** Settled by events: WS7.2 (#97) merged on Nov 13 without them. #47-1 declares `@modelcontextprotocol/core` (`^2.4.0`), `cors` and `@types/cors`, together with the `files` entry for `THIRD_PARTY_NOTICES.md` (B's hunk); this adds no package to the tree. #47-2 removes server-legacy. *No decision needed.*
 6. **Packets.** #47-1 in P7 (Tue Nov 24), about 0.75 h on top of #59 and #65b. #47-2 in P8 (Wed Dec 2), about 0.5 h next to WS7.4. P8 is the cut. *Recommendation: yes. If P7 is full, both go in P8, which then has three PRs.*
 7. **The fallback.** If #47-2 misses P8: ship on the pin with D11's reason, keep #47-1 merged and unmounted, and cut over in 0.5.1. *Recommendation: yes, and no attempt in P10.*
 8. **Authors and owners.** S writes both PRs. O acks the `as-router.ts` hunk and owns `src/auth/oauth-server/**` once #47-1 merges. B acks the `package.json` hunk. *Recommendation: yes.*
