@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { CATEGORY_GROUP_NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';

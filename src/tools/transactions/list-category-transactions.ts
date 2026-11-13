@@ -13,7 +13,7 @@ import {
   splitDeleted,
   transactionDeltaResult,
 } from '../../utils/delta.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';

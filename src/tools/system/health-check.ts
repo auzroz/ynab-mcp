@@ -6,7 +6,7 @@
 
 import { maskId } from '../../utils/mask.js';
 import { z } from 'zod';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeErrorMessage } from '../../utils/sanitize.js';
 

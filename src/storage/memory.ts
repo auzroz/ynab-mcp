@@ -11,7 +11,7 @@
  * the records and never returned.
  */
 
-import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
 import type {
   Storage,
   UserRecord,

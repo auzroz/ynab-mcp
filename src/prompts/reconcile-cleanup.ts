@@ -5,7 +5,7 @@
  * categories.
  */
 
-import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { Prompt, PromptMessage } from '@modelcontextprotocol/server';
 
 export const reconcileCleanupPrompt: Prompt = {
   name: 'ynab-reconcile-cleanup',

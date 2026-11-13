@@ -30,16 +30,16 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
-import { TooManyRequestsError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import {
+  TooManyRequestsError,
   createOAuthMetadata,
   getOAuthProtectedResourceMetadataUrl,
-} from '@modelcontextprotocol/sdk/server/auth/router.js';
-import { authorizationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/authorize.js';
-import { tokenHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/token.js';
-import { clientRegistrationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/register.js';
-import { revocationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/revoke.js';
-import { metadataHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/metadata.js';
+  authorizationHandler,
+  tokenHandler,
+  clientRegistrationHandler,
+  revocationHandler,
+  metadataHandler,
+} from '@modelcontextprotocol/server-legacy/auth';
 import type { HttpConfig } from '../config/environment.js';
 import type { Encryptor } from '../crypto.js';
 import type { Storage } from '../storage/types.js';
@@ -207,6 +207,7 @@ export function mountAuthorizationServer(
   // metadataHandler (CORS: any origin, GET/OPTIONS only).
   const scopesSupported = ['read-only', 'read-write'];
   const resourceName = 'YNAB MCP Server';
+  // getOAuthProtectedResourceMetadataUrl: still the server-legacy copy; WS7.3 moves it to @modelcontextprotocol/express.
   const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceServerUrl);
   const protectedResourceMetadata = {
     resource: resourceServerUrl.href,

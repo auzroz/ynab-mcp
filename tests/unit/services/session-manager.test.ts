@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ServerResponse } from 'node:http';
-import type { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { SessionManager, type SessionManagerOptions } from '../../../src/services/session-manager.js';
 
 /** A transport double whose close() runs onclose, like the real one. */
@@ -15,7 +15,7 @@ class FakeTransport {
   }
 }
 
-const asTransport = (t: FakeTransport): StreamableHTTPServerTransport => t as unknown as StreamableHTTPServerTransport;
+const asTransport = (t: FakeTransport): NodeStreamableHTTPServerTransport => t as unknown as NodeStreamableHTTPServerTransport;
 const fakeRes = (): ServerResponse => new EventEmitter() as unknown as ServerResponse;
 
 let clock = 0;

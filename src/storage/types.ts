@@ -15,7 +15,7 @@
  * secrets are stored as `client_secret_hash` (`s256.`) inside the client JSON.
  */
 
-import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
 import type { RetentionPolicy } from '../auth/retention-defaults.js';
 import type { StorageTimeouts } from './timeouts.js';
 
