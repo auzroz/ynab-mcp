@@ -4,6 +4,7 @@
  * Updates multiple existing transactions in a single request.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { IMPORT_ID_MAX_LENGTH, MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -76,7 +77,9 @@ Amounts are in dollars (e.g., -42.50 for a $42.50 outflow).
 To clear a field, pass null (distinct from omitting it, which leaves it unchanged): category_id null uncategorizes, payee_id null clears the payee, memo null clears the memo.
 YNAB cannot edit the splits of an existing transaction.
 
-**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
+**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

@@ -4,6 +4,7 @@
  * Creates a new transaction in a budget.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { IMPORT_ID_MAX_LENGTH, MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -84,7 +85,9 @@ Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
 Amount should be negative for expenses/outflows and positive for income/inflows.
 
 Split transactions: pass subtransactions (at least 2, each with amount in dollars and optional payee_id/payee_name, category_id, memo). Split amounts must sum exactly to the parent amount, and the parent must not set category_id. The splits of an existing transaction cannot be edited afterwards (YNAB limitation), so get them right on creation.
-Pass import_id to make the create idempotent: the request is sent in YNAB's skip-duplicates form, so if that import_id already exists nothing is created and the result has success=false with duplicate_import_ids.`,
+Pass import_id to make the create idempotent: the request is sent in YNAB's skip-duplicates form, so if that import_id already exists nothing is created and the result has success=false with duplicate_import_ids.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

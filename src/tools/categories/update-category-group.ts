@@ -4,6 +4,7 @@
  * Renames an existing category group.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { CATEGORY_GROUP_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -32,7 +33,9 @@ Requires a category_group_id. Use ynab_list_categories first to find the group I
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
 
-Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering category groups.`,
+Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering category groups.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

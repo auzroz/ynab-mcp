@@ -4,6 +4,7 @@
  * Returns details about a specific transaction.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -31,7 +32,9 @@ Use when the user asks:
 - "What's the info on transaction [id]?"
 - "Tell me more about that purchase"
 
-Requires a transaction_id. Use ynab_list_transactions first to find the transaction ID.`,
+Requires a transaction_id. Use ynab_list_transactions first to find the transaction ID.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

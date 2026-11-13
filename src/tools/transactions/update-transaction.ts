@@ -4,6 +4,7 @@
  * Updates an existing transaction.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -78,7 +79,9 @@ Use when the user asks:
 Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
 Only provide the fields you want to change; omitted fields stay unchanged.
 To clear a field, pass null (distinct from omitting it): category_id null uncategorizes the transaction, payee_id null clears the payee, memo null clears the memo.
-Split limitation: YNAB cannot edit the splits of an existing transaction, so you cannot change, add or remove splits here. To restructure splits, delete the transaction and create a new one with subtransactions via ynab_create_transaction.`,
+Split limitation: YNAB cannot edit the splits of an existing transaction, so you cannot change, add or remove splits here. To restructure splits, delete the transaction and create a new one with subtransactions via ynab_create_transaction.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

@@ -9,6 +9,7 @@
  * read-only mode. Removal is planned for a later release.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -37,7 +38,9 @@ export const importTransactionsTool: Tool = {
 
 Do NOT use this tool to sync, refresh, or pull in bank transactions. It will not fetch new transactions. To review recent transactions, use ynab_list_transactions instead.
 
-Kept registered for backward compatibility only. Makes no API call and returns deprecated: true with an explanatory message and an imported_count of 0.`,
+Kept registered for backward compatibility only. Makes no API call and returns deprecated: true with an explanatory message and an imported_count of 0.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

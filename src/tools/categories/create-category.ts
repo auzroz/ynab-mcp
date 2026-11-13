@@ -4,6 +4,7 @@
  * Creates a new category within an existing category group.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -44,7 +45,9 @@ Optionally set a target (goal) at creation: goal_target (in dollars, e.g. 200 fo
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
 
-Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering categories, target cadences other than monthly/weekly/yearly, due days, choosing the target type, and snoozing a target.`,
+Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering categories, target cadences other than monthly/weekly/yearly, due days, choosing the target type, and snoozing a target.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

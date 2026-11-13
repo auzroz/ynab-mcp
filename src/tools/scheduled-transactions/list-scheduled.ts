@@ -4,6 +4,7 @@
  * Returns all scheduled transactions in a budget.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -34,7 +35,9 @@ Use when the user asks:
 - "What payments are coming up?"
 
 Returns scheduled transaction details including frequency, next occurrence, and amounts.
-Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the scheduled transactions changed since then.`,
+Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the scheduled transactions changed since then.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

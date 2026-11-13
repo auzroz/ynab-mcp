@@ -4,6 +4,7 @@
  * Returns details about a specific scheduled transaction.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -30,7 +31,9 @@ Use when the user asks:
 - "Show me details for that scheduled transaction"
 - "What's the info on my Netflix subscription?"
 
-Requires a scheduled_transaction_id. Use ynab_list_scheduled_transactions first to find the ID.`,
+Requires a scheduled_transaction_id. Use ynab_list_scheduled_transactions first to find the ID.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

@@ -4,6 +4,7 @@
  * Creates multiple transactions in a single request.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { IMPORT_ID_MAX_LENGTH, MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -68,7 +69,9 @@ Use when the user asks:
 Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
 Maximum 100 transactions per request.
 Use import_id to prevent duplicate imports.
-Any item may carry subtransactions (at least 2, amounts in dollars) to create a split transaction: split amounts must sum exactly to that item's amount, and the item must not set category_id. YNAB cannot edit the splits of an existing transaction afterwards.`,
+Any item may carry subtransactions (at least 2, amounts in dollars) to create a split transaction: split amounts must sum exactly to that item's amount, and the item must not set category_id. YNAB cannot edit the splits of an existing transaction afterwards.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {
