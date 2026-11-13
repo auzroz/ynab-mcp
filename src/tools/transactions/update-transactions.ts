@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import { IMPORT_ID_MAX_LENGTH, MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { toMilliunits } from '../../utils/milliunits.js';

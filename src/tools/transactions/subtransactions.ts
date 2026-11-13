@@ -54,7 +54,7 @@ export const subtransactionsJsonSchema = {
     },
     required: ['amount'],
   },
-} as const;
+};
 
 /**
  * Cross-field rules for a transaction that may carry splits. Intended for a

@@ -8,8 +8,8 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { randomBytes, randomUUID } from 'node:crypto';
-import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/server-legacy/auth';
+import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/server';
 
 vi.mock('../../../src/auth/ynab-oauth.js', async () => {
   const actual =

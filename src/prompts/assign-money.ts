@@ -5,7 +5,7 @@
  * Assign money and fund underfunded goals.
  */
 
-import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { Prompt, PromptMessage } from '@modelcontextprotocol/server';
 
 export const assignMoneyPrompt: Prompt = {
   name: 'ynab-assign-money',

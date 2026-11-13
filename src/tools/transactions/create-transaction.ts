@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import { IMPORT_ID_MAX_LENGTH, MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
@@ -129,7 +129,7 @@ Pass import_id to make the create idempotent: the request is sent in YNAB's skip
       },
       cleared: {
         type: 'string',
-        enum: clearedStatuses,
+        enum: [...clearedStatuses],
         description: 'Cleared status',
       },
       approved: {
@@ -138,7 +138,7 @@ Pass import_id to make the create idempotent: the request is sent in YNAB's skip
       },
       flag_color: {
         type: 'string',
-        enum: flagColors,
+        enum: [...flagColors],
         description: 'Flag color',
       },
       import_id: {

@@ -9,19 +9,15 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import type { Response } from 'express';
-import type {
-  OAuthClientInformationFull,
-  OAuthClientMetadata,
-} from '@modelcontextprotocol/sdk/shared/auth.js';
-import type { AuthorizationParams } from '@modelcontextprotocol/sdk/server/auth/provider.js';
-import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import {
   InvalidGrantError,
   InvalidScopeError,
   InvalidTargetError,
   InvalidTokenError,
   ServerError,
-} from '@modelcontextprotocol/sdk/server/auth/errors.js';
+} from '@modelcontextprotocol/server-legacy/auth';
+import type { AuthorizationParams } from '@modelcontextprotocol/server-legacy/auth';
+import type { OAuthClientInformationFull, OAuthClientMetadata, OAuthTokens } from '@modelcontextprotocol/server';
 
 vi.mock('../../../src/auth/ynab-oauth.js', async () => {
   const actual =

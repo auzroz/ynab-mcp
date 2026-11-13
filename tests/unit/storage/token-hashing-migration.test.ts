@@ -16,8 +16,8 @@ import { createRequire } from 'node:module';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/server-legacy/auth';
+import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
 import type { Storage } from '../../../src/storage/types.js';
 import { SCHEMA_VERSION } from '../../../src/storage/migrations.js';
 import {

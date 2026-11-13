@@ -9,7 +9,7 @@
  * the tool list is built.
  */
 
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../services/ynab-client.js';
 import { TOOL_METADATA } from './annotations.js';
 

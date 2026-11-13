@@ -17,7 +17,7 @@
  */
 
 import type { ServerResponse } from 'node:http';
-import type { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 
 /** Upper bound on the time between idle sweeps. */
 const MAX_SWEEP_INTERVAL_MS = 60_000;
@@ -40,7 +40,7 @@ export interface SessionManagerOptions {
 
 interface Session {
   readonly id: string;
-  readonly transport: StreamableHTTPServerTransport;
+  readonly transport: NodeStreamableHTTPServerTransport;
   readonly owner: string | undefined;
   /** Quota key (the user), when there is one. */
   readonly userKey: string | undefined;
@@ -60,7 +60,7 @@ export interface Admission {
    * transport. `release` runs once, when the session closes or the admission
    * is cancelled without a session (use it to give back the user's hold).
    */
-  bind(transport: StreamableHTTPServerTransport, owner: string | undefined, release: () => void): void;
+  bind(transport: NodeStreamableHTTPServerTransport, owner: string | undefined, release: () => void): void;
   /** The transport assigned the session id: the session is now live. */
   commit(sessionId: string): void;
   /** Initialization ended; a no-op once committed. */
@@ -110,7 +110,7 @@ export class SessionManager {
     sessionId: string | undefined,
     owner: string | undefined,
     res: ServerResponse
-  ): StreamableHTTPServerTransport | undefined {
+  ): NodeStreamableHTTPServerTransport | undefined {
     const session = sessionId ? this.sessions.get(sessionId) : undefined;
     if (!session) return undefined;
     if (session.owner !== owner) {
@@ -171,7 +171,7 @@ export class SessionManager {
   }
 
   private admission(userKey: string | undefined): Admission {
-    let transport: StreamableHTTPServerTransport | undefined;
+    let transport: NodeStreamableHTTPServerTransport | undefined;
     let owner: string | undefined;
     let release = (): void => {};
     let reserved = true;
@@ -269,7 +269,7 @@ export class SessionManager {
   }
 
   /** Close the transport of a session already removed from the map; its onclose releases the rest. */
-  private async closeTransport(transport: StreamableHTTPServerTransport): Promise<void> {
+  private async closeTransport(transport: NodeStreamableHTTPServerTransport): Promise<void> {
     try {
       await transport.close();
     } catch {

@@ -97,10 +97,10 @@ export const categoryTargetCreateJsonProperties = {
   },
   goal_frequency: {
     type: "string",
-    enum: GOAL_FREQUENCIES,
+    enum: [...GOAL_FREQUENCIES],
     description: GOAL_FREQUENCY_DESCRIPTION,
   },
-} as const;
+};
 
 /** JSON-schema properties matching categoryTargetUpdateShape. */
 export const categoryTargetUpdateJsonProperties = {
@@ -122,10 +122,10 @@ export const categoryTargetUpdateJsonProperties = {
   },
   goal_frequency: {
     type: "string",
-    enum: GOAL_FREQUENCIES,
+    enum: [...GOAL_FREQUENCIES],
     description: GOAL_FREQUENCY_DESCRIPTION,
   },
-} as const;
+};
 
 export const CATEGORY_TARGET_FIELDS = [
   "goal_target",
