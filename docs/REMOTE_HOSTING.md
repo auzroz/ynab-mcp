@@ -57,6 +57,8 @@ Set these environment variables (see `.env.example`):
 | `TRUST_CF_CONNECTING_IP` | no | `true` to take the client address from `CF-Connecting-IP` (default `false`). Separate from `TRUST_PROXY`; turn it on only when the server is reachable solely through Cloudflare. See "Client addresses and rate limits" |
 | `REGISTER_RATE_LIMIT_PER_IP` | no | `/register` requests per client address per hour (integer 1-100000, default `100`) |
 | `REGISTER_RATE_LIMIT_PER_HOST` | no | `/register` requests per redirect URI host per hour (integer 1-100000, default `20`) |
+| `SECURITY_CONTACT` | no | Where to report a security issue in **your** deployment: one or more comma-separated email addresses or `mailto:`, `tel:` or `https:` URIs (at most 5). When set, the server serves `/.well-known/security.txt` (RFC 9116) with a `Contact` line for each, an `Expires` of 180 days from each request, and `Canonical` from `PUBLIC_URL`. Unset (default): the path is a 404. A value with a control character or line break is refused at startup |
+| `SECURITY_POLICY_URL` | no | An https URL for your disclosure policy, served as `Policy` in `security.txt`. Only used when `SECURITY_CONTACT` is set |
 
 OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
 `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL`; startup is refused if any is missing.

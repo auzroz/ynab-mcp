@@ -18,6 +18,8 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     trustCfConnectingIp: false,
     registerRateLimitPerIp: 100,
     registerRateLimitPerHost: 20,
+    securityContacts: [],
+    securityPolicyUrl: undefined,
     fallbackAccessToken: undefined,
     defaultBudgetId: undefined,
     readOnly: true,

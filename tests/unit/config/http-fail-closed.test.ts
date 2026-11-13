@@ -262,7 +262,7 @@ describe('loadHttpConfig composition', () => {
       'accessTokenTtlSec', 'allowAnonymousFallback', 'allowWrite', 'allowedHosts', 'allowedOrigins', 'authCodeTtlSec',
       'authMode', 'bindHost', 'cacheTtlMs', 'databaseUrl', 'defaultBudgetId', 'enableDnsRebindingProtection',
       'encryptionKey', 'fallbackAccessToken', 'logLevel', 'maxSessions', 'maxSessionsPerUser', 'oauthClientId',
-      'oauthClientSecret', 'port', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour', 'readOnly', 'registerRateLimitPerHost', 'registerRateLimitPerIp', 'resourceUrl', 'sessionIdleTimeoutMs',
+      'oauthClientSecret', 'port', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour', 'readOnly', 'registerRateLimitPerHost', 'registerRateLimitPerIp', 'resourceUrl', 'securityContacts', 'securityPolicyUrl', 'sessionIdleTimeoutMs',
       'sqlitePath', 'storageDriver', 'tokenPepper', 'trustCfConnectingIp', 'trustProxy',
     ]);
   });
