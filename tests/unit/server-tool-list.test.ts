@@ -97,14 +97,20 @@ describe('serverInfo', () => {
     const client = await connect(true);
     expect(client.getServerVersion()).toMatchObject({ name: 'ynab-mcp', version: pkg.version });
   });
+
+  it('sends the untrusted-text note as the server instructions', async () => {
+    const client = await connect(true);
+    expect(client.getInstructions()).toBe(UNTRUSTED_TEXT_NOTE);
+  });
 });
 
 describe('untrusted budget text note in tool descriptions', () => {
   const countOccurrences = (text: string, needle: string): number => text.split(needle).length - 1;
 
-  // Rule (#61b): every read tool whose output passes through sanitizeMemo
-  // (directly, or via accounts/account-fields.ts or transactions/format.ts)
-  // returns free text written by people, so it carries the note too.
+  // Rule (#61b): every read tool whose output carries a memo or note field from
+  // the budget (passed through sanitizeMemo on the way out, directly or via
+  // accounts/account-fields.ts or transactions/format.ts) carries the note too.
+  // Name-only tools rely on the server instructions (tested above).
   const freeTextReadTools = [
     'ynab_list_transactions',
     'ynab_get_transaction',

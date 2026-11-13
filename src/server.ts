@@ -14,6 +14,7 @@ const pkg = require('../package.json') as { version: string };
 import { YnabClient, type AccessTokenSource } from './services/ynab-client.js';
 import { createUserComponents, type UserComponents } from './services/user-registry.js';
 import { tools, handleToolCall } from './tools/index.js';
+import { UNTRUSTED_TEXT_NOTE } from './tools/untrusted-note.js';
 import {
   prompts,
   getPromptMessages,
@@ -75,6 +76,9 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
         tools: {},
         prompts: {},
       },
+      // Covers every tool result, including the many read tools that return
+      // only names and so carry no per-tool note (#61b).
+      instructions: UNTRUSTED_TEXT_NOTE,
     }
   );
 
