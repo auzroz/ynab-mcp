@@ -666,6 +666,36 @@ describe('startHttpServer', () => {
   });
 });
 
+describe('shutdown waits for work that outlived its response (D5)', () => {
+  it("closing the http.Server waits for a timed-out write's YNAB call, not just its response", async () => {
+    const server = await startHttpServer(makeHttpConfig({ bindHost: '127.0.0.1', requestTimeoutMs: 400, readOnly: false }));
+    await new Promise((resolve) => (server.listening ? resolve(undefined) : server.once('listening', resolve)));
+    const { port } = server.address() as AddressInfo;
+    api.hold();
+    const res = await fetchReal(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: MCP_ACCEPT, 'x-ynab-token': 'token-a', 'mcp-protocol-version': '2025-06-18' },
+      body: JSON.stringify(call(1, 'ynab_create_category_group', { budget_id: 'last-used', name: 'G' })),
+    });
+    // The client already has its unknown-outcome result; the write is still at YNAB.
+    expect(await res.text()).toContain(WRITE_TIMEOUT_MESSAGE);
+    expect(api.waiting).toBe(1);
+
+    let closed = false;
+    const closing = new Promise<void>((resolve) =>
+      server.close(() => {
+        closed = true;
+        resolve();
+      })
+    );
+    await sleep(100);
+    expect(closed).toBe(false);
+    api.release();
+    await closing;
+    expect(closed).toBe(true);
+  });
+});
+
 describe('the transaction feed state persists across requests (D5)', () => {
   it("is part of the user's components, which every request of that user gets", async () => {
     const handle = await headerApp();

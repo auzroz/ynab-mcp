@@ -160,7 +160,11 @@ export interface HttpApp {
   app: express.Express;
   /** The MCP handler; close() it once the HTTP server has stopped serving requests. */
   mcp: McpHttpHandler;
-  /** Resolves when no /mcp response is open (at once when none is). */
+  /**
+   * Resolves when every /mcp request is done: its response closed and the
+   * work it started (a resolve, a tool call that outlived its response)
+   * settled (D5). At once when none is in flight.
+   */
   mcpDrained(): Promise<void>;
   /** The /mcp in-flight caps (ADR-0001 D6). */
   inflight: InflightLimiter;
@@ -281,8 +285,9 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   const lifetimes = new WeakMap<Request, RequestLifetime>();
   // Contexts built by request-context; the factory accepts nothing else.
   const issuedContexts = new WeakSet<RequestContext>();
-  // Open /mcp responses, so shutdown can wait for them (mcpDrained).
-  let openResponses = 0;
+  // /mcp requests not yet released (D5), so shutdown can wait for them,
+  // including a timed-out tool call's YNAB work (mcpDrained).
+  let liveRequests = 0;
   let drainWaiters: Array<() => void> = [];
 
   /**
@@ -360,17 +365,20 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   const requestCeiling: RequestHandler = (req, res, next) => {
     const lifetime = new RequestLifetime(Date.now() + config.requestTimeoutMs);
     lifetimes.set(req, lifetime);
-    openResponses++;
-    const timer = setTimeout(() => onCeiling(req, res), config.requestTimeoutMs);
-    res.once('close', () => {
-      clearTimeout(timer);
-      lifetime.close();
-      openResponses--;
-      if (openResponses === 0) {
+    // The first hold, so released last: once the slot and lease are back.
+    liveRequests++;
+    lifetime.hold(() => {
+      liveRequests--;
+      if (liveRequests === 0) {
         const waiters = drainWaiters;
         drainWaiters = [];
         for (const resolve of waiters) resolve();
       }
+    });
+    const timer = setTimeout(() => onCeiling(req, res), config.requestTimeoutMs);
+    res.once('close', () => {
+      clearTimeout(timer);
+      lifetime.close();
     });
     next();
   };
@@ -610,17 +618,17 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   });
 
   const mcpDrained = (): Promise<void> =>
-    openResponses === 0 ? Promise.resolve() : new Promise<void>((resolve) => drainWaiters.push(resolve));
+    liveRequests === 0 ? Promise.resolve() : new Promise<void>((resolve) => drainWaiters.push(resolve));
 
   return { app, mcp, mcpDrained, inflight, registry, jobs, asPipeline, mcpPipeline };
 }
 
 /**
  * Build and start the HTTP server. Returns the Node http.Server; closing it
- * stops accepting connections, lets the /mcp requests in flight finish (each
- * is bounded by MCP_REQUEST_TIMEOUT_MS; the process entry's shutdown deadline
- * bounds the wait), then closes the MCP handler and stops the extension jobs,
- * which start here once storage is ready.
+ * stops accepting connections, lets the /mcp requests in flight finish with
+ * the work they started (the process entry's shutdown deadline bounds the
+ * wait), then closes the MCP handler and stops the extension jobs, which
+ * start here once storage is ready.
  */
 export async function startHttpServer(
   config: HttpConfig,
@@ -658,12 +666,13 @@ export async function startHttpServer(
     config.bindHost === undefined ? app.listen(config.port, onListening) : app.listen(config.port, config.bindHost, onListening);
   const closeServer = httpServer.close.bind(httpServer);
   httpServer.close = (callback) => {
-    // In-flight /mcp requests finish first. Their keep-alive connections are
-    // then idle and would hold close() open until they time out, so they are
-    // closed once the last response has gone. The caller's callback runs only
-    // once the jobs have stopped too: a job's stop() may be async (finishing a
-    // sweep, releasing a lock), and a caller that exits the process from the
-    // callback (index.ts) must not cut that short.
+    // In-flight /mcp requests finish first, including work that outlived its
+    // response (a timed-out tool call's YNAB write and its audit entry), so a
+    // caller that exits the process from the callback (index.ts) doesn't cut
+    // it off. Their keep-alive connections are then idle and would hold
+    // close() open until they time out, so they are closed once the last
+    // request is done. The callback also waits for the jobs: a job's stop()
+    // may be async (finishing a sweep, releasing a lock).
     const drained = mcpDrained().then(() => {
       setImmediate(() => httpServer.closeIdleConnections());
     });

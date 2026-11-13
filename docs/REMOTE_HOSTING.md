@@ -191,8 +191,8 @@ Limits:
   slot until it completes or YNAB's own fetch timeout ends it, so abandoned
   work can't pile up past the caps.
 - On shutdown (`SIGINT`/`SIGTERM`) the server stops accepting connections and
-  lets the requests in flight finish (each is bounded by the ceiling, and the
-  process exits after 10 s regardless).
+  lets the requests in flight finish, including YNAB calls that outlived their
+  response (a timed-out write); the process exits after 10 s regardless.
 
 Unauthenticated requests are bounded in time by the ceiling, but not in
 number: there is no pre-authentication cap. Keep Node's own request timeouts,
