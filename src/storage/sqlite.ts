@@ -29,6 +29,7 @@ import type {
   SweepOptions,
   SweepResult,
 } from './types.js';
+import { resolveStorageTimeouts } from './timeouts.js';
 import { applyMigrations, MIGRATION_PLAN, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
@@ -254,7 +255,10 @@ export class SqliteStorage implements Storage {
       throw new Error('SQLite driver selected but better-sqlite3 is not installed');
     }
 
-    const db = new Database(this.options.path);
+    // An explicit, bounded lock wait (the library's own default is also 5 s). It blocks the event loop.
+    const db = new Database(this.options.path, {
+      timeout: resolveStorageTimeouts(this.options.timeouts).sqliteBusyTimeoutMs,
+    });
     db.pragma('journal_mode = WAL');
 
     const baseSchema = `

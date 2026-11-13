@@ -1724,3 +1724,204 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage m
     });
   });
 });
+
+// --- Storage time bounds (ADR-0001 D6, Q7) ---
+
+describe('storage timeout defaults', () => {
+  it('keeps the Postgres query timeout above the statement timeout, so the server cancels first', async () => {
+    const t = await import('../../../src/storage/timeouts.js');
+    expect(t.DEFAULT_PG_STATEMENT_TIMEOUT_MS).toBe(10_000);
+    expect(t.DEFAULT_PG_CONNECTION_TIMEOUT_MS).toBe(10_000);
+    expect(t.DEFAULT_PG_QUERY_TIMEOUT_MS).toBeGreaterThan(t.DEFAULT_PG_STATEMENT_TIMEOUT_MS);
+    // better-sqlite3 blocks the event loop while it waits.
+    expect(t.DEFAULT_SQLITE_BUSY_TIMEOUT_MS).toBeLessThanOrEqual(5_000);
+  });
+
+  it('applies overrides and rejects a value that would mean "no limit"', async () => {
+    const { resolveStorageTimeouts } = await import('../../../src/storage/timeouts.js');
+    expect(resolveStorageTimeouts({ sqliteBusyTimeoutMs: 200 }).sqliteBusyTimeoutMs).toBe(200);
+    expect(resolveStorageTimeouts().pgStatementTimeoutMs).toBe(10_000);
+    expect(() => resolveStorageTimeouts({ pgStatementTimeoutMs: 0 })).toThrow(/positive integer/);
+    expect(() => resolveStorageTimeouts({ pgQueryTimeoutMs: 1.5 })).toThrow(/positive integer/);
+  });
+});
+
+describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage lock wait is bounded', () => {
+  it('fails a write with SQLITE_BUSY after about the busy timeout while another connection holds the write lock', async () => {
+    const { SqliteStorage } = await import('../../../src/storage/sqlite.js');
+    const file = join(tmpdir(), `ynab-mcp-sqlite-busy-${randomUUID()}.db`);
+    const storage = new SqliteStorage({
+      path: file,
+      tokenKeys: TEST_TOKEN_HASHER,
+      timeouts: { sqliteBusyTimeoutMs: 300 },
+    });
+    await storage.init();
+    const require = createRequire(import.meta.url);
+    const Database = require('better-sqlite3') as typeof import('better-sqlite3');
+    const holder = new Database(file);
+    try {
+      holder.exec('BEGIN IMMEDIATE');
+      const started = Date.now();
+      let caught: unknown;
+      try {
+        await storage.upsertUser(makeUser({ userId: 'busy-user' }));
+      } catch (err) {
+        caught = err;
+      }
+      const waited = Date.now() - started;
+      expect((caught as { code?: string } | undefined)?.code).toBe('SQLITE_BUSY');
+      expect(waited).toBeGreaterThanOrEqual(250);
+      expect(waited).toBeLessThan(3_000);
+
+      // Once the lock is gone the same storage serves writes again.
+      holder.exec('ROLLBACK');
+      await storage.upsertUser(makeUser({ userId: 'busy-user' }));
+      expect((await storage.getUser('busy-user'))?.userId).toBe('busy-user');
+    } finally {
+      holder.close();
+      await storage.close();
+      for (const suffix of ['', '-wal', '-shm']) rmSync(`${file}${suffix}`, { force: true });
+    }
+  });
+});
+
+describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage statements and connections are bounded', () => {
+  type PoolLike = {
+    options: Record<string, unknown>;
+    on(event: string, fn: (client: { processID: number }) => void): void;
+  };
+
+  async function open(timeouts: Record<string, number>) {
+    const { PostgresStorage } = await import('../../../src/storage/postgres.js');
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) throw new Error('DATABASE_URL not set');
+    const storage = new PostgresStorage({ connectionString, tokenKeys: TEST_TOKEN_HASHER, timeouts });
+    await storage.init();
+    const pool = (storage as unknown as { pool: PoolLike }).pool;
+    const acquired: number[] = [];
+    const removed: number[] = [];
+    pool.on('acquire', (c) => acquired.push(c.processID));
+    pool.on('remove', (c) => removed.push(c.processID));
+    return { storage, pool, acquired, removed };
+  }
+
+  async function lockHolder() {
+    const pg = (await import('pg')).default;
+    const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await client.connect();
+    return client;
+  }
+
+  it('configures the Pool with a client-side query timeout above the server statement timeout', async () => {
+    const { storage, pool } = await open({});
+    try {
+      expect(pool.options.statement_timeout).toBe(10_000);
+      expect(pool.options.connectionTimeoutMillis).toBe(10_000);
+      expect(pool.options.query_timeout as number).toBeGreaterThan(pool.options.statement_timeout as number);
+    } finally {
+      await storage.close();
+    }
+  });
+
+  it('does not nest query wrappers when a pooled connection is checked out again', async () => {
+    const { storage, pool } = await open({});
+    try {
+      type Checkout = { query: unknown; release(): void };
+      const raw = pool as unknown as { connect(): Promise<Checkout> };
+      const guarded = (): Promise<Checkout> =>
+        (storage as unknown as { connect(): Promise<Checkout> }).connect();
+      const first = await raw.connect();
+      const pristine = first.query;
+      first.release();
+      for (let i = 0; i < 5; i++) {
+        const c = await guarded();
+        expect(c).toBe(first); // one idle connection, reused
+        expect(c.query).not.toBe(pristine); // guarded while checked out
+        c.release();
+      }
+      const again = await raw.connect();
+      expect(again).toBe(first);
+      expect(again.query).toBe(pristine);
+      again.release();
+    } finally {
+      await storage.close();
+    }
+  });
+
+  it('cancels a stalled statement on the server, fails the write, and keeps serving the next query', async () => {
+    const { storage } = await open({ pgStatementTimeoutMs: 300, pgQueryTimeoutMs: 10_000 });
+    const holder = await lockHolder();
+    const userId = `stall-${randomUUID()}`;
+    try {
+      await storage.upsertUser(makeUser({ userId }));
+      await holder.query('BEGIN');
+      await holder.query('SELECT 1 FROM users WHERE user_id = $1 FOR UPDATE', [userId]);
+
+      const started = Date.now();
+      await expect(storage.upsertUser(makeUser({ userId }))).rejects.toMatchObject({ code: '57014' });
+      expect(Date.now() - started).toBeLessThan(3_000);
+
+      await holder.query('ROLLBACK');
+      expect((await storage.getUser(userId))?.userId).toBe(userId);
+      await storage.deleteUserData(userId);
+    } finally {
+      await holder.end();
+      await storage.close();
+    }
+  });
+
+  it('times out client side when the server never answers, discards that connection, and serves the next query', async () => {
+    // Server statement timeout far above the client's: only the client-side bound can fire here.
+    const { storage, acquired, removed } = await open({ pgStatementTimeoutMs: 20_000, pgQueryTimeoutMs: 300 });
+    const holder = await lockHolder();
+    const userId = `stall-${randomUUID()}`;
+    try {
+      await storage.upsertUser(makeUser({ userId }));
+      await holder.query('BEGIN');
+      await holder.query('SELECT 1 FROM users WHERE user_id = $1 FOR UPDATE', [userId]);
+
+      const before = acquired.length;
+      const started = Date.now();
+      await expect(storage.upsertUser(makeUser({ userId }))).rejects.toThrow('Query read timeout');
+      expect(Date.now() - started).toBeLessThan(3_000);
+      const stalledPid = acquired[before];
+      expect(stalledPid).toBeDefined();
+      await vi.waitFor(() => expect(removed).toContain(stalledPid));
+
+      await holder.query('ROLLBACK');
+      const next = acquired.length;
+      expect((await storage.getUser(userId))?.userId).toBe(userId);
+      expect(acquired[next]).not.toBe(stalledPid);
+    } finally {
+      await holder.end();
+      await storage.close();
+    }
+  });
+
+  it('discards the connection of a transaction whose statement timed out client side, without queueing a ROLLBACK behind it', async () => {
+    const { LOCK_FAMILY } = await import('../../../src/storage/postgres.js');
+    const { storage, acquired, removed } = await open({ pgStatementTimeoutMs: 20_000, pgQueryTimeoutMs: 300 });
+    const holder = await lockHolder();
+    const userId = `stall-${randomUUID()}`;
+    const familyId = `fam-${randomUUID()}`;
+    try {
+      // revokeUserFamily takes this family's advisory lock first; another session holds it.
+      await holder.query('BEGIN');
+      await holder.query(LOCK_FAMILY, [familyId]);
+
+      const before = acquired.length;
+      const started = Date.now();
+      await expect(storage.revokeUserFamily(userId, familyId)).rejects.toThrow('Query read timeout');
+      // A ROLLBACK queued behind the stuck statement would add another query timeout.
+      expect(Date.now() - started).toBeLessThan(600);
+      const stalledPid = acquired[before];
+      await vi.waitFor(() => expect(removed).toContain(stalledPid));
+
+      await holder.query('ROLLBACK');
+      await expect(storage.revokeUserFamily(userId, familyId)).resolves.toBe(false);
+    } finally {
+      await holder.end();
+      await storage.close();
+    }
+  });
+});

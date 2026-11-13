@@ -17,6 +17,7 @@
 
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { RetentionPolicy } from '../auth/retention-defaults.js';
+import type { StorageTimeouts } from './timeouts.js';
 
 export type GrantedScope = 'read-only' | 'read-write';
 
@@ -250,6 +251,8 @@ export interface SweepOptions {
 export interface StorageDriverOptions {
   /** Retention windows; the defaults are in `src/auth/retention-defaults.ts`. */
   retention?: Partial<RetentionPolicy> | undefined;
+  /** Overrides for the storage time bounds (defaults in `./timeouts.ts`); tests use short values. */
+  timeouts?: Partial<StorageTimeouts> | undefined;
 }
 
 /**

@@ -29,6 +29,7 @@ import type {
   SweepOptions,
   SweepResult,
 } from './types.js';
+import { resolveStorageTimeouts } from './timeouts.js';
 import { applyMigrations, MIGRATION_PLAN, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
@@ -278,7 +279,7 @@ function pgTx(client: PoolClient): MigrationTx {
  * the schema unchanged.
  */
 async function migrate(pool: PgPool, tokenKeys: TokenKeyDeriver): Promise<void> {
-  const client = await pool.connect();
+  const client = guardClient(await pool.connect());
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1)', [SCHEMA_LOCK_KEY]);
@@ -345,6 +346,43 @@ async function migrate(pool: PgPool, tokenKeys: TokenKeyDeriver): Promise<void> 
   }
 }
 
+/** `pg`'s client-side `query_timeout` error. It leaves the query running on the connection. */
+function isClientQueryTimeout(err: unknown): boolean {
+  return err instanceof Error && err.message === 'Query read timeout';
+}
+
+/**
+ * `pg` does not close a connection whose query timed out: it hands the error
+ * back and keeps the socket, with the query possibly still running on the
+ * server, so the pool would reuse a connection in an unknown state. Once a query
+ * on this client times out, every later query fails at once (a ROLLBACK would
+ * only queue behind the stuck statement, and the server aborts an open
+ * transaction when the socket closes), and `release()` destroys the connection.
+ * A write that timed out may still commit; nothing here retries it.
+ */
+function guardClient(client: PoolClient): PoolClient {
+  let timedOut: Error | undefined;
+  // pg reuses this client object across checkouts and resets `release` but not `query`,
+  // so the original is put back on release; wrappers would otherwise nest per checkout.
+  const original = client.query;
+  const query = original.bind(client) as (...args: unknown[]) => unknown;
+  const release = client.release.bind(client);
+  (client as unknown as { query: (...args: unknown[]) => unknown }).query = (...args) => {
+    if (timedOut) return Promise.reject(timedOut);
+    const result = query(...args);
+    if (!(result instanceof Promise)) return result;
+    return result.catch((err: unknown) => {
+      if (isClientQueryTimeout(err)) timedOut = err as Error;
+      throw err;
+    });
+  };
+  client.release = (err?: Error | boolean) => {
+    client.query = original;
+    release(err ?? timedOut);
+  };
+  return client;
+}
+
 export class PostgresStorage implements Storage {
   private pool: PgPool | undefined;
   private readonly retention: RetentionPolicy;
@@ -368,7 +406,15 @@ export class PostgresStorage implements Storage {
       throw new Error('Postgres driver selected but pg is not installed');
     }
 
-    const pool = new Pool({ connectionString: this.options.connectionString });
+    const timeouts = resolveStorageTimeouts(this.options.timeouts);
+    const pool = new Pool({
+      connectionString: this.options.connectionString,
+      // The server cancels a slow statement first; query_timeout (above it) fires only
+      // when the server can't be reached, and guardClient() then discards that connection.
+      statement_timeout: timeouts.pgStatementTimeoutMs,
+      query_timeout: timeouts.pgQueryTimeoutMs,
+      connectionTimeoutMillis: timeouts.pgConnectionTimeoutMs,
+    });
 
     try {
       await migrate(pool, this.options.tokenKeys);
@@ -527,7 +573,7 @@ export class PostgresStorage implements Storage {
     // A session-level try-lock on a dedicated connection: a second sweeper
     // (another replica) skips instead of queueing. Each batch then runs as its
     // own statement, so no transaction holds a large lock set.
-    const client = await this.db.connect();
+    const client = await this.connect();
     let broken: Error | undefined;
     try {
       const lock = await client.query<{ locked: boolean }>('SELECT pg_try_advisory_lock($1) AS locked', [
@@ -561,9 +607,14 @@ export class PostgresStorage implements Storage {
     }
   }
 
+  /** A pooled connection that is discarded, not returned, once a query on it timed out client side. */
+  private async connect(): Promise<PoolClient> {
+    return guardClient(await this.db.connect());
+  }
+
   /** Run `fn` in a transaction on one pooled connection; rolled back if it throws. */
   private async inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.db.connect();
+    const client = await this.connect();
     try {
       await client.query('BEGIN');
       const result = await fn(client);
@@ -732,7 +783,7 @@ export class PostgresStorage implements Storage {
     // or it runs after this commits and sees the tombstone revoked. The token
     // tables are written before consumed_auth_codes, the order migrate() locks
     // them in, so a replica starting up can't deadlock with this.
-    const client = await this.db.connect();
+    const client = await this.connect();
     try {
       await client.query('BEGIN');
       await client.query(LOCK_FAMILY, [found.familyId]);
@@ -770,7 +821,7 @@ export class PostgresStorage implements Storage {
     // The user row is held (HOLD_USER) before the tombstone, the order
     // deleteUserData deletes in: an erase either waits for this pair and then
     // deletes it, or has already removed the user and this refuses.
-    const client = await this.db.connect();
+    const client = await this.connect();
     try {
       await client.query('BEGIN');
       await client.query(LOCK_FAMILY, [tokens.familyId]);
@@ -898,7 +949,7 @@ export class PostgresStorage implements Storage {
     // deleteUserData deletes in, so an erase either waits for the new pair and
     // deletes it, or has already removed the user and this refuses. That also
     // covers a 0.3.x token, whose new family no erase could have locked.
-    const client = await this.db.connect();
+    const client = await this.connect();
     try {
       await client.query('BEGIN');
       await client.query(LOCK_FAMILY, [rotation.familyId]);
@@ -965,7 +1016,7 @@ export class PostgresStorage implements Storage {
     // snapshot is taken after the lock is granted and sees the pair it saved.
     // (Without it, READ COMMITTED would only re-check the rows it blocked on,
     // the spent token, and miss that pair.) Both deletes in one statement.
-    const client = await this.db.connect();
+    const client = await this.connect();
     try {
       await client.query('BEGIN');
       await client.query(LOCK_FAMILY, [familyId]);
