@@ -220,13 +220,15 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   });
   const registry = new UserRegistry({
     rateLimitPerHour: config.rateLimitPerHour,
+    rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
     cacheTtlMs: config.cacheTtlMs,
   });
   // Who a request is from, compared against the session's creator (set per mode).
   let sessionOwner: (req: Request) => string | undefined;
 
   app.get('/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', transport: 'http', authMode: config.authMode, sessions: sessions.size });
+    // Unauthenticated: reveals nothing about the mode or the load.
+    res.json({ status: 'ok' });
   });
 
   // Extension routes (src/http/extensions.ts): after host validation, the AS
@@ -275,8 +277,10 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
         // the session itself resolves the token per request (accessTokenFor),
         // so it outlives the ~2h YNAB token and stops when the grant is gone.
         const { grantedScope } = await resolver.resolve(userId);
-        // Write access needs all of: writes enabled globally, a read-write grant
-        // on this token (per client grant, not the user's latest consent), and
+        // Write access needs all of: writes enabled globally (YNAB_READ_ONLY off
+        // and YNAB_OAUTH_ALLOW_WRITE on, checked here on every initialize and not
+        // only at consent, so a read-write grant from before the operator turned
+        // writes off cannot write), a read-write grant on this token (per client grant, not the user's latest consent), and
         // a read-write YNAB token for the user (YNAB enforces that one anyway).
         // The token's level is also part of the session owner (sessionOwner).
         const tokenScope = auth === undefined ? 'read-only' : tokenAccessLevel(auth);
@@ -285,8 +289,10 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
           ctx: {
             accessToken: resolver.accessTokenFor(userId),
             defaultBudgetId: config.defaultBudgetId,
-            readOnly: config.readOnly || tokenScope === 'read-only' || grantedScope === 'read-only',
+            readOnly:
+              config.readOnly || !config.allowWrite || tokenScope === 'read-only' || grantedScope === 'read-only',
             rateLimitPerHour: config.rateLimitPerHour,
+            rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
             cacheTtlMs: config.cacheTtlMs,
           },
           userKey: userId,
@@ -317,6 +323,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
           defaultBudgetId: config.defaultBudgetId,
           readOnly: config.readOnly,
           rateLimitPerHour: config.rateLimitPerHour,
+          rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
           cacheTtlMs: config.cacheTtlMs,
         },
         userKey: headerUserKey(token),
@@ -454,7 +461,7 @@ export async function startHttpServer(
   const { app, sessions, jobs } = await buildHttpApp(config, options);
   // Storage is ready once the app is built.
   jobs.start();
-  const httpServer = app.listen(config.port, () => {
+  const onListening = (): void => {
     console.error(`YNAB MCP Server (HTTP, ${config.authMode} auth) listening on port ${config.port}`);
     console.error(
       config.readOnly ? 'READ-ONLY mode (write operations disabled)' : 'WRITE operations ENABLED'
@@ -464,12 +471,21 @@ export async function startHttpServer(
         'WARNING: Host/Origin validation is DISABLED (ENABLE_DNS_REBINDING_PROTECTION=false). This is unsafe: any website can reach this server via DNS rebinding.'
       );
     }
-    if (config.authMode === 'header') {
+    if (config.authMode === 'oauth') {
       console.error(
-        'Interim auth: YNAB token via X-YNAB-Token header (TLS required; set the YNAB OAuth env vars to enable OAuth)'
+        config.readOnly || !config.allowWrite
+          ? 'Write policy: connections are read-only (set YNAB_OAUTH_ALLOW_WRITE=true and YNAB_READ_ONLY=false to allow writes)'
+          : 'Write policy: connections granted read-write can write (YNAB_OAUTH_ALLOW_WRITE=true)'
       );
     }
-  });
+    if (config.authMode === 'header') {
+      console.error(
+        'WARNING: AUTH_MODE=header. Any X-YNAB-Token value is accepted as a user; TLS is required, and OAuth (AUTH_MODE=oauth) is the multi-user mode.'
+      );
+    }
+  };
+  const httpServer =
+    config.bindHost === undefined ? app.listen(config.port, onListening) : app.listen(config.port, config.bindHost, onListening);
   const closeServer = httpServer.close.bind(httpServer);
   httpServer.close = (callback) => {
     // The streams ended by closing the sessions leave idle keep-alive

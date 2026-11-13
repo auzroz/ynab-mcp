@@ -11,20 +11,24 @@
  */
 
 import { parseKey32 } from '../../crypto.js';
+import type { HttpLoader } from './types.js';
 
-export interface TokenConfig {
-  /** `TOKEN_PEPPER`, validated; undefined when unset (the HKDF fallback applies). */
+export interface TokenSettings {
+  /** `TOKEN_PEPPER`, validated; undefined when unset (the ENCRYPTION_KEY fallback applies). */
   tokenPepper: string | undefined;
 }
 
-export function loadTokenConfig(env: Record<string, string | undefined> = process.env): TokenConfig {
-  const raw = env['TOKEN_PEPPER'];
-  if (raw === undefined || raw === '') return { tokenPepper: undefined };
+/** Validate a `TOKEN_PEPPER` value: undefined when unset or empty; throws (value-free) when invalid. */
+export function parseTokenPepper(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') return undefined;
   // Blank but set is a mistake, not "unset": refuse it rather than fall back.
   if (raw.trim() === '') {
     throw new Error('Invalid TOKEN_PEPPER: must be 32 bytes as base64 or 64 hex characters.');
   }
-  // Validate at load time, so a bad value stops startup with the other config errors.
   parseKey32(raw, 'TOKEN_PEPPER');
-  return { tokenPepper: raw.trim() };
+  return raw.trim();
 }
+
+export const loadTokenSettings: HttpLoader<TokenSettings> = ({ env, problems }) => ({
+  tokenPepper: problems.capture('TOKEN_PEPPER', () => parseTokenPepper(env['TOKEN_PEPPER']), undefined),
+});

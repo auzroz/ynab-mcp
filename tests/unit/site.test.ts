@@ -46,7 +46,8 @@ function configEnvVars(): Set<string> {
 
 /** Names read from process.env in a source text, in any of the three access forms. */
 function envReadsIn(source: string): string[] {
-  return [...source.matchAll(/process\.env(?:\[\s*['"]([A-Z0-9_]+)['"]\s*\]|\.([A-Z0-9_]+)\b)/g)].map(
+  // `env[...]` too: the HTTP loaders and entry.ts read a passed-in env (default process.env).
+  return [...source.matchAll(/(?:process\.env|\benv)(?:\[\s*['"]([A-Z0-9_]+)['"]\s*\]|\.([A-Z0-9_]+)\b)/g)].map(
     (m) => (m[1] ?? m[2]) as string
   );
 }
@@ -82,10 +83,11 @@ function envNamesOn(html: string): Set<string> {
 
 describe('site content matches the code', () => {
   it('finds environment reads in every access form', () => {
-    expect(envReadsIn(`process.env['A_B']; process.env["C"]; process.env.D_E; process.env[name]`)).toEqual([
+    expect(envReadsIn(`process.env['A_B']; process.env["C"]; process.env.D_E; process.env[name]; env['F_G']`)).toEqual([
       'A_B',
       'C',
       'D_E',
+      'F_G',
     ]);
     expect(configEnvVars()).toContain('MCP_TRANSPORT');
   });

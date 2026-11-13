@@ -21,7 +21,9 @@ Use when you need to:
 - See if rate limiting might affect operations
 - Plan large operations that require many API calls
 
-YNAB allows 200 requests per hour. This server uses 180 as a safety margin. If YNAB itself has answered 429 (too many requests), ynab_exhausted shows when that happened and when requests are allowed again; until then requests fail fast.`,
+YNAB allows 200 requests per hour. This server uses 180 as a safety margin. If YNAB itself has answered 429 (too many requests), ynab_exhausted shows when that happened and when requests are allowed again; until then requests fail fast.
+
+When the budget is used up, tool calls fail at once with a rate_limited error and retry_after_seconds (they wait at most max_wait_ms for a token, and only one call waits at a time). In HTTP mode each user has their own budget, shared by that user's sessions; usage shows this user's requests and refusals over the last hour.`,
   inputSchema: {
     type: 'object',
     properties: {},
@@ -87,6 +89,11 @@ export async function handleRateLimitStatus(
         total_limit: status.limit,
         used_requests: status.used,
         percent_used: status.percentUsed,
+      },
+      usage: {
+        requests_last_hour: status.sentLastHour,
+        rejected_last_hour: status.rejectedLastHour,
+        max_wait_ms: status.maxWaitMs,
       },
       timing: {
         can_make_request_now: status.canMakeRequest,

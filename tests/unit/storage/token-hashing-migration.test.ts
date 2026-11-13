@@ -172,6 +172,13 @@ async function plantLegacyRows(db: TestDb, opts: { withCodeTombstone: boolean })
     client_secret_expires_at: 0,
   };
   await db.exec('INSERT INTO oauth_clients (client_id, client_json) VALUES ($1, $2)', [p.clientId, JSON.stringify(client)]);
+  // 0.4.1 kept a users row for every connected user; STOR-1 reads tokens only through it.
+  await db.exec('INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at) VALUES ($1, $2, $3, $4)', [
+    'u-legacy',
+    'read-only',
+    'x',
+    Date.now(),
+  ]);
   await db.exec(
     'INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, granted_scope) VALUES ($1, $2, $3, $4, $5, $6)',
     [p.accessToken, p.clientId, 'u-legacy', '["read-only"]', FUTURE(), 'read-only']
@@ -342,6 +349,12 @@ function runM3Suite(name: string, enabled: boolean, newDb: () => Promise<TestDb>
 
       // A 0.4.x replica (or a rollback) writes plaintext after the stamp.
       const late = legacyToken();
+      await db.exec('INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at) VALUES ($1, $2, $3, $4)', [
+        'u-late',
+        'read-only',
+        'x',
+        Date.now(),
+      ]);
       await db.exec('INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at) VALUES ($1, $2, $3, $4, $5)', [
         late,
         p.clientId,

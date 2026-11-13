@@ -24,12 +24,25 @@ import type {
   AuthCodeConsumption,
   CodeTokens,
   PendingAuthRecord,
+  ConnectionRecord,
+  StorageDriverOptions,
+  SweepOptions,
+  SweepResult,
 } from './types.js';
 import { applyMigrations, MIGRATION_PLAN, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
+import { retentionPolicy, type RetentionPolicy } from '../auth/retention-defaults.js';
+import {
+  connectionsFromRows,
+  issuedUnderUser,
+  issuedUnderUserSql,
+  refreshTokenExpired,
+  runSqlSweep,
+  type ConnectionRow,
+} from './retention.js';
 
-export interface SqliteStorageOptions {
+export interface SqliteStorageOptions extends StorageDriverOptions {
   path: string;
   /** Derives the `h1.` keys and pepper fingerprint for migration M3 (#52). Required: M3 refuses to run without it. */
   tokenKeys: TokenKeyDeriver;
@@ -40,6 +53,7 @@ interface UserRow {
   granted_scope: string;
   encrypted_refresh_token: string;
   updated_at: number;
+  created_at: number | null;
 }
 
 interface ClientRow {
@@ -91,6 +105,8 @@ interface RefreshTokenRow {
   resource: string | null;
   granted_scope: string | null;
   family_id: string | null;
+  issued_at: number | null;
+  family_created_at: number | null;
 }
 
 interface ConsumedRefreshTokenRow {
@@ -107,6 +123,16 @@ interface ConsumedAuthCodeRow {
   family_id: string;
   expires_at: number;
   revoked: number;
+}
+
+function userFromRow(row: UserRow): UserRecord {
+  return {
+    userId: row.user_id,
+    grantedScope: parseGrantedScope(row.granted_scope),
+    encryptedRefreshToken: row.encrypted_refresh_token,
+    updatedAt: row.updated_at,
+    ...(row.created_at !== null ? { createdAt: row.created_at } : {}),
+  };
 }
 
 function consumedAuthCodeFromRow(row: ConsumedAuthCodeRow): ConsumedAuthCodeRecord {
@@ -200,10 +226,19 @@ async function migrate(db: BetterSqlite3.Database, baseSchema: string, tokenKeys
   }
 }
 
+/** Live tokens only: joined to their user under the account-generation invariant. */
+const SELECT_ACCESS_TOKEN = `SELECT t.* FROM access_tokens t JOIN users u ON u.user_id = t.user_id
+  WHERE t.token = ? AND ${issuedUnderUserSql('t')}`;
+const SELECT_REFRESH_TOKEN = `SELECT t.* FROM refresh_tokens t JOIN users u ON u.user_id = t.user_id
+  WHERE t.token = ? AND ${issuedUnderUserSql('t')}`;
+
 export class SqliteStorage implements Storage {
   private db: BetterSqlite3.Database | undefined;
+  private readonly retention: RetentionPolicy;
 
-  constructor(private readonly options: SqliteStorageOptions) {}
+  constructor(private readonly options: SqliteStorageOptions) {
+    this.retention = retentionPolicy(options.retention);
+  }
 
   private get database(): BetterSqlite3.Database {
     if (!this.db) throw new Error('SqliteStorage used before init()');
@@ -293,10 +328,11 @@ export class SqliteStorage implements Storage {
   // Users + YNAB tokens
 
   async upsertUser(rec: UserRecord): Promise<void> {
+    // created_at is written by the insert only (the account's generation).
     this.database
       .prepare(
-        `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at)
-         VALUES (@userId, @grantedScope, @encryptedRefreshToken, @updatedAt)
+        `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at, created_at)
+         VALUES (@userId, @grantedScope, @encryptedRefreshToken, @updatedAt, @createdAt)
          ON CONFLICT(user_id) DO UPDATE SET
            granted_scope = excluded.granted_scope,
            encrypted_refresh_token = excluded.encrypted_refresh_token,
@@ -307,6 +343,7 @@ export class SqliteStorage implements Storage {
         grantedScope: rec.grantedScope,
         encryptedRefreshToken: rec.encryptedRefreshToken,
         updatedAt: rec.updatedAt,
+        createdAt: Date.now(),
       });
   }
 
@@ -314,17 +351,125 @@ export class SqliteStorage implements Storage {
     const row = this.database
       .prepare('SELECT * FROM users WHERE user_id = ?')
       .get(userId) as UserRow | undefined;
-    if (!row) return undefined;
-    return {
-      userId: row.user_id,
-      grantedScope: parseGrantedScope(row.granted_scope),
-      encryptedRefreshToken: row.encrypted_refresh_token,
-      updatedAt: row.updated_at,
-    };
+    return row ? userFromRow(row) : undefined;
+  }
+
+  async updateUserRefreshToken(
+    userId: string,
+    oldCiphertext: string,
+    newCiphertext: string
+  ): Promise<UserRecord | undefined> {
+    const row = this.database
+      .prepare(
+        `UPDATE users SET encrypted_refresh_token = ?, updated_at = ?
+         WHERE user_id = ? AND encrypted_refresh_token = ? RETURNING *`
+      )
+      .get(newCiphertext, Date.now(), userId, oldCiphertext) as UserRow | undefined;
+    return row ? userFromRow(row) : undefined;
   }
 
   async deleteUser(userId: string): Promise<void> {
     this.database.prepare('DELETE FROM users WHERE user_id = ?').run(userId);
+  }
+
+  async deleteUserData(userId: string): Promise<void> {
+    const erase = this.database.transaction((u: string): void => {
+      const db = this.database;
+      const families = (
+        db
+          .prepare(
+            `SELECT family_id FROM access_tokens WHERE user_id = ? AND family_id IS NOT NULL
+             UNION SELECT family_id FROM refresh_tokens WHERE user_id = ? AND family_id IS NOT NULL
+             UNION SELECT family_id FROM consumed_auth_codes WHERE user_id = ?
+             UNION SELECT family_id FROM consumed_refresh_tokens WHERE user_id = ?`
+          )
+          .all(u, u, u, u) as Array<{ family_id: string }>
+      ).map((r) => r.family_id);
+      db.prepare('DELETE FROM users WHERE user_id = ?').run(u);
+      db.prepare('DELETE FROM auth_codes WHERE user_id = ?').run(u);
+      db.prepare('DELETE FROM access_tokens WHERE user_id = ?').run(u);
+      db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(u);
+      db.prepare('DELETE FROM consumed_auth_codes WHERE user_id = ?').run(u);
+      // Tombstones written by 0.4.x carry no user: matched by family.
+      db.prepare(
+        'DELETE FROM consumed_refresh_tokens WHERE user_id = ? OR family_id IN (SELECT value FROM json_each(?))'
+      ).run(u, JSON.stringify(families));
+    });
+    // IMMEDIATE: one writer at a time, so a rotation or code exchange in
+    // another process runs wholly before (and is erased) or after (and finds
+    // no user row).
+    erase.immediate(userId);
+  }
+
+  // Account self-service
+
+  async listConnections(userId: string): Promise<ConnectionRecord[]> {
+    const rows = this.database
+      .prepare(
+        `SELECT t.family_id, t.client_id, t.granted_scope, t.issued_at, t.family_created_at, c.client_json
+         FROM refresh_tokens t JOIN users u ON u.user_id = t.user_id
+         LEFT JOIN oauth_clients c ON c.client_id = t.client_id
+         WHERE t.user_id = ? AND t.family_id IS NOT NULL AND ${issuedUnderUserSql('t')}`
+      )
+      .all(userId) as ConnectionRow[];
+    return connectionsFromRows(rows, this.retention, Date.now());
+  }
+
+  async revokeUserFamily(userId: string, familyId: string): Promise<boolean> {
+    const revoke = this.database.transaction((u: string, f: string): number => {
+      const db = this.database;
+      return (
+        db.prepare('DELETE FROM access_tokens WHERE family_id = ? AND user_id = ?').run(f, u).changes +
+        db.prepare('DELETE FROM refresh_tokens WHERE family_id = ? AND user_id = ?').run(f, u).changes +
+        db
+          .prepare('UPDATE consumed_auth_codes SET revoked = 1 WHERE family_id = ? AND user_id = ? AND revoked = 0')
+          .run(f, u).changes
+      );
+    });
+    return revoke.immediate(userId, familyId) > 0;
+  }
+
+  async deleteTokenFamiliesForClient(userId: string, clientId: string): Promise<number> {
+    const revoke = this.database.transaction((u: string, c: string): number => {
+      const db = this.database;
+      const { families } = db
+        .prepare(
+          `SELECT COUNT(DISTINCT family_id) AS families FROM (
+             SELECT family_id FROM access_tokens WHERE user_id = ? AND client_id = ? AND family_id IS NOT NULL
+             UNION SELECT family_id FROM refresh_tokens WHERE user_id = ? AND client_id = ? AND family_id IS NOT NULL
+             UNION SELECT family_id FROM consumed_auth_codes WHERE user_id = ? AND client_id = ? AND revoked = 0
+           )`
+        )
+        .get(u, c, u, c, u, c) as { families: number };
+      db.prepare('DELETE FROM access_tokens WHERE user_id = ? AND client_id = ?').run(u, c);
+      // A pre-0.4.0 refresh token has no family; each counts as one grant.
+      const unfamilied = db
+        .prepare('DELETE FROM refresh_tokens WHERE user_id = ? AND client_id = ? AND family_id IS NULL')
+        .run(u, c).changes;
+      db.prepare('DELETE FROM refresh_tokens WHERE user_id = ? AND client_id = ?').run(u, c);
+      db.prepare(
+        'UPDATE consumed_auth_codes SET revoked = 1 WHERE user_id = ? AND client_id = ? AND revoked = 0'
+      ).run(u, c);
+      return families + unfamilied;
+    });
+    return revoke.immediate(userId, clientId);
+  }
+
+  async sweepExpired(options: SweepOptions = {}): Promise<SweepResult> {
+    const db = this.database;
+    // Each batch is its own statement, so its own short write transaction.
+    const deleted = await runSqlSweep(
+      {
+        dialect: 'sqlite',
+        async run(sql, params) {
+          return db.prepare(sql.replace(/\$\d+/g, '?')).run(...params).changes;
+        },
+      },
+      options.now ?? Date.now(),
+      this.retention,
+      options.batchSize
+    );
+    return { ran: true, deleted };
   }
 
   // MCP clients
@@ -338,13 +483,14 @@ export class SqliteStorage implements Storage {
   }
 
   async saveClient(client: OAuthClientInformationFull): Promise<void> {
+    // created_at is written by the insert only.
     this.database
       .prepare(
-        `INSERT INTO oauth_clients (client_id, client_json)
-         VALUES (@clientId, @clientJson)
+        `INSERT INTO oauth_clients (client_id, client_json, created_at)
+         VALUES (@clientId, @clientJson, @createdAt)
          ON CONFLICT(client_id) DO UPDATE SET client_json = excluded.client_json`
       )
-      .run({ clientId: client.client_id, clientJson: JSON.stringify(client) });
+      .run({ clientId: client.client_id, clientJson: JSON.stringify(client), createdAt: Date.now() });
   }
 
   // Pending federated authorization (one-time)
@@ -375,7 +521,13 @@ export class SqliteStorage implements Storage {
       const row = this.database.prepare('SELECT * FROM pending_auth WHERE state = ?').get(s) as
         | PendingRow
         | undefined;
-      if (row) this.database.prepare('DELETE FROM pending_auth WHERE state = ?').run(s);
+      if (row) {
+        this.database.prepare('DELETE FROM pending_auth WHERE state = ?').run(s);
+        // In the same transaction: the client is mid-authorization (see sweepExpired).
+        this.database
+          .prepare('UPDATE oauth_clients SET last_seen_at = ? WHERE client_id = ?')
+          .run(Date.now(), row.client_id);
+      }
       return row;
     });
     const row = take(state);
@@ -494,15 +646,23 @@ export class SqliteStorage implements Storage {
 
   async saveCodeTokens(code: string, tokens: CodeTokens): Promise<boolean> {
     const save = this.database.transaction((c: string): boolean => {
+      const now = Date.now();
+      const user = this.database
+        .prepare('SELECT 1 FROM users WHERE user_id = ?')
+        .get(tokens.refreshToken.userId);
+      if (!user) return false;
       const live = this.database
         .prepare(
           `SELECT 1 FROM consumed_auth_codes
            WHERE code = ? AND family_id = ? AND revoked = 0 AND expires_at >= ?`
         )
-        .get(c, tokens.familyId, Date.now());
+        .get(c, tokens.familyId, now);
       if (!live) return false;
-      this.insertAccessToken(tokens.accessToken);
-      this.insertRefreshToken(tokens.refreshToken);
+      this.insertAccessToken(tokens.accessToken, now);
+      this.insertRefreshToken(tokens.refreshToken, now, now);
+      this.database
+        .prepare('UPDATE oauth_clients SET last_authorized_at = ? WHERE client_id = ?')
+        .run(now, tokens.refreshToken.clientId);
       return true;
     });
     // IMMEDIATE takes the write lock before the check, so a replay's revocation
@@ -514,14 +674,14 @@ export class SqliteStorage implements Storage {
   // MCP access tokens
 
   async saveAccessToken(rec: AccessTokenRecord): Promise<void> {
-    this.insertAccessToken(rec);
+    this.insertAccessToken(rec, Date.now());
   }
 
-  private insertAccessToken(rec: AccessTokenRecord): void {
+  private insertAccessToken(rec: AccessTokenRecord, issuedAt: number): void {
     this.database
       .prepare(
-        `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, resource, granted_scope, family_id)
-         VALUES (@token, @clientId, @userId, @scopes, @expiresAt, @resource, @grantedScope, @familyId)`
+        `INSERT INTO access_tokens (token, client_id, user_id, scopes, expires_at, resource, granted_scope, family_id, issued_at)
+         VALUES (@token, @clientId, @userId, @scopes, @expiresAt, @resource, @grantedScope, @familyId, @issuedAt)`
       )
       .run({
         token: rec.token,
@@ -532,13 +692,12 @@ export class SqliteStorage implements Storage {
         resource: rec.resource ?? null,
         grantedScope: rec.grantedScope ?? null,
         familyId: rec.familyId ?? null,
+        issuedAt,
       });
   }
 
   async getAccessToken(token: string): Promise<AccessTokenRecord | undefined> {
-    const row = this.database
-      .prepare('SELECT * FROM access_tokens WHERE token = ?')
-      .get(token) as AccessTokenRow | undefined;
+    const row = this.database.prepare(SELECT_ACCESS_TOKEN).get(token) as AccessTokenRow | undefined;
     if (!row) return undefined;
     if (row.expires_at < Date.now()) {
       this.database.prepare('DELETE FROM access_tokens WHERE token = ?').run(token);
@@ -563,14 +722,16 @@ export class SqliteStorage implements Storage {
   // MCP refresh tokens (one-time, rotated on use)
 
   async saveRefreshToken(rec: RefreshTokenRecord): Promise<void> {
-    this.insertRefreshToken(rec);
+    const now = Date.now();
+    this.insertRefreshToken(rec, now, now);
   }
 
-  private insertRefreshToken(rec: RefreshTokenRecord): void {
+  private insertRefreshToken(rec: RefreshTokenRecord, issuedAt: number, familyCreatedAt: number): void {
     this.database
       .prepare(
-        `INSERT INTO refresh_tokens (token, client_id, user_id, scopes, resource, granted_scope, family_id)
-         VALUES (@token, @clientId, @userId, @scopes, @resource, @grantedScope, @familyId)`
+        `INSERT INTO refresh_tokens
+           (token, client_id, user_id, scopes, resource, granted_scope, family_id, issued_at, family_created_at)
+         VALUES (@token, @clientId, @userId, @scopes, @resource, @grantedScope, @familyId, @issuedAt, @familyCreatedAt)`
       )
       .run({
         token: rec.token,
@@ -580,26 +741,34 @@ export class SqliteStorage implements Storage {
         resource: rec.resource ?? null,
         grantedScope: rec.grantedScope ?? null,
         familyId: rec.familyId ?? null,
+        issuedAt,
+        familyCreatedAt,
       });
   }
 
   async getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
-    const row = this.database
-      .prepare('SELECT * FROM refresh_tokens WHERE token = ?')
-      .get(token) as RefreshTokenRow | undefined;
-    return row ? refreshTokenFromRow(row) : undefined;
+    const row = this.database.prepare(SELECT_REFRESH_TOKEN).get(token) as RefreshTokenRow | undefined;
+    if (!row) return undefined;
+    if (this.refreshExpired(row, Date.now())) {
+      // Expired, not reused: the token goes, its family stays.
+      this.database.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(token);
+      return undefined;
+    }
+    return refreshTokenFromRow(row);
   }
 
   async takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined> {
     const take = this.database.transaction((t: string): RefreshTokenRow | undefined => {
-      const row = this.database.prepare('SELECT * FROM refresh_tokens WHERE token = ?').get(t) as
-        | RefreshTokenRow
-        | undefined;
-      if (row) this.database.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(t);
+      const row = this.database.prepare(SELECT_REFRESH_TOKEN).get(t) as RefreshTokenRow | undefined;
+      this.database.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(t);
       return row;
     });
     const row = take.immediate(token); // as in rotateRefreshToken
-    return row ? refreshTokenFromRow(row) : undefined;
+    return row && !this.refreshExpired(row, Date.now()) ? refreshTokenFromRow(row) : undefined;
+  }
+
+  private refreshExpired(row: RefreshTokenRow, now: number): boolean {
+    return refreshTokenExpired(row.issued_at, row.family_created_at, this.retention, now);
   }
 
   async deleteRefreshToken(token: string): Promise<void> {
@@ -611,25 +780,35 @@ export class SqliteStorage implements Storage {
     rotation: RefreshTokenRotation
   ): Promise<RefreshTokenRecord | undefined> {
     const rotate = this.database.transaction((t: string): RefreshTokenRow | undefined => {
+      const userId = rotation.refreshToken.userId;
+      const user = this.database.prepare('SELECT created_at FROM users WHERE user_id = ?').get(userId) as
+        | { created_at: number | null }
+        | undefined;
+      if (!user) return undefined;
       const row = this.database.prepare('SELECT * FROM refresh_tokens WHERE token = ?').get(t) as
         | RefreshTokenRow
         | undefined;
-      if (!row) return undefined;
+      if (!row || row.user_id !== userId) return undefined;
       this.database.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(t);
-      this.database.prepare('DELETE FROM consumed_refresh_tokens WHERE expires_at < ?').run(Date.now());
+      const now = Date.now();
+      // Expired, or from an erased account: spent with no tombstone and no new pair.
+      if (!issuedUnderUser(row.issued_at, user.created_at) || this.refreshExpired(row, now)) return undefined;
+      this.database.prepare('DELETE FROM consumed_refresh_tokens WHERE expires_at < ?').run(now);
       this.database
         .prepare(
-          `INSERT OR REPLACE INTO consumed_refresh_tokens (token, client_id, family_id, expires_at)
-           VALUES (@token, @clientId, @familyId, @expiresAt)`
+          `INSERT OR REPLACE INTO consumed_refresh_tokens (token, client_id, family_id, expires_at, user_id)
+           VALUES (@token, @clientId, @familyId, @expiresAt, @userId)`
         )
         .run({
           token: t,
           clientId: row.client_id,
           familyId: rotation.familyId,
           expiresAt: rotation.consumedUntil,
+          userId: row.user_id,
         });
-      this.insertAccessToken(rotation.accessToken);
-      this.insertRefreshToken(rotation.refreshToken);
+      this.insertAccessToken(rotation.accessToken, now);
+      // The family's absolute clock carries over (a row a 0.4.x replica wrote has none yet).
+      this.insertRefreshToken(rotation.refreshToken, now, row.family_created_at ?? row.issued_at ?? now);
       return row;
     });
     // IMMEDIATE takes the write lock before the SELECT. A deferred transaction

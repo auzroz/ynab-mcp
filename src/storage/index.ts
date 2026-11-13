@@ -10,19 +10,23 @@
  * the selected driver's dependency needs to be installed.
  */
 
-import type { Storage } from './types.js';
+import type { Storage, StorageDriverOptions } from './types.js';
 import { MemoryStorage } from './memory.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 
 /**
- * The durable drivers take the token hasher: their migration M3 (#52) checks
- * the pepper fingerprint and rewrites 0.4.x keys with it. Memory storage holds
- * nothing from an earlier process, so it needs none.
+ * Which driver to build; every driver also takes the retention windows (#54b
+ * passes its settings here). The durable drivers also take the token hasher:
+ * their migration M3 (#52) checks the pepper fingerprint and rewrites 0.4.x
+ * keys with it. Memory storage holds nothing from an earlier process, so it
+ * needs none.
  */
-export type StorageOptions =
-  | { driver?: 'memory' }
-  | { driver: 'sqlite'; path: string; tokenKeys: TokenKeyDeriver }
-  | { driver: 'postgres'; connectionString: string; tokenKeys: TokenKeyDeriver };
+export type StorageOptions = StorageDriverOptions &
+  (
+    | { driver?: 'memory' }
+    | { driver: 'sqlite'; path: string; tokenKeys: TokenKeyDeriver }
+    | { driver: 'postgres'; connectionString: string; tokenKeys: TokenKeyDeriver }
+  );
 
 /**
  * Construct and `init()` a Storage adapter for the requested driver.
@@ -38,18 +42,20 @@ async function buildStorage(opts: StorageOptions): Promise<Storage> {
   switch (opts.driver) {
     case 'sqlite': {
       const { SqliteStorage } = await import('./sqlite.js');
-      return new SqliteStorage({ path: opts.path, tokenKeys: opts.tokenKeys });
+      return new SqliteStorage({ path: opts.path, tokenKeys: opts.tokenKeys, retention: opts.retention });
     }
     case 'postgres': {
       const { PostgresStorage } = await import('./postgres.js');
-      return new PostgresStorage({ connectionString: opts.connectionString, tokenKeys: opts.tokenKeys });
+      return new PostgresStorage({
+        connectionString: opts.connectionString,
+        tokenKeys: opts.tokenKeys,
+        retention: opts.retention,
+      });
     }
-    case 'memory':
-    case undefined:
-      return new MemoryStorage();
     default:
-      return new MemoryStorage();
+      return new MemoryStorage({ retention: opts.retention });
   }
 }
 
-export type { Storage } from './types.js';
+export type { Storage, AccountStore } from './types.js';
+export { createAccountStore } from './account-store.js';

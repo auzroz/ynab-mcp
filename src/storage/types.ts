@@ -16,6 +16,7 @@
  */
 
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { RetentionPolicy } from '../auth/retention-defaults.js';
 
 export type GrantedScope = 'read-only' | 'read-write';
 
@@ -26,6 +27,14 @@ export interface UserRecord {
   /** AES-GCM-encrypted YNAB refresh token. */
   encryptedRefreshToken: string;
   updatedAt: number;
+  /**
+   * When this user row was inserted (storage clock, epoch ms): the account's
+   * generation. Read-only: {@link Storage.upsertUser} sets it on insert and
+   * ignores it otherwise. Undefined for users created before 0.5.0, which
+   * count as generation 0. Tokens issued before it belong to an erased
+   * account and are never valid (see {@link Storage.getAccessToken}).
+   */
+  createdAt?: number | undefined;
 }
 
 export interface AuthCodeRecord {
@@ -187,16 +196,136 @@ export interface PendingAuthRecord {
   browserBinding?: string | undefined;
 }
 
+/** One live grant (token family) of a user, as {@link Storage.listConnections} reports it. */
+export interface ConnectionRecord {
+  familyId: string;
+  clientId: string;
+  /** The client's self-declared `client_name`, unsanitized; undefined if none or the client is gone. */
+  clientName: string | undefined;
+  /** The access level of the grant; read-only for grants written before 0.4.0. */
+  grantedScope: GrantedScope;
+  /**
+   * When the grant's code was exchanged (epoch ms); the upgrade instant for
+   * older grants. Undefined only for a row a 0.4.x replica wrote since the
+   * last startup (the next startup's backfill stamps it).
+   */
+  createdAt: number | undefined;
+  /** When its current refresh token was issued: the last refresh, or the exchange. */
+  lastUsedAt: number | undefined;
+  /** When it expires unless refreshed first (the idle limit, capped by the absolute one). */
+  expiresAt: number | undefined;
+}
+
+/** Rows removed by one {@link Storage.sweepExpired} run, per rule. */
+export interface SweepCounts {
+  pendingAuth: number;
+  authCodes: number;
+  accessTokens: number;
+  /** Refresh tokens past their idle or absolute limit. */
+  refreshTokens: number;
+  consumedRefreshTokens: number;
+  consumedAuthCodes: number;
+  /** Access and refresh tokens whose user row is gone or newer than they are. */
+  orphanTokens: number;
+  /** Clients that never completed an authorization (abandoned registrations). */
+  abandonedClients: number;
+  /** Clients with no live grant since their last authorization window. */
+  unusedClients: number;
+}
+
+export interface SweepResult {
+  /** False when another sweeper held the sweep lock (Postgres); nothing was deleted. */
+  ran: boolean;
+  deleted: SweepCounts;
+}
+
+export interface SweepOptions {
+  /** The sweep's clock (epoch ms); defaults to the storage clock. */
+  now?: number;
+  /** Rows per DELETE statement. */
+  batchSize?: number;
+}
+
+/** Options every driver accepts. */
+export interface StorageDriverOptions {
+  /** Retention windows; the defaults are in `src/auth/retention-defaults.ts`. */
+  retention?: Partial<RetentionPolicy> | undefined;
+}
+
+/**
+ * What the account tools (#53b) may do to a user's data: only ever the
+ * authenticated user's own rows. The provider-internal, unscoped
+ * {@link Storage.deleteTokenFamily} is deliberately not here. Build one with
+ * `createAccountStore` (src/storage/account-store.ts).
+ */
+export interface AccountStore {
+  listConnections(userId: string): Promise<ConnectionRecord[]>;
+  revokeUserFamily(userId: string, familyId: string): Promise<boolean>;
+  deleteTokenFamiliesForClient(userId: string, clientId: string): Promise<number>;
+  deleteUserData(userId: string): Promise<void>;
+}
+
 export interface Storage {
   init(): Promise<void>;
   close(): Promise<void>;
 
   // Users + YNAB tokens
+  /**
+   * Insert or update a user. Only the insert sets `created_at` (from the
+   * storage clock); an update keeps it, whatever `rec.createdAt` says. Used at
+   * consent; the YNAB refresh write-back uses {@link updateUserRefreshToken}.
+   */
   upsertUser(rec: UserRecord): Promise<void>;
   getUser(userId: string): Promise<UserRecord | undefined>;
+  /**
+   * Compare-and-set the user's YNAB refresh token: replace it with
+   * `newCiphertext` (and stamp `updated_at`) only while the stored value is
+   * still `oldCiphertext`. Never inserts, so a refresh that finishes after the
+   * user was deleted can't bring the row back, and writes no other column, so
+   * a re-consent that changed the access level meanwhile keeps it. Returns the
+   * row as written (read the access level from it, not from the record the
+   * refresh started with), or undefined (nothing written) when the row is gone
+   * or holds another token.
+   */
+  updateUserRefreshToken(
+    userId: string,
+    oldCiphertext: string,
+    newCiphertext: string
+  ): Promise<UserRecord | undefined>;
+  /** Deletes the `users` row only. To erase an account, use {@link deleteUserData}. */
   deleteUser(userId: string): Promise<void>;
+  /**
+   * Erase everything stored for a user, atomically: the user row, auth codes,
+   * code tombstones, access and refresh tokens, and the refresh-token
+   * tombstones of the user's families. On Postgres the user's family locks are
+   * taken first, in sorted order. A token minted concurrently by a refresh or
+   * a code exchange either is deleted here or is refused (it predates the
+   * account's next generation).
+   */
+  deleteUserData(userId: string): Promise<void>;
 
-  // MCP clients (Dynamic Client Registration)
+  // Account self-service (#53b), reached by tools only through AccountStore.
+  /** The user's live grants, one per token family, oldest first. */
+  listConnections(userId: string): Promise<ConnectionRecord[]>;
+  /**
+   * Revoke one of the user's grants: its tokens, and its code tombstone (so an
+   * exchange in flight is refused). Scoped by `userId`: another user's or an
+   * unknown family is a no-op. Returns whether a token was deleted.
+   */
+  revokeUserFamily(userId: string, familyId: string): Promise<boolean>;
+  /** Revoke every grant the user gave `clientId`. Returns the number of families revoked. */
+  deleteTokenFamiliesForClient(userId: string, clientId: string): Promise<number>;
+
+  /**
+   * Delete expired and dead rows in batches: pending auth, codes, access tokens
+   * and tombstones past `expires_at`; refresh tokens past the idle or absolute
+   * limit; tokens of erased users; abandoned and unused client registrations.
+   * On Postgres it holds a session advisory try-lock, so of two concurrent
+   * sweepers one runs and the other returns `ran: false`.
+   */
+  sweepExpired(options?: SweepOptions): Promise<SweepResult>;
+
+  // MCP clients (Dynamic Client Registration). saveClient stamps created_at on insert.
   getClient(clientId: string): Promise<OAuthClientInformationFull | undefined>;
   saveClient(client: OAuthClientInformationFull): Promise<void>;
 
@@ -230,13 +359,18 @@ export interface Storage {
   revokeConsumedAuthCode(code: string): Promise<ConsumedAuthCodeRecord | undefined>;
   /**
    * Save the token pair issued for a spent code, but only while its tombstone
-   * is live, not revoked, and names `tokens.familyId`; checked and written
-   * atomically under the family's lock. Returns false (nothing written)
-   * otherwise.
+   * is live, not revoked, and names `tokens.familyId`, and the user row
+   * exists; checked and written atomically under the family's lock (on
+   * Postgres the user row is also held FOR KEY SHARE, as in rotation). Returns
+   * false (nothing written) otherwise. Starts the family's absolute clock and
+   * stamps the client's `last_authorized_at`.
    */
   saveCodeTokens(code: string, tokens: CodeTokens): Promise<boolean>;
 
-  // MCP access tokens
+  // MCP access and refresh tokens. Every insert stamps `issued_at` from the
+  // storage clock. Every read is joined to the token's user: a token whose
+  // user row is gone, or was issued before that row was created (an erased
+  // account that signed up again), reads as unknown.
   saveAccessToken(rec: AccessTokenRecord): Promise<void>;
   getAccessToken(token: string): Promise<AccessTokenRecord | undefined>;
   deleteAccessToken(token: string): Promise<void>;
@@ -245,7 +379,9 @@ export interface Storage {
   // a token up (to validate a request before spending it). takeRefreshToken is
   // a bare atomic take for tests and maintenance: it leaves no tombstone and
   // takes no family lock, so a refresh grant must spend tokens only through
-  // rotateRefreshToken, or reuse detection is bypassed.
+  // rotateRefreshToken, or reuse detection is bypassed. A refresh token past
+  // its idle or absolute limit (RetentionPolicy) reads as unknown and is
+  // deleted on that read; its family is left alone.
   saveRefreshToken(rec: RefreshTokenRecord): Promise<void>;
   getRefreshToken(token: string): Promise<RefreshTokenRecord | undefined>;
   takeRefreshToken(token: string): Promise<RefreshTokenRecord | undefined>;
@@ -256,7 +392,11 @@ export interface Storage {
    * token pair, all in one atomic step. So whoever finds the token gone after a
    * rotation also finds its tombstone and the tokens issued in its place. Also
    * prunes expired tombstones. Returns the taken row, or undefined (nothing
-   * written) when the token was not live.
+   * written) when the token was not live. Not live includes: past its idle or
+   * absolute limit (the token is then deleted with no tombstone), and its user
+   * row gone or newer than the token. The new refresh token keeps the family's
+   * creation time, and on Postgres the user row is held (FOR KEY SHARE) so a
+   * concurrent {@link deleteUserData} either waits for the new pair or wins.
    */
   rotateRefreshToken(token: string, rotation: RefreshTokenRotation): Promise<RefreshTokenRecord | undefined>;
 

@@ -4,6 +4,8 @@ import type { HttpConfig } from '../../../src/config/environment.js';
 export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
   return {
     port: 0,
+    bindHost: undefined,
+    logLevel: 'info',
     publicUrl: undefined,
     allowedHosts: undefined,
     allowedOrigins: undefined,
@@ -18,11 +20,15 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     readOnly: true,
     cacheTtlMs: 300000,
     rateLimitPerHour: 180,
+    rateLimitMaxWaitMs: 2000,
     authMode: 'header',
     oauthClientId: undefined,
     oauthClientSecret: undefined,
     encryptionKey: undefined,
+    tokenPepper: undefined,
+    // Tests that exercise writes need them on; the loader's own default is false.
     allowWrite: true,
+    allowAnonymousFallback: false,
     accessTokenTtlSec: 3600,
     authCodeTtlSec: 600,
     storageDriver: 'memory',

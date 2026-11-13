@@ -38,6 +38,7 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 });
 
 import { MemoryStorage } from '../../../src/storage/memory.js';
+import { MIN_ABANDONED_CLIENT_MS, YNAB_CALLBACK_DEADLINE_MS } from '../../../src/auth/retention-defaults.js';
 import { Encryptor } from '../../../src/crypto.js';
 import {
   McpOAuthProvider,
@@ -91,6 +92,19 @@ function makeProvider(overrides: Partial<McpProviderOptions> = {}): {
     ...overrides,
   });
   return { provider, storage, encryptor };
+}
+
+/**
+ * The user row a 0.3.x / 0.4.x token belongs to: consent creates it before any
+ * code or token, and storage reads a token without one as unknown.
+ */
+async function seedYnabUser(storage: MemoryStorage): Promise<void> {
+  await storage.upsertUser({
+    userId: 'ynab-user-1',
+    grantedScope: 'read-write',
+    encryptedRefreshToken: 'x',
+    updatedAt: Date.now(),
+  });
 }
 
 const clientMetadata: OAuthClientMetadata = {
@@ -378,6 +392,70 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('ynabcode');
     errorSpy.mockRestore();
+  });
+
+  it('a callback past its deadline saves no user or code and redirects server_error', async () => {
+    // A slow YNAB exchange could outlast the client's sweep protection (last_seen_at).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { provider, storage } = makeProvider();
+    const { state, nonce } = await pendingState(provider);
+    const saveAuthCode = vi.spyOn(storage, 'saveAuthCode');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      exchangeCodeMock.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS + 1);
+        return { accessToken: 'ya', refreshToken: 'yr', expiresAt: Date.now() + 7200_000 };
+      });
+      const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+      expect(url.searchParams.get('error')).toBe('server_error');
+      expect(url.searchParams.has('code')).toBe(false);
+      expect(saveAuthCode).not.toHaveBeenCalled();
+      expect(await storage.getUser('ynab-user-1')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('a callback that passes its deadline while saving the user saves no code', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { provider, storage } = makeProvider();
+    const { state, nonce } = await pendingState(provider);
+    const saveAuthCode = vi.spyOn(storage, 'saveAuthCode');
+    const upsertUser = storage.upsertUser.bind(storage);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.spyOn(storage, 'upsertUser').mockImplementationOnce(async (user) => {
+        await upsertUser(user);
+        vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS + 1);
+      });
+      const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+      expect(url.searchParams.get('error')).toBe('server_error');
+      expect(saveAuthCode).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('a callback just inside its deadline still completes', async () => {
+    const { provider } = makeProvider();
+    const { state, nonce } = await pendingState(provider);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      exchangeCodeMock.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS);
+        return { accessToken: 'ya', refreshToken: 'yr', expiresAt: Date.now() + 7200_000 };
+      });
+      const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+      expect(url.searchParams.has('code')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the deadline is shorter than the shortest sweep protection', () => {
+    expect(YNAB_CALLBACK_DEADLINE_MS).toBeLessThan(MIN_ABANDONED_CLIENT_MS);
   });
 });
 
@@ -672,6 +750,7 @@ describe('McpOAuthProvider resource binding: /token (authorization_code)', () =>
   it('exchanges a 0.3.x code (no stored resource) and binds the new tokens', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    await seedYnabUser(storage);
     await storage.saveAuthCode({
       code: testKey('code', LEGACY_CODE),
       clientId: client.client_id,
@@ -747,6 +826,7 @@ describe('McpOAuthProvider resource binding: /token (refresh_token)', () => {
   it('refreshes a 0.3.x refresh token (no stored resource) and binds the new tokens', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    await seedYnabUser(storage);
     await storage.saveRefreshToken({
       token: testKey('refresh', LEGACY_RT),
       clientId: client.client_id,
@@ -899,6 +979,7 @@ describe('McpOAuthProvider refresh validation (before the token is spent)', () =
   it('a stale resource binding is rejected without spending the refresh token', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    await seedYnabUser(storage);
     await storage.saveRefreshToken({
       token: testKey('refresh', STALE_RT),
       clientId: client.client_id,
@@ -967,6 +1048,7 @@ describe('McpOAuthProvider refresh validation (before the token is spent)', () =
 describe('McpOAuthProvider.verifyAccessToken resource checks', () => {
   it('accepts a 0.3.x access token (no stored resource) and reports this resource', async () => {
     const { provider, storage } = makeProvider();
+    await seedYnabUser(storage);
     await storage.saveAccessToken({
       token: testKey('access', LEGACY_AT),
       clientId: 'c1',
@@ -1252,6 +1334,7 @@ describe('McpOAuthProvider per-grant access level', () => {
   it('a pre-0.4.0 refresh token or code yields read-only tokens', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    await seedYnabUser(storage);
     await storage.saveRefreshToken({
       token: testKey('refresh', LEGACY_RT),
       clientId: client.client_id,
@@ -1418,6 +1501,11 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
       expiresAt: rotatedAt + REFRESH_TOKEN_REUSE_WINDOW_MS,
     });
 
+    // The grant stays in use (a refresh token idle for the whole window would
+    // itself have expired, #54).
+    vi.setSystemTime(rotatedAt + REFRESH_TOKEN_REUSE_WINDOW_MS / 2);
+    const current = await provider.exchangeRefreshToken(client, refreshOf(rotated));
+
     // Past the window the replay is an unknown token: refused, nothing revoked.
     vi.setSystemTime(rotatedAt + REFRESH_TOKEN_REUSE_WINDOW_MS + 1);
     const del = vi.spyOn(storage, 'deleteTokenFamily');
@@ -1425,7 +1513,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
       InvalidGrantError
     );
     expect(del).not.toHaveBeenCalled();
-    await expect(provider.exchangeRefreshToken(client, refreshOf(rotated))).resolves.toHaveProperty(
+    await expect(provider.exchangeRefreshToken(client, refreshOf(current))).resolves.toHaveProperty(
       'access_token'
     );
   });
@@ -1436,16 +1524,20 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     const { client, tokens } = await driveToTokens(provider);
     const t0 = Date.now();
     const rotated = await provider.exchangeRefreshToken(client, refreshOf(tokens));
+    // Refreshed again mid-window, so no refresh token sits idle long enough to expire (#54).
+    vi.setSystemTime(t0 + REFRESH_TOKEN_REUSE_WINDOW_MS / 2);
+    const again = await provider.exchangeRefreshToken(client, refreshOf(rotated));
 
     vi.setSystemTime(t0 + REFRESH_TOKEN_REUSE_WINDOW_MS + 1);
-    await provider.exchangeRefreshToken(client, refreshOf(rotated));
+    await provider.exchangeRefreshToken(client, refreshOf(again));
 
     // Back inside the first tombstone's window it would still be readable, had
-    // it not been pruned; the second tombstone is kept.
+    // it not been pruned; the later tombstones are kept.
     vi.setSystemTime(t0);
     expect(await storage.getConsumedRefreshToken(testKey('refresh', refreshOf(tokens)))).toBeUndefined();
     vi.setSystemTime(t0 + REFRESH_TOKEN_REUSE_WINDOW_MS + 1);
     expect(await storage.getConsumedRefreshToken(testKey('refresh', refreshOf(rotated)))).toBeDefined();
+    expect(await storage.getConsumedRefreshToken(testKey('refresh', refreshOf(again)))).toBeDefined();
   });
 
   it('a refresh token presented by another client takes its family with it', async () => {
@@ -1487,6 +1579,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
   it('a 0.3.x refresh token (no family) refreshes into a new family that its replay revokes', async () => {
     const { provider, storage } = makeProvider();
     const client = await provider.clientsStore.registerClient(clientMetadata);
+    await seedYnabUser(storage);
     await storage.saveRefreshToken({
       token: testKey('refresh', LEGACY_RT),
       clientId: client.client_id,
@@ -1513,6 +1606,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
       scopes: [],
       expiresAt: Date.now() + 60_000,
     };
+    await seedYnabUser(storage);
     await storage.saveAccessToken(legacyAt);
     const del = vi.spyOn(storage, 'deleteTokenFamily');
     await expect(provider.exchangeRefreshToken(client, SPENT_RT)).rejects.toBeInstanceOf(

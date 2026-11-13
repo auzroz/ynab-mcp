@@ -82,6 +82,8 @@ async function register(method?: 'none' | 'client_secret_post'): Promise<OAuthCl
 /** An MCP authorization code for `clientId`, stored as the AS stores one. */
 async function plantCode(clientId: string): Promise<string> {
   const { value, key } = TEST_TOKEN_HASHER.issue('code');
+  // A code is only redeemable while its user is connected (STOR-1).
+  await storage().upsertUser({ userId: 'ynab-user-1', grantedScope: 'read-only', encryptedRefreshToken: 'x', updatedAt: Date.now() });
   await storage().saveAuthCode({
     code: key,
     clientId,

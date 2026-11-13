@@ -372,6 +372,7 @@ for (const driver of drivers) {
       const client = await newClient();
       // A 0.4.x code: 43 characters, stored (after M3) under its h1. key.
       const legacy = legacyToken();
+      await storage.upsertUser({ userId: 'legacy-user', grantedScope: 'read-only', encryptedRefreshToken: 'x', updatedAt: Date.now() });
       await storage.saveAuthCode({
         code: testKey('code', legacy),
         clientId: client.client_id,
