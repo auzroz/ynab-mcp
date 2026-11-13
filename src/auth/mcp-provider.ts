@@ -71,11 +71,11 @@ import type {
   OAuthTokenRevocationRequest,
   AuthInfo,
 } from '@modelcontextprotocol/server';
+import { OAuthError, OAuthErrorCode } from '@modelcontextprotocol/server';
 import {
   InvalidGrantError,
   InvalidScopeError,
   InvalidTargetError,
-  InvalidTokenError,
   ServerError,
 } from '@modelcontextprotocol/server-legacy/auth';
 import type {
@@ -762,25 +762,41 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
    * `expectedResource` check. `extra.grantedScope` is the access this token
    * carries: its grant's level, lowered to read-only when its scopes say so,
    * and read-only for tokens written before 0.4.0.
+   *
+   * Every refusal is the same v2 `OAuthError(InvalidToken)`, the one class the
+   * /mcp bearer middleware (`@modelcontextprotocol/express`) answers with 401
+   * and the `resource_metadata` challenge; server-legacy's `InvalidTokenError`
+   * would be a 500 there (ADR-0001 D14). A failure while verifying (a storage
+   * error or timeout, a corrupt row) is logged, sanitized, and refused the same
+   * way, so none of its text reaches the client. Nothing here is cached
+   * (ADR-0001 D7): every call reads storage.
    */
   async verifyAccessToken(token: string): Promise<AuthInfo> {
-    const key = this.keyFor('access', token);
-    if (key === undefined) throw new InvalidTokenError('Invalid or expired access token');
-    const rec = await this.opts.storage.getAccessToken(key);
-    if (!rec) throw new InvalidTokenError('Invalid or expired access token');
-    const resource = rec.resource ?? this.resource;
-    if (resource !== this.resource) throw new InvalidTokenError('Invalid or expired access token');
-    return {
-      token,
-      clientId: rec.clientId,
-      scopes: rec.scopes,
-      expiresAt: Math.floor(rec.expiresAt / 1000),
-      resource: new URL(resource),
-      extra: {
-        userId: rec.userId,
-        grantedScope: minScope(rec.grantedScope ?? 'read-only', scopeCeiling(rec.scopes)),
-      },
-    };
+    let verified: AuthInfo | undefined;
+    try {
+      const key = this.keyFor('access', token);
+      const rec = key === undefined ? undefined : await this.opts.storage.getAccessToken(key);
+      const resource = rec?.resource ?? this.resource;
+      if (rec && resource === this.resource) {
+        verified = {
+          token,
+          clientId: rec.clientId,
+          scopes: rec.scopes,
+          expiresAt: Math.floor(rec.expiresAt / 1000),
+          resource: new URL(resource),
+          extra: {
+            userId: rec.userId,
+            grantedScope: minScope(rec.grantedScope ?? 'read-only', scopeCeiling(rec.scopes)),
+          },
+        };
+      }
+    } catch (err) {
+      console.error('[OAuth] Access token verification failed; refused as invalid_token:', sanitizeErrorMessage(err));
+    }
+    if (verified === undefined) {
+      throw new OAuthError(OAuthErrorCode.InvalidToken, 'Invalid or expired access token');
+    }
+    return verified;
   }
 
   /**

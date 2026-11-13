@@ -16,7 +16,7 @@ import { createRequire } from 'node:module';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/server-legacy/auth';
+import { InvalidGrantError } from '@modelcontextprotocol/server-legacy/auth';
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
 import type { Storage } from '../../../src/storage/types.js';
 import { SCHEMA_VERSION } from '../../../src/storage/migrations.js';
@@ -29,6 +29,7 @@ import { McpOAuthProvider } from '../../../src/auth/mcp-provider.js';
 import { newConsentNonce } from '../../../src/auth/consent-cookie.js';
 import { Encryptor } from '../../../src/crypto.js';
 import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER, legacyToken, testKey } from '../helpers/token-hasher.js';
+import { expectInvalidToken } from '../helpers/invalid-token.js';
 
 /** Raw access to one test database, beside the storage under test. */
 interface TestDb {
@@ -327,9 +328,7 @@ function runM3Suite(name: string, enabled: boolean, newDb: () => Promise<TestDb>
         expect(await familyCount('fam-code')).toBe(0);
 
         // The stored keys themselves are never credentials.
-        await expect(provider.verifyAccessToken(testKey('access', p.accessToken))).rejects.toBeInstanceOf(
-          InvalidTokenError
-        );
+        await expectInvalidToken(provider.verifyAccessToken(testKey('access', p.accessToken)));
       } finally {
         errors.mockRestore();
         await storage.close();

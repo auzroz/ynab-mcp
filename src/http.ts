@@ -16,7 +16,7 @@
 
 import { randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { requireBearerAuth } from '@modelcontextprotocol/server-legacy/auth';
+import { requireBearerAuth } from '@modelcontextprotocol/express';
 import { isInitializeRequest } from '@modelcontextprotocol/server';
 import type { AuthInfo } from '@modelcontextprotocol/server';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
@@ -257,12 +257,13 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     const resolver = oauth.resolver;
     resourceMetadataUrl = oauth.as.resourceMetadataUrl;
 
-    // Protect the MCP endpoint with the bearer verifier. expectedResource makes the
-    // SDK refuse (401 invalid_token) any token whose audience is not this resource;
-    // the provider also checks it, and reports 0.3.x tokens as bound to it.
+    // Protect the MCP endpoint with the bearer verifier (v2's middleware, which
+    // answers 401 with the challenge only for v2's OAuthError: the provider
+    // throws that for every refused token, ADR-0001 D14). expectedResource makes
+    // the SDK refuse (401 invalid_token) any token whose audience is not this
+    // resource; the provider also checks it, and reports 0.3.x tokens as bound to it.
     app.use(
       '/mcp',
-      // requireBearerAuth: still the server-legacy copy; WS7.3 moves it to @modelcontextprotocol/express.
       requireBearerAuth({ verifier: provider, resourceMetadataUrl, expectedResource: resourceServerUrl })
     );
 

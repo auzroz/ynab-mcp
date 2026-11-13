@@ -8,7 +8,7 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/server-legacy/auth';
+import { InvalidGrantError } from '@modelcontextprotocol/server-legacy/auth';
 import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/server';
 
 vi.mock('../../../src/auth/ynab-oauth.js', async () => {
@@ -26,6 +26,7 @@ import { DEFAULT_RETENTION } from '../../../src/auth/retention-defaults.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
 import { cleanupDrivers, testDrivers, type DriverHandle } from '../helpers/storage-drivers.js';
 import { TEST_TOKEN_HASHER } from '../helpers/token-hasher.js';
+import { expectInvalidToken } from '../helpers/invalid-token.js';
 
 const refreshMock = vi.mocked(ynabOauth.refreshAccessToken);
 
@@ -308,7 +309,7 @@ for (const driver of testDrivers) {
         vi.setSystemTime(Date.now() + 1000);
         await connect('u');
 
-        await expect(provider.verifyAccessToken(tokens.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+        await expectInvalidToken(provider.verifyAccessToken(tokens.access_token));
         await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
           InvalidGrantError
         );

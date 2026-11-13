@@ -13,7 +13,6 @@ import {
   InvalidGrantError,
   InvalidScopeError,
   InvalidTargetError,
-  InvalidTokenError,
   ServerError,
 } from '@modelcontextprotocol/server-legacy/auth';
 import type { AuthorizationParams } from '@modelcontextprotocol/server-legacy/auth';
@@ -43,6 +42,7 @@ import {
 } from '../../../src/auth/mcp-provider.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
 import { TEST_TOKEN_HASHER, legacyToken, testKey } from '../helpers/token-hasher.js';
+import { expectInvalidToken } from '../helpers/invalid-token.js';
 
 // 0.4.x-shaped values (43 characters) that tests plant under their h1. keys, as M3 leaves them.
 const LEGACY_AT = legacyToken();
@@ -1059,7 +1059,7 @@ describe('McpOAuthProvider refresh validation (before the token is spent)', () =
     // The loser looks like reuse (RFC 9700): the winner's new pair is revoked.
     const winner = won[0]?.status === 'fulfilled' ? won[0].value : undefined;
     if (!winner) throw new Error('expected a winner');
-    await expect(provider.verifyAccessToken(winner.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+    await expectInvalidToken(provider.verifyAccessToken(winner.access_token));
     await expect(provider.exchangeRefreshToken(client, refreshOf(winner))).rejects.toBeInstanceOf(
       InvalidGrantError
     );
@@ -1092,9 +1092,7 @@ describe('McpOAuthProvider.verifyAccessToken resource checks', () => {
       expiresAt: Date.now() + 60_000,
       resource: 'https://mcp.example.com/other',
     });
-    const err = await errorOf(provider.verifyAccessToken(FOREIGN_AT));
-    expect(err).toBeInstanceOf(InvalidTokenError);
-    expect((err as Error).message).toBe('Invalid or expired access token');
+    await expectInvalidToken(provider.verifyAccessToken(FOREIGN_AT));
   });
 });
 
@@ -1413,7 +1411,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     ...pairs: OAuthTokens[]
   ): Promise<void> {
     for (const pair of pairs) {
-      await expect(provider.verifyAccessToken(pair.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+      await expectInvalidToken(provider.verifyAccessToken(pair.access_token));
       await expect(provider.exchangeRefreshToken(client, refreshOf(pair))).rejects.toBeInstanceOf(
         InvalidGrantError
       );
@@ -1450,8 +1448,8 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
 
     // The current pair, and every earlier access token, is now dead.
     await expectRevoked(provider, client, second);
-    await expect(provider.verifyAccessToken(tokens.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
-    await expect(provider.verifyAccessToken(first.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+    await expectInvalidToken(provider.verifyAccessToken(tokens.access_token));
+    await expectInvalidToken(provider.verifyAccessToken(first.access_token));
 
     // Logged for the operator, without the token.
     expect(errorSpy).toHaveBeenCalledWith('[OAuth] Refresh token reuse detected; revoked its token family');
@@ -1580,7 +1578,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     await provider.revokeToken(client, { token: refreshOf(rotated) });
 
     await expectRevoked(provider, client, rotated);
-    await expect(provider.verifyAccessToken(tokens.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+    await expectInvalidToken(provider.verifyAccessToken(tokens.access_token));
     await expect(provider.verifyAccessToken(unrelated.access_token)).resolves.toBeDefined();
     await expect(provider.exchangeRefreshToken(client, refreshOf(unrelated))).resolves.toHaveProperty(
       'access_token'
@@ -1591,7 +1589,7 @@ describe('McpOAuthProvider refresh-token reuse detection', () => {
     const { provider } = makeProvider();
     const { client, tokens } = await driveToTokens(provider);
     await provider.revokeToken(client, { token: tokens.access_token });
-    await expect(provider.verifyAccessToken(tokens.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+    await expectInvalidToken(provider.verifyAccessToken(tokens.access_token));
     await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).resolves.toHaveProperty(
       'access_token'
     );
