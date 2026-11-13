@@ -42,7 +42,12 @@ async function buildStorage(opts: StorageOptions): Promise<Storage> {
   switch (opts.driver) {
     case 'sqlite': {
       const { SqliteStorage } = await import('./sqlite.js');
-      return new SqliteStorage({ path: opts.path, tokenKeys: opts.tokenKeys, retention: opts.retention });
+      return new SqliteStorage({
+        path: opts.path,
+        tokenKeys: opts.tokenKeys,
+        retention: opts.retention,
+        clientSchema: opts.clientSchema,
+      });
     }
     case 'postgres': {
       const { PostgresStorage } = await import('./postgres.js');
@@ -50,6 +55,7 @@ async function buildStorage(opts: StorageOptions): Promise<Storage> {
         connectionString: opts.connectionString,
         tokenKeys: opts.tokenKeys,
         retention: opts.retention,
+        clientSchema: opts.clientSchema,
       });
     }
     default:

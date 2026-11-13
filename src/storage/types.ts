@@ -232,6 +232,19 @@ export interface SweepCounts {
   abandonedClients: number;
   /** Clients with no live grant since their last authorization window. */
   unusedClients: number;
+  // oidc-provider rows (`oauth_rows`, ADR-0002 D4). The counters above are the 0.4.x tables'.
+  /** Expired rows that were never consumed: tokens, codes, sessions, interactions, staged sign-ins. */
+  oauthExpired: number;
+  /** Consumed codes and refresh tokens past their retention (D6) whose grant has no live token. */
+  oauthConsumed: number;
+  /** Grant-bound rows whose grant or user is gone (or newer), and registration tokens of removed clients. */
+  oauthOrphans: number;
+  /** Expired grants with no row left under them. */
+  oauthGrants: number;
+  /** Library clients that never completed a sign-in, past the abandoned-registration window. */
+  oauthAbandonedClients: number;
+  /** Library clients with nothing in flight and no sign-in within the unused-client window. */
+  oauthUnusedClients: number;
 }
 
 export interface SweepResult {
@@ -247,12 +260,26 @@ export interface SweepOptions {
   batchSize?: number;
 }
 
+/**
+ * Checks one client's metadata against oidc-provider's client schema (M4,
+ * ADR-0002 D12). Resolves to undefined when the client is valid, otherwise to
+ * a short reason that names no value from the metadata. The default is
+ * `createClientSchemaValidator` in src/auth/oidc/client-schema.ts.
+ */
+export type ClientSchemaValidator = (metadata: Readonly<Record<string, unknown>>) => Promise<string | undefined>;
+
 /** Options every driver accepts. */
 export interface StorageDriverOptions {
   /** Retention windows; the defaults are in `src/auth/retention-defaults.ts`. */
   retention?: Partial<RetentionPolicy> | undefined;
   /** Overrides for the storage time bounds (defaults in `./timeouts.ts`); tests use short values. */
   timeouts?: Partial<StorageTimeouts> | undefined;
+  /**
+   * The client schema M4 converts registered clients against. Defaults to
+   * the library's own (loaded only when a client is waiting for conversion);
+   * tests may pass another. Memory storage has nothing to convert.
+   */
+  clientSchema?: ClientSchemaValidator | undefined;
 }
 
 /**
@@ -304,19 +331,35 @@ export interface Storage {
    * taken first, in sorted order. A token minted concurrently by a refresh or
    * a code exchange either is deleted here or is refused (it predates the
    * account's next generation).
+   *
+   * The oidc-provider rows go in the same step (ADR-0002 D4, D12): every
+   * `oauth_rows` row with the user's `account_id`, and every row of the user's
+   * grants. The 0.4.x token tables above are cleared too, although nothing
+   * reads them after the cut-over. (SQLite and Postgres: #47-1's driver step.)
    */
   deleteUserData(userId: string): Promise<void>;
 
   // Account self-service (#53b), reached by tools only through AccountStore.
-  /** The user's live grants, one per token family, oldest first. */
+  // Both generations until the cut-over (#47-4): a 0.4.x token family and an
+  // oidc-provider grant are each one connection, and a grant id is accepted
+  // wherever a family id is (ADR-0002 D4: `revokeUserFamily` takes a grant id).
+  /**
+   * The user's live grants, oldest first: one per 0.4.x token family with a
+   * live refresh token, and one per oidc-provider grant with a live access or
+   * refresh token issued under the user's current row.
+   */
   listConnections(userId: string): Promise<ConnectionRecord[]>;
   /**
-   * Revoke one of the user's grants: its tokens, and its code tombstone (so an
-   * exchange in flight is refused). Scoped by `userId`: another user's or an
-   * unknown family is a no-op. Returns whether a token was deleted.
+   * Revoke one of the user's grants: a 0.4.x family's tokens and its code
+   * tombstone (so an exchange in flight is refused), or an oidc-provider grant
+   * with every row under it. Scoped by `userId`: another user's or an unknown
+   * id is a no-op. Returns whether anything was revoked.
    */
   revokeUserFamily(userId: string, familyId: string): Promise<boolean>;
-  /** Revoke every grant the user gave `clientId`. Returns the number of families revoked. */
+  /**
+   * Revoke every grant the user gave `clientId`, in both generations.
+   * Returns the number of families and grants revoked.
+   */
   deleteTokenFamiliesForClient(userId: string, clientId: string): Promise<number>;
 
   /**
@@ -325,6 +368,13 @@ export interface Storage {
    * limit; tokens of erased users; abandoned and unused client registrations.
    * On Postgres it holds a session advisory try-lock, so of two concurrent
    * sweepers one runs and the other returns `ran: false`.
+   *
+   * The same for `oauth_rows` (ADR-0002 D4, D6; the rules are in
+   * src/storage/retention.ts): expired rows never consumed; consumed codes
+   * and refresh tokens once `CONSUMED_CREDENTIAL_RETENTION_MS` (30 days) has passed
+   * and their grant has no live token; grant-bound rows whose grant or user is
+   * gone; expired grants with nothing under them; and library clients by the
+   * same abandoned and unused windows, on `created_at` and `authorized_at`.
    */
   sweepExpired(options?: SweepOptions): Promise<SweepResult>;
 
@@ -419,4 +469,158 @@ export interface Storage {
 
   /** Delete every access and refresh token of a grant family, atomically. */
   deleteTokenFamily(familyId: string): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// oidc-provider storage (ADR-0002 D4): one `oauth_rows` table behind the
+// library's adapter (src/auth/oidc/adapter.ts). The adapter derives every key
+// and the stored payload; a driver stores both as opaque strings and enforces
+// the rules below atomically. Memory implements it in #47-1; SQLite and
+// Postgres implement it in #47-1's driver step, against
+// tests/unit/storage/oauth-adapter-conformance.test.ts.
+// ---------------------------------------------------------------------------
+
+/**
+ * What a row holds: the oidc-provider models the adapter stores, plus
+ * `SignIn`, the sign-in `complete` stages under its grant until the code's
+ * upsert applies it (#94, D4).
+ */
+export type OAuthModel =
+  | 'AccessToken'
+  | 'RefreshToken'
+  | 'AuthorizationCode'
+  | 'RegistrationAccessToken'
+  | 'Session'
+  | 'Interaction'
+  | 'Grant'
+  | 'Client'
+  | 'SignIn';
+
+/** One `oauth_rows` row as the adapter writes it. */
+export interface OAuthRowWrite {
+  /**
+   * The primary key: `h1.` + HMAC of the row's kind and id for every model
+   * whose id is a credential (tokens, codes, sessions, interactions,
+   * registration tokens), `Grant:<id>`, `Client:<id>` or `SignIn:<grant id>`
+   * for the others (src/storage/oauth-rows.ts).
+   */
+  key: string;
+  model: OAuthModel;
+  /**
+   * The library's payload as JSON text, without `jti` (the credential itself)
+   * or `consumed` (kept in `consumedAt`), and with a client's secret replaced
+   * by its `s256.` hash.
+   */
+  payload: string;
+  /** The grant the row belongs to (the grant's own id on its `Grant` row). */
+  grantId: string | undefined;
+  /** The YNAB user id (the library's `accountId`). */
+  accountId: string | undefined;
+  /** The client the row belongs to (its own id on a `Client` row). */
+  clientId: string | undefined;
+  /** A session's `uid`, for `findByUid`. */
+  uid: string | undefined;
+  /** Epoch ms (storage clock); undefined for rows without a lifetime (clients). */
+  expiresAt: number | undefined;
+}
+
+/** One `oauth_rows` row as storage returns it. */
+export interface OAuthRowRecord extends OAuthRowWrite {
+  /** When a code or refresh token was consumed (epoch ms, storage clock); undefined while live. */
+  consumedAt: number | undefined;
+  /** When the row was inserted (storage clock); an update keeps it. STOR-1's generation check reads it. */
+  createdAt: number;
+  /**
+   * `Client` rows only: when a sign-in for the client last completed (its
+   * code was issued), or when M4 converted it. Undefined until then. The
+   * client sweep's clock.
+   */
+  authorizedAt: number | undefined;
+}
+
+/** The sign-in `complete` stages under its grant (#94, D4). */
+export interface StagedSignIn {
+  grantId: string;
+  /** The user the code's upsert applies, as {@link Storage.upsertUser} would. */
+  user: UserRecord;
+  /** Epoch ms: the interaction's lifetime. */
+  expiresAt: number;
+}
+
+/**
+ * What {@link OAuthRowStore.saveAuthorizationCode} did. Anything but `saved`
+ * wrote nothing.
+ */
+export type CodeSaveOutcome = 'saved' | 'client-gone' | 'grant-gone' | 'no-sign-in';
+
+/**
+ * What {@link OAuthRowStore.consumeOAuthRow} did: `consumed` (this call set
+ * `consumed_at`), `replayed` (it was already consumed, so its grant was
+ * revoked in the same step) or `missing` (no such row; nothing changed).
+ */
+export type ConsumeOutcome = 'consumed' | 'replayed' | 'missing';
+
+/**
+ * The driver-facing contract behind the oidc-provider adapter. Every method
+ * is atomic. "Grant-bound" rows are AccessToken, RefreshToken and
+ * AuthorizationCode.
+ */
+export interface OAuthRowStore {
+  /**
+   * Insert or update a row that isn't grant-bound or staged (Client, Grant,
+   * Session, Interaction, RegistrationAccessToken). An update replaces the
+   * payload and the indexed columns and keeps `createdAt`, `consumedAt` and
+   * `authorizedAt`. Throws for a grant-bound or `SignIn` row.
+   */
+  upsertOAuthRow(row: OAuthRowWrite): Promise<void>;
+  /**
+   * Save an AccessToken or RefreshToken, only while its grant row exists for
+   * the same account and client and the account's user row exists, checked
+   * and written in one transaction (on Postgres under the grant's lock, with
+   * the user row held FOR KEY SHARE). Returns false, having written nothing,
+   * otherwise: a revocation that ran first leaves nothing behind (#42).
+   */
+  saveGrantToken(row: OAuthRowWrite): Promise<boolean>;
+  /**
+   * Save an AuthorizationCode with #94's `completeAuthorization` semantics, in
+   * one transaction: the client row must exist (and is stamped
+   * `authorizedAt`, which also locks it against the sweep), the grant row must
+   * exist for the same account and client, and the grant's staged sign-in
+   * must be live for the same account. Then the staged user is applied (as
+   * {@link Storage.upsertUser}, `created_at` from the same clock instant as
+   * the code's `createdAt`), the staged row is deleted and the code is
+   * inserted. Anything else writes nothing.
+   */
+  saveAuthorizationCode(row: OAuthRowWrite): Promise<CodeSaveOutcome>;
+  /**
+   * Stage a sign-in under its grant (replacing an earlier one), only while the
+   * grant row exists for `user.userId`. Returns false (nothing written) otherwise.
+   */
+  stageSignIn(signIn: StagedSignIn): Promise<boolean>;
+  /**
+   * The row under `key`, whatever its age (the adapter applies expiry). A
+   * grant-bound row is returned only while its grant row exists and its user
+   * row exists and is not newer than the row (STOR-1's issued-under-user
+   * rule, on `createdAt`); otherwise it reads as unknown.
+   */
+  findOAuthRow(key: string): Promise<OAuthRowRecord | undefined>;
+  /** The newest `Session` row with this `uid`. */
+  findOAuthRowByUid(uid: string): Promise<OAuthRowRecord | undefined>;
+  /**
+   * Compare-and-set consumption of a code or refresh token: set `consumedAt`
+   * only while it is unset. When it was already set, revoke the row's whole
+   * grant ({@link revokeOAuthGrant}) in the same transaction. Throws for a row
+   * of another model.
+   */
+  consumeOAuthRow(key: string): Promise<ConsumeOutcome>;
+  /** Delete one row (not a grant's: use {@link revokeOAuthGrant}). */
+  destroyOAuthRow(key: string): Promise<void>;
+  /**
+   * The library's `revokeByGrantId`: delete the grant-bound and staged rows of
+   * a grant, live or consumed, and keep the `Grant` row (the library destroys
+   * it separately when its policy says so). Returns the rows deleted.
+   */
+  revokeOAuthGrantTokens(grantId: string): Promise<number>;
+  /** Delete every row of a grant, its `Grant` row included. Returns the rows deleted. */
+  revokeOAuthGrant(grantId: string): Promise<number>;
 }

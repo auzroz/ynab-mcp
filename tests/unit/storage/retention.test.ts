@@ -550,6 +550,13 @@ for (const driver of testDrivers) {
             orphanTokens: 2,
             abandonedClients: 1,
             unusedClients: 1,
+            // oauth_rows (ADR-0002 D4) holds nothing here; its rules are in oauth-adapter-conformance.test.ts.
+            oauthExpired: 0,
+            oauthConsumed: 0,
+            oauthOrphans: 0,
+            oauthGrants: 0,
+            oauthAbandonedClients: 0,
+            oauthUnusedClients: 0,
           },
         });
 

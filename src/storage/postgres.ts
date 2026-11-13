@@ -30,7 +30,7 @@ import type {
   SweepResult,
 } from './types.js';
 import { resolveStorageTimeouts } from './timeouts.js';
-import { applyMigrations, MIGRATION_PLAN, type MigrationTx } from './migrations.js';
+import { applyMigrations, MIGRATION_PLAN, type MigrationDeps, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 import { retentionPolicy, type RetentionPolicy } from '../auth/retention-defaults.js';
@@ -311,7 +311,7 @@ function pgTx(client: PoolClient | PgClient): MigrationTx {
  * (including a refusal because a newer release migrated the database) leaves
  * the schema unchanged.
  */
-async function migrate(client: PgClient, tokenKeys: TokenKeyDeriver): Promise<void> {
+async function migrate(client: PgClient, deps: MigrationDeps): Promise<void> {
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1)', [SCHEMA_LOCK_KEY]);
@@ -368,7 +368,7 @@ async function migrate(client: PgClient, tokenKeys: TokenKeyDeriver): Promise<vo
         expires_at BIGINT NOT NULL
       );
     `);
-    await applyMigrations(pgTx(client), now, MIGRATION_PLAN, undefined, { tokenKeys });
+    await applyMigrations(pgTx(client), now, MIGRATION_PLAN, undefined, deps);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
@@ -460,7 +460,7 @@ export class PostgresStorage implements Storage {
     });
     try {
       await migration.connect();
-      await migrate(migration, this.options.tokenKeys);
+      await migrate(migration, { tokenKeys: this.options.tokenKeys, clientSchema: this.options.clientSchema });
     } catch (err) {
       await migration.end().catch(() => undefined);
       await pool.end();

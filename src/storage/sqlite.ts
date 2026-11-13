@@ -30,7 +30,7 @@ import type {
   SweepResult,
 } from './types.js';
 import { resolveStorageTimeouts } from './timeouts.js';
-import { applyMigrations, MIGRATION_PLAN, type MigrationTx } from './migrations.js';
+import { applyMigrations, MIGRATION_PLAN, type MigrationDeps, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 import { retentionPolicy, type RetentionPolicy } from '../auth/retention-defaults.js';
@@ -209,13 +209,13 @@ function sqliteTx(db: BetterSqlite3.Database): MigrationTx {
  * every SQLite call is synchronous, so nothing else can run on this connection
  * in between.
  */
-async function migrate(db: BetterSqlite3.Database, baseSchema: string, tokenKeys: TokenKeyDeriver): Promise<void> {
+async function migrate(db: BetterSqlite3.Database, baseSchema: string, deps: MigrationDeps): Promise<void> {
   db.exec('BEGIN IMMEDIATE');
   try {
     // Captured once, with the write lock held, so it is when the migration really runs.
     const now = Date.now();
     db.exec(baseSchema);
-    await applyMigrations(sqliteTx(db), now, MIGRATION_PLAN, undefined, { tokenKeys });
+    await applyMigrations(sqliteTx(db), now, MIGRATION_PLAN, undefined, deps);
     db.exec('COMMIT');
   } catch (err) {
     try {
@@ -314,7 +314,10 @@ export class SqliteStorage implements Storage {
       );
     `;
     try {
-      await migrate(db, baseSchema, this.options.tokenKeys);
+      await migrate(db, baseSchema, {
+        tokenKeys: this.options.tokenKeys,
+        clientSchema: this.options.clientSchema,
+      });
       db.pragma(`busy_timeout = ${timeouts.sqliteBusyTimeoutMs}`);
     } catch (err) {
       db.close();

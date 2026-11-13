@@ -31,7 +31,9 @@
  */
 
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
+import type { ClientSchemaValidator } from './types.js';
 import { TOKEN_HASHING_BACKFILL } from './token-hashing-migration.js';
+import { CLIENT_CONVERSION_BACKFILL, M4_COLUMNS, OAUTH_ROWS_TABLE } from './oauth-rows-migration.js';
 
 export type Dialect = 'sqlite' | 'postgres';
 
@@ -79,11 +81,19 @@ export interface BackfillContext {
    * a caller opened storage without one; M3 then refuses to run.
    */
   tokenKeys: TokenKeyDeriver | undefined;
+  /**
+   * The client schema M4 validates converted clients against. Undefined means
+   * the library's own (M4 loads it only when a client is waiting).
+   */
+  clientSchema: ClientSchemaValidator | undefined;
+  /** Where a backfill reports what an operator must know (a dropped client). Never a value. */
+  warn: (message: string) => void;
 }
 
 /** What a driver hands {@link applyMigrations} besides the transaction. */
 export interface MigrationDeps {
   tokenKeys?: TokenKeyDeriver | undefined;
+  clientSchema?: ClientSchemaValidator | undefined;
 }
 
 /**
@@ -119,9 +129,10 @@ export interface MigrationTx {
 
 /**
  * The version of this release's schema: the highest step applied. Bump it with
- * each step (M1 is 2, STOR-1's M2 is 3, #52's M3 is 4, and so on).
+ * each step (M1 is 2, STOR-1's M2 is 3, #52's M3 is 4, ADR-0002's M4 is 5, and
+ * so on).
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /** The release these migrations ship in. A database stamped with a newer floor is refused. */
 export const STORAGE_RELEASE = '0.5.0';
@@ -167,6 +178,8 @@ export const ADDED_TABLES: readonly AddedTable[] = [
       )`,
     },
   },
+  // M4 (ADR-0002 D4): the oidc-provider rows, with their indexes. 0.4.x ignores it.
+  OAUTH_ROWS_TABLE,
 ];
 
 /** Columns added since 0.3.x, applied in order. */
@@ -201,6 +214,8 @@ export const ADDED_COLUMNS: readonly AddedColumn[] = [
   { table: 'oauth_clients', column: 'created_at', type: 'BIGINT' },
   { table: 'oauth_clients', column: 'last_authorized_at', type: 'BIGINT' },
   { table: 'oauth_clients', column: 'last_seen_at', type: 'BIGINT' },
+  // M4 (ADR-0002 D12): when the client conversion processed an oauth_clients row.
+  ...M4_COLUMNS,
 ];
 
 /** Indexes added since 0.3.x, created after {@link ADDED_COLUMNS}. */
@@ -263,6 +278,8 @@ export const BACKFILLS: readonly Backfill[] = [
   M2_RETENTION_CLOCKS,
   // M3 (#52): pepper check, eager rehash of 0.4.x keys, hashed client secrets.
   TOKEN_HASHING_BACKFILL,
+  // M4 (ADR-0002 D12): registered clients become library client records.
+  CLIENT_CONVERSION_BACKFILL,
 ];
 
 /** Everything {@link applyMigrations} applies; tests pass their own. */
@@ -328,7 +345,8 @@ async function writeMeta(tx: MigrationTx, key: string, value: string): Promise<v
  * database is at a newer schema version but still compatible.
  *
  * `now` is captured once by the caller, after it holds the migrate lock, and
- * handed to every backfill, with `deps.tokenKeys` (M3 needs it).
+ * handed to every backfill, with `deps.tokenKeys` (M3 needs it),
+ * `deps.clientSchema` (M4's, when not the library's) and `warn`.
  */
 export async function applyMigrations(
   tx: MigrationTx,
@@ -390,7 +408,7 @@ export async function applyMigrations(
     .filter((b) => b.version <= plan.schemaVersion)
     .sort((a, b) => a.version - b.version);
   for (const backfill of steps) {
-    await backfill.run({ now, tx, tokenKeys: deps.tokenKeys });
+    await backfill.run({ now, tx, tokenKeys: deps.tokenKeys, clientSchema: deps.clientSchema, warn });
   }
 
   // Stamp only what changed, so a restart against a migrated database writes nothing.
