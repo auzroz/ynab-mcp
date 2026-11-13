@@ -98,7 +98,7 @@ describe('main', () => {
   });
 
   it('stdio: listens for stdin closing, which ends the session', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const stdinBefore = process.stdin.listenerCount('close');
     const prior = { token: process.env['YNAB_ACCESS_TOKEN'] };
     process.env['YNAB_ACCESS_TOKEN'] = 'dummy-token';
@@ -106,6 +106,20 @@ describe('main', () => {
       await main({});
       expect(process.stdin.listenerCount('close')).toBe(stdinBefore + 1);
       expect(serveStdio).toHaveBeenCalledTimes(1);
+
+      // The transport error callback logs the message only, with secrets redacted and no stack.
+      const options = (serveStdio.mock.calls[0] as unknown[] | undefined)?.[1] as
+        | { onerror?: (error: Error) => void }
+        | undefined;
+      expect(options?.onerror).toBeTypeOf('function');
+      errorSpy.mockClear();
+      const failure = new Error('stdio transport failed while holding dummy-token');
+      options?.onerror?.(failure);
+      const logged = errorSpy.mock.calls.flat().map(String).join('\n');
+      expect(logged).toContain('MCP stdio error:');
+      expect(logged).toContain('[YNAB_ACCESS_TOKEN REDACTED]');
+      expect(logged).not.toContain('dummy-token');
+      expect(logged).not.toContain('    at ');
     } finally {
       if (prior.token === undefined) delete process.env['YNAB_ACCESS_TOKEN'];
       else process.env['YNAB_ACCESS_TOKEN'] = prior.token;
