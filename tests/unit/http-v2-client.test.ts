@@ -90,6 +90,17 @@ describe.each<Era>(['2025-11-25', '2026-07-28'])('the v2 client over HTTP, %s', 
     expect(transport.sessionId).toBeUndefined();
   });
 
+  it('declares no change notifications: no listChanged, no resources or subscriptions (D13)', async () => {
+    await start();
+    const { client } = await connect(era);
+    const caps = client.getServerCapabilities();
+    expect(caps?.tools).toEqual({});
+    expect(caps?.prompts).toEqual({});
+    expect(caps?.tools?.listChanged).toBeUndefined();
+    expect(caps?.prompts?.listChanged).toBeUndefined();
+    expect(caps?.resources).toBeUndefined();
+  });
+
   it('lists the read-only tools and calls one that makes no YNAB request', async () => {
     await start();
     const { client } = await connect(era);
