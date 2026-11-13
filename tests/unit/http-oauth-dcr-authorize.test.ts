@@ -1,8 +1,9 @@
 /**
  * #55 end to end over HTTP: dynamic client registration rules (dcr-validator),
  * /authorize bounds and the grandfathered-client refusal
- * (authorize-validation), and the consent page. Only the YNAB network calls
- * are absent (nothing here reaches them).
+ * (authorize-validation), the open-redirect guard over every server-legacy
+ * phase-2 error path (authorize-guard), and the consent page. Only the YNAB
+ * network calls are absent (nothing here reaches them).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -40,6 +41,7 @@ const PUBLIC_URL = 'https://mcp.example.com';
 const ISSUER = `${PUBLIC_URL}/`;
 const CALLBACK = 'https://client.example/cb';
 const ATTACKER = 'https://attacker.example/phish';
+const CLAUDE_CALLBACK = 'https://claude.ai/api/mcp/auth_callback';
 const LOOPBACK = 'http://localhost:33418/callback';
 
 function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
@@ -104,7 +106,7 @@ function authorizeQuery(clientId: string, redirectUri: string, extra: Record<str
 const authorize = (clientId: string, redirectUri: string, extra: Record<string, unknown> = {}, on: Express = app) =>
   request(on).get('/authorize').query(authorizeQuery(clientId, redirectUri, extra));
 
-/** The error page: no redirect, the error shown, the strict headers. */
+/** The error page for an unverified client: no redirect, the error shown, the strict headers. */
 function expectErrorPage(res: request.Response, error: string, status = 400): void {
   expect(res.status).toBe(status);
   expect(res.headers['location']).toBeUndefined();
@@ -122,14 +124,18 @@ function returnLink(res: request.Response): URL | undefined {
 }
 
 /**
- * An authorization error for this file's default client: an RFC 6749 error
- * redirect with iss. Returns its parameters.
+ * An authorization error for this file's default client (client.example,
+ * unverified): our error page (55b). Returns the error response's parameters,
+ * from the page's return link.
  */
-function refused(res: request.Response, error: string): URLSearchParams {
-  return expectErrorRedirect(res, CALLBACK, error).searchParams;
+function refused(res: request.Response, error: string, status = 400): URLSearchParams {
+  expectErrorPage(res, error, status);
+  const link = returnLink(res);
+  expect(link?.origin + (link?.pathname ?? '')).toBe(CALLBACK);
+  return link!.searchParams;
 }
 
-/** An RFC 6749 error redirect with iss. */
+/** A redirect error response for a verified client. */
 function expectErrorRedirect(res: request.Response, redirectUri: string, error: string): URL {
   expect(res.status).toBe(302);
   const loc = new URL(res.headers['location'] as string);
@@ -289,6 +295,20 @@ describe('/authorize bounds (55a)', () => {
     refused(res, 'invalid_request');
   });
 
+  it('a verified client gets the bounds errors as RFC 6749 redirects with iss', async () => {
+    const verified = await createHttpApp(makeConfig({ verifiedRedirectUris: [CALLBACK] }));
+    const clientId = await register([CALLBACK], {}, verified);
+    const loc = expectErrorRedirect(await authorize(clientId, CALLBACK, { code_challenge: 'short' }, verified), CALLBACK, 'invalid_request');
+    expect(loc.searchParams.get('state')).toBe('client-state');
+    const noState = expectErrorRedirect(
+      await authorize(clientId, CALLBACK, { state: 'x'.repeat(MAX_STATE_LENGTH + 1) }, verified),
+      CALLBACK,
+      'invalid_request'
+    );
+    expect(noState.searchParams.has('state')).toBe(false);
+    expectErrorRedirect(await authorize(clientId, CALLBACK, { scope: 'a b c d e f' }, verified), CALLBACK, 'invalid_scope');
+  });
+
   it('leaves the handler 400 JSON for an unknown client and an unregistered redirect URI', async () => {
     const unknown = await authorize('no-such-client', CALLBACK);
     expect(unknown.status).toBe(400);
@@ -341,8 +361,106 @@ describe('grandfathered clients (55a, batch-3 default)', () => {
   });
 });
 
+/**
+ * Every server-legacy 2.4.0 /authorize error after the client and redirect URI
+ * are accepted (authorize-guard-legacy.ts lists them). For an unverified
+ * client each one becomes our page; for a verified one it stays a redirect.
+ */
+const PHASE2: ReadonlyArray<{ name: string; error: string; status?: number; send: (on: Express, clientId: string, uri: string) => request.Test; arrange?: () => void }> = [
+  {
+    name: 'response_type other than code (schema)',
+    error: 'invalid_request',
+    send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri, { response_type: 'token' })),
+  },
+  {
+    name: 'code_challenge_method plain (schema)',
+    error: 'invalid_request',
+    send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri, { code_challenge_method: 'plain' })),
+  },
+  {
+    name: 'resource that is not a URL (schema)',
+    error: 'invalid_request',
+    send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri, { resource: 'not a url' })),
+  },
+  {
+    name: 'POST with a schema error',
+    error: 'invalid_request',
+    send: (on, id, uri) => request(on).post('/authorize').type('form').send(authorizeQuery(id, uri, { response_type: 'token' })),
+  },
+  {
+    name: 'provider OAuth error (invalid_target for a foreign resource)',
+    error: 'invalid_target',
+    send: (on, id, uri) =>
+      request(on).get('/authorize').query(authorizeQuery(id, uri, { resource: 'https://evil.example/mcp' })),
+  },
+  {
+    name: 'provider failure (storage error, server_error)',
+    error: 'server_error',
+    status: 500,
+    arrange: () => {
+      vi.spyOn(storage(), 'savePendingAuth').mockRejectedValueOnce(new Error('connect ECONNREFUSED db.internal:5432'));
+    },
+    send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri)),
+  },
+];
+
+describe('authorize-guard: every phase-2 error path (55b)', () => {
+  it.each(PHASE2)('unverified client, $name: our page, not a redirect', async ({ error, status, send, arrange }) => {
+    const clientId = await register([CALLBACK]);
+    arrange?.();
+    const res = await send(app, clientId, CALLBACK);
+    expectErrorPage(res, error, status);
+    expect(res.text).not.toContain('db.internal');
+    // The user may go back on their own: the link is the error response the client would have got.
+    const link = returnLink(res);
+    expect(link?.origin + (link?.pathname ?? '')).toBe(CALLBACK);
+    expect(link?.searchParams.get('error')).toBe(error);
+    expect(link?.searchParams.get('iss')).toBe(ISSUER);
+    expect(res.text).toContain('return to client.example');
+  });
+
+  it.each(PHASE2)('verified client, $name: an RFC 6749 redirect with iss', async ({ error, send, arrange }) => {
+    const verified = await createHttpApp(makeConfig({ verifiedRedirectUris: [CALLBACK] }));
+    const clientId = await register([CALLBACK], {}, verified);
+    arrange?.();
+    expectErrorRedirect(await send(verified, clientId, CALLBACK), CALLBACK, error);
+  });
+
+  it("the open-redirect case: a link built from an attacker's own registration never bounces off this server", async () => {
+    const clientId = await register([ATTACKER], { client_name: 'Claude' });
+    for (const res of [
+      await request(app).get('/authorize').query({ client_id: clientId, response_type: 'token', redirect_uri: ATTACKER }),
+      await request(app).get('/authorize').query({ client_id: clientId, response_type: 'code' }),
+    ]) {
+      expect(res.status).toBe(400);
+      expect(res.headers['location']).toBeUndefined();
+      expect(res.headers['refresh']).toBeUndefined();
+      expect(res.text).toContain('return to attacker.example');
+    }
+  });
+
+  it("Claude's callback is verified by default", async () => {
+    const clientId = await register([CLAUDE_CALLBACK]);
+    expectErrorRedirect(await authorize(clientId, CLAUDE_CALLBACK, { response_type: 'token' }), CLAUDE_CALLBACK, 'invalid_request');
+  });
+
+  it('loopback is trusted for redirects by default, and not when MCP_TRUST_LOOPBACK_REDIRECTS=false', async () => {
+    const clientId = await register([LOOPBACK]);
+    expectErrorRedirect(await authorize(clientId, LOOPBACK, { response_type: 'token' }), LOOPBACK, 'invalid_request');
+    const strict = await createHttpApp(makeConfig({ trustLoopbackRedirects: false }));
+    const strictId = await register([LOOPBACK], {}, strict);
+    expectErrorPage(await authorize(strictId, LOOPBACK, { response_type: 'token' }, strict), 'invalid_request');
+  });
+
+  it('with an empty verified list nothing is redirected', async () => {
+    const empty = await createHttpApp(makeConfig({ verifiedRedirectUris: [], trustLoopbackRedirects: false }));
+    const clientId = await register([CLAUDE_CALLBACK], {}, empty);
+    expectErrorPage(await authorize(clientId, CLAUDE_CALLBACK, { response_type: 'token' }, empty), 'invalid_request');
+  });
+});
+
 describe('consent page (55a)', () => {
-  it('names the host prominently and the client "calls itself"; strict headers', async () => {
+  it('names the host prominently and calls an unverified client "calls itself"; strict headers', async () => {
     const clientId = await register([ATTACKER], { client_name: 'Claude' });
     const res = await authorize(clientId, ATTACKER);
     expect(res.status).toBe(200);
@@ -353,7 +471,15 @@ describe('consent page (55a)', () => {
     expect(res.headers['x-content-type-options']).toBe('nosniff');
   });
 
-  it('labels a loopback client', async () => {
+  it('names a verified client plainly', async () => {
+    const clientId = await register([CLAUDE_CALLBACK], { client_name: 'Claude' });
+    const res = await authorize(clientId, CLAUDE_CALLBACK);
+    expect(res.text).toContain('<p><strong>Claude</strong> is requesting access');
+    expect(res.text).not.toContain('calls itself');
+    expect(res.text).toContain('returned to <strong>claude.ai</strong>');
+  });
+
+  it('labels a loopback client although its errors redirect', async () => {
     const clientId = await register([LOOPBACK], { client_name: 'CLI' });
     const res = await authorize(clientId, LOOPBACK);
     expect(res.text).toContain('calls itself <strong>“CLI”</strong>');

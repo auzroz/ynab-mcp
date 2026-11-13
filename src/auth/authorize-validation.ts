@@ -11,23 +11,29 @@
  *      non-loopback `http://` redirect URI is refused here, on this server's
  *      page and never by redirect; its other rule failures are logged once
  *      per process and the client keeps working (#55, batch 3).
- *   2. The redirect URI the handler will use is resolved by its rules.
+ *   2. The context (redirect URI and whether errors may redirect there) is
+ *      recorded for the authorize-guard stage.
  *   3. `state`: one string of at most MAX_STATE_LENGTH characters.
  *   4. `code_challenge`: exactly 43 base64url characters (an S256 challenge).
  *   5. `scope`: at most MAX_SCOPES space-separated values. Unknown values are
  *      dropped (UNKNOWN_SCOPE_POLICY), so the handler sees only
  *      KNOWN_SCOPES.
  *
- * A failed bound is an authorization error, redirected to the client with
- * `state` (when it was valid) and `iss` (RFC 6749 section 4.1.2.1, RFC 9207).
+ * A failed bound is an authorization error, sent the way authorize-guard.ts
+ * sends every error: redirected to a verified client, shown here otherwise.
  * This stage needs only the client store and so stays as it is when the
  * authorization server moves to oidc-provider (ADR-0002, #47-4).
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { checkStoredClient, redirectUriMatches, type ClientMetadataPolicy } from './client-metadata.js';
-import { HTML_CONTENT_TYPE, PAGE_HEADERS, renderAuthorizationErrorPage } from './auth-pages.js';
-import { withIssuer } from '../middleware/iss-redirect.js';
+import { checkStoredClient, errorsMayRedirect, redirectUriMatches, type RedirectPolicy } from './client-metadata.js';
+import {
+  sendAuthorizationError,
+  sendErrorPage,
+  setAuthorizeContext,
+  type AuthorizationError,
+  type AuthorizeContext,
+} from './authorize-guard.js';
 
 /** The longest `state` accepted (#55). */
 export const MAX_STATE_LENGTH = 512;
@@ -64,7 +70,7 @@ export interface AuthorizeClientLookup {
 
 export interface AuthorizeValidationOptions {
   clients: AuthorizeClientLookup;
-  policy: ClientMetadataPolicy;
+  policy: RedirectPolicy;
   /** The issuer, sent as `iss` on error redirects (RFC 9207). */
   issuer: string;
 }
@@ -100,20 +106,6 @@ function resolveRedirectUri(requested: unknown, registered: unknown): string | u
   else if (typeof requested === 'string' && uris.some((r) => redirectUriMatches(requested, r))) uri = requested;
   if (uri === undefined || !URL.canParse(uri)) return undefined;
   return uri;
-}
-
-/** An OAuth error: its code and a fixed description. */
-interface AuthorizationError {
-  readonly error: string;
-  readonly error_description: string;
-}
-
-/** Send an authorization error page (no redirect). */
-function sendErrorPage(res: Response, error: string, description: string): void {
-  const { status, html } = renderAuthorizationErrorPage({ error, errorDescription: description, returnUrl: undefined });
-  for (const [name, value] of Object.entries(PAGE_HEADERS)) res.setHeader(name, value);
-  res.setHeader('Content-Type', HTML_CONTENT_TYPE);
-  res.status(status).send(html);
 }
 
 const PLAIN_HTTP_REFUSED =
@@ -174,21 +166,15 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
       );
     }
 
-    // 2. The redirect URI, once the handler would accept the client and it.
+    // 2. The context, once the handler would accept the client and redirect URI.
     const redirectUri = resolveRedirectUri(params['redirect_uri'], client['redirect_uris']);
     if (redirectUri === undefined) {
       next();
       return;
     }
-    /** Redirect an error to the client, with its state once that is known to be valid. */
-    const fail = (err: AuthorizationError, clientState?: string): void => {
-      const url = new URL(redirectUri);
-      url.searchParams.set('error', err.error);
-      url.searchParams.set('error_description', err.error_description);
-      if (clientState !== undefined && clientState !== '') url.searchParams.set('state', clientState);
-      res.setHeader('Cache-Control', 'no-store');
-      res.redirect(302, withIssuer(url.href, issuer));
-    };
+    const ctx: AuthorizeContext = { redirectUri, mayRedirect: errorsMayRedirect(redirectUri, policy), state: undefined };
+    setAuthorizeContext(res, ctx);
+    const fail = (err: AuthorizationError): void => sendAuthorizationError(res, ctx, err, issuer);
 
     // 3. state (not echoed when it is the problem).
     const state = params['state'];
@@ -196,11 +182,12 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
       fail({ error: 'invalid_request', error_description: `state must be one string of at most ${MAX_STATE_LENGTH} characters` });
       return;
     }
+    ctx.state = state;
 
     // 4. code_challenge.
     const challenge = params['code_challenge'];
     if (typeof challenge !== 'string' || !CODE_CHALLENGE_PATTERN.test(challenge)) {
-      fail({ error: 'invalid_request', error_description: 'code_challenge must be a 43-character S256 challenge' }, state);
+      fail({ error: 'invalid_request', error_description: 'code_challenge must be a 43-character S256 challenge' });
       return;
     }
 
@@ -208,17 +195,17 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
     const scope = params['scope'];
     if (scope !== undefined) {
       if (typeof scope !== 'string') {
-        fail({ error: 'invalid_scope', error_description: 'scope must be one string' }, state);
+        fail({ error: 'invalid_scope', error_description: 'scope must be one string' });
         return;
       }
       const requested = scope.split(' ').filter((s) => s !== '');
       if (requested.length > MAX_SCOPES) {
-        fail({ error: 'invalid_scope', error_description: `At most ${MAX_SCOPES} scopes may be requested` }, state);
+        fail({ error: 'invalid_scope', error_description: `At most ${MAX_SCOPES} scopes may be requested` });
         return;
       }
       const known = [...new Set(requested)].filter((s) => KNOWN_SCOPES.includes(s));
       if (UNKNOWN_SCOPE_POLICY === 'refuse' && known.length !== new Set(requested).size) {
-        fail({ error: 'invalid_scope', error_description: `Supported scopes: ${KNOWN_SCOPES.join(', ')}` }, state);
+        fail({ error: 'invalid_scope', error_description: `Supported scopes: ${KNOWN_SCOPES.join(', ')}` });
         return;
       }
       setParam(req, 'scope', known.length > 0 ? known.join(' ') : undefined);

@@ -13,7 +13,10 @@ import {
   checkRedirectUri,
   checkStoredClient,
   displayClientName,
+  errorsMayRedirect,
   redirectHostLabel,
+  redirectPolicyFrom,
+  redirectTrust,
   redirectUriMatches,
   validateClientMetadata,
   type ClientMetadataPolicy,
@@ -249,6 +252,34 @@ describe('checkStoredClient (grandfathered clients)', () => {
       'unsupported fields: (other), contacts, logo_uri',
     ]);
     expect(failures.join(' ')).not.toContain('legacy');
+  });
+});
+
+describe('redirect trust (the verified-client predicate, 55b)', () => {
+  const policy = redirectPolicyFrom({
+    verifiedRedirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+    privateUseSchemes: [],
+    trustLoopbackRedirects: true,
+  });
+
+  it('verifies only listed URIs, exactly', () => {
+    expect(redirectTrust('https://claude.ai/api/mcp/auth_callback', policy)).toBe('verified');
+    expect(redirectTrust('https://claude.ai/api/mcp/auth_callback?x=1', policy)).toBe('unverified');
+    expect(redirectTrust('https://claude.ai.evil.example/api/mcp/auth_callback', policy)).toBe('unverified');
+    expect(redirectTrust('https://CLAUDE.AI/api/mcp/auth_callback', policy)).toBe('verified');
+    expect(redirectTrust('http://localhost:1/cb', policy)).toBe('loopback');
+    expect(redirectTrust('https://client.example/cb', policy)).toBe('unverified');
+    expect(redirectTrust('not a url', policy)).toBe('unverified');
+  });
+
+  it('lets errors redirect to verified URIs, and to loopback only while that is trusted', () => {
+    expect(errorsMayRedirect('https://claude.ai/api/mcp/auth_callback', policy)).toBe(true);
+    expect(errorsMayRedirect('http://127.0.0.1:5/cb', policy)).toBe(true);
+    expect(errorsMayRedirect('https://client.example/cb', policy)).toBe(false);
+    const noLoopback = { ...policy, trustLoopbackRedirects: false };
+    expect(errorsMayRedirect('http://127.0.0.1:5/cb', noLoopback)).toBe(false);
+    const empty = redirectPolicyFrom({ verifiedRedirectUris: [], privateUseSchemes: [], trustLoopbackRedirects: false });
+    expect(errorsMayRedirect('https://claude.ai/api/mcp/auth_callback', empty)).toBe(false);
   });
 });
 

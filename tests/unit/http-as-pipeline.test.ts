@@ -40,6 +40,7 @@ const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
       'as-limiter',
       'bounded-parser',
       'authorize-validation',
+      'authorize-guard',
       'iss-redirect',
       'sdk-router',
     ],

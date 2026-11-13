@@ -1,6 +1,6 @@
 /**
  * The HTML pages the authorization server shows on its own origin (#55): the
- * consent page and the authorization error page.
+ * consent page and the authorization error page for unverified clients.
  *
  * Both are static HTML with no script, served with PAGE_HEADERS: a strict CSP
  * (nothing loads; inline styles only; forms post only here; no <base>; no
@@ -14,7 +14,7 @@
  */
 
 import { stripBidi, stripInvisible } from '../utils/sanitize.js';
-import { displayClientName, redirectHostLabel } from './client-metadata.js';
+import { displayClientName, redirectHostLabel, type RedirectTrust } from './client-metadata.js';
 
 /** The CSP of every page here (#55): nothing but inline styles; no framing. */
 export const PAGE_CSP =
@@ -59,8 +59,8 @@ export interface ConsentPageInput {
   clientId: string;
   /** The redirect URI this authorization returns to. */
   redirectUri: string;
-  /** Whether that redirect URI is on this device (loopback). */
-  loopback: boolean;
+  /** How that redirect URI is trusted (client-metadata.ts redirectTrust). */
+  trust: RedirectTrust;
   /** The read-only, read-write and cancel links (absolute, on this server). */
   readOnlyLink: string;
   readWriteLink: string | undefined;
@@ -68,20 +68,25 @@ export interface ConsentPageInput {
 }
 
 /**
- * The consent page. The redirect URI's host is shown prominently, the client
- * "calls itself" its name next to it, and a loopback one is labelled as
- * returning to this device.
+ * The consent page. The redirect URI's host is shown prominently. A client
+ * whose redirect URI is verified is named plainly; any other "calls itself"
+ * its name, next to the host it returns to, and a loopback one is labelled
+ * as returning to this device.
  */
 export function renderConsentPage(input: ConsentPageInput): string {
   const name = displayClientName(input.clientName);
   const host = redirectHostLabel(input.redirectUri) ?? input.redirectUri;
   const hostHtml = `<strong>${htmlEscape(host)}</strong>`;
-  const who =
-    name !== undefined
-      ? `An application at ${hostHtml} that calls itself <strong>“${htmlEscape(name)}”</strong>`
-      : `An application at ${hostHtml} (it gave no name)`;
+  let who: string;
+  if (input.trust === 'verified') {
+    who = `<strong>${htmlEscape(name ?? input.clientId)}</strong>`;
+  } else if (name !== undefined) {
+    who = `An application at ${hostHtml} that calls itself <strong>“${htmlEscape(name)}”</strong>`;
+  } else {
+    who = `An application at ${hostHtml} (it gave no name)`;
+  }
   const loopback =
-    input.loopback
+    input.trust === 'loopback'
       ? `<p class="warn">This address is on your own device. Continue only if you started this connection from an app on this computer.</p>\n`
       : '';
   return page(

@@ -1,12 +1,12 @@
 /**
  * Client metadata rules (#55): what a dynamic client registration may hold,
  * how a stored client is checked again at /authorize, how a redirect URI is
- * classified, and how a client's name is shown.
+ * classified and trusted, and how a client's name is shown.
  *
- * Pure functions only, with no Express and no SDK import: the dcr-validator
- * and authorize-validation stages and the consent page use them, and they
- * stay unchanged when the authorization server moves to oidc-provider
- * (ADR-0002, #47-4).
+ * Pure functions only, with no Express and no SDK import: the dcr-validator,
+ * authorize-validation and authorize-guard stages and the consent page use
+ * them, and they stay unchanged when the authorization server moves to
+ * oidc-provider (ADR-0002, #47-4).
  *
  * A registration (RFC 7591) keeps only the fields this server uses
  * (CLIENT_METADATA_FIELDS) and drops every other one, as RFC 7591 section 2
@@ -56,6 +56,27 @@ export const CLIENT_METADATA_FIELDS = [
 export interface ClientMetadataPolicy {
   /** Private-use schemes allowed in redirect URIs: lowercase, no colon. */
   readonly privateUseSchemes: readonly string[];
+}
+
+/** How errors and the consent page treat a redirect URI. */
+export interface RedirectPolicy extends ClientMetadataPolicy {
+  /** Redirect URIs whose clients are verified, as URL `href`s. */
+  readonly verifiedRedirectUris: ReadonlySet<string>;
+  /** Whether loopback redirect URIs receive error redirects. */
+  readonly trustLoopbackRedirects: boolean;
+}
+
+/** Build a RedirectPolicy from the loaded settings (src/config/http/dcr.ts). */
+export function redirectPolicyFrom(settings: {
+  verifiedRedirectUris: readonly string[];
+  privateUseSchemes: readonly string[];
+  trustLoopbackRedirects: boolean;
+}): RedirectPolicy {
+  return {
+    verifiedRedirectUris: new Set(settings.verifiedRedirectUris),
+    privateUseSchemes: settings.privateUseSchemes,
+    trustLoopbackRedirects: settings.trustLoopbackRedirects,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +160,31 @@ export function redirectUriMatches(requested: string, registered: string): boole
     req.pathname === reg.pathname &&
     req.search === reg.search
   );
+}
+
+/**
+ * How far a redirect URI is trusted:
+ *   - `verified`: on MCP_VERIFIED_REDIRECT_URIS;
+ *   - `loopback`: on this device;
+ *   - `unverified`: anything else.
+ */
+export type RedirectTrust = 'verified' | 'loopback' | 'unverified';
+
+export function redirectTrust(redirectUri: string, policy: RedirectPolicy): RedirectTrust {
+  const url = parseUrl(redirectUri);
+  if (url !== undefined && policy.verifiedRedirectUris.has(url.href)) return 'verified';
+  if (isLoopbackRedirectUri(redirectUri)) return 'loopback';
+  return 'unverified';
+}
+
+/**
+ * The verified-client predicate (55b): whether an authorization error may be
+ * redirected to this redirect URI (RFC 6749 section 4.1.2.1). Otherwise it is
+ * shown on this server's own page.
+ */
+export function errorsMayRedirect(redirectUri: string, policy: RedirectPolicy): boolean {
+  const trust = redirectTrust(redirectUri, policy);
+  return trust === 'verified' || (trust === 'loopback' && policy.trustLoopbackRedirects);
 }
 
 /**

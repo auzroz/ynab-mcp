@@ -25,7 +25,7 @@
  * rules in client-metadata.ts keep, and refuses what they refuse, so a
  * registration that skipped the dcr-validator stage stores nothing it would
  * refuse. The consent page (auth-pages.ts) names the host the authorization
- * returns to, and shows the client's name as what it "calls itself".
+ * returns to, and shows an unverified client's name as what it "calls itself".
  *
  * Browser binding: the consent page sets a per-authorization cookie (see
  * consent-cookie.ts) and every later leg (start, callback, cancel) requires
@@ -111,7 +111,7 @@ import { ConsentCookie, consentNonceMatches, newConsentNonce } from './consent-c
 import { withIssuer } from '../middleware/iss-redirect.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { YNAB_CALLBACK_DEADLINE_MS } from './retention-defaults.js';
-import { isLoopbackRedirectUri, validateClientMetadata, type ClientMetadataPolicy } from './client-metadata.js';
+import { redirectTrust, validateClientMetadata, type RedirectPolicy } from './client-metadata.js';
 import { HTML_CONTENT_TYPE, PAGE_HEADERS, renderConsentPage } from './auth-pages.js';
 
 export interface McpProviderOptions {
@@ -140,13 +140,18 @@ export interface McpProviderOptions {
   accessTokenTtlSec: number;
   authCodeTtlSec: number;
   /**
-   * Redirect-URI rules (#55): the private-use schemes a registration may use.
-   * Default: none.
+   * Redirect-URI rules (#55): the private-use schemes a registration may use,
+   * and which redirect URIs are verified on the consent page. Default: no
+   * private-use scheme and nothing verified.
    */
-  redirectPolicy?: ClientMetadataPolicy;
+  redirectPolicy?: RedirectPolicy;
 }
 
-const NO_REDIRECT_TRUST: ClientMetadataPolicy = { privateUseSchemes: [] };
+const NO_REDIRECT_TRUST: RedirectPolicy = {
+  verifiedRedirectUris: new Set(),
+  privateUseSchemes: [],
+  trustLoopbackRedirects: false,
+};
 
 /** A stored client: the DCR metadata plus, for a confidential client, its secret's hash. */
 type StoredClient = OAuthClientInformationFull & { client_secret_hash?: unknown };
@@ -347,7 +352,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
     return `${this.opts.publicUrl}/oauth/ynab/callback`;
   }
 
-  private get redirectPolicy(): ClientMetadataPolicy {
+  private get redirectPolicy(): RedirectPolicy {
     return this.opts.redirectPolicy ?? NO_REDIRECT_TRUST;
   }
 
@@ -437,7 +442,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
         clientName: client.client_name,
         clientId: client.client_id,
         redirectUri: params.redirectUri,
-        loopback: isLoopbackRedirectUri(params.redirectUri),
+        trust: redirectTrust(params.redirectUri, this.redirectPolicy),
         readOnlyLink: roLink,
         readWriteLink: offerWrite ? rwLink : undefined,
         cancelLink,

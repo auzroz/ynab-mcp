@@ -286,7 +286,9 @@ npx mcp-remote http://localhost:3000/mcp --header "X-YNAB-Token: &lt;your-token&
                 <tr><td><code>DATABASE_URL</code></td><td>none</td><td>Connection string for <code>postgres</code>.</td></tr>
                 <tr><td><code>MCP_ACCESS_TOKEN_TTL_SEC</code></td><td><code>3600</code></td><td>Lifetime of the access tokens the server issues to MCP clients.</td></tr>
                 <tr><td><code>MCP_AUTH_CODE_TTL_SEC</code></td><td><code>600</code></td><td>Lifetime of an authorization code and of the consent step.</td></tr>
+                <tr><td><code>MCP_VERIFIED_REDIRECT_URIS</code></td><td>Claude's connector callbacks on <code>claude.ai</code> and <code>claude.com</code></td><td>Comma-separated redirect URIs of clients you trust. An authorization error is sent back only to these (and to loopback addresses); for any other client it is shown on the server's own page, and the consent page says the client "calls itself" its name. <code>none</code> empties the list.</td></tr>
                 <tr><td><code>MCP_DCR_PRIVATE_USE_SCHEMES</code></td><td>none</td><td>Comma-separated private-use URI schemes, such as <code>com.example.app</code>, that a registering native app may use for its redirect URI. Otherwise only <code>https</code>, and <code>http</code> to loopback, are accepted.</td></tr>
+                <tr><td><code>MCP_TRUST_LOOPBACK_REDIRECTS</code></td><td><code>true</code></td><td>Send authorization errors back to loopback redirect URIs (<code>localhost</code>, <code>127.0.0.1</code>, <code>[::1]</code>). The consent page labels them either way.</td></tr>
               </tbody>
             </table>
           </div>

@@ -13,7 +13,8 @@
  *   bounded-parser     the request-body parser, at AS_MAX_BODY (8kb), with
  *                      OAuth-shaped errors (413 for a body over the limit)
  *   ...slots           route-specific checks: on /authorize the bounds
- *                      (authorize-validation) and iss-redirect; on /token and
+ *                      (authorize-validation), the open-redirect guard
+ *                      (authorize-guard) and iss-redirect; on /token and
  *                      /revoke the route limiter and then client
  *                      authentication (#52); on /register the DCR validator
  *   router             the handler that answers: the SDK's (sdk-router), the
@@ -49,9 +50,10 @@ import { clientAuthentication } from './client-auth.js';
 import type { TokenHasher } from './token-hash.js';
 import type { YnabOAuthConfig } from './ynab-oauth.js';
 import { issOnAuthorizationRedirects } from '../middleware/iss-redirect.js';
-import type { ClientMetadataPolicy } from './client-metadata.js';
+import { redirectPolicyFrom } from './client-metadata.js';
 import { dcrValidator } from './dcr-validator.js';
 import { authorizeValidation } from './authorize-validation.js';
+import { authorizeGuard } from './authorize-guard.js';
 import {
   AS_MAX_BODY,
   mountStages,
@@ -236,7 +238,7 @@ export function mountAuthorizationServer(
     globalReadOnly: config.readOnly,
     accessTokenTtlSec: config.accessTokenTtlSec,
     authCodeTtlSec: config.authCodeTtlSec,
-    redirectPolicy: { privateUseSchemes: config.privateUseSchemes },
+    redirectPolicy: redirectPolicyFrom(config),
   });
 
   // Protected-resource metadata (RFC 9728) describes the MCP endpoint, so it is
@@ -264,8 +266,8 @@ export function mountAuthorizationServer(
     authorization_response_iss_parameter_supported: true,
   };
   const pathOf = (endpoint: string): string => new URL(endpoint).pathname;
-  // #55: the redirect URIs a registration may hold.
-  const redirectPolicy: ClientMetadataPolicy = { privateUseSchemes: config.privateUseSchemes };
+  // #55: how registrations and authorization errors treat redirect URIs.
+  const redirectPolicy = redirectPolicyFrom(config);
 
   // One body parser per route, at AS_MAX_BODY (8kb, #55a): no OAuth request
   // comes near it. express.json and express.urlencoded skip a body that an
@@ -365,6 +367,8 @@ export function mountAuthorizationServer(
           'authorize-validation',
           authorizeValidation({ clients: provider.clientsStore, policy: redirectPolicy, issuer: oauthMetadata.issuer })
         ),
+        // #55b: no error redirect to an unverified client's redirect URI.
+        stage('authorize-guard', authorizeGuard()),
         // The SDK's /authorize handler redirects errors to the client without
         // `iss`; this adds it to every redirect from the authorization endpoint.
         stage('iss-redirect', issOnAuthorizationRedirects(oauthMetadata.issuer)),

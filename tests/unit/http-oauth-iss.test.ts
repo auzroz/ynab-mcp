@@ -43,6 +43,9 @@ function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
     oauthClientId: 'cid',
     oauthClientSecret: 'sec',
     encryptionKey: randomBytes(32).toString('base64'),
+    // A verified client (#55b): only its authorization errors are redirected,
+    // which is what these tests check. Unverified clients: http-oauth-dcr-authorize.test.ts.
+    verifiedRedirectUris: [CALLBACK],
     ...overrides,
   });
 }
