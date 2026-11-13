@@ -42,6 +42,7 @@ import {
   runSqlSweep,
   type ConnectionRow,
 } from './retention.js';
+import { USER_DATA_TABLES, USER_GRANTS_SQL, userDataDeleteParams, userDataDeleteSql } from './user-data.js';
 
 export interface SqliteStorageOptions extends StorageDriverOptions {
   path: string;
@@ -227,6 +228,9 @@ async function migrate(db: BetterSqlite3.Database, baseSchema: string, deps: Mig
   }
 }
 
+/** `$1`-style placeholders as SQLite's positional `?` (in order, once each). */
+const toPositional = (sql: string): string => sql.replace(/\$\d+/g, '?');
+
 /** Live tokens only: joined to their user under the account-generation invariant. */
 const SELECT_ACCESS_TOKEN = `SELECT t.* FROM access_tokens t JOIN users u ON u.user_id = t.user_id
   WHERE t.token = ? AND ${issuedUnderUserSql('t')}`;
@@ -340,8 +344,20 @@ export class SqliteStorage implements Storage {
     this.putUser(rec);
   }
 
+  /**
+   * The users-row write of a completed sign-in (#94): the one place a sign-in
+   * writes the user, inside its transaction. `created_at` is `now` on insert,
+   * the same instant the sign-in's code is stamped with. The YNAB refresh
+   * token's ciphertext is stored exactly as given (#57b binds its AAD to this
+   * column). #48 resets the user's refresh lease and shared access token here,
+   * and #54's inactive-user erase stamps `last_seen_at` here.
+   */
+  private applyStagedUser(user: UserRecord, now: number): void {
+    this.putUser(user, now);
+  }
+
   /** created_at is written by the insert only (the account's generation). */
-  private putUser(rec: UserRecord): void {
+  private putUser(rec: UserRecord, now: number = Date.now()): void {
     this.database
       .prepare(
         `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at, created_at)
@@ -356,7 +372,7 @@ export class SqliteStorage implements Storage {
         grantedScope: rec.grantedScope,
         encryptedRefreshToken: rec.encryptedRefreshToken,
         updatedAt: rec.updatedAt,
-        createdAt: Date.now(),
+        createdAt: now,
       });
   }
 
@@ -398,15 +414,17 @@ export class SqliteStorage implements Storage {
           )
           .all(u, u, u, u) as Array<{ family_id: string }>
       ).map((r) => r.family_id);
-      db.prepare('DELETE FROM users WHERE user_id = ?').run(u);
-      db.prepare('DELETE FROM auth_codes WHERE user_id = ?').run(u);
-      db.prepare('DELETE FROM access_tokens WHERE user_id = ?').run(u);
-      db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(u);
-      db.prepare('DELETE FROM consumed_auth_codes WHERE user_id = ?').run(u);
-      // Tombstones written by 0.4.x carry no user: matched by family.
-      db.prepare(
-        'DELETE FROM consumed_refresh_tokens WHERE user_id = ? OR family_id IN (SELECT value FROM json_each(?))'
-      ).run(u, JSON.stringify(families));
+      const grants = (db.prepare(toPositional(USER_GRANTS_SQL)).all(u) as Array<{ grant_id: string }>).map(
+        (r) => r.grant_id
+      );
+      // Every table of the catalog, in its order (src/storage/user-data.ts).
+      // Tombstones written by 0.4.x carry no user: matched by family; a row
+      // under one of the user's grants is matched by grant.
+      for (const entry of USER_DATA_TABLES) {
+        db.prepare(toPositional(userDataDeleteSql(entry, 'sqlite'))).run(
+          ...userDataDeleteParams(entry, 'sqlite', u, { families, grants })
+        );
+      }
     });
     // IMMEDIATE: one writer at a time, so a rotation or code exchange in
     // another process runs wholly before (and is erased) or after (and finds
@@ -593,7 +611,7 @@ export class SqliteStorage implements Storage {
         .prepare('UPDATE oauth_clients SET last_seen_at = ? WHERE client_id = ?')
         .run(Date.now(), i.code.clientId);
       if (seen.changes === 0) return false;
-      this.putUser(i.user);
+      this.applyStagedUser(i.user, Date.now());
       this.insertAuthCode(i.code);
       return true;
     });

@@ -605,6 +605,24 @@ const CASES: Case[] = [
     },
   },
   {
+    name: '#57b: the staged ciphertext reaches users.encrypted_refresh_token unchanged, never re-encrypted',
+    async run(ctx) {
+      const { clientId } = await registerClient(ctx);
+      const grantId = await saveGrant(ctx, 'u1', clientId);
+      // Whatever the caller's encryption produced (with its AAD), byte for byte.
+      const ciphertext = `v2:k7:${'\u00e9"\\/\n'}${libId()}==`;
+      expect(
+        await ctx.store.stageSignIn({
+          grantId,
+          user: { userId: 'u1', grantedScope: 'read-write', encryptedRefreshToken: ciphertext, updatedAt: 1234 },
+          expiresAt: Date.now() + 600_000,
+        })
+      ).toBe(true);
+      await saveToken(ctx, 'AuthorizationCode', { accountId: 'u1', clientId, grantId }, 600);
+      expect(await ctx.store.getUser('u1')).toMatchObject({ encryptedRefreshToken: ciphertext, grantedScope: 'read-write', updatedAt: 1234 });
+    },
+  },
+  {
     name: '#94: a code for a removed client, a revoked grant or without a live staged sign-in writes nothing (server_error)',
     async run(ctx) {
       vi.useFakeTimers({ toFake: ['Date'] });

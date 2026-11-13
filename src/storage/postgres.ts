@@ -44,6 +44,7 @@ import {
   runSqlSweep,
   type ConnectionRow,
 } from './retention.js';
+import { USER_DATA_TABLES, USER_GRANTS_SQL, userDataDeleteParams, userDataDeleteSql } from './user-data.js';
 
 export interface PostgresStorageOptions extends StorageDriverOptions {
   connectionString: string;
@@ -243,13 +244,25 @@ const UPSERT_USER_SQL = `INSERT INTO users (user_id, granted_scope, encrypted_re
          granted_scope = EXCLUDED.granted_scope,
          encrypted_refresh_token = EXCLUDED.encrypted_refresh_token,
          updated_at = EXCLUDED.updated_at`;
-const upsertUserParams = (rec: UserRecord): unknown[] => [
+const upsertUserParams = (rec: UserRecord, now: number = Date.now()): unknown[] => [
   rec.userId,
   rec.grantedScope,
   rec.encryptedRefreshToken,
   rec.updatedAt,
-  Date.now(),
+  now,
 ];
+
+/**
+ * The users-row write of a completed sign-in (#94): the one place a sign-in
+ * writes the user, inside its transaction. `created_at` is `now` on insert,
+ * the same instant the sign-in's code is stamped with. The YNAB refresh
+ * token's ciphertext is stored exactly as given (#57b binds its AAD to this
+ * column). #48 resets the user's refresh lease and shared access token here,
+ * and #54's inactive-user erase stamps `last_seen_at` here.
+ */
+async function applyStagedUser(client: PoolClient, user: UserRecord, now: number): Promise<void> {
+  await client.query(UPSERT_USER_SQL, upsertUserParams(user, now));
+}
 
 const INSERT_AUTH_CODE_SQL = `INSERT INTO auth_codes
          (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at, resource, granted_scope)
@@ -525,23 +538,26 @@ export class PostgresStorage implements Storage {
         [userId]
       );
       const families = found.rows.map((r) => r.family_id).sort();
-      for (const familyId of families) await client.query(LOCK_FAMILY, [familyId]);
-      // The user row first: a transaction minting tokens holds it FOR KEY SHARE
+      // The user's oidc-provider grants share the family lock space (LOCK_FAMILY by grant id).
+      const grants = (await client.query<{ grant_id: string }>(USER_GRANTS_SQL, [userId])).rows
+        .map((r) => r.grant_id)
+        .sort();
+      for (const id of [...new Set([...families, ...grants])].sort()) await client.query(LOCK_FAMILY, [id]);
+      // Every table of the catalog, in its order (src/storage/user-data.ts). The
+      // user row first: a transaction minting tokens holds it FOR KEY SHARE
       // (HOLD_USER), so it either commits before this DELETE (and its tokens,
       // committed by then, are deleted below) or finds the row gone. Codes
       // before code tombstones, so a code spent concurrently has its tombstone
       // committed before that DELETE reads. Token rows before tombstones, as
-      // revokeConsumedAuthCode writes them.
-      await client.query('DELETE FROM users WHERE user_id = $1', [userId]);
-      await client.query('DELETE FROM auth_codes WHERE user_id = $1', [userId]);
-      await client.query('DELETE FROM access_tokens WHERE user_id = $1', [userId]);
-      await client.query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
-      await client.query('DELETE FROM consumed_auth_codes WHERE user_id = $1', [userId]);
-      // Tombstones written by 0.4.x carry no user: matched by family.
-      await client.query(
-        'DELETE FROM consumed_refresh_tokens WHERE user_id = $1 OR family_id = ANY($2::text[])',
-        [userId, families]
-      );
+      // revokeConsumedAuthCode writes them. Tombstones written by 0.4.x carry
+      // no user and are matched by family; a row under one of the user's
+      // grants is matched by grant.
+      for (const entry of USER_DATA_TABLES) {
+        await client.query(
+          userDataDeleteSql(entry, 'postgres'),
+          userDataDeleteParams(entry, 'postgres', userId, { families, grants })
+        );
+      }
     });
   }
 
@@ -752,7 +768,7 @@ export class PostgresStorage implements Storage {
         [input.code.clientId, Date.now()]
       );
       if (seen.rowCount === 0) return false;
-      await client.query(UPSERT_USER_SQL, upsertUserParams(input.user));
+      await applyStagedUser(client, input.user, Date.now());
       await client.query(INSERT_AUTH_CODE_SQL, authCodeParams(input.code));
       return true;
     });

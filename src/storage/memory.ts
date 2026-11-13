@@ -131,6 +131,18 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   async upsertUser(rec: UserRecord): Promise<void> {
     this.putUser(rec);
   }
+  /**
+   * The users-row write of a completed sign-in (#94): the one place a sign-in
+   * writes the user, in the same step as its code. `created_at` is `now` on
+   * insert, the instant the code is stamped with. The YNAB refresh token's
+   * ciphertext is stored exactly as given (#57b binds its AAD to this column).
+   * #48 resets the user's refresh lease and shared access token here, and
+   * #54's inactive-user erase stamps `last_seen_at` here.
+   */
+  private applyStagedUser(user: UserRecord, now: number): void {
+    this.putUser(user, now);
+  }
+
   /** created_at is set by the insert only, from the storage clock (`now`, when the caller holds one instant). */
   private putUser(rec: UserRecord, now: number = Date.now()): void {
     const existing = this.users.get(rec.userId);
@@ -183,7 +195,8 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     for (const [key, stored] of this.consumedRefreshTokens) {
       if (stored.userId === userId || families.has(stored.rec.familyId)) this.consumedRefreshTokens.delete(key);
     }
-    // oauth_rows: everything with the user's account id, and every row of the user's grants.
+    // oauth_rows: everything with the user's account id, and every row of the
+    // user's grants (as USER_DATA_TABLES in src/storage/user-data.ts).
     const grants = new Set<string>();
     for (const row of this.oauthRows.values()) {
       if (row.model === 'Grant' && row.accountId === userId && row.grantId !== undefined) grants.add(row.grantId);
@@ -332,7 +345,7 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     const client = this.clients.get(input.code.clientId);
     if (!client) return false;
     client.lastSeenAt = Date.now();
-    this.putUser(input.user);
+    this.applyStagedUser(input.user, Date.now());
     this.authCodes.set(input.code.code, input.code);
     return true;
   }
@@ -517,7 +530,7 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     if (!user) return 'no-sign-in';
     // Synchronous from the client check to the last write, so nothing interleaves.
     client.authorizedAt = now;
-    this.putUser(user, now);
+    this.applyStagedUser(user, now);
     this.oauthRows.delete(signInKey);
     this.putOAuthRow(row, now);
     return 'saved';
