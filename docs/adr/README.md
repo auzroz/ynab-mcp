@@ -4,4 +4,4 @@ Each file records one decision: its context, the decision, its consequences and 
 
 | ADR | Title | Status |
 |---|---|---|
-| [0001](0001-mcp-sdk-v2-stateless.md) | MCP SDK v2 and stateless Streamable HTTP | Proposed |
+| [0001](0001-mcp-sdk-v2-stateless.md) | MCP SDK v2 and stateless Streamable HTTP | Accepted (2026-11-13) |

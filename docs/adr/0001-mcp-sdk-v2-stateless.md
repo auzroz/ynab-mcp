@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Proposed** (2026-11-10). Maintainer sign-off due Wed 2026-11-11. |
+| Status | **Accepted** (2026-11-13). Proposed 2026-11-10; the maintainer answered Q1-Q9 on 2026-11-13 with the recommendations (see "Maintainer decisions"). |
 | Issues | #41 (SDK v2 and stateless HTTP), #47 (server-legacy), #45 (structured tool output) |
 | Plan row | WS7.0. It binds WS7.2, WS7.3, WS7.4, WS7.5+7.6, WS7.7, WS7.8 and #47. |
 | Already decided | D15.5: size and truncation budgets count text content only (maintainer, 2026-11-09, on #41) |
@@ -58,7 +58,7 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
   - The cause is `classifyRequestBody`: any envelope claim routes modern. Plain 2025-era clients don't send that key, so they aren't affected. A client that falls back to 2025 but keeps the 2026 envelope key is.
   - WS7.4 adds a test pinning today's behaviour for that request shape, so the SDK fix shows up as a test change.
   - WS7.9a checks whether any client in the interop set sends it.
-  - Whether to work around it before the fix ships is Q6.
+  - **No workaround (Q6):** we accept it until #3160 ships, then bump `server`. If WS7.9a finds a client that sends this shape, WS7.4 adds the workaround instead: before the handler, strip a 2025-revision envelope claim from `params._meta` on non-`initialize` requests (about 15 lines, deleted after the fix).
 - **Why:**
   - It removes the process-local session state behind ABUSE-7 and ABUSE-22.
   - It removes the need for sticky sessions.
@@ -144,27 +144,34 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
 - **Binds:**
   - WS7.4: `http.ts`, `server.ts` (the settle hook in the `tools/call` handler), `user-registry.ts` (leases only; owner A acks) and `ynab-client.ts` (only `feedSinceDateRejected`).
   - Tests: after the ceiling fires, the lease and the slot stay held until the tool call settles; with a stalled resolver, the slot stays held until `resolve` settles.
-  - Q4 asks you to confirm this change from the plan.
+  - The maintainer confirmed this change from the plan (Q4, 2026-11-13), including its cost: a hung YNAB fetch keeps its slot until #58's fetch timeout.
 
 ### D6. In-flight caps and a request ceiling replace the session caps
 
 - **What:**
-  - **Caps:** a new `src/services/inflight-limiter.ts` keeps in-flight counters per user and per (client, user). Past either cap, the request gets 429 with `Retry-After` and a JSON-RPC error, before any server is built.
-  - **The plan's numbers:** 4 per user and 8 per (client, user). As written, the second cap can never bind; see Q1.
+  - **Caps:** a new `src/services/inflight-limiter.ts` keeps in-flight counters per user and per (client, user). Past either cap, the request gets 429 with `Retry-After: 1` and a JSON-RPC error, before any server is built.
+  - **Numbers (Q1):** 8 per user (`MCP_MAX_INFLIGHT_PER_USER`) and 4 per (client, user) (`MCP_MAX_INFLIGHT_PER_CLIENT`). The plan had them the other way round, where the per-client cap could never bind and one client could take all of a user's slots.
   - **Header mode** has no client id, so only the per-user cap applies.
-  - **A process-wide cap (proposed; Q1):** header mode accepts any non-empty token as a new "user" (`http.ts:282-289`), so per-user caps alone don't bound total concurrency. `MCP_MAX_INFLIGHT` (proposed default 64) caps in-flight requests across all users, with the same 429 response. Today's global session cap is the thing it replaces.
+  - **A process-wide cap (Q1):** header mode accepts any non-empty token as a new "user" (`http.ts:282-289`), so per-user caps alone don't bound total concurrency. `MCP_MAX_INFLIGHT` (default 64) caps in-flight requests across all users, with the same 429 response. Today's global session cap is the thing it replaces.
     - Slots are **not** guaranteed to free at the ceiling. Under D5, a slot is held until the request's started work settles, and that includes `resolver.resolve`.
     - `resolve` awaits storage reads and an `upsertUser` write. #58's fetch timeout bounds the YNAB token refresh inside it, but nothing bounds the storage calls today: `postgres.ts` sets no statement, query or pool-acquire timeout.
     - So requests that stall in storage hold their slots until the storage call returns, and enough of them can exhaust the cap with their responses already closed.
-    - Bounding storage work is Q7.
-    - Until it's bounded, the cap stops new work from piling onto a stalled database (429). It does not promise recovery within the ceiling.
+    - **Storage work is bounded (Q7)**, so every held slot frees:
+      - Postgres, server side: `statement_timeout`, and the pool's `connectionTimeoutMillis` (for example 10 s).
+      - Postgres, client side: `pg`'s `query_timeout`, set above `statement_timeout`, so the server cancels a slow statement first and the client-side timeout fires only when the server can't be reached (for example a reply lost in a network partition). A connection whose query timed out is discarded, not returned to the pool.
+      - A timed-out write is an unknown outcome. The request fails; nothing retries the write or acts on a re-read as if it had failed, because the write may still commit. The refresh-token write is already a compare-and-set (STOR-1's `updateUserRefreshToken`), so a late commit can't overwrite a newer token.
+      - SQLite: a bounded `busy_timeout`, which bounds the wait for a lock held by another connection or process.
+      - A query that hits a timeout fails as a 401 or a mapped error, never a hang.
+      - SQLite (`better-sqlite3`) runs synchronously on the event loop. A slow query or a stalled disk therefore stalls the whole process, ceiling timers included, instead of holding slots while other requests run. That is a single-node outage, not slot exhaustion, and moving SQLite to a worker thread is out of scope for 0.5.0.
   - **Ceiling:** `MCP_REQUEST_TIMEOUT_MS`, default 60 000. At the ceiling, a request whose response hasn't started gets a JSON-RPC error that echoes its id ("Request timed out", with no upstream text).
   - **Open SSE streams get the error in the stream:**
     - In 2.4.0 the stateless legacy leg answers every request-bearing POST over SSE. `WebStandardStreamableHTTPServerTransport` defaults to `enableJsonResponse: false`, the fallback can't change that, and it writes the headers and a keepalive every 15 s straight away. So for 2025-era clients the response has always "started".
     - Ending that stream without a result would leave a timed-out write with no outcome at all.
-    - **Requirement:** at the ceiling, a request on an open SSE stream first receives a JSON-RPC error for its id as an SSE `message` event: the unknown-outcome text below for write tools, "Request timed out" otherwise. Only then is the stream ended.
-    - **Proposed mechanism (Q8):** a deadline inside the `tools/call` handler (`server.ts`), a little earlier than `MCP_REQUEST_TIMEOUT_MS`. It returns the timeout as an `isError` tool result, and the SDK delivers that over whichever transport the request uses (JSON, modern SSE or legacy SSE). The HTTP-level ceiling stays as the backstop for stalled stages before the handler, and for non-tool methods.
-  - **Settings:** `MCP_MAX_INFLIGHT_PER_USER`, `MCP_MAX_INFLIGHT_PER_CLIENT` and `MCP_REQUEST_TIMEOUT_MS`. All three are parsed strictly and bounds-checked like #56's settings.
+    - **Requirement:** a `tools/call` that times out on an open SSE stream first receives a JSON-RPC result for its id as an SSE `message` event: the unknown-outcome text below for write tools, "Request timed out" otherwise. Only then is the stream ended. Other methods are covered below.
+    - **Mechanism (Q8):** a deadline inside the `tools/call` handler (`server.ts`), taken from the request's absolute deadline (when `request-ceiling` started, plus `MCP_REQUEST_TIMEOUT_MS`) less a small margin, never a fresh timer. A slow `resolve` therefore shortens the handler's time instead of pushing its deadline past the ceiling; a test covers a delayed resolver followed by a slow write. It returns the timeout as an `isError` tool result, and the SDK delivers that over whichever transport the request uses (JSON, modern SSE or legacy SSE). The HTTP-level ceiling stays as the backstop for stalled stages before the handler, and for non-tool methods:
+      - A stage before `mcp-handler` (for example a stalled `resolver.resolve`) runs before the SDK has started any response, legacy SSE included, so the ceiling answers with the JSON-RPC error above ("Request timed out", echoing the id).
+      - A non-tool method that stalls after the legacy leg has started its SSE response gets no error event: the ceiling ends the stream. Those methods change nothing, so there is no unknown outcome to report. Writing our own SSE frame into the SDK's stream was option (b) of Q8, which was not chosen.
+  - **Settings (Q5):** `MCP_MAX_INFLIGHT_PER_USER` (default 8) and `MCP_MAX_INFLIGHT_PER_CLIENT` (default 4), each 1-64; `MCP_MAX_INFLIGHT` (default 64); `MCP_REQUEST_TIMEOUT_MS` from 5 000 to 300 000 (default 60 000). All are parsed strictly and bounds-checked like #56's settings, in WS7.4's `src/config/http/limits.ts`, which fixes the final names and `MCP_MAX_INFLIGHT`'s range.
 - **Why:**
   - These caps bound concurrency per principal instead of counting sessions.
   - The (client, user) key stops one client from starving another client of the same user (ABUSE-22).
@@ -180,6 +187,7 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
   - `ynab_create_transaction`'s description already says to pass `import_id` for an idempotent create (`create-transaction.ts:87`). Generating one on the server would change YNAB's import matching, so it is not part of this ADR.
 - **Binds:**
   - WS7.4: `src/services/inflight-limiter.ts` (new) and `src/config/http/limits.ts` (owner C acks).
+  - Storage owner D: the Q7 timeouts in `postgres.ts` and `sqlite.ts`, with tests that a stalled query fails instead of hanging.
   - Gate G2: 429 per user and per (client, user), and the ceiling holds (including a stalled `resolve`).
   - A test that a timed-out write tool gets the unknown-outcome message, including a 2025-era (legacy SSE) write that times out after keepalives have started: the error event must arrive before the stream ends.
   - Breaking-change row 3.
@@ -270,7 +278,8 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
     - the provider throws its error classes inside the authorization server.
   - A guard test asserts the range and checks that `@modelcontextprotocol/core` resolves to one version.
   - **Trigger:** if a server-legacy advisory has no patched 2.4.x release, #47 is pulled forward (or, after the release, a 0.5.x).
-  - Under the 2026-11-09 scope decision, #47 itself (moving the AS off server-legacy) ships in 0.5.0. It needs its own ADR-0002 for the replacement choice, which issue #47 asks for. #46 (Client ID Metadata Documents) builds on it. See Q3.
+  - Under the 2026-11-09 scope decision, #47 itself (moving the AS off server-legacy) ships in 0.5.0. It needs its own ADR-0002 for the replacement choice, which issue #47 asks for. #46 (Client ID Metadata Documents) builds on it.
+  - **Q3:** ADR-0002 is P's next document after WS7.3. If the port hasn't merged by the Dec 9 freeze, 0.5.0 ships on this pin with the documented reason (issue #47's own fallback), and #47 and #46 move to 0.5.1.
 - **Why:**
   - server-legacy is frozen and npm-deprecated, and it pins `core` exactly. If `server` moved to 2.5 while server-legacy stayed at 2.4, the tree would hold two copies of `core`.
   - The v2 bearer middleware recognizes only v2's `OAuthError` (an `instanceof` check). server-legacy ships its own copy of the class.
@@ -297,7 +306,7 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
 6. **Pilot (45a).**
    - The first ten tools: `ynab_get_user`, `ynab_list_budgets`, `ynab_get_budget_settings`, `ynab_list_accounts`, `ynab_get_account`, `ynab_get_category`, `ynab_get_month`, `ynab_get_transaction`, `ynab_list_scheduled_transactions` and `ynab_rate_limit_status`.
    - Four of them (`get_category`, `get_month`, `get_transaction`, `list_scheduled_transactions`) go through `omitNull` today, so they exercise item 1.
-   - The rest follow in 45b (see Q2).
+   - The other 59 tools follow in 45b, in P10 with the pilot (Q2). A tool without a schema at the tag ships without `outputSchema`, which doesn't block the release.
 
 - **Binds:** WS7.8 and 45b (`src/server.ts`, `src/tools/index.ts`, the tool modules; owner B) and the CHANGELOG "Added" section.
 
@@ -313,7 +322,7 @@ The stages are mounted with `mountStages` and named, so a stage-list test covers
 - The in-flight limiter runs before the request context, so a refused request costs no storage read. It answers 429 in both modes (D6).
 - Nothing bounds the *number* of requests that are still unauthenticated:
   - Partial uploads and `verifyAccessToken` reads take no slot, because the caps key on identity. The ceiling bounds how long each one lasts, but not how many there are.
-  - A pre-authentication admission cap would close this, but it lets an unauthenticated flood lock out authenticated users. That trade-off is Q9.
+  - **No pre-authentication cap in 0.5.0 (Q9).** It would let an unauthenticated flood lock out authenticated users. 0.5.0 relies on the ceiling, Node's `server.headersTimeout` and `requestTimeout`, and a reverse proxy's connection limits, and WS7.7 documents that. A per-IP limiter on `/mcp`, keyed the way #59 keys the AS limiters, is the better tool for unauthenticated load; it isn't planned yet.
 - Every authentication failure (`bearer`) and every `request-context` failure answers 401 with `resource_metadata` in OAuth mode, never 500 (gate G6). The 429 from `inflight-limit` is outside G6.
 
 ## Consequences
@@ -355,59 +364,19 @@ The stages are mounted with `mountStages` and named, so a stage-list test covers
 - **A global cap per `client_id`** (the #41 comment). Rejected in D6: it throttles all users of a shared public client together.
 - **Porting the AS off server-legacy inside WS7.3.** Rejected: WS7.3 stays a small auth split. The port has its own issue (#47) and ADR (ADR-0002).
 
-## Open questions for the maintainer (Wed Nov 11)
+## Maintainer decisions (2026-11-13)
 
-1. **The cap numbers can't both bind.**
-   - The plan says 4 in-flight requests per user and 8 per (client, user). Every (client, user) count is at most the user's count, so the 8 never binds, and one client can still take all 4 of a user's slots (ABUSE-22).
-   - **Recommendation:** 8 per user and 4 per (client, user): `MCP_MAX_INFLIGHT_PER_USER=8`, `MCP_MAX_INFLIGHT_PER_CLIENT=4`.
-   - Alternative: keep 4 per user and drop the per-client cap.
-   - Either way, Breaking-change row 3 and its CHANGELOG line change to match.
-   - Also confirm the process-wide cap D6 proposes (`MCP_MAX_INFLIGHT`, default 64). The plan has none, and without one, header mode with made-up tokens is unbounded.
-2. **#45 in full.**
-   - The 2026-11-09 scope decision puts all of #45 in 0.5.0. The plan has only the ten-tool pilot, as a stretch item in P9 or P10, and no slot for the other 59 tools.
-   - Please confirm:
-     - (a) Where 45b (59 tools, mechanical once the pilot sets the pattern) lands: P10 with the pilot, or the Sun Dec 13 interop-fix packet.
-     - (b) A tool without a schema at the tag ships without `outputSchema`, which is not a release blocker.
-     - (c) #45's `registerTool` checkbox is reworded to "outputSchema on the low-level Server" (D2, D15).
-3. **#47 in full.**
-   - The scope decision moves the AS port into 0.5.0. The plan had P draft it after the tag, and the port needs ADR-0002 first.
-   - Please confirm:
-     - (a) ADR-0002 is P's next document after WS7.3.
-     - (b) If the port hasn't merged by the Dec 9 freeze, 0.5.0 ships on the D14 pin with the documented reason (issue #47's own fallback), and #47 and #46 move to 0.5.1.
-4. **When leases are released (a change from the plan).**
-   - The plan releases on `res.on('close')` alone. D5 instead holds the registry lease and the in-flight slot until the response has closed *and* the tool call has settled.
-   - The reasons: no eviction of components still in use, and no stacking of abandoned work after the ceiling fires.
-   - The cost: a hung YNAB fetch keeps its slot until #58's fetch timeout, so that user may get 429s sooner.
-   - Please confirm.
-5. **Ceiling bounds and `Retry-After`.**
-   - **Proposed:** `MCP_REQUEST_TIMEOUT_MS` from 5 000 to 300 000 (default 60 000); the in-flight caps from 1 to 64; `Retry-After: 1` on 429.
-   - The final names and bounds go in WS7.4's `limits.ts`, as #58a did with its setting.
-6. **Work around the SDK's legacy-routing defect (D1)?**
-   - Options:
-     - (a) Accept it until typescript-sdk#3160 ships, and bump `server` then. A pinning test flags the change, and WS7.9a checks the real clients.
-     - (b) Before the handler, strip a 2025-revision `io.modelcontextprotocol/protocolVersion` claim from `params._meta` on non-`initialize` requests, so they classify legacy. This is about 15 lines; delete it after the fix.
-   - **Recommendation:** (a), unless WS7.9a finds a client that sends the shape. Then (b).
-7. **Bound storage work, so held slots always free (D6).**
-   - Options:
-     - (a) Bound storage calls on both sides:
-       - Postgres server side: `statement_timeout` and the pool's `connectionTimeoutMillis` (e.g. 10 s).
-       - Postgres client side: `pg`'s `query_timeout`. This also covers a reply lost in a network partition, which the server-side timeouts don't. A connection whose query timed out is discarded, not returned to the pool, and a timed-out write is treated as an unknown outcome: re-read before acting on it.
-       - SQLite: a bound `busy_timeout`.
-     - (b) An application-level timeout around `resolve`'s storage calls. A timed-out call is abandoned and its slot freed, but the write may still land.
-     - (c) No bound in 0.5.0; document that the process-wide cap may fill while storage is stalled.
-   - **Recommendation:** (a). It belongs to storage owner D (`postgres.ts`, `sqlite.ts`), fits P5-P6, and makes every storage call settle. A query that hits the timeout fails as a 401 or a mapped error, never a hang.
-8. **How a timed-out tool call reports (D6).**
-   - Options:
-     - (a) A handler-level deadline in `tools/call` returns the error as an `isError` result through the SDK, plus the HTTP ceiling as a backstop.
-     - (b) The HTTP ceiling writes its own SSE `message` frame into the stream `toNodeHandler` is piping, then ends it.
-   - **Recommendation:** (a). The SDK keeps the framing, it works on all three response shapes, and the model sees an ordinary tool error. (b) depends on the transport's frame boundaries.
-9. **A pre-authentication admission cap?**
-   - The in-flight caps key on identity, so requests still uploading or being verified count against nothing (pipeline section).
-   - Options:
-     - (a) A process-wide pre-auth cap (e.g. 128) acquired before `json-512kb` and held until verification settles.
-     - (b) Rely on the ceiling, Node's `server.headersTimeout` and `requestTimeout`, and a reverse proxy's connection limits, and document that.
-   - **Recommendation:** (b) for 0.5.0. A pre-auth cap is a lever an unauthenticated client can use to lock out every authenticated user.
-   - A per-IP limiter on `/mcp`, keyed the way #59 keys the AS limiters, is the better tool for unauthenticated load. It isn't planned today: #59 covers only the AS routes.
+The ADR's nine open questions, answered with the recommendations. The numbers match the PR #91 review threads.
+
+1. **Caps:** 8 in flight per user and 4 per (client, user); a process-wide cap, `MCP_MAX_INFLIGHT`, default 64 (D6). Breaking-change row 3 and its CHANGELOG line use these numbers.
+2. **#45 in full:** (a) 45b, the other 59 tools, lands in P10 with the pilot; (b) a tool without a schema at the tag ships without `outputSchema`, which doesn't block the release; (c) #45's `registerTool` checkbox is reworded to "outputSchema on the low-level Server" (D2, D15).
+3. **#47 in full:** (a) ADR-0002 is P's next document after WS7.3; (b) if the port hasn't merged by the Dec 9 freeze, 0.5.0 ships on the D14 pin and #47 and #46 move to 0.5.1 (D14).
+4. **Leases:** held until the response has closed and the started work has settled (D5).
+5. **Bounds:** `MCP_REQUEST_TIMEOUT_MS` 5 000-300 000 (default 60 000); the per-user and per-client caps 1-64; `Retry-After: 1` on 429 (D6).
+6. **SDK legacy-routing defect:** no workaround unless WS7.9a finds a client that sends the shape (D1).
+7. **Storage work:** bounded at the database and driver level, owned by storage owner D in P5-P6 (D6).
+8. **Timed-out tool calls:** a handler-level deadline returns an `isError` result through the SDK; the HTTP ceiling is the backstop (D6).
+9. **Unauthenticated load:** no pre-authentication cap in 0.5.0; rely on timeouts and a reverse proxy, documented in WS7.7 (pipeline section).
 
 ## Addenda
 
