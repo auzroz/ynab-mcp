@@ -5,4 +5,4 @@ Each file records one decision: its context, the decision, its consequences and 
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-mcp-sdk-v2-stateless.md) | MCP SDK v2 and stateless Streamable HTTP | Accepted (2026-11-13) |
-| [0002](0002-oauth-authorization-server-library.md) | The OAuth authorization server moves to oidc-provider | Proposed (2026-11-13) |
+| [0002](0002-oauth-authorization-server-library.md) | The OAuth authorization server moves to oidc-provider | Accepted (2026-11-13) |

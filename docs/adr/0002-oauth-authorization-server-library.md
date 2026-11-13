@@ -2,15 +2,15 @@
 
 | | |
 |---|---|
-| Status | **Proposed** (2026-11-13, revised the same day after the maintainer's answers). The first draft proposed porting server-legacy's handlers. The maintainer chose a library instead (decision 1 below), so this revision designs the move to one. |
+| Status | **Accepted** (2026-11-13). Proposed the same day; the first draft proposed porting server-legacy's handlers, and the maintainer chose a library instead (first-draft decision 1 below). The maintainer then answered the nine open questions on 2026-11-13: eight with the recommendations, and Q3 (the upgrade path) with a middle path. See "Maintainer decisions (2026-11-13)" at the end. |
 | Issues | #47 (this move), #46 (Client ID Metadata Documents, built on it), and #42, #52, #53, #54, #55, #59, #64, #94, which share its code |
-| Bound by | ADR-0001: the package table, D14 (the `~2.4.0` pin, the guard test, the advisory trigger, the `OAuthError` `instanceof` problem) and the Q3 fallback. The maintainer's answers of 2026-11-13 (below) replace Q3's "ship on the pin at the freeze": 0.5.0 waits for this move. |
+| Bound by | ADR-0001: the package table, D14 (the `~2.4.0` pin, the guard test, the advisory trigger, the `OAuthError` `instanceof` problem) and ADR-0001's Q3 fallback. The maintainer's answers of 2026-11-13 (below) replace that Q3's "ship on the pin at the freeze": 0.5.0 waits for this move. |
 | Evidence | Two throwaway spikes, run on 2026-11-13 outside the repository (see "The spikes") |
 | Changes | Later changes are dated addenda at the end of this file. |
 
-## Maintainer decisions (2026-11-13)
+## Maintainer decisions on the first draft (2026-11-13)
 
-The answers to the first draft's eight questions. They bind this revision.
+The answers to the first draft's eight questions. They bind this revision. The answers to this revision's nine questions are in "Maintainer decisions (2026-11-13)" at the end.
 
 1. **Adopt a maintained OAuth library, not a port.** The first draft rejected `oidc-provider` because it couldn't land by Dec 9; decision 7 removes that constraint.
 2. **Code we still port or adapt comes from the MIT `@modelcontextprotocol/sdk` 1.32.2.** With a library, that is only the 405 method check (D8).
@@ -49,7 +49,7 @@ Facts checked on 2026-11-13 against npm, the published tarballs and the two spik
 | Refresh rotation, reuse revocation, code-replay revocation | Built in (a replay revokes the grant) | Rotation built in; reuse revocation is opt-in; code replay is the model's job | Rotation hook only | None |
 | Storage | Its adapter models replace our tables | Its model interface fits our storage almost as it is | Model hooks | Not applicable |
 | CIMD (#46) | Experimental (draft-03, needs an `ack`) | Built in, opt-in | No | Schema field only |
-| **Disqualifier** | None. It is a rewrite of our AS glue and storage (D15). | None on function. Maturity: a four-month-old 1.x with one maintainer and a few thousand installs, for our most security-sensitive code (new question 1). | Too little of the AS | No AS |
+| **Disqualifier** | None. It is a rewrite of our AS glue and storage (D15). | None on function. Maturity: a four-month-old 1.x with one maintainer and a few thousand installs, for our most security-sensitive code (rejected, Q1). | Too little of the AS | No AS |
 
 Also ruled out:
 - `@better-auth/oauth-provider`: needs the better-auth framework.
@@ -58,7 +58,7 @@ Also ruled out:
 - An external identity provider (Auth0, Keycloak): every self-hosted operator would run a second service, and the YNAB broker would become a plug-in of it.
 - The port of server-legacy's handlers: decision 1.
 
-**Recommendation: (a1) `oidc-provider`, as the lead assumed.** Every must-keep behaviour has a place in it (the table after D15), and the spike exercised each one. It is the mature choice, and maturity is the main reason to adopt a library rather than port. (a2) `mcp-oauth-server` is the newly found alternative. It fits our code better: it is the SDK's AS continued as a library, so our storage, error shapes and tests would change far less. But it is four months old, with one maintainer and about 2.7 k installs a week. New question 1 asks the maintainer to confirm the choice.
+**Recommendation: (a1) `oidc-provider`, as the lead assumed.** Every must-keep behaviour has a place in it (the table after D15), and the spike exercised each one. It is the mature choice, and maturity is the main reason to adopt a library rather than port. (a2) `mcp-oauth-server` is the newly found alternative. It fits our code better: it is the SDK's AS continued as a library, so our storage, error shapes and tests would change far less. But it is four months old, with one maintainer and about 2.7 k installs a week. The maintainer confirmed oidc-provider and rejected mcp-oauth-server as too young for security-critical code (Q1).
 
 ## The spikes
 
@@ -73,7 +73,8 @@ Neither is in the repository. Both mount the library inside Express 5 behind sta
   - **Revocation.** `/revoke` from a client that doesn't own the token does nothing; revoking a refresh token removes the whole grant.
   - **STOR-1.** A token issued before its user row was re-created reads as unknown.
   - **The browser binding.** Completing an interaction from a browser without its cookie is refused before the YNAB exchange. Cancel returns `access_denied` with `state` and `iss`.
-  - **#64a and the upgrade.** The #64a idempotency stage gives a retry within 60 s the same token pair. A 0.4.x refresh token known only by its hash is honoured once through the public model constructors, then rotated; replaying it later counts as reuse.
+  - **#64a.** The #64a idempotency stage gives a retry within 60 s the same token pair.
+  - Checks 33 and 34 also showed that a 0.4.x refresh token could be turned into a library token through the public model constructors. The maintainer chose not to use this (Q3), so those two checks are evidence only.
 - **mcp-oauth-server 1.1.0: 18 of 19 checks pass.** The one failure is narrowing a refresh to `read-only` after a `read-write` grant. D7's normalization fixes it for both libraries. The spike also showed that the library defaults an omitted `grant_types` to `authorization_code` only. A client registered that way can't refresh, so `dcr-validator` would have to default it.
 
 ## Spike checks
@@ -112,8 +113,8 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
 30. The #64a stage: a retry within 60 s gets the same pair, and nothing is revoked
 31. The #64a stage: once the successor is used, the old token is reuse
 32. A forced race: the compare-and-set `consume()` refuses the loser and revokes the grant
-33. The upgrade bridge honours a 0.4.x refresh token once, and the library rotates it
-34. The upgrade bridge: replaying the 0.4.x value after rotation is reuse
+33. A 0.4.x refresh token could be converted once and rotated by the library (not used: Q3 drops the conversion)
+34. Replaying the converted 0.4.x value after rotation is reuse (not used: Q3)
 35. Concurrent redemption of one code leaves no live token
 36. Completing an interaction without its browser cookie is refused before the YNAB exchange
 37. Cancel returns `access_denied` with `state` and `iss`
@@ -193,13 +194,13 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
   - **#42, tokens only for a live grant.** A token or code is saved only while its grant row exists, checked in the same transaction (on Postgres, `FOR KEY SHARE` on the grant). A replay that revoked the grant in between leaves nothing behind.
   - **STOR-1.** Every token read is joined to its user row. A token whose user is gone, or which predates the user's row, reads as unknown.
   - **#94, atomic sign-in.** `complete` stages the sign-in (the encrypted YNAB refresh token and the YNAB grant level) under the grant id. The code's `upsert` runs #94's `completeAuthorization` in one transaction: the client must still be registered (locked against the sweep), the staged user is applied, and the code row is inserted. If the client is gone, nothing is written and the library answers `server_error`.
-  - **Retention and the sweep.** Every row carries `expires_at`, `grant_id`, `account_id`, `client_id` and `consumed_at`. `sweepExpired` deletes expired rows in batches. Abandoned and unused clients use the grant rows.
-  - **Account deletion and #53b.** `deleteUserData` deletes every row with the user's `account_id`, then the user, in one transaction. `AccountStore` keeps its interface: `listConnections` reads grant rows, and `revokeUserFamily` takes a grant id.
+  - **Retention and the sweep.** Every row carries `expires_at`, `grant_id`, `account_id`, `client_id` and `consumed_at`. `sweepExpired` deletes expired rows in batches. Abandoned and unused clients use the grant rows. A client converted by M4 has no grant rows until its users sign in again, so its 90-day unused window counts from the conversion (M4 stamps it), not from its last 0.4.x use.
+  - **Account deletion and #53b.** `deleteUserData` deletes every row with the user's `account_id`, and the user's rows in the old 0.4.x token tables (D12), then the user, in one transaction. `AccountStore` keeps its interface: `listConnections` reads grant rows, and `revokeUserFamily` takes a grant id.
 - **Drivers:** memory, SQLite and Postgres, all in the same PR, with one conformance suite run against each (D13).
 - **Migration M4** (it takes #64a's slot, since #64a's own M4 is dropped: see D14):
   - one `oauth_rows` table (`key` PK, `model`, `payload` JSON, `grant_id`, `account_id`, `client_id`, `uid`, `expires_at`, `consumed_at`, `created_at`), with indexes on `(model, grant_id)`, `account_id`, `uid` and `expires_at`;
-  - existing clients converted (D12);
-  - the old token tables left in place, read only by the upgrade bridge.
+  - existing clients converted (D12), so no client has to register again;
+  - the old token tables (access, refresh, codes, pending authorizations, refresh tombstones) are neither converted nor read: D12 says what happens to their rows.
 - **Binds:** #47-1. D owns the drivers; S writes the adapter.
 
 ### D5. Client authentication stays #52's fail-closed stage
@@ -240,20 +241,20 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
   - A new `method-check` stage keeps today's 405 with `Allow` and a `method_not_allowed` body; the library answers 404. It is ported from 1.32.2's `allowedMethods` (MIT, about 10 lines, decision 2).
   - `route-limiter` stages on `/authorize` (100 per 15 min) and `/register` (20 per hour) replace the SDK handlers' internal limiters. #59's keys apply to them.
   - `iss-redirect` goes: the library sets `iss` on every authorization response, errors included (the spike checked this).
-- **The final stage lists**, once #47-5 and the re-scoped #64a have merged (with #55's and #59's stages as the plan has them). #47-4 mounts every stage except `legacy-refresh` and `legacy-revoke` (added by #47-5) and `refresh-guard` (added by #64a). Each of those PRs adds its stages to `EXPECTED` itself.
+- **The final stage lists**, once the re-scoped #64a has merged (with #55's and #59's stages as the plan has them). #47-4 mounts every stage except `refresh-guard` (added by #64a). #64a adds its stage to `EXPECTED` itself.
 
 | Route | Stages |
 |---|---|
 | `/authorize` | host-validation → as-limiter → bounded-parser → method-check → route-limiter → authorize-validation → authorize-guard → as-library |
-| `/token` | host-validation → as-limiter → bounded-parser → method-check → cors-origin → route-limiter → client-auth → legacy-refresh → grant-guard → refresh-guard → as-library |
-| `/revoke` | host-validation → as-limiter → bounded-parser → method-check → cors-origin → route-limiter → client-auth → legacy-revoke → as-library |
+| `/token` | host-validation → as-limiter → bounded-parser → method-check → cors-origin → route-limiter → client-auth → grant-guard → refresh-guard → as-library |
+| `/revoke` | host-validation → as-limiter → bounded-parser → method-check → cors-origin → route-limiter → client-auth → as-library |
 | `/register` | host-validation → as-limiter → bounded-parser → method-check → route-limiter → dcr-validator → as-library |
 | `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`, `/jwks` | host-validation → bounded-parser → as-library |
 | the PRM routes | unchanged (`metadata`, ours) |
 | `/oauth` | host-validation → oauth-leg-limiter → bounded-parser → ynab-federation (now including the interaction routes) |
 
 - **`dcr-validator`** (#55) also sets `application_type: native` on a registration whose redirect URIs are all loopback or private-use. That keeps today's RFC 8252 loopback port relaxation, which the library applies only to native clients.
-- **Binds:** #47-4, with `http-as-pipeline.test.ts`'s `EXPECTED` changed in that PR; #47-5 and #64a for their own stages.
+- **Binds:** #47-4, with `http-as-pipeline.test.ts`'s `EXPECTED` changed in that PR; #64a for its own stage.
 
 ### D9. Errors
 
@@ -287,48 +288,31 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
 
 ### D12. The 0.4.x upgrade path
 
+The maintainer chose a middle path (Q3). **Registered clients are converted. Tokens, codes and sign-ins in flight are not carried over.** Every user signs in again once per client after the upgrade.
+
 What an upgrading instance holds, and what happens to it:
 
-| Data | Lifetime | Recommended handling |
+| Data | Lifetime | Handling |
 |---|---|---|
 | `users` (encrypted YNAB refresh tokens) | Long | Kept as is (ours) |
-| `oauth_clients` (DCR) | Until swept | **Converted** in M4 into library client records, validated with the library's client schema. `application_type` is set as in D8. A client that fails validation is dropped and logged, and has to register again. |
-| Refresh-token families | 30-day idle, 90-day absolute (STOR-1) | **Honoured lazily** by the `legacy-refresh` stage (below) |
-| Access tokens | At most `MCP_ACCESS_TOKEN_TTL_SEC` (1 h by default) | Honoured by the verifier's fallback read of the old table until they expire, or until their family is bridged or revoked |
-| Codes, pending authorizations | 10 min | Dropped: a sign-in in flight at upgrade time starts over |
-| Refresh tombstones (rotated before the upgrade) | 30 days | Kept read-only for the bridge's reuse detection |
+| `oauth_clients` (DCR) | Until swept | **Converted** in M4 into library client records, validated with the library's client schema. `application_type` is set as in D8. A client that fails validation is dropped and logged, and has to register again. The old client rows stay in place for rollback. The 90-day unused-client window of a converted client counts from the conversion (D4), so it survives until its users sign in again or the window passes, as an unused client would under 0.4.x. |
+| Access tokens | At most `MCP_ACCESS_TOKEN_TTL_SEC` (1 h by default) | **Stop working at the cut-over.** The verifier reads only `oauth_rows` |
+| Refresh tokens and their families | 30-day idle, 90-day absolute (STOR-1) | **Stop working at the cut-over.** The client gets `invalid_grant` and sends the user through authorization again |
+| Codes, pending authorizations, sign-ins in flight | 10 min | **Stop working.** A sign-in in flight at upgrade time starts over |
+| Refresh tombstones (rotated before the upgrade) | 30 days | Unused. Nothing reads them |
 
-**The bridge, step by step.** `legacy-refresh` runs only for a refresh token the library doesn't know:
-1. **A live 0.4.x refresh token, presented by its own client.** In one storage transaction (D's drivers):
-   - create a library `Grant` and a `RefreshToken` with `jti` set to the presented value, through the public model constructors (the spike checked this);
-   - record the mapping from the legacy family to the new grant id;
-   - delete the family's legacy access tokens (the client is refreshing, so it is about to get a new one);
-   - mark the legacy refresh row converted.
+**What the user sees.** A converted client is still registered, so nothing needs to be added again. A client that failed conversion was dropped and has to register again before anyone can sign in with it. On its next call it is refused and sends the user through the consent page and YNAB's approval once. That is U×C sign-ins: 6 for a family instance with 3 users and 2 clients each. The claude.ai connector shows as disconnected until each one is redone. 0.5.0 already asks operators to act on upgrade, and the upgrade notes (REMOTE_HOSTING and the CHANGELOG) say this plainly: tell your users to expect one sign-in per client.
 
-   Then the library rotates the token as usual.
-   - **If that rotation fails** (a storage error, say), the converted `RefreshToken` still holds the presented value, unconsumed. A retry finds it in the library, skips the bridge, and rotates normally. So a failed rotation never looks like reuse.
-   - **If the rotation succeeded**, a later replay of the value is reuse, handled by the library.
-2. **A 0.4.x tombstone** (a token rotated before the upgrade) is reuse. The bridge revokes the legacy family and its mapped grant, as `rejectRefreshToken` does today.
-3. **A live 0.4.x token presented by another client** revokes the legacy family, as today.
+**What happens to the old token rows.** They are ignored, not read, and not migrated:
+- **No code path reads them.** The new verifier, the adapter and `grant-guard` look only at `oauth_rows`. A 0.4.x token value is therefore unknown to the library and is refused. Nothing in the cut-over is a fallback or a converter.
+- **Retention is unchanged (STOR-1).** The existing sweep keeps deleting expired rows from the old tables in batches, on the same schedule, so they empty by themselves within the 90-day absolute lifetime. M4 doesn't drop them: dropping a table in a migration can't be undone, and rollback needs them.
+- **Deletion stays complete.** `deleteUserData`, and a user's revoke-all (`revokeUserFamily`), also delete that user's rows in the old tables (D4), so an account deletion leaves nothing behind in either generation. The user row is the join key STOR-1 relies on, and it is deleted last, in the same transaction.
+- **0.6 drops the old tables** in a later migration, after every 0.4.x row has passed its 90-day absolute lifetime. The 0.6 upgrade notes say so.
 
-Revoking a family covers both generations: `revokeByGrantId`, `revokeUserFamily` and `deleteUserData` follow the family-to-grant mapping into the legacy rows. #53b's `listConnections` also lists families not yet bridged.
+**Why not carry tokens over.** The first recommendation was to preserve them (a legacy refresh stage, a legacy revoke stage and a family-to-grant mapping, as a fifth PR, #47-5). The maintainer removed that PR from the busiest week of the plan: it was one-time, security-sensitive code that would have run once per instance. Dropping it also removes the verifier fallback and the double-generation revoke paths.
 
-**`/revoke` for an unbridged token.** A `legacy-revoke` stage on `/revoke` (#47-5) handles a token the library doesn't know but the legacy tables do. Today's ownership rule applies: the token must belong to the authenticated client. Then:
-- an access token is deleted;
-- a refresh token revokes its whole legacy family, including its access tokens, as `revokeToken` does today.
-
-Either way the stage answers 200 itself. A token that belongs to another client, or that nothing knows, is left alone and also gets 200 (RFC 7009 §2.2), so the endpoint can't be used to probe for tokens.
-
-- **The cost of preserving:** one PR, #47-5 (M). The bridge and the fallback are removed in 0.6, after every 0.4.x family has passed its 90-day absolute lifetime.
-- **Leaving the bridge.** A family is converted only when its client refreshes. A family that isn't refreshed for the idle window (30 days by default) expires anyway (STOR-1). So:
-  - an instance that runs 0.5.x for at least the idle window before 0.6 has bridged or expired every 0.4.x family;
-  - the 0.6 upgrade notes say this;
-  - 0.6 removes the bridge no earlier than 90 days after 0.5.0 ships.
-
-  An instance upgrading from 0.4.x straight to 0.6 or later, or leaving 0.5.x sooner, reconnects its remaining connections once, as on the forced path.
-- **The cost of forcing a reconnect instead:** every connected client of every user signs in again once (the consent page, then YNAB's approval) for U×C connections. A family instance with 3 users and 2 clients each means 6 reconnects. The claude.ai connector shows as disconnected until each one is redone.
-- **Recommendation: preserve** (new question 3).
-- **Rollback to 0.4.x** keeps the old tables. A family already bridged is unknown to 0.4.x and reconnects, which matches the existing "rollback means reconnect" note.
+- **Rollback to 0.4.x** keeps the old tables, so 0.4.x tokens that haven't expired work again. Tokens issued by 0.5 are unknown to 0.4.x, so those connections sign in again, which matches the existing "rollback means reconnect" note. A 0.4.x token that a client revokes while 0.5 runs isn't revoked in the old tables, because `/revoke` reads only `oauth_rows` and answers 200 for an unknown token (RFC 7009). After a rollback it works again until it expires (access token 1 h; refresh token 30 days idle). This is accepted: a rollback is an operator action, and the user's revoke-all and an account deletion do clear the old rows (above).
+- **Upgrade check at rc time:** rc.1's DB-copy upgrade (D15) confirms that the clients are converted, that a 0.4.x access token, refresh token and code are each refused, and that the sweep and account deletion clear the old rows.
 
 ### D13. Tests
 
@@ -342,7 +326,7 @@ Either way the stage answers 200 itself. A token that belongs to another client,
   - **Helpers.** #47-3 moves token planting (direct `saveAuthCode`/`saveAccessToken` calls) behind helpers; #47-4 swaps the helpers' implementation.
   - **Assertions that encode SDK details.** Error descriptions, `bearer` against `Bearer`, the exact scope string, and the DCR response fields. The reviewer checks that every changed assertion is one of these.
 - **WS7.4's protected list** must pass unchanged in meaning: #57a's `granted_scope='admin'`, `X-YNAB-Token` 401, the downgrade, `ALLOW_WRITE=false`, #42's replay end to end, RFC 8707 binding, `iss` and the non-owner `/revoke`.
-- **New tests:** each D6 stage, the forced races, the browser binding, the upgrade bridge on fixtures for all three drivers (including a revoke followed by a read of the legacy access token, and a retry after a failed rotation), and a test that every OAuth error keeps its own code (400, or 500 only for `server_error`).
+- **New tests:** each D6 stage, the forced races, the browser binding, the 0.4.x upgrade on fixtures for all three drivers (M4 converts the clients, a client that fails validation is dropped and logged, a 0.4.x access token, refresh token and code are each refused, the sweep clears the old rows, and account deletion removes them), and a test that every OAuth error keeps its own code (400, or 500 only for `server_error`).
 
 ### D14. Effects on other work
 
@@ -364,11 +348,10 @@ Either way the stage answers 200 itself. A token that belongs to another client,
 | PR | What | Files (owner) | Author, model | Size | Built | Packet |
 |---|---|---|---|---|---|---|
 | ADR-0002 | This document | `docs/adr/` (P) | P, Opus | S | Nov 13 | Sign-off Wed Nov 18 (P5) |
-| **#47-1** Library storage | D4: the adapter, the `Storage` methods, M4, sweeps, `AccountStore`, the conformance suite | `src/auth/oidc/adapter.ts` (new; O after merge), `src/storage/**` (D), `token-hash.ts` (S) | S, Opus (design-sensitive), with D, Sonnet, committing the SQLite and Postgres drivers on S's branch | L (4) | Nov 18-Dec 4 | **P11 Sat Dec 12** |
+| **#47-1** Library storage | D4: the adapter, the `Storage` methods, M4 (with D12's client conversion), sweeps, `AccountStore`, the conformance suite | `src/auth/oidc/adapter.ts` (new; O after merge), `src/storage/**` (D), `token-hash.ts` (S) | S, Opus (design-sensitive), with D, Sonnet, committing the SQLite and Postgres drivers on S's branch | L (4) | Nov 18-Dec 4 | **P11 Sat Dec 12** |
 | **#47-2** Provider and broker | D2, D3, D7, D10, and B's `oidc-provider` hunk. Not mounted yet; tested on its own Express app, as in the spike. | `src/auth/oidc/{provider,interaction,verifier}.ts`, `src/auth/errors.ts` (new; O after merge), `package.json` (B acks) | S, Opus | L (4) | Nov 23-Dec 9 | **P11 Sat Dec 12** |
 | **#47-3** Test helpers | Move token planting in the HTTP tests behind helpers. No behaviour change. | `tests/unit/http-*.test.ts`, `tests/unit/helpers/**` | B, Sonnet (mechanical) | M (2) | Dec 3-8, after WS7.4 | **P10 Wed Dec 9** |
 | **#47-4** Cut-over | D5, D8, D9, D6's `grant-guard` and D11's removal: mount the library, retire `McpOAuthProvider`, `iss-redirect`, the consent cookie and server-legacy, and update the tests (D13) | `as-router.ts` (O acks), `mcp-provider.ts` (deleted; S), `client-auth.ts` (S), `package.json` (B acks), tests | S, Opus | L (3) | Dec 12-15 | **P12 Wed Dec 16** |
-| **#47-5** Upgrade bridge | D12: the client conversion check, `legacy-refresh` with the family-to-grant mapping, `legacy-revoke`, the verifier fallback, fixtures | `src/auth/oidc/legacy.ts` (new), `src/storage/**` (D) | S, Opus | M (2) | Dec 14-18 | **P13 Sat Dec 19** |
 | **#64a, re-scoped** | D6's `refresh-guard` and the rest of #64a's row in D14 | `src/auth/oidc/**`, `src/config/http/oauth.ts` (C acks) | S, Opus | M (2) | Dec 14-18 | **P13 Sat Dec 19** |
 | **#46** CIMD | #46's row in D14 | `src/auth/oidc/**`, `src/auth/client-id-metadata.ts` (O) | O, Opus | M (3) | Dec 10-18 | **P13 Sat Dec 19**, or 0.5.1 if it isn't ready |
 | Docs | REMOTE_HOSTING: the new routes and cookies, the client-visible changes, the upgrade path; the CHANGELOG lines in each PR | docs | A, Sonnet (Opus signs off) | S (1) | Dec 16-22 | P14 Tue Dec 22 |
@@ -376,16 +359,16 @@ Either way the stage answers 200 itself. A token that belongs to another client,
 - **Dependency order:**
   - #47-1 ∥ #47-2, both after the sign-off; #47-3 after WS7.4;
   - #47-4 after #47-1, #47-2, #47-3, #55 and #59;
-  - #47-5, #64a and #46 after #47-4.
-- **New dates** (decision 7). The three new packets (P11 Sat Dec 12, P12 Wed Dec 16, P13 Sat Dec 19) and P14 (Tue Dec 22, fixes) follow the plan's Wednesday and Saturday rhythm.
-  - **WS7.9b, Sat Dec 19-Sun Dec 20 (1.5 h of maintainer time):** the claude.ai connector, Desktop and the Inspector against the cut-over head on staging, so that client-visible changes show up before the holidays.
+  - #64a and #46 after #47-4.
+- **New dates** (decision 7). The three new packets (P11 Sat Dec 12, P12 Wed Dec 16, P13 Sat Dec 19) and P14 (Tue Dec 22, fixes) follow the plan's Wednesday and Saturday rhythm. The maintainer approved these dates and asked that none move earlier (Q7). Dropping the token carry-over (Q3) frees its slot in P13: that slot is **buffer**, held for a slip in #47-1 to #47-4 or for fixes from WS7.9b. It doesn't pull any date forward.
+  - **WS7.9b, Sat Dec 19-Sun Dec 20 (1.5 h of maintainer time):** the claude.ai connector, Desktop and the Inspector against the cut-over head on staging, so that client-visible changes show up before the freeze and the holidays (Q4). The check covers Desktop, the claude.ai connector and the Inspector.
   - **Freeze: Wed Dec 23**, moved from Dec 9.
   - **Dec 24-Jan 3:** no maintainer packets. The closing audit (WS8.60) runs on the frozen head.
-  - **rc.1 (#86): Mon Jan 4**, moved from Dec 10. Staging deploys it, with a 0.4.x-to-0.5.0 upgrade on a DB copy for D12.
+  - **rc.1 (#86): Mon Jan 4**, moved from Dec 10. Staging deploys it, with a 0.4.x-to-0.5.0 upgrade on a DB copy for D12 (clients converted, old tokens refused, old rows swept).
   - **WS7.9 interop: Jan 4-8**, with fix packets Wed Jan 6 and Fri Jan 8.
   - **Go/no-go: Mon Jan 11.**
   - **REL and the tag: Tue Jan 12**, moved from Dec 18; it was the plan's backstop. Buffer to Fri Jan 22, five days before v1.x support ends.
-- **Maintainer time:** about 9 h of reviews (#47-1 1.5, #47-2 1.5, #47-3 0.5, #47-4 1.5, #47-5 1, #64a 1, #46 1.5, docs 0.5), plus 1.5 h for WS7.9b. The interop week moves from mid-December to early January.
+- **Maintainer time:** about 8 h of reviews (#47-1 1.5, #47-2 1.5, #47-3 0.5, #47-4 1.5, #64a 1, #46 1.5, docs 0.5), plus 1.5 h for WS7.9b. The interop week moves from mid-December to early January.
 
 ### Where each must-keep behaviour lives
 
@@ -409,6 +392,7 @@ Either way the stage answers 200 itself. A token that belongs to another client,
 | Error response shapes | Library JSON; `renderError`; `method-check`; `sendOAuthError` | Config + ours | the HTTP tests |
 | The `/mcp` resource side | `verifier.ts` via `AccessToken.find` | Ours (public API) | `http-oauth-flow`, `-resource`, WS7.3's never-500 test |
 | #64a's 60 s idempotency | `refresh-guard` stage | Ours | spike 30, 31 |
+| Registered clients survive the upgrade; 0.4.x tokens don't | M4's client conversion; no code reads the old token tables; the sweep and `deleteUserData` clear them (D12) | Storage + ours | upgrade fixtures on all three drivers; rc.1's DB-copy upgrade |
 | The path to #46 | `clientIdMetadataDocument` feature | Config (experimental) | #46's tests |
 
 "Spike N" refers to the numbered list in "Spike checks", before the decisions.
@@ -421,10 +405,11 @@ Either way the stage answers 200 itself. A token that belongs to another client,
 - Our code is glue at documented extension points: stages, the interaction, the adapter, `provider.use`, events. Nothing patches the library.
 
 **Negative:**
-- **A rewrite of the AS glue and its storage:** an estimated 1,500 lines changed, and the provider unit tests rewritten. Most of the risk is in the adapter (D4) and the bridge (D12).
+- **A rewrite of the AS glue and its storage:** an estimated 1,500 lines changed, and the provider unit tests rewritten. Most of the risk is in the adapter (D4).
 - **Koa runs inside Express for the AS routes,** and oidc-provider adds 24 packages. Its type definitions come from DefinitelyTyped and lag behind.
+- **Every connection signs in again once on upgrade** (D12, Q3). Registered clients are converted, but 0.4.x access tokens, refresh tokens, codes and sign-ins in flight stop working at the cut-over. That is U×C sign-ins, for example 6 for 3 users with 2 clients each. The upgrade notes say so.
 - **What clients can see change:**
-  - token values have no `ymcp1_` prefix (new question 2);
+  - token values have no `ymcp1_` prefix (Q2);
   - `token_type` is `Bearer` (RFC 6749 says case-insensitive);
   - a read-write token's `scope` is `read-only read-write`;
   - the DCR response has more fields, and `client_secret_expires_at` is `0`;
@@ -432,7 +417,7 @@ Either way the stage answers 200 itself. A token that belongs to another client,
   - error descriptions read differently;
   - an `invalid_client` that comes from the library itself is 401.
 
-  The 405 response and the JSON pre-redirect errors are kept (D2, D8).
+  The maintainer accepted these (Q4), and each is documented in the CHANGELOG. The 405 response and the JSON pre-redirect errors are kept (D2, D8).
 - **0.5.0 moves from Dec 18 to Jan 12.**
 
 **Neutral:**
@@ -443,37 +428,37 @@ Either way the stage answers 200 itself. A token that belongs to another client,
 
 - **The adapter's security rules** (hashing, compare-and-set, the grant check, the user join) are new code on all three drivers. Mitigation: one conformance suite runs on every driver, the forced-race tests, and an Opus review. Postgres is gated with 0 skipped.
 - **An upstream change in the payload or adapter contract.** Mitigation: the tilde pin, and a review of every bump's changelog. The adapter treats payloads as opaque, except for the fields it indexes or strips (`jti`, `grantId`, `accountId`, `clientId`, `uid`, `iat`, `consumed`).
-- **The bridge mis-converts a 0.4.x family.** Mitigation: the fixtures, and the DB-copy upgrade at rc time. A failed conversion falls back to a reconnect, never to a wrong grant.
+- **M4 mis-converts a client.** Mitigation: the fixtures, and the DB-copy upgrade at rc time. A client that fails validation is dropped and logged and registers again, never converted wrongly.
+- **Operators and users are surprised by the forced sign-in.** Mitigation: the CHANGELOG and REMOTE_HOSTING say plainly that every user signs in again once per client, and rc.1 gives operators a preview.
 - **A client-visible change breaks a real client** (Desktop, the connector, the Inspector). Mitigation: WS7.9b on Dec 19-20, before the freeze, and WS7.9 in January.
-- **The schedule.** Three large and two medium PRs from one author (S) inside a month, with the holidays in it. Mitigation: #47-1 and #47-2 are independent and built in parallel, with D on the drivers. #46 can move to 0.5.1 without blocking. Jan 12 still leaves 15 days to v1.x's end of support.
+- **The schedule.** Three large and one medium PR from one author (S) inside a month, with the holidays in it. Mitigation: #47-1 and #47-2 are independent and built in parallel, with D on the drivers. #46 can move to 0.5.1 without blocking. P13's freed slot is buffer. Jan 12 still leaves 15 days to v1.x's end of support.
 - **A bus factor of one upstream** (panva). Mitigation: 10 years of releases and a broad user base. If it ever stalls, mcp-oauth-server and the port remain fallbacks.
 
 ## Alternatives considered
 
-- **(a2) mcp-oauth-server**: new question 1. Choose it to keep our storage and tests largely as they are, in exchange for depending on a young project.
+- **(a2) mcp-oauth-server**: rejected (Q1). It would keep our storage and tests largely as they are, in exchange for depending on a young project with one maintainer, for security-critical code.
 - **(a3) @node-oauth/oauth2-server**: too little of the AS.
 - **(c) v2 alone**: no AS.
 - **The port of server-legacy's handlers** (the first draft): rejected by decision 1.
 - **Shipping 0.5.0 on ADR-0001's D14 pin**: rejected by decision 7.
-- **Forcing every user to reconnect instead of the bridge**: D12, new question 3.
+- **Carrying 0.4.x refresh tokens and families over** (the ADR's recommendation, one more PR): rejected by Q3 in favour of the middle path in D12.
+- **Forcing every client to register again as well**: rejected. M4 converts the clients, so only the sign-in repeats.
 
-## Open questions for the maintainer
+## Maintainer decisions (2026-11-13)
 
-Each has a recommendation. As in plan §10, a missed answer means the recommendation ships.
+The ADR's nine open questions, answered on 2026-11-13. Eight take the recommendation; Q3 does not. The numbers match the questions and the PR #100 review threads.
 
-1. **The library: oidc-provider or mcp-oauth-server?**
-   - **oidc-provider:** mature (1.6 M installs a week, certified, released since 2016), at the cost of a rewrite of our glue and storage and the client-visible changes listed above.
-   - **mcp-oauth-server:** fits our code (storage, error shapes and tests mostly unchanged), but it is a 1.x from August 2026 with one maintainer and about 2.7 k installs a week.
+1. **Library:** oidc-provider `~9.15.0`. mcp-oauth-server is rejected: too young, with one maintainer and little adoption, for security-critical code (D1).
+2. **Token values:** accept 43-character values without the `ymcp1_` prefix or tag. The `h1.` keys, the pepper and the shape check stay (D4).
+3. **Upgrade path: a middle path, not the recommendation to preserve.** M4 still converts the registered clients, so no client has to re-register. There is no token carry-over: 0.4.x access tokens, refresh tokens, codes and sign-ins in flight stop working at the cut-over, and each user signs in again once per client (U×C sign-ins, for example 6 for 3 users with 2 clients each). The old token rows are ignored, swept on STOR-1's retention and removed with the account (D12).
+4. **Client-visible changes:** accepted and documented in the CHANGELOG. The 405 and the JSON errors stay. The staging check (WS7.9b) tests Desktop, the claude.ai connector and the Inspector before the freeze (D15).
+5. **Non-expiring client secrets:** accepted (D5).
+6. **#64a:** re-scoped onto the library, its old M4 dropped, its replay cache per process (D6, D14).
+7. **Dates:** approved. Freeze Wed Dec 23, rc.1 Mon Jan 4, tag Tue Jan 12. None moves earlier. Dropping #47-5 frees its slot in P13 (Sat Dec 19), which is buffer (D15).
+8. **#46:** through the experimental CIMD feature, off by default. It moves to 0.5.1 if it isn't ready (D14, D15).
+9. **OIDC surface:** trimmed. The unused features are disabled, the `openid` scope is dropped, the signing key is ephemeral, and there is no silent sign-in (D2, D7).
 
-   *Recommendation: oidc-provider.*
-2. **#52's token format.** The library generates its own token values (43 base64url characters). The `ymcp1_` prefix and the tag checked before any storage read can't be kept without patching the library. The `h1.` keys, the pepper, the shape check before storage and the per-kind separation all stay. *Recommendation: accept.*
-3. **The upgrade path.** Preserve existing clients and grants (D12, one more PR), or force every connection to reconnect once. *Recommendation: preserve.*
-4. **The client-visible changes in Consequences.** *Recommendation: accept them and document each in the CHANGELOG. Keep 405 and the JSON pre-redirect errors.*
-5. **New secrets no longer expire.** The library issues DCR secrets with `client_secret_expires_at: 0`, where the SDK gave 30 days. The 90-day sweep removes only unused clients, so an active client's secret stays valid for as long as the client is used. What limits the exposure is that the secret works only at `/token` and `/revoke`, behind `client-auth` and the route limiter, and that a stored hash is never a credential (#52). *Recommendation: accept. Revisit if a secret-rotation story is needed.*
-6. **#64a re-scoped onto the library**, its M4 dropped, and its replay cache per process (single replica, as documented). *Recommendation: yes. A shared cache comes with #48 and #67b in 0.5.1.*
-7. **The new dates.** Freeze Wed Dec 23, rc.1 Mon Jan 4, tag Tue Jan 12, buffer to Jan 22. *Recommendation: approve.*
-8. **#46 in 0.5.0** through the library's experimental CIMD (draft-03), off by default, if it is ready in P13; otherwise 0.5.1. *Recommendation: yes.*
-9. **The OIDC surface:** disable every feature we don't use, drop the `openid` scope, use an ephemeral signing key, and offer no silent sign-in (D2). *Recommendation: yes.*
+**Q3 departs from the recommendation.** The ADR recommended preserving existing connections, with a legacy refresh stage, a legacy revoke stage, a family-to-grant mapping and a verifier fallback, in a fifth PR (#47-5). The maintainer chose to keep the client conversion and drop the rest. The reason: it removes a PR of security-sensitive one-time code from the busiest week, and 0.5.0 already asks operators to act on upgrade. This document therefore has no #47-5, and nothing that existed only for it, in the design, the stage lists, the must-keep table, the plan, the schedule, the risks or the consequences.
 
 ## Addenda
 
