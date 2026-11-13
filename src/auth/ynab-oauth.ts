@@ -6,6 +6,8 @@
  * token-bearing failures throw sanitized errors that never echo secrets.
  */
 
+import { outboundFetch } from '../services/outbound.js';
+
 /** Default YNAB OAuth/API endpoints. Overridable per config for tests. */
 export const YNAB_AUTHORIZE_URL = 'https://app.ynab.com/oauth/authorize';
 export const YNAB_TOKEN_URL = 'https://app.ynab.com/oauth/token';
@@ -108,7 +110,8 @@ function parseTokenSet(body: unknown): YnabTokenSet {
 
 async function postToken(cfg: YnabOAuthConfig, form: URLSearchParams): Promise<YnabTokenSet> {
   const tokenUrl = cfg.endpoints?.tokenUrl ?? YNAB_TOKEN_URL;
-  const res = await fetch(tokenUrl, {
+  // Every call here has a deadline (#58): a stalled YNAB must not hold a request's slot.
+  const res = await outboundFetch(tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: form.toString(),
@@ -155,7 +158,7 @@ export async function getYnabUserId(
   endpoints?: YnabOAuthEndpoints
 ): Promise<string> {
   const base = endpoints?.apiBaseUrl ?? YNAB_API_BASE_URL;
-  const res = await fetch(`${base}/user`, {
+  const res = await outboundFetch(`${base}/user`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) {

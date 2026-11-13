@@ -17,6 +17,7 @@ import { RateLimiter } from './rate-limiter.js';
 import { Cache } from './cache.js';
 import { DeltaCache } from './delta-cache.js';
 import { AuditLog } from './audit-log.js';
+import { CircuitBreaker } from './circuit-breaker.js';
 import type { TransactionFeedState } from './ynab-client.js';
 
 /** The rate limiter's refill window: an idle hour refills any bucket completely. */
@@ -31,6 +32,8 @@ export interface UserComponents {
   readonly cache: Cache;
   readonly deltaCache: DeltaCache;
   readonly auditLog: AuditLog;
+  /** Fails this user's YNAB calls fast while YNAB is failing (#58); per user, never shared. */
+  readonly breaker: CircuitBreaker;
   /**
    * What YNAB has told us about the transaction change feed (a rejected
    * since_date), kept per user so a new request's YnabClient does not repeat a
@@ -49,6 +52,7 @@ export function createUserComponents(
     cache: new Cache(limits.cacheTtlMs),
     deltaCache: new DeltaCache({ now }),
     auditLog: new AuditLog(),
+    breaker: new CircuitBreaker({ now }),
     feedState: { sinceDateRejected: false },
   };
 }

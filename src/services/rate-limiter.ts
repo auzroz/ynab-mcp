@@ -117,13 +117,42 @@ export class RateLimiter {
   }
 
   /**
-   * Give back a token taken by acquire() for a request that was never sent
-   * (e.g. its access token could not be resolved). Capped at the bucket size.
+   * Take `count` tokens at once or none: a fan-out reservation (#58). Never
+   * waits; when the bucket holds fewer than `count` it throws a RateLimitError
+   * carrying the time until `count` tokens are free, so a multi-request tool
+   * refuses up front instead of failing after some of its calls were sent. A
+   * `count` beyond the bucket size is clamped to it (the whole budget). Give
+   * back what goes unused with release(n). Returns the number taken.
    */
-  release(): void {
-    this.sentAt.pop();
+  acquireMany(count: number): number {
+    if (!Number.isInteger(count) || count < 1) {
+      throw new Error(`Invalid token count: must be a positive integer, got ${count}`);
+    }
+    this.throwIfExhaustedByYnab();
     this.refill();
-    this.tokens = Math.min(this.maxTokens, this.tokens + 1);
+    const needed = Math.min(count, this.maxTokens);
+    // Tolerate float rounding, as acquire() does.
+    if (this.tokens < needed - 1e-6) {
+      throw this.reject(Math.ceil((needed - this.tokens) / this.refillRate));
+    }
+    // A caller already waiting for a token has the next one; this reservation must not jump it.
+    if (this.waiterActive && this.tokens < needed + 1) {
+      throw this.reject(Math.ceil((needed + 1 - this.tokens) / this.refillRate));
+    }
+    this.tokens = Math.max(0, this.tokens - needed);
+    for (let i = 0; i < needed; i++) this.recordSent();
+    return needed;
+  }
+
+  /**
+   * Give back tokens taken by acquire() or acquireMany() for requests that were
+   * never sent (e.g. an access token that could not be resolved, a fan-out's
+   * unused share). Capped at the bucket size.
+   */
+  release(count = 1): void {
+    for (let i = 0; i < count; i++) this.sentAt.pop();
+    this.refill();
+    this.tokens = Math.min(this.maxTokens, this.tokens + count);
   }
 
   /**

@@ -5,9 +5,12 @@
  */
 
 import * as ynab from 'ynab';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RateLimiter } from './rate-limiter.js';
+import type { CircuitBreaker } from './circuit-breaker.js';
+import { outboundFetch } from './outbound.js';
 import type { Cache } from './cache.js';
-import { ReadOnlyModeError, YnabApiError } from '../utils/errors.js';
+import { CircuitOpenError, OutboundTimeoutError, ReadOnlyModeError, YnabApiError } from '../utils/errors.js';
 import { getAuditLog, type AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { isBudgetIdSentinel } from '../utils/schemas.js';
@@ -35,6 +38,31 @@ export type AccessTokenSource = string | (() => Promise<string>);
 export interface TransactionFeedState {
   /** YNAB rejected FEED_SINCE_DATE: the feed starts at the budget's first month instead. */
   sinceDateRejected: boolean;
+}
+
+/**
+ * Per-client options beyond the shared per-user components.
+ */
+export interface YnabClientOptions {
+  /** The user's circuit breaker (#58); none: no breaking. */
+  breaker?: CircuitBreaker | undefined;
+  /**
+   * The request's absolute deadline (epoch ms). No YNAB call outlives it and
+   * none starts after it, so work a timed-out request left running ends with
+   * the request ceiling instead of at the full per-call timeout (ADR-0001 D5).
+   */
+  deadline?: number | undefined;
+  /** Per-call timeout; defaults to OUTBOUND_TIMEOUT_MS (10 s). Tests shorten it. */
+  outboundTimeoutMs?: number | undefined;
+  /** Replaces the global fetch for this client's YNAB calls (tests). */
+  fetch?: typeof fetch | undefined;
+  now?: (() => number) | undefined;
+}
+
+/** Tokens a fan-out reserved up front (see YnabClient.withFanOut). */
+interface FanOutReservation {
+  remaining: number;
+  closed: boolean;
 }
 
 /**
@@ -182,9 +210,6 @@ function hashText(text: string): number {
  * since_date of the transaction change feed: early enough to cover any
  * transaction, so the feed doesn't depend on a (cached) first month.
  */
-// Category writes kept the 30 s deadline the old direct-call path had. Other
-// SDK calls have no deadline yet (#58).
-const CATEGORY_WRITE_TIMEOUT_MS = 30_000;
 const FEED_SINCE_DATE = '1900-01-01';
 
 /** A YNAB 400 response (as the SDK throws it). */
@@ -330,7 +355,10 @@ export class YnabClient {
     deltaCache: DeltaCache = new DeltaCache(),
     // The transaction feed state, per user like the delta cache; a client
     // built without one gets its own.
-    feedState: TransactionFeedState = { sinceDateRejected: false }
+    feedState: TransactionFeedState = { sinceDateRejected: false },
+    // Outbound bounds: the user's circuit breaker, the request deadline and the
+    // per-call timeout (#58).
+    options: YnabClientOptions = {}
   ) {
     // Every YNAB response passes this hook; a 429 marks the limiter exhausted.
     // The SDK parses every error body as JSON, so a non-JSON one (a proxy's
@@ -338,6 +366,12 @@ export class YnabClient {
     // those by status only.
     const middleware: ynab.Middleware[] = [
       {
+        // The SDK wraps whatever fetchApi throws in a FetchError; ours reach the
+        // caller as themselves so the mapped messages apply.
+        onError: async ({ error }) => {
+          if (error instanceof OutboundTimeoutError || error instanceof CircuitOpenError) throw error;
+          return undefined;
+        },
         post: async ({ response }) => {
           if (response.status === 429) throw this.noteYnabRateLimited(response);
           if (!response.ok && !/\bjson\b/i.test(response.headers.get('content-type') ?? '')) {
@@ -347,9 +381,21 @@ export class YnabClient {
         },
       },
     ];
+    // Every call to YNAB goes through outboundFetch: a deadline (never past the
+    // request's), the body read inside it, and the user's circuit breaker.
+    const fetchApi = (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
+      outboundFetch(input instanceof Request ? input.url : input, init, {
+        timeoutMs: options.outboundTimeoutMs,
+        deadline: options.deadline,
+        breaker: options.breaker,
+        now: options.now,
+        fetch: options.fetch,
+        // Taken at acquire(), but nothing was sent: give the token back.
+        onNotSent: () => this.giveBackToken(),
+      });
     if (typeof accessToken === 'string') {
       this.api = new ConfiguredApi(
-        new ynab.Configuration({ accessToken, basePath: ynab.BASE_PATH, middleware })
+        new ynab.Configuration({ accessToken, basePath: ynab.BASE_PATH, middleware, fetchApi })
       );
       this.getAccessToken = () => Promise.resolve(accessToken);
     } else {
@@ -359,12 +405,12 @@ export class YnabClient {
         try {
           return await accessToken();
         } catch (error) {
-          this.rateLimiter.release();
+          this.giveBackToken();
           throw error;
         }
       };
       this.api = new ConfiguredApi(
-        new ynab.Configuration({ accessToken: this.getAccessToken, basePath: ynab.BASE_PATH, middleware })
+        new ynab.Configuration({ accessToken: this.getAccessToken, basePath: ynab.BASE_PATH, middleware, fetchApi })
       );
     }
     this.rateLimiter = rateLimiter;
@@ -374,6 +420,49 @@ export class YnabClient {
     this.auditLog = auditLog;
     this.deltaCache = deltaCache;
     this.feedState = feedState;
+  }
+
+  // The fan-out reservation of the current async call chain, if any.
+  private readonly fanOut = new AsyncLocalStorage<FanOutReservation>();
+
+  /**
+   * Take one request's worth of the rate limit: from the call chain's fan-out
+   * reservation while it lasts, else from the limiter (which fails fast).
+   */
+  private takeToken(): Promise<void> {
+    const reservation = this.fanOut.getStore();
+    if (reservation !== undefined && !reservation.closed && reservation.remaining > 0) {
+      reservation.remaining--;
+      return Promise.resolve();
+    }
+    return this.rateLimiter.acquire();
+  }
+
+  /** Return a token taken by takeToken() for a request that was never sent. */
+  private giveBackToken(): void {
+    const reservation = this.fanOut.getStore();
+    if (reservation !== undefined && !reservation.closed) reservation.remaining++;
+    else this.rateLimiter.release();
+  }
+
+  /**
+   * Run a tool whose reads fan out into up to `requests` YNAB calls. The whole
+   * fan-out is reserved from the rate limiter at once: either all `requests`
+   * tokens are taken, or the call fails now with a RateLimitError carrying the
+   * time until they would be free, instead of failing part-way after some calls
+   * were made. Calls made inside `work` draw on the reservation; tokens it did
+   * not use (reads served from cache) go back when `work` ends.
+   */
+  async withFanOut<T>(requests: number, work: () => Promise<T>): Promise<T> {
+    if (requests <= 1) return work();
+    const taken = this.rateLimiter.acquireMany(requests);
+    const reservation: FanOutReservation = { remaining: taken, closed: false };
+    try {
+      return await this.fanOut.run(reservation, work);
+    } finally {
+      reservation.closed = true;
+      if (reservation.remaining > 0) this.rateLimiter.release(reservation.remaining);
+    }
   }
 
   /**
@@ -531,7 +620,7 @@ export class YnabClient {
       response = await this.refreshSnapshot(spec, key, base, snapshotGeneration);
     }
     if (response === undefined) {
-      await this.rateLimiter.acquire();
+      await this.takeToken();
       response = await spec.fetch(undefined);
       const knowledge = response.data.server_knowledge;
       if (key !== undefined && isKnowledge(knowledge)) {
@@ -580,7 +669,7 @@ export class YnabClient {
    */
   private async cursorRead<R extends KnowledgeResponse>(spec: SnapshotRead<R>, cursor: number): Promise<R> {
     const snapshotGeneration = this.deltaCache.generation(this.snapshotGroup(spec));
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     const response = await spec.fetch(cursor);
     const knowledge = response.data.server_knowledge;
     const key = this.snapshotKey(spec);
@@ -701,7 +790,7 @@ export class YnabClient {
       fetch,
       merge,
       refresh: async (base, knowledge) => {
-        await this.rateLimiter.acquire();
+        await this.takeToken();
         const delta = await fetch(knowledge);
         return isKnowledge(delta.data.server_knowledge) ? merge(base, delta) : undefined;
       },
@@ -734,7 +823,7 @@ export class YnabClient {
     let since: string | undefined = FEED_SINCE_DATE;
     let delta: ynab.TransactionsResponse | undefined;
     if (!this.feedState.sinceDateRejected) {
-      await this.rateLimiter.acquire();
+      await this.takeToken();
       try {
         delta = await this.api.transactions.getTransactions(budgetId, since, undefined, undefined, knowledge);
       } catch (error) {
@@ -745,7 +834,7 @@ export class YnabClient {
     if (delta === undefined) {
       since = await this.getBudgetFirstMonth(budgetId);
       if (since === undefined || since > lowerBound) return undefined;
-      await this.rateLimiter.acquire();
+      await this.takeToken();
       delta = await this.api.transactions.getTransactions(budgetId, since, undefined, undefined, knowledge);
     }
     const next = delta.data.server_knowledge;
@@ -756,7 +845,7 @@ export class YnabClient {
   // ==================== User ====================
 
   async getUser(): Promise<ynab.UserResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.user.getUser();
   }
 
@@ -768,7 +857,7 @@ export class YnabClient {
     if (cached !== undefined) return cached;
 
     const generation = this.cache.generation();
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     const response = await this.api.plans.getPlans(includeAccounts);
     if (generation === this.cache.generation()) this.cache.set(cacheKey, response);
     return response;
@@ -778,7 +867,7 @@ export class YnabClient {
     budgetId: string,
     lastKnowledgeOfServer?: number
   ): Promise<ynab.PlanDetailResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     const response = await this.api.plans.getPlanById(budgetId, lastKnowledgeOfServer);
 
     if (response.data.server_knowledge !== undefined) {
@@ -793,7 +882,7 @@ export class YnabClient {
     const cached = this.cache.get<ynab.PlanSettingsResponse>(cacheKey);
     if (cached !== undefined) return cached;
 
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     const response = await this.api.plans.getPlanSettingsById(budgetId);
     this.cache.set(cacheKey, response);
     return response;
@@ -875,7 +964,7 @@ export class YnabClient {
   }
 
   async getAccountById(budgetId: string, accountId: string): Promise<ynab.AccountResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.accounts.getAccountById(budgetId, accountId);
   }
 
@@ -884,7 +973,7 @@ export class YnabClient {
     data: ynab.PostAccountWrapper
   ): Promise<ynab.AccountResponse> {
     this.assertWriteAllowed('createAccount');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     // Invalidate accounts cache after creating
     // Also invalidate budgets cache since getBudgets(true) includes account data
     // Only invalidate budgets:true since getBudgets(false) doesn't include account data
@@ -951,7 +1040,7 @@ export class YnabClient {
   }
 
   async getCategoryById(budgetId: string, categoryId: string): Promise<ynab.CategoryResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.categories.getCategoryById(budgetId, categoryId);
   }
 
@@ -960,7 +1049,7 @@ export class YnabClient {
     month: string,
     categoryId: string
   ): Promise<ynab.CategoryResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.categories.getMonthCategoryById(budgetId, month, categoryId);
   }
 
@@ -971,7 +1060,7 @@ export class YnabClient {
     data: ynab.PatchMonthCategoryWrapper
   ): Promise<ynab.SaveCategoryResponse> {
     this.assertWriteAllowed('updateMonthCategory');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     // Invalidate categories cache after updating
     this.invalidateCached(`categories:${budgetId}`);
 
@@ -1017,7 +1106,7 @@ export class YnabClient {
     data: ynab.PatchCategoryWrapper
   ): Promise<ynab.SaveCategoryResponse> {
     this.assertWriteAllowed('updateCategory');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     // Invalidate categories cache after updating (names, groups and targets all
     // change). A rename also changes the category_name of transaction rows
     // without changing the rows, so their snapshots go too.
@@ -1026,9 +1115,7 @@ export class YnabClient {
 
     const auditLog = this.auditLog;
     try {
-      const response = await this.api.categories.updateCategory(budgetId, categoryId, data, {
-        signal: AbortSignal.timeout(CATEGORY_WRITE_TIMEOUT_MS),
-      });
+      const response = await this.api.categories.updateCategory(budgetId, categoryId, data);
       auditLog.log({
         operation: 'update',
         tool: 'ynab_update_category_details',
@@ -1072,15 +1159,13 @@ export class YnabClient {
     data: ynab.PostCategoryWrapper
   ): Promise<ynab.SaveCategoryResponse> {
     this.assertWriteAllowed('createCategory');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     // Invalidate categories cache after creating
     this.invalidateCached(`categories:${budgetId}`);
 
     const auditLog = this.auditLog;
     try {
-      const response = await this.api.categories.createCategory(budgetId, data, {
-        signal: AbortSignal.timeout(CATEGORY_WRITE_TIMEOUT_MS),
-      });
+      const response = await this.api.categories.createCategory(budgetId, data);
       auditLog.log({
         operation: 'create',
         tool: 'ynab_create_category',
@@ -1113,7 +1198,7 @@ export class YnabClient {
     data: ynab.PostCategoryGroupWrapper
   ): Promise<ynab.SaveCategoryGroupResponse> {
     this.assertWriteAllowed('createCategoryGroup');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     // Invalidate categories cache after creating (groups are returned with categories)
     this.invalidateCached(`categories:${budgetId}`);
 
@@ -1152,7 +1237,7 @@ export class YnabClient {
     data: ynab.PatchCategoryGroupWrapper
   ): Promise<ynab.SaveCategoryGroupResponse> {
     this.assertWriteAllowed('updateCategoryGroup');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     // Invalidate categories cache after updating
     this.invalidateCached(`categories:${budgetId}`);
 
@@ -1286,7 +1371,7 @@ export class YnabClient {
     budgetId: string,
     transactionId: string
   ): Promise<ynab.TransactionResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.transactions.getTransactionById(budgetId, transactionId);
   }
 
@@ -1295,7 +1380,7 @@ export class YnabClient {
     data: ynab.PostTransactionsWrapper
   ): Promise<ynab.SaveTransactionsResponse> {
     this.assertWriteAllowed('createTransaction');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
 
     const auditLog = this.auditLog;
     // Single-body requests use `transaction`; the skip-duplicates form uses a one-item `transactions`.
@@ -1357,7 +1442,7 @@ export class YnabClient {
     data: ynab.PutTransactionWrapper
   ): Promise<ynab.TransactionResponse> {
     this.assertWriteAllowed('updateTransaction');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
 
     const auditLog = this.auditLog;
     const txn = data.transaction;
@@ -1411,7 +1496,7 @@ export class YnabClient {
     data: ynab.PatchTransactionsWrapper
   ): Promise<ynab.SaveTransactionsResponse> {
     this.assertWriteAllowed('updateTransactions');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
 
     const auditLog = this.auditLog;
     // Counts only: how many rows are addressed by import_id and how many fields are cleared with null.
@@ -1461,7 +1546,7 @@ export class YnabClient {
     transactionId: string
   ): Promise<ynab.TransactionResponse> {
     this.assertWriteAllowed('deleteTransaction');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
 
     const auditLog = this.auditLog;
     try {
@@ -1634,7 +1719,7 @@ export class YnabClient {
     budgetId: string,
     scheduledTransactionId: string
   ): Promise<ynab.ScheduledTransactionResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.scheduledTransactions.getScheduledTransactionById(
       budgetId,
       scheduledTransactionId
@@ -1646,7 +1731,7 @@ export class YnabClient {
     data: ynab.PostScheduledTransactionWrapper
   ): Promise<ynab.ScheduledTransactionResponse> {
     this.assertWriteAllowed('createScheduledTransaction');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
 
     const auditLog = this.auditLog;
     const txn = data.scheduled_transaction;
@@ -1698,7 +1783,7 @@ export class YnabClient {
     data: ynab.PutScheduledTransactionWrapper
   ): Promise<ynab.ScheduledTransactionResponse> {
     this.assertWriteAllowed('updateScheduledTransaction');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
 
     const auditLog = this.auditLog;
     const txn = data.scheduled_transaction;
@@ -1751,7 +1836,7 @@ export class YnabClient {
     scheduledTransactionId: string
   ): Promise<ynab.ScheduledTransactionResponse> {
     this.assertWriteAllowed('deleteScheduledTransaction');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
 
     const auditLog = this.auditLog;
     try {
@@ -1808,7 +1893,7 @@ export class YnabClient {
   }
 
   async getPayeeById(budgetId: string, payeeId: string): Promise<ynab.PayeeResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.payees.getPayeeById(budgetId, payeeId);
   }
 
@@ -1817,7 +1902,7 @@ export class YnabClient {
     data: ynab.PostPayeeWrapper
   ): Promise<ynab.SavePayeeResponse> {
     this.assertWriteAllowed('createPayee');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     // Invalidate payees cache after creating
     this.invalidateCached(`payees:${budgetId}`);
 
@@ -1857,7 +1942,7 @@ export class YnabClient {
     data: ynab.PatchPayeeWrapper
   ): Promise<ynab.SavePayeeResponse> {
     this.assertWriteAllowed('updatePayee');
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     // Invalidate payees cache after updating. A rename also changes the
     // payee_name of transaction rows without changing the rows (no delta
     // reports it), so their snapshots go too.
@@ -1899,7 +1984,7 @@ export class YnabClient {
   // ==================== Payee Locations ====================
 
   async getPayeeLocations(budgetId: string): Promise<ynab.PayeeLocationsResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.payeeLocations.getPayeeLocations(budgetId);
   }
 
@@ -1907,7 +1992,7 @@ export class YnabClient {
     budgetId: string,
     payeeLocationId: string
   ): Promise<ynab.PayeeLocationResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.payeeLocations.getPayeeLocationById(budgetId, payeeLocationId);
   }
 
@@ -1915,7 +2000,7 @@ export class YnabClient {
     budgetId: string,
     payeeId: string
   ): Promise<ynab.PayeeLocationsResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.payeeLocations.getPayeeLocationsByPayee(budgetId, payeeId);
   }
 
@@ -1951,14 +2036,14 @@ export class YnabClient {
   }
 
   async getBudgetMonth(budgetId: string, month: string): Promise<ynab.MonthDetailResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.months.getPlanMonth(budgetId, month);
   }
 
   // ==================== Money Movements ====================
 
   async getMoneyMovements(budgetId: string): Promise<ynab.MoneyMovementsResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.money_movements.getMoneyMovements(budgetId);
   }
 
@@ -1966,7 +2051,7 @@ export class YnabClient {
     budgetId: string,
     month: string
   ): Promise<ynab.MoneyMovementsResponse> {
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     return this.api.money_movements.getMoneyMovementsByMonth(budgetId, month);
   }
 
@@ -2021,7 +2106,7 @@ export class YnabClient {
       if (cached !== undefined) return cached;
     }
     const generation = this.cache.generation();
-    await this.rateLimiter.acquire();
+    await this.takeToken();
     const response = await fetchGroups();
     if (cacheable && generation === this.cache.generation()) this.cache.set(cacheKey, response);
     return response;
