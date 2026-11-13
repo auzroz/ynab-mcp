@@ -103,8 +103,10 @@ describe('serverInfo', () => {
 describe('untrusted budget text note in tool descriptions', () => {
   const countOccurrences = (text: string, needle: string): number => text.split(needle).length - 1;
 
-  // Read tools whose output carries memos or notes written by people (#61b).
-  const memoReadTools = [
+  // Rule (#61b): every read tool whose output passes through sanitizeMemo
+  // (directly, or via accounts/account-fields.ts or transactions/format.ts)
+  // returns free text written by people, so it carries the note too.
+  const freeTextReadTools = [
     'ynab_list_transactions',
     'ynab_get_transaction',
     'ynab_list_account_transactions',
@@ -113,6 +115,15 @@ describe('untrusted budget text note in tool descriptions', () => {
     'ynab_transaction_search',
     'ynab_list_scheduled_transactions',
     'ynab_get_scheduled_transaction',
+    'ynab_reconciliation_helper',
+    'ynab_get_category',
+    'ynab_get_month_category',
+    'ynab_list_money_movement_groups',
+    'ynab_list_money_movements',
+    'ynab_get_month',
+    'ynab_list_months',
+    'ynab_get_account',
+    'ynab_list_accounts',
   ];
 
   const writeTools = tools.filter((t) => t.annotations?.readOnlyHint !== true);
@@ -126,16 +137,17 @@ describe('untrusted budget text note in tool descriptions', () => {
     }
   });
 
-  it('appends the note to the memo-bearing read tools', () => {
-    for (const name of memoReadTools) {
+  it('appends the note to the free-text read tools', () => {
+    expect(freeTextReadTools.length).toBe(17);
+    for (const name of freeTextReadTools) {
       const tool = tools.find((t) => t.name === name);
       expect(tool, name).toBeDefined();
       expect(tool!.description?.endsWith(`\n\n${UNTRUSTED_TEXT_NOTE}`), name).toBe(true);
     }
   });
 
-  it('adds the note to exactly the write tools plus the memo-bearing read tools', () => {
-    const expected = new Set([...writeTools.map((t) => t.name), ...memoReadTools]);
+  it('adds the note to exactly the write tools plus the free-text read tools', () => {
+    const expected = new Set([...writeTools.map((t) => t.name), ...freeTextReadTools]);
     const withNote = tools.filter((t) => t.description?.includes(UNTRUSTED_TEXT_NOTE)).map((t) => t.name);
     expect(new Set(withNote)).toEqual(expected);
     expect(withNote.length).toBe(expected.size);

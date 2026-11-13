@@ -4,6 +4,7 @@
  * Returns all budget months.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -33,7 +34,9 @@ Use when the user asks:
 - "Show me past months"
 
 Returns each month's income, budgeted, activity, and to-be-budgeted amounts.
-Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the months changed since then.`,
+Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the months changed since then.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

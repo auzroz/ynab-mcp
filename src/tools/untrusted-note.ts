@@ -1,8 +1,9 @@
 /**
  * Shared note appended to the descriptions of tools whose input or output
  * carries free text written by people (payee names, memos, notes, account and
- * category names). Tool modules import this constant; they never repeat the
- * text inline.
+ * category names): every non-read-only tool, and every read tool whose output
+ * passes through sanitizeMemo. Tool modules import this constant; they never
+ * repeat the text inline.
  */
 
 export const UNTRUSTED_TEXT_NOTE =

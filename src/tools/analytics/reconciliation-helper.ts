@@ -4,6 +4,7 @@
  * Shows uncleared transactions to help with account reconciliation.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -33,7 +34,9 @@ Use when the user asks:
 - "Pending transactions"
 - "Reconciliation status"
 
-Returns uncleared transactions organized by account with totals.`,
+Returns uncleared transactions organized by account with totals.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

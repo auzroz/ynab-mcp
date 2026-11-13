@@ -5,6 +5,7 @@
  * Money movements are a YNAB feature exposed by API v1.83+ / ynab SDK v4.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -38,7 +39,9 @@ Use when the user asks:
 - "List my category fund transfers"
 - "What money did I move in [month]?"
 
-Returns each movement's amount (formatted, plus amount_milliunits), the categories it moved between, when it happened and who performed it (performed_by_user_id, masked). Pass month (YYYY-MM-01 or "current") to limit to a single budget month. Pass group_by_group=true to get movements nested under their money movement group (money_movement_groups[].movements, plus ungrouped_movements) instead of a flat list; it costs one extra request.`,
+Returns each movement's amount (formatted, plus amount_milliunits), the categories it moved between, when it happened and who performed it (performed_by_user_id, masked). Pass month (YYYY-MM-01 or "current") to limit to a single budget month. Pass group_by_group=true to get movements nested under their money movement group (money_movement_groups[].movements, plus ungrouped_movements) instead of a flat list; it costs one extra request.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {
