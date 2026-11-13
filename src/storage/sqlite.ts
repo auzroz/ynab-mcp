@@ -10,7 +10,7 @@
  * tombstone.
  */
 
-import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
 import type BetterSqlite3 from 'better-sqlite3';
 import type {
   Storage,

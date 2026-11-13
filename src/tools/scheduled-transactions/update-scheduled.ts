@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import { MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
@@ -98,7 +98,7 @@ Split limitation: YNAB scheduled transactions cannot have splits, and the splits
       },
       frequency: {
         type: 'string',
-        enum: frequencies,
+        enum: [...frequencies],
         description: 'New recurrence frequency',
       },
       payee_id: {

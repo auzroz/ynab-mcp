@@ -5,7 +5,7 @@
  * missing recurring bills, and plans monthly contributions for them.
  */
 
-import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { Prompt, PromptMessage } from '@modelcontextprotocol/server';
 
 export const trueExpensesPrompt: Prompt = {
   name: 'ynab-true-expenses',

@@ -5,7 +5,7 @@
  * and near-term cash flow.
  */
 
-import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { Prompt, PromptMessage } from '@modelcontextprotocol/server';
 
 export const ageOfMoneyPrompt: Prompt = {
   name: 'ynab-age-of-money',

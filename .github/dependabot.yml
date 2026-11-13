@@ -20,8 +20,6 @@ updates:
       # Major bumps are planned manually (0.4.0 and later).
       - dependency-name: zod
         update-types: ['version-update:semver-major']
-      - dependency-name: '@modelcontextprotocol/sdk'
-        update-types: ['version-update:semver-major']
       - dependency-name: typescript
         versions: ['>=6.1.0']
       - dependency-name: vitest

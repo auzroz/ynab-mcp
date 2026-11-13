@@ -11,7 +11,7 @@ const serverConnect = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../src/server.js', () => ({
   createServer: () => ({ connect: serverConnect, close: vi.fn(async () => undefined) }),
 }));
-vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({ StdioServerTransport: class {} }));
+vi.mock('@modelcontextprotocol/server/stdio', () => ({ StdioServerTransport: class {} }));
 
 import { main, resolveTransport, shutdownWithDeadline, SHUTDOWN_DEADLINE_MS } from '../../src/entry.js';
 

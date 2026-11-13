@@ -3,8 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { tools, handleToolCall } from '../../../src/tools/index.js';
 import { TOOL_METADATA } from '../../../src/tools/annotations.js';
 import { createServerForUser } from '../../../src/server.js';

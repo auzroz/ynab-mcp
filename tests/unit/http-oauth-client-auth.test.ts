@@ -13,8 +13,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createHash, randomBytes } from 'node:crypto';
 import express from 'express';
 import request from 'supertest';
-import { tokenHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/token.js';
-import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
+import { tokenHandler } from '@modelcontextprotocol/server-legacy/auth';
 import type { Storage } from '../../src/storage/types.js';
 
 const created = vi.hoisted(() => ({ storage: undefined as Storage | undefined }));

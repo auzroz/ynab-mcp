@@ -4,7 +4,7 @@
  * Fast, at-a-glance snapshot of the budget right now.
  */
 
-import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { Prompt, PromptMessage } from '@modelcontextprotocol/server';
 
 export const pulseCheckPrompt: Prompt = {
   name: 'ynab-pulse-check',

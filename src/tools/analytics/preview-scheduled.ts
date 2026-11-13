@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import { MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
@@ -83,7 +83,7 @@ Does NOT create anything - use ynab_create_scheduled_transaction to actually cre
       },
       frequency: {
         type: 'string',
-        enum: frequencies,
+        enum: [...frequencies],
         description: 'Recurrence frequency',
       },
       payee_id: {
@@ -113,7 +113,7 @@ Does NOT create anything - use ynab_create_scheduled_transaction to actually cre
       },
       flag_color: {
         type: 'string',
-        enum: flagColors,
+        enum: [...flagColors],
         description: 'Flag color',
       },
     },

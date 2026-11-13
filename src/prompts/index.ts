@@ -6,8 +6,7 @@
  * - A message-builder function
  */
 
-import type { Prompt, GetPromptResult } from '@modelcontextprotocol/sdk/types.js';
-
+import type { Prompt, GetPromptResult } from '@modelcontextprotocol/server';
 import { pulseCheckPrompt, buildPulseCheckMessages } from './pulse-check.js';
 import { monthlyReviewPrompt, buildMonthlyReviewMessages } from './monthly-review.js';
 import { assignMoneyPrompt, buildAssignMoneyMessages } from './assign-money.js';
