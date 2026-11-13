@@ -5,9 +5,8 @@
  */
 
 import type { Server as HttpServer } from 'node:http';
-import type { Server } from '@modelcontextprotocol/server';
-import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
-import { createServer } from './server.js';
+import { serveStdio, type StdioServerHandle } from '@modelcontextprotocol/server/stdio';
+import { createStdioServerFactory } from './server.js';
 import { redactSecretEnvValues } from './utils/sanitize.js';
 import { startHttpServer } from './http.js';
 import { loadConfig, loadHttpConfig } from './config/environment.js';
@@ -82,11 +81,11 @@ export async function shutdownWithDeadline(deps: ShutdownDeps): Promise<void> {
 }
 
 // What shutdown closes, set as each transport starts.
-let server: Server | null = null;
+let stdioHandle: StdioServerHandle | null = null;
 let httpServer: HttpServer | null = null;
 
 async function closeAll(): Promise<void> {
-  if (server) await server.close();
+  if (stdioHandle) await stdioHandle.close();
   if (httpServer) {
     const http = httpServer;
     // HttpServer.close (see startHttpServer) also stops the sessions and the extension jobs before calling back.
@@ -125,9 +124,9 @@ export async function main(env: Env = process.env): Promise<void> {
   // stdio (single-user) mode: the client closing stdin ends the session.
   process.stdin.on('close', shutdown);
   const config = loadConfig();
-  server = createServer(config);
-  const stdio = new StdioServerTransport();
-  await server.connect(stdio);
+  stdioHandle = serveStdio(createStdioServerFactory(config), {
+    onerror: (error) => console.error('MCP stdio error:', errorMessage(error)),
+  });
   console.error(`YNAB MCP Server started (budget: ${config.defaultBudgetId ?? 'last-used'})`);
 }
 

@@ -7,11 +7,11 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 const startHttpServer = vi.hoisted(() => vi.fn());
 vi.mock('../../src/http.js', () => ({ startHttpServer }));
-const serverConnect = vi.hoisted(() => vi.fn(async () => undefined));
+const serveStdio = vi.hoisted(() => vi.fn(() => ({ close: vi.fn(async () => undefined) })));
 vi.mock('../../src/server.js', () => ({
-  createServer: () => ({ connect: serverConnect, close: vi.fn(async () => undefined) }),
+  createStdioServerFactory: () => () => ({}),
 }));
-vi.mock('@modelcontextprotocol/server/stdio', () => ({ StdioServerTransport: class {} }));
+vi.mock('@modelcontextprotocol/server/stdio', () => ({ serveStdio }));
 
 import { main, resolveTransport, shutdownWithDeadline, SHUTDOWN_DEADLINE_MS } from '../../src/entry.js';
 
@@ -71,13 +71,13 @@ describe('main', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     startHttpServer.mockReset();
-    serverConnect.mockClear();
+    serveStdio.mockClear();
   });
 
   it('refuses an unknown MCP_TRANSPORT before starting anything', async () => {
     await expect(main({ MCP_TRANSPORT: 'htpp' })).rejects.toThrow(/Invalid MCP_TRANSPORT/);
     expect(startHttpServer).not.toHaveBeenCalled();
-    expect(serverConnect).not.toHaveBeenCalled();
+    expect(serveStdio).not.toHaveBeenCalled();
   });
 
   it('installs the unhandledRejection handler for every transport', async () => {
@@ -98,14 +98,28 @@ describe('main', () => {
   });
 
   it('stdio: listens for stdin closing, which ends the session', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const stdinBefore = process.stdin.listenerCount('close');
     const prior = { token: process.env['YNAB_ACCESS_TOKEN'] };
     process.env['YNAB_ACCESS_TOKEN'] = 'dummy-token';
     try {
       await main({});
       expect(process.stdin.listenerCount('close')).toBe(stdinBefore + 1);
-      expect(serverConnect).toHaveBeenCalledTimes(1);
+      expect(serveStdio).toHaveBeenCalledTimes(1);
+
+      // The transport error callback logs the message only, with secrets redacted and no stack.
+      const options = (serveStdio.mock.calls[0] as unknown[] | undefined)?.[1] as
+        | { onerror?: (error: Error) => void }
+        | undefined;
+      expect(options?.onerror).toBeTypeOf('function');
+      errorSpy.mockClear();
+      const failure = new Error('stdio transport failed while holding dummy-token');
+      options?.onerror?.(failure);
+      const logged = errorSpy.mock.calls.flat().map(String).join('\n');
+      expect(logged).toContain('MCP stdio error:');
+      expect(logged).toContain('[YNAB_ACCESS_TOKEN REDACTED]');
+      expect(logged).not.toContain('dummy-token');
+      expect(logged).not.toContain('    at ');
     } finally {
       if (prior.token === undefined) delete process.env['YNAB_ACCESS_TOKEN'];
       else process.env['YNAB_ACCESS_TOKEN'] = prior.token;

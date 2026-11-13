@@ -3,7 +3,7 @@
  */
 
 import { createRequire } from 'node:module';
-import { Server, ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
+import { Server, ProtocolError, ProtocolErrorCode, type McpServerFactory } from '@modelcontextprotocol/server';
 import type { Config } from './config/environment.js';
 
 // Read the version from package.json at runtime so the server always advertises
@@ -61,6 +61,10 @@ export function buildYnabClient(
   );
 }
 
+/** Advertised as serverInfo.description; says what the server is and holds no user data. */
+export const SERVER_DESCRIPTION =
+  'MCP server for the YNAB (You Need A Budget) API: budgets, accounts, categories, payees, transactions, scheduled transactions, and spending analytics.';
+
 /**
  * Create an MCP `Server` that dispatches tool calls to the given YnabClient.
  * Shared by the stdio (single-user) and HTTP (per-user) entrypoints.
@@ -70,12 +74,19 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
     {
       name: 'ynab-mcp',
       version: pkg.version,
+      description: SERVER_DESCRIPTION,
     },
     {
+      // No `listChanged` and no subscriptions: the tool and prompt lists are
+      // fixed for the life of a server instance (ADR-0001 D13).
       capabilities: {
         tools: {},
         prompts: {},
       },
+      // 2026-07-28 caching of tools/list, set explicitly rather than left to
+      // the SDK default: the list depends on the caller's read-only state, so
+      // it is never shared-cacheable (ADR-0001 D11). Ignored on 2025-era connections.
+      cacheHints: { 'tools/list': { ttlMs: 0, cacheScope: 'private' } },
       // Covers every tool result, including the many read tools that return
       // only names and so carry no per-tool note (#61b).
       instructions: UNTRUSTED_TEXT_NOTE,
@@ -158,16 +169,20 @@ export function createServerForUser(ctx: UserContext, components?: UserComponent
 }
 
 /**
- * Create the single-user server from process config (stdio mode).
+ * Build the factory for the single-user (stdio) server from process config.
+ * `serveStdio` may call it more than once per process (a discarded
+ * `server/discover` probe, then the pinned connection), so the YnabClient, with
+ * its rate limiter and cache, is built once here and every server shares it.
+ * The mode line is printed once, not per call.
  */
-export function createServer(config: Config): Server {
+export function createStdioServerFactory(config: Config): McpServerFactory {
   if (config.readOnly) {
     console.error('YNAB MCP Server running in READ-ONLY mode (write operations disabled)');
   } else {
     console.error('YNAB MCP Server running with WRITE operations ENABLED');
   }
 
-  return createServerForUser({
+  const client = buildYnabClient({
     accessToken: config.accessToken,
     defaultBudgetId: config.defaultBudgetId,
     readOnly: config.readOnly,
@@ -175,4 +190,5 @@ export function createServer(config: Config): Server {
     rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
     cacheTtlMs: config.cacheTtlMs,
   });
+  return () => createServerFromClient(client);
 }
