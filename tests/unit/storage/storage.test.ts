@@ -1785,6 +1785,48 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage lock wait is
   });
 });
 
+describe.skipIf(!sqliteAvailable && !requireDbTests)('SqliteStorage startup migration waits longer than requests', () => {
+  it('waits out another process holding the write lock past the request busy timeout, then restores it', async () => {
+    const { spawn } = await import('node:child_process');
+    const { SqliteStorage } = await import('../../../src/storage/sqlite.js');
+    const file = join(tmpdir(), `ynab-mcp-sqlite-startup-${randomUUID()}.db`);
+    const first = new SqliteStorage({ path: file, tokenKeys: TEST_TOKEN_HASHER });
+    await first.init();
+    await first.close();
+    // Another process holds the write lock for 700 ms (it can't be this process: the wait blocks the loop).
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const D=require('better-sqlite3');const d=new D(process.argv[1]);d.exec('BEGIN IMMEDIATE');console.log('locked');setTimeout(()=>{d.exec('ROLLBACK');d.close()},700)`,
+        file,
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] }
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.stdout.once('data', () => resolve());
+        child.once('error', reject);
+        child.once('exit', () => reject(new Error('lock holder exited early')));
+      });
+      const second = new SqliteStorage({
+        path: file,
+        tokenKeys: TEST_TOKEN_HASHER,
+        timeouts: { sqliteBusyTimeoutMs: 100, sqliteMigrationBusyTimeoutMs: 5_000 },
+      });
+      const started = Date.now();
+      await second.init();
+      expect(Date.now() - started).toBeGreaterThanOrEqual(400);
+      const db = (second as unknown as { db: { pragma(s: string, o: { simple: true }): unknown } }).db;
+      expect(db.pragma('busy_timeout', { simple: true })).toBe(100);
+      await second.close();
+    } finally {
+      child.kill();
+      for (const suffix of ['', '-wal', '-shm']) rmSync(`${file}${suffix}`, { force: true });
+    }
+  });
+});
+
 describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage statements and connections are bounded', () => {
   type PoolLike = {
     options: Record<string, unknown>;
@@ -1922,6 +1964,42 @@ describe.skipIf(!process.env.DATABASE_URL && !requireDbTests)('PostgresStorage s
     } finally {
       await holder.end();
       await storage.close();
+    }
+  });
+
+  it('lets startup wait for the schema lock past the request timeouts, and keeps them on the request pool', async () => {
+    const holder = await lockHolder();
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT pg_advisory_xact_lock($1)', [0x796e6162]); // the migration's schema lock
+      const started = Date.now();
+      const { PostgresStorage } = await import('../../../src/storage/postgres.js');
+      const connectionString = process.env.DATABASE_URL;
+      if (!connectionString) throw new Error('DATABASE_URL not set');
+      const storage = new PostgresStorage({
+        connectionString,
+        tokenKeys: TEST_TOKEN_HASHER,
+        timeouts: { pgStatementTimeoutMs: 200, pgQueryTimeoutMs: 300 },
+      });
+      const init = storage.init();
+      let settled = false;
+      void init.then(
+        () => (settled = true),
+        () => (settled = true)
+      );
+      // Well past both request-path timeouts, still waiting.
+      await new Promise((r) => setTimeout(r, 900));
+      expect(settled).toBe(false);
+      await holder.query('COMMIT');
+      await init;
+      expect(Date.now() - started).toBeGreaterThanOrEqual(800);
+      const pool = (storage as unknown as { pool: PoolLike }).pool;
+      expect(pool.options.statement_timeout).toBe(200);
+      expect(pool.options.query_timeout).toBe(300);
+      expect((await storage.getUser(`nobody-${randomUUID()}`)) ?? null).toBeNull();
+      await storage.close();
+    } finally {
+      await holder.end();
     }
   });
 });

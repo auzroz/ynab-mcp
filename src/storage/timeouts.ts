@@ -25,12 +25,21 @@ export const DEFAULT_PG_CONNECTION_TIMEOUT_MS = 10_000;
  * transaction) to finish; routine writes hold the lock for milliseconds.
  */
 export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5_000;
+/**
+ * SQLite, startup only: the lock wait while `init()` migrates, then lowered to
+ * the request-path value. Startup holds no request slot and nothing else runs
+ * on the loop yet, so a second process can wait out the first one's migration
+ * (an IMMEDIATE transaction, possibly with a backfill) instead of failing.
+ * Still bounded, so a wedged lock holder fails startup.
+ */
+export const DEFAULT_SQLITE_MIGRATION_BUSY_TIMEOUT_MS = 60_000;
 
 export interface StorageTimeouts {
   pgStatementTimeoutMs: number;
   pgQueryTimeoutMs: number;
   pgConnectionTimeoutMs: number;
   sqliteBusyTimeoutMs: number;
+  sqliteMigrationBusyTimeoutMs: number;
 }
 
 export const DEFAULT_STORAGE_TIMEOUTS: StorageTimeouts = {
@@ -38,6 +47,7 @@ export const DEFAULT_STORAGE_TIMEOUTS: StorageTimeouts = {
   pgQueryTimeoutMs: DEFAULT_PG_QUERY_TIMEOUT_MS,
   pgConnectionTimeoutMs: DEFAULT_PG_CONNECTION_TIMEOUT_MS,
   sqliteBusyTimeoutMs: DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+  sqliteMigrationBusyTimeoutMs: DEFAULT_SQLITE_MIGRATION_BUSY_TIMEOUT_MS,
 };
 
 /** Defaults overlaid with overrides; a non-positive or non-integer value is a bug, not "no limit". */

@@ -11,7 +11,7 @@
  */
 
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
-import type { Pool as PgPool, PoolClient, QueryResultRow } from 'pg';
+import type { Client as PgClient, Pool as PgPool, PoolClient, QueryResultRow } from 'pg';
 import type {
   Storage,
   UserRecord,
@@ -255,7 +255,7 @@ export const LOCK_FAMILY = `SELECT pg_advisory_xact_lock(${FAMILY_LOCK_SPACE}, h
 export const SWEEP_LOCK_KEY = 0x73776570; // "swep"
 
 /** The migration transaction's handle on one pooled connection. */
-function pgTx(client: PoolClient): MigrationTx {
+function pgTx(client: PoolClient | PgClient): MigrationTx {
   return {
     dialect: 'postgres',
     async exec(sql, params) {
@@ -278,8 +278,7 @@ function pgTx(client: PoolClient): MigrationTx {
  * (including a refusal because a newer release migrated the database) leaves
  * the schema unchanged.
  */
-async function migrate(pool: PgPool, tokenKeys: TokenKeyDeriver): Promise<void> {
-  const client = guardClient(await pool.connect());
+async function migrate(client: PgClient, tokenKeys: TokenKeyDeriver): Promise<void> {
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1)', [SCHEMA_LOCK_KEY]);
@@ -341,8 +340,6 @@ async function migrate(pool: PgPool, tokenKeys: TokenKeyDeriver): Promise<void> 
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw err;
-  } finally {
-    client.release();
   }
 }
 
@@ -398,10 +395,12 @@ export class PostgresStorage implements Storage {
 
   async init(): Promise<void> {
     let Pool: typeof PgPool;
+    let Client: typeof PgClient;
     try {
       const mod = await import('pg');
       // `pg` is a CommonJS module; the Pool constructor lives on the default export.
       Pool = mod.default.Pool;
+      Client = mod.default.Client;
     } catch {
       throw new Error('Postgres driver selected but pg is not installed');
     }
@@ -416,12 +415,25 @@ export class PostgresStorage implements Storage {
       connectionTimeoutMillis: timeouts.pgConnectionTimeoutMs,
     });
 
+    // Startup holds no request slot, so the migration runs on its own connection under none of the
+    // request-path bounds: it may wait for the schema lock while another replica migrates, or for a
+    // lock an older version still serving holds, and a statement_timeout would roll a long backfill
+    // back and restart-loop. Only the connect is bounded, so an unreachable database fails startup;
+    // TCP keep-alive detects a server that vanishes mid-migration.
+    const migration = new Client({
+      connectionString: this.options.connectionString,
+      connectionTimeoutMillis: timeouts.pgConnectionTimeoutMs,
+      keepAlive: true,
+    });
     try {
-      await migrate(pool, this.options.tokenKeys);
+      await migration.connect();
+      await migrate(migration, this.options.tokenKeys);
     } catch (err) {
+      await migration.end().catch(() => undefined);
       await pool.end();
       throw err;
     }
+    await migration.end().catch(() => undefined);
 
     this.pool = pool;
   }

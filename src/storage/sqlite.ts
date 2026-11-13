@@ -255,10 +255,11 @@ export class SqliteStorage implements Storage {
       throw new Error('SQLite driver selected but better-sqlite3 is not installed');
     }
 
-    // An explicit, bounded lock wait (the library's own default is also 5 s). It blocks the event loop.
-    const db = new Database(this.options.path, {
-      timeout: resolveStorageTimeouts(this.options.timeouts).sqliteBusyTimeoutMs,
-    });
+    // Explicit, bounded lock waits (the library's own default is 5 s). The wait blocks the event
+    // loop, so the request-path value is short; startup holds no request slot and gets a longer
+    // one for the migration only (set back below).
+    const timeouts = resolveStorageTimeouts(this.options.timeouts);
+    const db = new Database(this.options.path, { timeout: timeouts.sqliteMigrationBusyTimeoutMs });
     db.pragma('journal_mode = WAL');
 
     const baseSchema = `
@@ -314,6 +315,7 @@ export class SqliteStorage implements Storage {
     `;
     try {
       await migrate(db, baseSchema, this.options.tokenKeys);
+      db.pragma(`busy_timeout = ${timeouts.sqliteBusyTimeoutMs}`);
     } catch (err) {
       db.close();
       throw err;
