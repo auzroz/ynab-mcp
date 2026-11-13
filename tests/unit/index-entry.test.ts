@@ -7,11 +7,11 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 const startHttpServer = vi.hoisted(() => vi.fn());
 vi.mock('../../src/http.js', () => ({ startHttpServer }));
-const serverConnect = vi.hoisted(() => vi.fn(async () => undefined));
+const serveStdio = vi.hoisted(() => vi.fn(() => ({ close: vi.fn(async () => undefined) })));
 vi.mock('../../src/server.js', () => ({
-  createServer: () => ({ connect: serverConnect, close: vi.fn(async () => undefined) }),
+  createStdioServerFactory: () => () => ({}),
 }));
-vi.mock('@modelcontextprotocol/server/stdio', () => ({ StdioServerTransport: class {} }));
+vi.mock('@modelcontextprotocol/server/stdio', () => ({ serveStdio }));
 
 import { main, resolveTransport, shutdownWithDeadline, SHUTDOWN_DEADLINE_MS } from '../../src/entry.js';
 
@@ -71,13 +71,13 @@ describe('main', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     startHttpServer.mockReset();
-    serverConnect.mockClear();
+    serveStdio.mockClear();
   });
 
   it('refuses an unknown MCP_TRANSPORT before starting anything', async () => {
     await expect(main({ MCP_TRANSPORT: 'htpp' })).rejects.toThrow(/Invalid MCP_TRANSPORT/);
     expect(startHttpServer).not.toHaveBeenCalled();
-    expect(serverConnect).not.toHaveBeenCalled();
+    expect(serveStdio).not.toHaveBeenCalled();
   });
 
   it('installs the unhandledRejection handler for every transport', async () => {
@@ -105,7 +105,7 @@ describe('main', () => {
     try {
       await main({});
       expect(process.stdin.listenerCount('close')).toBe(stdinBefore + 1);
-      expect(serverConnect).toHaveBeenCalledTimes(1);
+      expect(serveStdio).toHaveBeenCalledTimes(1);
     } finally {
       if (prior.token === undefined) delete process.env['YNAB_ACCESS_TOKEN'];
       else process.env['YNAB_ACCESS_TOKEN'] = prior.token;
