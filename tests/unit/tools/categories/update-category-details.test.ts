@@ -155,7 +155,7 @@ describe('handleUpdateCategoryDetails', () => {
       { category_id: CAT_ID, name: 'X', budget_id: 'custom' },
       mockClient as never
     );
-    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom');
+    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom', { fresh: true });
   });
 
   it('sanitizes names and notes in the response', async () => {

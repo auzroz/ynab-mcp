@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-budget caches are keyed by the budget's UUID, never by the `last-used`
   or `default` alias (#66). A `budget_id` of `last-used` (or the default when
   `YNAB_BUDGET_ID` is unset) is resolved to the budget's UUID with one request
-  per user, reused for 60 seconds, so a change of last-used budget in YNAB is
-  picked up within a minute and a write invalidates exactly the entries a read
-  created. The budget-settings cache now has the same generation guard as the
+  per user, reused by reads for 5 minutes, so a change of last-used budget in
+  YNAB is picked up within 5 minutes for reads. Writes always resolve fresh, and
+  a write invalidates exactly the entries a read created. The budget-settings cache now has the same generation guard as the
   other caches.
 
 ## [0.4.2] - 2026-11-04

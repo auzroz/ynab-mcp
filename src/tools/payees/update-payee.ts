@@ -69,7 +69,7 @@ export async function handleUpdatePayee(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
   const response = await client.updatePayee(budgetId, validated.payee_id, {
     payee: { name: validated.name },

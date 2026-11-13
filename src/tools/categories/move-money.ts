@@ -179,7 +179,7 @@ export async function handleMoveMoney(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budget = await client.resolveBudgetId(validated.budget_id);
+  const budget = await client.resolveBudgetId(validated.budget_id, { fresh: true });
   const month = validated.month === 'current' ? getCurrentMonth() : validated.month;
   const amount = toMilliunits(validated.amount);
 

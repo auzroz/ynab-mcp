@@ -1243,7 +1243,7 @@ describe('budget alias resolution (#66)', () => {
     expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(1);
   });
 
-  it('picks up a changed last-used budget once the 60 s window has passed', async () => {
+  it('picks up a changed last-used budget once the 5 minute window has passed', async () => {
     vi.useFakeTimers();
     const client = makeClient(true);
     asMock(mockApi.plans.getPlanById).mockResolvedValueOnce(planResponse(U1)).mockResolvedValueOnce(planResponse(U2));
@@ -1254,6 +1254,32 @@ describe('budget alias resolution (#66)', () => {
     vi.advanceTimersByTime(2000);
     await expect(client.resolveBudgetId()).resolves.toBe(U2);
     expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(2);
+  });
+
+  it('fresh skips the cached entry, refreshes it, and still joins an in-flight lookup', async () => {
+    const client = makeClient(true);
+    asMock(mockApi.plans.getPlanById).mockResolvedValueOnce(planResponse(U1)).mockResolvedValueOnce(planResponse(U2));
+
+    await expect(client.resolveBudgetId()).resolves.toBe(U1);
+    await expect(client.resolveBudgetId('last-used', { fresh: true })).resolves.toBe(U2);
+    // The refreshed entry now serves reads.
+    await expect(client.resolveBudgetId()).resolves.toBe(U2);
+    expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(2);
+
+    asMock(mockApi.plans.getPlanById).mockClear();
+    setResolve(mockApi.plans.getPlanById, planResponse(U1));
+    const both = await Promise.all([
+      client.resolveBudgetId('last-used', { fresh: true }),
+      client.resolveBudgetId('last-used', { fresh: true }),
+    ]);
+    expect(both).toEqual([U1, U1]);
+    expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(1);
+  });
+
+  it('fresh costs no request for a UUID', async () => {
+    const client = makeClient(true);
+    await expect(client.resolveBudgetId(U1, { fresh: true })).resolves.toBe(U1);
+    expect(asMock(mockApi.plans.getPlanById)).not.toHaveBeenCalled();
   });
 
   it('shares the resolution between clients of one user through the cache', async () => {

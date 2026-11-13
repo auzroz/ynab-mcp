@@ -65,8 +65,8 @@ interface FanOutReservation {
   closed: boolean;
 }
 
-/** How long a resolved "last-used" / "default" budget id is reused (#66). */
-export const BUDGET_ALIAS_TTL_MS = 60_000;
+/** How long a read reuses a resolved "last-used" / "default" budget id (#66); writes resolve fresh. */
+export const BUDGET_ALIAS_TTL_MS = 300_000;
 
 /**
  * server_knowledge no budget has reached: asking for changes since it returns
@@ -540,14 +540,20 @@ export class YnabClient {
    * sentinel is resolved with one request and remembered for
    * BUDGET_ALIAS_TTL_MS in the user's cache, so tool calls do not each cost a
    * request; a changed "last-used" budget is picked up within that time.
+   *
+   * Writes pass `{ fresh: true }`: the cached entry is skipped (a lookup
+   * already in flight is still joined) and the answer replaces it, so a write
+   * never targets a budget that stopped being last-used since the last read.
    */
-  async resolveBudgetId(budgetId?: string): Promise<string> {
+  async resolveBudgetId(budgetId?: string, options: { fresh?: boolean } = {}): Promise<string> {
     const requested = budgetId ?? this.defaultBudgetId;
     if (!isBudgetIdSentinel(requested)) return requested;
 
     const cacheKey = `budget-alias:${requested}`;
-    const cached = this.cache.get<string>(cacheKey);
-    if (cached !== undefined) return cached;
+    if (options.fresh !== true) {
+      const cached = this.cache.get<string>(cacheKey);
+      if (cached !== undefined) return cached;
+    }
 
     // Concurrent callers in this client share one lookup.
     let pending = this.aliasLookups.get(requested);

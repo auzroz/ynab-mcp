@@ -43,7 +43,7 @@ describe('handleUpdatePayee', () => {
       mockClient as never
     );
 
-    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('b-7');
+    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('b-7', { fresh: true });
     expect(mockClient.updatePayee).toHaveBeenCalledWith('b-7', PAYEE_UUID, {
       payee: { name: 'New Name' },
     });

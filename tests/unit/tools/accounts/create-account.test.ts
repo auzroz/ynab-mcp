@@ -37,7 +37,7 @@ describe('handleCreateAccount', () => {
       mockClient as never
     );
 
-    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('b-1');
+    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('b-1', { fresh: true });
     expect(mockClient.createAccount).toHaveBeenCalledWith('b-1', {
       account: {
         name: 'New Checking',

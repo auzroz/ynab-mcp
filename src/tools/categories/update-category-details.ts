@@ -116,7 +116,7 @@ export async function handleUpdateCategoryDetails(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
   // Fail fast in read-only sessions before any API read is spent.
   if (client.isReadOnly()) {
