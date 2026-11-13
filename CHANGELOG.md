@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Per-budget caches are keyed by the budget's UUID, never by the `last-used`
+  or `default` alias (#66). A `budget_id` of `last-used` (or the default when
+  `YNAB_BUDGET_ID` is unset) is resolved to the budget's UUID with one request
+  per user, reused for 60 seconds, so a change of last-used budget in YNAB is
+  picked up within a minute and a write invalidates exactly the entries a read
+  created. The budget-settings cache now has the same generation guard as the
+  other caches.
+
 ## [0.4.2] - 2026-11-04
 
 A documentation site and dependency updates. The server's code and tools are

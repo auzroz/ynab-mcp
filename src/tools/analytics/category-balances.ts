@@ -93,7 +93,7 @@ export async function handleCategoryBalances(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const filter = validated.filter ?? 'all';
   const currentMonth = getCurrentMonth();
 

@@ -128,7 +128,7 @@ export async function handleCreateTransactions(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   // Convert transactions to YNAB format
   const ynabTransactions: ynab.NewTransaction[] = validated.transactions.map((t) => {

@@ -136,7 +136,7 @@ export async function handleUpdateTransactions(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   const transactions: ynab.SaveTransactionWithIdOrImportId[] = validated.transactions.map((t) => {
     const update: ynab.SaveTransactionWithIdOrImportId = {};

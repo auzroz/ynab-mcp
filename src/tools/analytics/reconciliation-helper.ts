@@ -86,7 +86,7 @@ export async function handleReconciliationHelper(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   // Get accounts and transactions (limit to last 90 days for reconciliation)
   const lookbackDays = 90;
