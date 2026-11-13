@@ -114,9 +114,9 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
   - WS7.7's upgrade notes and Breaking-change row 8 must say "restart", not "instant switch".
 - **A downgrade depends on STOR-1:**
   - "The very next request" holds only if a YNAB token refresh can't put back an older grant.
-  - Today `YnabTokenResolver.refresh` writes back the whole `UserRecord` it read before refreshing (`user-session.ts`, `upsertUser({ ...user, … })`). A read-only re-consent that lands during the refresh is overwritten with the old read-write `grantedScope`.
-  - STOR-1 (WS8.25) replaces that write-back with the compare-and-set `updateUserRefreshToken(userId, oldCiphertext, newCiphertext)`. It writes only the refresh token and misses when the row has changed, which closes the race.
-  - WS7.4 relies on that change and must not merge ahead of it.
+  - At f35a0d7, `YnabTokenResolver.refresh` wrote back the whole `UserRecord` it read before refreshing (`upsertUser({ ...user, … })`). A read-only re-consent that landed during the refresh was overwritten with the old read-write `grantedScope`.
+  - STOR-1 (WS8.25, #93, merged into `release/0.5.0` on 2026-11-13) replaced that write-back with the compare-and-set `updateUserRefreshToken(userId, oldCiphertext, newCiphertext)`. It writes only the refresh token and misses when the row has changed, which closes the race.
+  - WS7.4 relies on that change, which is already on `release/0.5.0`.
 - **Binds:**
   - WS7.4 carries #56's line verbatim, and the reviewer diffs it.
   - Protected tests: the downgrade test and the `ALLOW_WRITE=false` test.
@@ -156,7 +156,7 @@ Each decision states what it is, why, and the code it binds. "Today" means `rele
     - Slots are **not** guaranteed to free at the ceiling. Under D5, a slot is held until the request's started work settles, and that includes `resolver.resolve`.
     - `resolve` awaits storage reads and an `upsertUser` write. #58's fetch timeout bounds the YNAB token refresh inside it, but nothing bounds the storage calls today: `postgres.ts` sets no statement, query or pool-acquire timeout.
     - So requests that stall in storage hold their slots until the storage call returns, and enough of them can exhaust the cap with their responses already closed.
-    - **Storage work is bounded (Q7)**, so every held slot frees:
+    - **Storage work is bounded (Q7).** On Postgres every held slot then frees. On SQLite the bound covers lock waits only (see the last item):
       - Postgres, server side: `statement_timeout`, and the pool's `connectionTimeoutMillis` (for example 10 s).
       - Postgres, client side: `pg`'s `query_timeout`, set above `statement_timeout`, so the server cancels a slow statement first and the client-side timeout fires only when the server can't be reached (for example a reply lost in a network partition). A connection whose query timed out is discarded, not returned to the pool.
       - A timed-out write is an unknown outcome. The request fails; nothing retries the write or acts on a re-read as if it had failed, because the write may still commit. The refresh-token write is already a compare-and-set (STOR-1's `updateUserRefreshToken`), so a late commit can't overwrite a newer token.
