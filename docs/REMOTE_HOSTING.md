@@ -53,7 +53,10 @@ Set these environment variables (see `.env.example`):
 | `MCP_MAX_SESSIONS_PER_USER` | no | Cap on one user's concurrent sessions (integer >= 1 and at most `MCP_MAX_SESSIONS`, default `10` or `MCP_MAX_SESSIONS` if smaller). Past it the user's least recently used session is closed to make room. Set it below `MCP_MAX_SESSIONS` so one user can't take every slot. See "Sessions" |
 | `MCP_SESSION_IDLE_TIMEOUT_MS` | no | Idle time before a session is closed (integer >= 1, default `1800000`, 30 min). See "Sessions" |
 | `RATE_LIMIT_MAX_WAIT_MS` | no | Longest a request waits for a per-user YNAB rate-limit token (integer 0-60000, default `2000`). `0` never waits. Past that, or when another request is already waiting, the tool returns `rate_limited` with `retry_after_seconds` at once, so a burst can't pile up behind the limiter |
-| `TRUST_PROXY` | if behind a reverse proxy | Hop count to trust for `X-Forwarded-*` (e.g. `1` behind a single Traefik/Caddy/nginx). Without it, every client behind the proxy shares one rate limit on the OAuth endpoints, so one client can lock out the others. Set it only when the app is reachable solely through the proxy, or clients can spoof `X-Forwarded-For` |
+| `TRUST_PROXY` | if behind a reverse proxy | Number of proxies between the client and this server whose `X-Forwarded-For` to trust (integer 0-10, default `0`; e.g. `1` behind a single Traefik/Caddy/nginx). Too low and every client shares one rate-limit bucket, so one client can lock out the others; too high and clients can spoof their address. Set it only when the app is reachable solely through the proxy. See "Client addresses and rate limits" |
+| `TRUST_CF_CONNECTING_IP` | no | `true` to take the client address from `CF-Connecting-IP` (default `false`). Separate from `TRUST_PROXY`; turn it on only when the server is reachable solely through Cloudflare. See "Client addresses and rate limits" |
+| `REGISTER_RATE_LIMIT_PER_IP` | no | `/register` requests per client address per hour (integer 1-100000, default `100`) |
+| `REGISTER_RATE_LIMIT_PER_HOST` | no | `/register` requests per redirect URI host per hour (integer 1-100000, default `20`) |
 
 OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
 `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL`; startup is refused if any is missing.
@@ -277,6 +280,85 @@ Error descriptions are fixed text; nothing from YNAB is forwarded. If you put
 the server behind a proxy, set `PUBLIC_URL` to the exact URL clients use: it
 is both the issuer and the `iss` value. No new environment variables.
 
+## Client addresses and rate limits
+
+The OAuth endpoints are rate limited per client, so the server has to know the
+client's address. It takes it from the socket, or, behind a reverse proxy, from
+`X-Forwarded-For` as far as `TRUST_PROXY` says to trust it.
+
+**Get this wrong and one of two things happens.**
+
+- `TRUST_PROXY` too low (the default `0` behind a proxy): every client appears
+  to connect from the proxy, so all of them share one bucket and one client's
+  burst locks everyone out of `/register`, `/authorize`, `/token` and `/revoke`.
+  The server logs a warning at startup when `TRUST_PROXY=0` and `PUBLIC_URL` is
+  not localhost.
+- `TRUST_PROXY` too high: the server trusts entries that the client wrote
+  itself, so anyone can pick a fresh address per request and never be limited.
+
+### Which address is used
+
+`TRUST_PROXY=N` trusts the last N hops, counting the socket peer as the first.
+The address used is the first one past those hops: with `X-Forwarded-For:
+a, b, c` and `TRUST_PROXY=1`, the socket peer is trusted and the address is
+`c`; with `2` it is `b`. Entries to the left of that are ignored, because the
+client could have written them.
+
+| Your setup | `TRUST_PROXY` | `TRUST_CF_CONNECTING_IP` | Address used |
+|---|---|---|---|
+| Clients connect straight to the server (no proxy) | `0` (default) | `false` | The socket peer. `X-Forwarded-For` and `CF-Connecting-IP` are ignored |
+| One proxy: Caddy, nginx or Traefik, no CDN | `1` | `false` | The right-most `X-Forwarded-For` entry, the address the proxy saw connect |
+| Two proxies: a load balancer, then nginx | `2` | `false` | The second entry from the right, the address the first proxy saw connect |
+| Cloudflare straight to the server | `1` | `false` | The right-most `X-Forwarded-For` entry, which Cloudflare appends |
+| Cloudflare straight to the server, header preferred | `1` | `true` | `CF-Connecting-IP`, when it is a valid IP; else as the row above |
+| Cloudflare, then one proxy of yours | `2` | `false` | The second entry from the right |
+| Cloudflare, then one proxy of yours, header preferred | `2` | `true` | `CF-Connecting-IP`, when valid; else as the row above |
+
+Rules that apply to every row:
+
+- `TRUST_PROXY` is the number of proxies **between the client and this server**
+  (Cloudflare counts as one). A proxy of yours that overwrites
+  `X-Forwarded-For` instead of appending is still one hop.
+- `CF-Connecting-IP` is read **only** with `TRUST_CF_CONNECTING_IP=true`, and
+  it is independent of `TRUST_PROXY`. Turn it on only when the server can be
+  reached **only** through Cloudflare (a Cloudflare Tunnel, or a firewall that
+  admits Cloudflare's address ranges alone). Otherwise anyone who connects
+  directly can send the header and choose their own address. A header that is
+  not a single valid IP is ignored.
+- IPv6 clients are keyed by their `/64`, so one host cannot get a new bucket
+  by changing the low 64 bits of its address. An IPv4-mapped IPv6 address
+  (`::ffff:a.b.c.d`) is keyed as the IPv4.
+- To check your setting, send a request through the proxy and read the
+  `RateLimit` headers on a `/token` response from two different networks: they
+  should count separately.
+
+### What is limited, and by what key
+
+An unauthenticated endpoint is keyed by **(client_id, address)**, never by
+`client_id` alone: a `client_id` is public, so anyone who knew one could spend
+its budget. Each such endpoint also has an address-only ceiling of ten times
+its limit, so rotating `client_id` does not give one address unlimited buckets.
+
+| Endpoint | Limit | Key |
+|---|---|---|
+| `/authorize` | 100 per 15 minutes | (`client_id`, address) |
+| `/token` | 50 per 15 minutes | (`client_id`, address) |
+| `/revoke` | 50 per 15 minutes | (`client_id`, address) |
+| `/oauth/*` (YNAB login legs) | 100 per 15 minutes | address |
+| `/register` | `REGISTER_RATE_LIMIT_PER_IP` per hour (default 100) | address |
+| `/register` | `REGISTER_RATE_LIMIT_PER_HOST` per hour (default 20) | each redirect URI host |
+
+`/register` has two limits because hosted MCP clients such as claude.ai
+register from one small range of addresses, so a low per-address limit would
+lock their users out of each other, while the redirect host is what they
+share. A registration naming several hosts is counted against each of them.
+Loopback redirects (`localhost`, `127.0.0.1`, `[::1]`) and private-use schemes
+are shared by native clients everywhere, so they are keyed by host **and**
+address instead of by host alone.
+
+The `client_id` for `/token` and `/revoke` is the HTTP Basic user or the
+`client_id` form field; for `/authorize`, the query parameter.
+
 ## Host and Origin validation
 
 On by default. One middleware (`src/middleware/origin-validation.ts`) runs before
@@ -394,8 +476,8 @@ any MCP client that supports the `prompts` capability:
   and DCR client secrets only as SHA-256 hashes, so a copy of the database holds
   no usable MCP credential. A value that isn't a correctly tagged `ymcp1_` token
   (or a 0.4.x-shaped one) is refused without a database read. `/token` and
-  `/revoke` verify client secrets behind a per-IP limit (50 per 15 minutes per
-  route).
+  `/revoke` verify client secrets behind a per-(client_id, address) limit (50
+  per 15 minutes per route); see "Client addresses and rate limits".
 - Access is read-only or read-write **per connection**, per the consent choice
   for that client; the server also honors a global `YNAB_READ_ONLY=true`
   override.

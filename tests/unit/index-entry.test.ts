@@ -13,7 +13,7 @@ vi.mock('../../src/server.js', () => ({
 }));
 vi.mock('@modelcontextprotocol/server/stdio', () => ({ serveStdio }));
 
-import { main, resolveTransport, shutdownWithDeadline, SHUTDOWN_DEADLINE_MS } from '../../src/entry.js';
+import { main, proxyWarnings, resolveTransport, shutdownWithDeadline, SHUTDOWN_DEADLINE_MS } from '../../src/entry.js';
 
 describe('resolveTransport', () => {
   it('defaults to stdio when unset or empty', () => {
@@ -63,6 +63,21 @@ describe('shutdownWithDeadline', () => {
   });
 });
 
+describe('proxyWarnings', () => {
+  const base = { publicUrl: 'https://ynab.example.com', trustProxy: 0, trustCfConnectingIp: false };
+  it('warns for a public PUBLIC_URL with TRUST_PROXY=0', () => {
+    expect(proxyWarnings(base)).toHaveLength(1);
+  });
+  it('is silent for a loopback PUBLIC_URL, no PUBLIC_URL, a trusted hop count, or CF-Connecting-IP', () => {
+    expect(proxyWarnings({ ...base, publicUrl: 'http://localhost:3000' })).toEqual([]);
+    expect(proxyWarnings({ ...base, publicUrl: 'http://127.0.0.1' })).toEqual([]);
+    expect(proxyWarnings({ ...base, publicUrl: 'http://[::1]:3000' })).toEqual([]);
+    expect(proxyWarnings({ ...base, publicUrl: undefined })).toEqual([]);
+    expect(proxyWarnings({ ...base, trustProxy: 1 })).toEqual([]);
+    expect(proxyWarnings({ ...base, trustCfConnectingIp: true })).toEqual([]);
+  });
+});
+
 describe('main', () => {
   beforeEach(() => {
     // main installs SIGINT/SIGTERM/unhandledRejection handlers; not in the test worker.
@@ -95,6 +110,19 @@ describe('main', () => {
     expect(startHttpServer).toHaveBeenCalledTimes(1);
     expect(startHttpServer.mock.calls[0]?.[0]).toMatchObject({ authMode: 'header' });
     expect(process.stdin.listenerCount('close')).toBe(stdinBefore);
+  });
+
+  it('http: warns about TRUST_PROXY=0 with a public PUBLIC_URL, and not with TRUST_PROXY set', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    startHttpServer.mockResolvedValue({ close: vi.fn() });
+    const env = { MCP_TRANSPORT: 'http', AUTH_MODE: 'header', PUBLIC_URL: 'https://ynab.example.com' };
+    await main(env);
+    const logged = () => errorSpy.mock.calls.flat().map(String).join('\n');
+    expect(logged()).toContain('TRUST_PROXY=0 with a non-localhost PUBLIC_URL');
+    expect(logged()).not.toContain('ynab.example.com');
+    errorSpy.mockClear();
+    await main({ ...env, TRUST_PROXY: '1' });
+    expect(logged()).not.toContain('TRUST_PROXY=0');
   });
 
   it('stdio: listens for stdin closing, which ends the session', async () => {

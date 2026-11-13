@@ -13,6 +13,7 @@
 import { ConfigProblems, type Env } from '../parse.js';
 import { HTTP_CHECKS } from './checks.js';
 import { loadAuthSettings } from './auth.js';
+import { loadRateLimitSettings } from './rate-limit.js';
 import { loadServerSettings } from './server.js';
 import { loadSessionSettings } from './sessions.js';
 import { loadStorageSettings } from './storage.js';
@@ -20,6 +21,7 @@ import { loadTokenSettings } from './tokens.js';
 import { loadYnabSettings } from './ynab.js';
 
 export type { HttpAuthMode, AuthSettings } from './auth.js';
+export type { RateLimitSettings } from './rate-limit.js';
 export type { LogLevel, ServerSettings } from './server.js';
 export type { SessionSettings } from './sessions.js';
 export type { StorageDriver, StorageSettings } from './storage.js';
@@ -34,6 +36,7 @@ const LOADERS = [
   loadAuthSettings,
   loadStorageSettings,
   loadTokenSettings,
+  loadRateLimitSettings,
 ] as const;
 
 type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (k: infer I) => void ? I : never;
