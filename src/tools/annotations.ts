@@ -33,7 +33,7 @@
  * keys), and tests/unit/tools/annotations.test.ts checks the hint rules.
  */
 
-import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+import type { ToolAnnotations } from '@modelcontextprotocol/server';
 import type { ToolName } from './index.js';
 
 export interface ToolMetadata {

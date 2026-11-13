@@ -17,7 +17,7 @@ export const transactionTypeJsonSchema = {
   type: 'string',
   enum: ['uncategorized', 'unapproved'],
   description: 'Filter by transaction type: "uncategorized" or "unapproved"',
-} as const;
+};
 
 /** Max length of a returned flag label (YNAB flag names are short). */
 const FLAG_NAME_MAX_LENGTH = 100;

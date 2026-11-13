@@ -16,10 +16,10 @@
 
 import { randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
-import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import { requireBearerAuth } from '@modelcontextprotocol/server-legacy/auth';
+import { isInitializeRequest } from '@modelcontextprotocol/server';
+import type { AuthInfo } from '@modelcontextprotocol/server';
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
 import { createServerForUser, type UserContext } from './server.js';
 import { UserRegistry, headerUserKey } from './services/user-registry.js';
@@ -262,6 +262,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     // the provider also checks it, and reports 0.3.x tokens as bound to it.
     app.use(
       '/mcp',
+      // requireBearerAuth: still the server-legacy copy; WS7.3 moves it to @modelcontextprotocol/express.
       requireBearerAuth({ verifier: provider, resourceMetadataUrl, expectedResource: resourceServerUrl })
     );
 
@@ -385,7 +386,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     let bound = false;
     try {
       lease = registry.acquire(result.userKey);
-      const newTransport = new StreamableHTTPServerTransport({
+      const newTransport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid: string) => admission.commit(sid),
       });

@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import type { Response } from 'express';
-import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/server';
 
 vi.mock('../../../src/auth/ynab-oauth.js', async () => {
   const actual = await vi.importActual<typeof import('../../../src/auth/ynab-oauth.js')>(

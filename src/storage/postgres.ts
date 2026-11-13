@@ -10,7 +10,7 @@
  * code at the token endpoint writes the code's tombstone in the same statement.
  */
 
-import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
 import type { Pool as PgPool, PoolClient, QueryResultRow } from 'pg';
 import type {
   Storage,

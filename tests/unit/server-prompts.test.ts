@@ -7,9 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport, ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/client';
 
 vi.mock('../../src/prompts/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/prompts/index.js')>();
@@ -53,10 +51,10 @@ describe('prompts/get error mapping', () => {
 
     const err = await client.getPrompt({ name, arguments: {} }).catch((e: unknown) => e);
 
-    expect(err).toBeInstanceOf(McpError);
-    expect((err as McpError).code).toBe(ErrorCode.InvalidParams);
-    expect((err as McpError).message).toContain('Unknown prompt: no-such-promptwith-newline');
-    expect((err as McpError).message).not.toContain('\n');
+    expect(err).toBeInstanceOf(ProtocolError);
+    expect((err as ProtocolError).code).toBe(ProtocolErrorCode.InvalidParams);
+    expect((err as ProtocolError).message).toContain('Unknown prompt: no-such-promptwith-newline');
+    expect((err as ProtocolError).message).not.toContain('\n');
 
     await client.close();
     await server.close();
@@ -69,10 +67,10 @@ describe('prompts/get error mapping', () => {
       .getPrompt({ name: 'ynab-monthly-review', arguments: { month: 'not-a-month' } })
       .catch((e: unknown) => e);
 
-    expect(err).toBeInstanceOf(McpError);
-    expect((err as McpError).code).toBe(ErrorCode.InvalidParams);
-    expect((err as McpError).message).toContain('Invalid arguments for prompt ynab-monthly-review');
-    expect((err as McpError).message).not.toContain('not-a-month');
+    expect(err).toBeInstanceOf(ProtocolError);
+    expect((err as ProtocolError).code).toBe(ProtocolErrorCode.InvalidParams);
+    expect((err as ProtocolError).message).toContain('Invalid arguments for prompt ynab-monthly-review');
+    expect((err as ProtocolError).message).not.toContain('not-a-month');
 
     await client.close();
     await server.close();
@@ -88,11 +86,11 @@ describe('prompts/get error mapping', () => {
       .getPrompt({ name: 'ynab-pulse-check', arguments: {} })
       .catch((e: unknown) => e);
 
-    expect(err).toBeInstanceOf(McpError);
-    expect((err as McpError).code).toBe(ErrorCode.InternalError);
-    expect((err as McpError).message).toContain('Failed to build prompt');
-    expect((err as McpError).message).not.toContain('secret internal detail');
-    expect((err as McpError).message).not.toContain('abc123');
+    expect(err).toBeInstanceOf(ProtocolError);
+    expect((err as ProtocolError).code).toBe(ProtocolErrorCode.InternalError);
+    expect((err as ProtocolError).message).toContain('Failed to build prompt');
+    expect((err as ProtocolError).message).not.toContain('secret internal detail');
+    expect((err as ProtocolError).message).not.toContain('abc123');
     // The detail is still logged server-side, sanitized.
     expect(consoleError).toHaveBeenCalledWith('[PromptError]', expect.any(String));
     const logged = String(consoleError.mock.calls.at(-1)?.[1]);

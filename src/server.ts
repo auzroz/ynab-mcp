@@ -3,15 +3,7 @@
  */
 
 import { createRequire } from 'node:module';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-  McpError,
-  ErrorCode,
-} from '@modelcontextprotocol/sdk/types.js';
+import { Server, ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { Config } from './config/environment.js';
 
 // Read the version from package.json at runtime so the server always advertises
@@ -88,7 +80,7 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
 
   const writeToolNames = new Set(tools.filter((t) => t.annotations?.readOnlyHint !== true).map((t) => t.name));
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
+  server.setRequestHandler('tools/list', async () => {
     // Hide write tools from read-only sessions. This is a UX nicety only: the
     // YnabClient write guard still rejects writes server-side. Uses the
     // per-client value so each HTTP session gets its own list.
@@ -98,7 +90,7 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
     return { tools };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler('tools/call', async (request) => {
     const { name, arguments: args } = request.params;
 
     try {
@@ -123,11 +115,11 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
     }
   });
 
-  server.setRequestHandler(ListPromptsRequestSchema, async () => {
+  server.setRequestHandler('prompts/list', async () => {
     return { prompts };
   });
 
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  server.setRequestHandler('prompts/get', async (request) => {
     const { name, arguments: args } = request.params;
 
     try {
@@ -135,18 +127,18 @@ export function createServerFromClient(ynabClient: YnabClient): Server {
     } catch (error) {
       // Client errors map to InvalidParams with a sanitized name only.
       if (error instanceof UnknownPromptError) {
-        throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${sanitizePromptName(name)}`);
+        throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown prompt: ${sanitizePromptName(name)}`);
       }
       if (error instanceof InvalidPromptArgumentsError) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidParams,
           `Invalid arguments for prompt ${sanitizePromptName(name)}: ${error.message}`
         );
       }
       // Anything else is ours. Log the detail server-side and return a generic
       // message, because the SDK forwards plain Error text to the client.
       console.error('[PromptError]', sanitizeErrorMessage(error));
-      throw new McpError(ErrorCode.InternalError, 'Failed to build prompt');
+      throw new ProtocolError(ProtocolErrorCode.InternalError, 'Failed to build prompt');
     }
   });
 

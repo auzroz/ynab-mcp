@@ -5,7 +5,7 @@
  * trend, net worth, and suggested targets for next month.
  */
 
-import type { Prompt, PromptMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { Prompt, PromptMessage } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { InvalidPromptArgumentsError } from './errors.js';
 

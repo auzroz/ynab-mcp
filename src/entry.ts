@@ -5,8 +5,8 @@
  */
 
 import type { Server as HttpServer } from 'node:http';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import type { Server } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { createServer } from './server.js';
 import { redactSecretEnvValues } from './utils/sanitize.js';
 import { startHttpServer } from './http.js';
