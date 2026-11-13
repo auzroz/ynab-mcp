@@ -395,7 +395,7 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { provider, storage } = makeProvider();
     const { state, nonce } = await pendingState(provider);
-    const saveAuthCode = vi.spyOn(storage, 'saveAuthCode');
+    const completeAuthorization = vi.spyOn(storage, 'completeAuthorization');
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       exchangeCodeMock.mockImplementationOnce(async () => {
@@ -405,7 +405,7 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
       const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
       expect(url.searchParams.get('error')).toBe('server_error');
       expect(url.searchParams.has('code')).toBe(false);
-      expect(saveAuthCode).not.toHaveBeenCalled();
+      expect(completeAuthorization).not.toHaveBeenCalled();
       expect(await storage.getUser('ynab-user-1')).toBeUndefined();
     } finally {
       vi.useRealTimers();
@@ -413,25 +413,50 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
     }
   });
 
-  it('a callback that passes its deadline while saving the user saves no code', async () => {
+  it('a callback whose completion fails past the deadline leaves no user and no code', async () => {
+    // The user and the code are one storage step: there is no point between them to stop at.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { provider, storage } = makeProvider();
     const { state, nonce } = await pendingState(provider);
-    const saveAuthCode = vi.spyOn(storage, 'saveAuthCode');
-    const upsertUser = storage.upsertUser.bind(storage);
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
-      vi.spyOn(storage, 'upsertUser').mockImplementationOnce(async (user) => {
-        await upsertUser(user);
+      vi.spyOn(storage, 'completeAuthorization').mockImplementationOnce(async () => {
         vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS + 1);
+        throw new Error('storage failed');
       });
       const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
       expect(url.searchParams.get('error')).toBe('server_error');
-      expect(saveAuthCode).not.toHaveBeenCalled();
+      expect(url.searchParams.has('code')).toBe(false);
+      expect(await storage.getUser('ynab-user-1')).toBeUndefined();
     } finally {
       vi.useRealTimers();
       errorSpy.mockRestore();
     }
+  });
+
+  it('a callback whose client was deleted redirects server_error and leaves the user unchanged', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { provider, storage } = makeProvider();
+    await storage.upsertUser({
+      userId: 'ynab-user-1',
+      grantedScope: 'read-only',
+      encryptedRefreshToken: 'enc-existing',
+      updatedAt: 1,
+    });
+    const before = await storage.getUser('ynab-user-1');
+    const { state, nonce } = await pendingState(provider);
+    // The cleanup sweep removes the client while the YNAB exchange is in flight.
+    exchangeCodeMock.mockImplementationOnce(async () => {
+      const swept = await storage.sweepExpired({ now: Date.now() + 400 * 86_400_000 });
+      expect(swept.deleted.abandonedClients).toBe(1);
+      return { accessToken: 'ya', refreshToken: 'yr', expiresAt: Date.now() + 7200_000 };
+    });
+    const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+    expect(url.searchParams.get('error')).toBe('server_error');
+    expect(url.searchParams.get('error_description')).toBe('Could not complete YNAB authorization');
+    expect(url.searchParams.has('code')).toBe(false);
+    expect(await storage.getUser('ynab-user-1')).toEqual(before);
+    errorSpy.mockRestore();
   });
 
   it('a callback just inside its deadline still completes', async () => {
@@ -654,9 +679,9 @@ describe('McpOAuthProvider resource binding: /authorize', () => {
     'accepts %s and binds the canonical resource through to the tokens',
     async (resource) => {
       const { provider, storage } = makeProvider();
-      const saveCode = vi.spyOn(storage, 'saveAuthCode');
+      const saveCode = vi.spyOn(storage, 'completeAuthorization');
       const { tokens } = await driveToTokens(provider, { authorizeResource: resource });
-      expect(saveCode.mock.calls[0]?.[0].resource).toBe(RESOURCE);
+      expect(saveCode.mock.calls[0]?.[0].code.resource).toBe(RESOURCE);
       expect((await storage.getAccessToken(testKey('access', tokens.access_token)))?.resource).toBe(RESOURCE);
       const info = await provider.verifyAccessToken(tokens.access_token);
       expect(info.resource?.href).toBe(RESOURCE);
@@ -665,9 +690,9 @@ describe('McpOAuthProvider resource binding: /authorize', () => {
 
   it('allows a legacy client that sends no resource; tokens are still bound', async () => {
     const { provider, storage } = makeProvider();
-    const saveCode = vi.spyOn(storage, 'saveAuthCode');
+    const saveCode = vi.spyOn(storage, 'completeAuthorization');
     const { tokens } = await driveToTokens(provider);
-    expect(saveCode.mock.calls[0]?.[0].resource).toBeUndefined();
+    expect(saveCode.mock.calls[0]?.[0].code.resource).toBeUndefined();
     expect((await storage.getAccessToken(testKey('access', tokens.access_token)))?.resource).toBe(RESOURCE);
     expect((await provider.verifyAccessToken(tokens.access_token)).resource?.href).toBe(RESOURCE);
   });
@@ -1261,9 +1286,9 @@ describe('McpOAuthProvider per-grant access level', () => {
 
   it('records the grant on the code and both tokens', async () => {
     const { provider, storage } = makeProvider();
-    const save = vi.spyOn(storage, 'saveAuthCode');
+    const save = vi.spyOn(storage, 'completeAuthorization');
     const { tokens } = await tokensFor(provider, 'read-write');
-    expect(save.mock.calls[0]?.[0].grantedScope).toBe('read-write');
+    expect(save.mock.calls[0]?.[0].code.grantedScope).toBe('read-write');
     expect((await storage.getAccessToken(testKey('access', tokens.access_token)))?.grantedScope).toBe('read-write');
     expect((await storage.takeRefreshToken(testKey('refresh', refreshOf(tokens))))?.grantedScope).toBe('read-write');
   });

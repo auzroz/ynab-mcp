@@ -232,6 +232,39 @@ const SELECT_REFRESH_TOKEN = `SELECT t.* FROM refresh_tokens t JOIN users u ON u
  */
 const HOLD_USER = 'SELECT created_at FROM users WHERE user_id = $1 FOR KEY SHARE';
 
+/**
+ * created_at is written by the insert only (the account's generation), from the
+ * storage clock that also stamps issued_at.
+ */
+const UPSERT_USER_SQL = `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at, created_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (user_id) DO UPDATE SET
+         granted_scope = EXCLUDED.granted_scope,
+         encrypted_refresh_token = EXCLUDED.encrypted_refresh_token,
+         updated_at = EXCLUDED.updated_at`;
+const upsertUserParams = (rec: UserRecord): unknown[] => [
+  rec.userId,
+  rec.grantedScope,
+  rec.encryptedRefreshToken,
+  rec.updatedAt,
+  Date.now(),
+];
+
+const INSERT_AUTH_CODE_SQL = `INSERT INTO auth_codes
+         (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at, resource, granted_scope)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
+const authCodeParams = (rec: AuthCodeRecord): unknown[] => [
+  rec.code,
+  rec.clientId,
+  rec.userId,
+  rec.redirectUri,
+  rec.codeChallenge,
+  JSON.stringify(rec.scopes),
+  rec.expiresAt,
+  rec.resource ?? null,
+  rec.grantedScope ?? null,
+];
+
 function toMillis(value: string | number): number {
   return typeof value === 'number' ? value : Number(value);
 }
@@ -391,17 +424,7 @@ export class PostgresStorage implements Storage {
   // Users + YNAB tokens
 
   async upsertUser(rec: UserRecord): Promise<void> {
-    // created_at is written by the insert only (the account's generation), from
-    // the storage clock that also stamps issued_at.
-    await this.db.query(
-      `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at, created_at)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (user_id) DO UPDATE SET
-         granted_scope = EXCLUDED.granted_scope,
-         encrypted_refresh_token = EXCLUDED.encrypted_refresh_token,
-         updated_at = EXCLUDED.updated_at`,
-      [rec.userId, rec.grantedScope, rec.encryptedRefreshToken, rec.updatedAt, Date.now()]
-    );
+    await this.db.query(UPSERT_USER_SQL, upsertUserParams(rec));
   }
 
   async getUser(userId: string): Promise<UserRecord | undefined> {
@@ -651,22 +674,25 @@ export class PostgresStorage implements Storage {
   // MCP authorization codes (one-time)
 
   async saveAuthCode(rec: AuthCodeRecord): Promise<void> {
-    await this.db.query(
-      `INSERT INTO auth_codes
-         (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at, resource, granted_scope)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [
-        rec.code,
-        rec.clientId,
-        rec.userId,
-        rec.redirectUri,
-        rec.codeChallenge,
-        JSON.stringify(rec.scopes),
-        rec.expiresAt,
-        rec.resource ?? null,
-        rec.grantedScope ?? null,
-      ]
-    );
+    await this.db.query(INSERT_AUTH_CODE_SQL, authCodeParams(rec));
+  }
+
+  async completeAuthorization(input: { user: UserRecord; code: AuthCodeRecord }): Promise<boolean> {
+    return this.inTransaction(async (client) => {
+      // An UPDATE, not a bare lock: a sweep DELETE already waiting on this row
+      // re-checks its predicate (last_seen_at) against the new version and
+      // skips it, which a FOR KEY SHARE lock would not make it do. A sweep that
+      // locks the row first (it skips locked rows) makes this UPDATE match
+      // nothing once it commits, and nothing is written.
+      const seen = await client.query(
+        'UPDATE oauth_clients SET last_seen_at = $2 WHERE client_id = $1 RETURNING client_id',
+        [input.code.clientId, Date.now()]
+      );
+      if (seen.rowCount === 0) return false;
+      await client.query(UPSERT_USER_SQL, upsertUserParams(input.user));
+      await client.query(INSERT_AUTH_CODE_SQL, authCodeParams(input.code));
+      return true;
+    });
   }
 
   async takeAuthCode(code: string): Promise<AuthCodeRecord | undefined> {
