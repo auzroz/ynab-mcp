@@ -219,9 +219,15 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
 | Rotation on every use; reuse revokes the family (the library's grant) | Library (`rotateRefreshToken`) |
 | A race between two refreshes of one token | Adapter compare-and-set (D4) |
 | Code replay revokes the grant | Library, plus the adapter for the race |
-| A **live** refresh token or a **consumed** code presented by another client revokes the grant (today's RFC 9700 hardening; the library only refuses it) | Our `grant-guard` stage on `/token`. It looks the value up with `provider.RefreshToken.find` and `provider.AuthorizationCode.find` (public API) and revokes through storage. It keeps today's behaviour, so it lands in #47-4. |
-| #64a's 60 s idempotency window | Our `refresh-guard` stage on `/token`, added by the re-scoped #64a. The cache key is the refresh token's hash, the client, the requested `scope` and the requested `resource`. A retry that repeats all four within 60 s, while the successor is unused, gets the cached response; the library never sees it. Any other replay goes to the library as reuse and revokes the family, as #64a specifies ("anything else revokes the family"). The cache is per process, like the limiters (#67a). |
-| A consumed refresh token stays detectable | The adapter keeps a consumed row until the later of: 30 days after consumption (today's `REFRESH_TOKEN_REUSE_WINDOW_MS`), and the expiry of its grant's last live token. A replay inside that window revokes the family, as today; the sweep checks the grant before deleting the row. |
+| A **live** refresh token or a **consumed** code presented by another client revokes the grant (today's RFC 9700 hardening; the library only refuses it). **A consumed refresh token or code presented after it has expired, by any client, also revokes the grant** (see below) | Our `grant-guard` stage on `/token`. It looks the value up with `provider.RefreshToken.find(value, { ignoreExpiration: true })` and `provider.AuthorizationCode.find(value, { ignoreExpiration: true })` (public API; the same call the library makes), so the adapter's `find` returns the row whatever its age. The stage compares the presenting client with the row's client and checks `consumed`. It revokes the grant (the family) through storage and answers `invalid_grant`, before the library runs, in either case: (1) the client differs and the token is a refresh token or a code, live or consumed; (2) the row is consumed, whichever client presents it and whatever its age. A live token presented by its own client passes through. It keeps today's behaviour, so it lands in #47-4. |
+| #64a's 60 s idempotency window | Our `refresh-guard` stage on `/token`, added by the re-scoped #64a. It runs before `grant-guard`, so an identical retry is answered from the cache before `grant-guard` sees its already consumed token. The cached response is keyed by the authenticated client, so another client can't use it. The cache key is the refresh token's hash, the client, the requested `scope` and the requested `resource`. A retry that repeats all four within 60 s, while the successor is unused, gets the cached response; the library never sees it. Any other replay goes to the library as reuse and revokes the family, as #64a specifies ("anything else revokes the family"). The cache is per process, like the limiters (#67a). |
+| A consumed refresh token or code stays detectable | The adapter keeps a consumed row, of either kind, until the later of: 30 days after consumption (today's `REFRESH_TOKEN_REUSE_WINDOW_MS`), and the expiry of its grant's last live token. A replay inside that window revokes the family, as today; the sweep checks the grant before deleting the row. |
+
+**Why `grant-guard` ignores expiry (checked in oidc-provider 9.15.0).** The library tests expiry before it tests `consumed`, so an expired and consumed credential is refused without revoking its grant:
+- refresh token: `lib/actions/grants/refresh_token.js` line 61 throws `InvalidGrant('refresh token is expired')`; the `consumed` check that revokes the grant is at line 107;
+- authorization code: `lib/actions/grants/authorization_code.js` line 35 throws `InvalidGrant('authorization code is expired')`; the consumed check that revokes the grant is `consumeGrantSource` in `lib/helpers/grant_source.js` line 26, called at line 69.
+
+Both grant handlers load the credential with `ignoreExpiration: true` (`refresh_token.js` line 51, `grant_source.js` line 10), so the row is still there for `grant-guard` to find. The adapter keeps a consumed row for the retention window (the last row of the table above), so a replay after expiry is still detectable. That row covers consumed codes as well as consumed refresh tokens. The stage needs one test per credential type: a consumed and expired refresh token, and a consumed and expired code, each presented after expiry and each revoking the grant.
 
 ### D7. Scope normalization
 
@@ -239,6 +245,7 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
 - **What:**
   - The last stage is `as-library` (decision 4).
   - A new `method-check` stage keeps today's 405 with `Allow` and a `method_not_allowed` body; the library answers 404. It is ported from 1.32.2's `allowedMethods` (MIT, about 10 lines, decision 2).
+  - `cors-origin` runs **before** `method-check` on `/token`, `/revoke` and `/register`, so a browser's `OPTIONS` preflight gets 204 with the CORS headers and never 405. On a preflight it answers itself (204; `Access-Control-Allow-Origin: *`; `Access-Control-Allow-Methods: POST`; `Access-Control-Allow-Headers` echoing the request's `Access-Control-Request-Headers`) and ends the request, so `method-check` never sees `OPTIONS` on those routes. On any other method it sets `Access-Control-Allow-Origin: *` and continues, so a 405, 429 or `invalid_client` is readable by a browser client. This matches server-legacy 2.4.0, whose token, revocation and registration handlers each apply `cors()` ahead of `allowedMethods(["POST"])`. `/authorize` has no `cors-origin`: a browser navigates there, and the SDK's authorization handler applies no `cors()`. The discovery routes are answered by the library (`clientBasedCORS`, D2).
   - `route-limiter` stages on `/authorize` (100 per 15 min) and `/register` (20 per hour) replace the SDK handlers' internal limiters. #59's keys apply to them.
   - `iss-redirect` goes: the library sets `iss` on every authorization response, errors included (the spike checked this).
 - **The final stage lists**, once the re-scoped #64a has merged (with #55's and #59's stages as the plan has them). #47-4 mounts every stage except `refresh-guard` (added by #64a). #64a adds its stage to `EXPECTED` itself.
@@ -246,9 +253,9 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
 | Route | Stages |
 |---|---|
 | `/authorize` | host-validation → as-limiter → bounded-parser → method-check → route-limiter → authorize-validation → authorize-guard → as-library |
-| `/token` | host-validation → as-limiter → bounded-parser → method-check → cors-origin → route-limiter → client-auth → grant-guard → refresh-guard → as-library |
-| `/revoke` | host-validation → as-limiter → bounded-parser → method-check → cors-origin → route-limiter → client-auth → as-library |
-| `/register` | host-validation → as-limiter → bounded-parser → method-check → route-limiter → dcr-validator → as-library |
+| `/token` | host-validation → as-limiter → bounded-parser → cors-origin → method-check → route-limiter → client-auth → refresh-guard → grant-guard → as-library |
+| `/revoke` | host-validation → as-limiter → bounded-parser → cors-origin → method-check → route-limiter → client-auth → as-library |
+| `/register` | host-validation → as-limiter → bounded-parser → cors-origin → method-check → route-limiter → dcr-validator → as-library |
 | `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`, `/jwks` | host-validation → bounded-parser → as-library |
 | the PRM routes | unchanged (`metadata`, ours) |
 | `/oauth` | host-validation → oauth-leg-limiter → bounded-parser → ynab-federation (now including the interaction routes) |
@@ -275,9 +282,10 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
 
 ### D11. Dependencies, ADR-0001 D14's pin and the guard test
 
-- **B's hunk in #47-2:**
+- **B's hunk in #47-1** (the adapter imports the library's types and errors, so the dependency arrives with it):
   - adds `oidc-provider` `~9.15.0` (tilde, as the library advises for experimental features: CIMD); this adds koa 3.3.0, jose 6 and about 20 small packages;
   - adds `@types/oidc-provider` (DefinitelyTyped; 9.13.1 today) to the dev dependencies.
+  #47-2 and later PRs build on it.
 - **B's hunk in #47-4** removes `@modelcontextprotocol/server-legacy`.
 - **ADR-0001 D14's guard test:**
   - asserts that server-legacy is absent from `package.json` and the lockfile, and that nothing imports it;
@@ -326,7 +334,7 @@ What an upgrading instance holds, and what happens to it:
   - **Helpers.** #47-3 moves token planting (direct `saveAuthCode`/`saveAccessToken` calls) behind helpers; #47-4 swaps the helpers' implementation.
   - **Assertions that encode SDK details.** Error descriptions, `bearer` against `Bearer`, the exact scope string, and the DCR response fields. The reviewer checks that every changed assertion is one of these.
 - **WS7.4's protected list** must pass unchanged in meaning: #57a's `granted_scope='admin'`, `X-YNAB-Token` 401, the downgrade, `ALLOW_WRITE=false`, #42's replay end to end, RFC 8707 binding, `iss` and the non-owner `/revoke`.
-- **New tests:** each D6 stage, the forced races, the browser binding, the 0.4.x upgrade on fixtures for all three drivers (M4 converts the clients, a client that fails validation is dropped and logged, a 0.4.x access token, refresh token and code are each refused, the sweep clears the old rows, and account deletion removes them), and a test that every OAuth error keeps its own code (400, or 500 only for `server_error`).
+- **New tests:** each D6 stage (`grant-guard` with a case per credential type: a consumed refresh token and a consumed code, each replayed after expiry within the retention window), the forced races, the browser binding, the 0.4.x upgrade on fixtures for all three drivers (M4 converts the clients, a client that fails validation is dropped and logged, a 0.4.x access token, refresh token and code are each refused, the sweep clears the old rows, and account deletion removes them), and a test that every OAuth error keeps its own code (400, or 500 only for `server_error`).
 
 ### D14. Effects on other work
 
@@ -348,8 +356,8 @@ What an upgrading instance holds, and what happens to it:
 | PR | What | Files (owner) | Author, model | Size | Built | Packet |
 |---|---|---|---|---|---|---|
 | ADR-0002 | This document | `docs/adr/` (P) | P, Opus | S | Nov 13 | Sign-off Wed Nov 18 (P5) |
-| **#47-1** Library storage | D4: the adapter, the `Storage` methods, M4 (with D12's client conversion), sweeps, `AccountStore`, the conformance suite | `src/auth/oidc/adapter.ts` (new; O after merge), `src/storage/**` (D), `token-hash.ts` (S) | S, Opus (design-sensitive), with D, Sonnet, committing the SQLite and Postgres drivers on S's branch | L (4) | Nov 18-Dec 4 | **P11 Sat Dec 12** |
-| **#47-2** Provider and broker | D2, D3, D7, D10, and B's `oidc-provider` hunk. Not mounted yet; tested on its own Express app, as in the spike. | `src/auth/oidc/{provider,interaction,verifier}.ts`, `src/auth/errors.ts` (new; O after merge), `package.json` (B acks) | S, Opus | L (4) | Nov 23-Dec 9 | **P11 Sat Dec 12** |
+| **#47-1** Library storage | D4: the adapter, the `Storage` methods, M4 (with D12's client conversion), sweeps, `AccountStore`, the conformance suite, and B's `oidc-provider` dependency hunk (D11) | `src/auth/oidc/adapter.ts` (new; O after merge), `src/storage/**` (D), `token-hash.ts` (S), `package.json` and the lockfile (B acks: B's `oidc-provider` hunk, D11) | S, Opus (design-sensitive), with D, Sonnet, committing the SQLite and Postgres drivers on S's branch | L (4) | Nov 18-Dec 4 | **P11 Sat Dec 12** |
+| **#47-2** Provider and broker | D2, D3, D7, D10. Not mounted yet; tested on its own Express app, as in the spike. | `src/auth/oidc/{provider,interaction,verifier}.ts`, `src/auth/errors.ts` (new; O after merge) | S, Opus | L (4) | Nov 23-Dec 9 | **P11 Sat Dec 12** |
 | **#47-3** Test helpers | Move token planting in the HTTP tests behind helpers. No behaviour change. | `tests/unit/http-*.test.ts`, `tests/unit/helpers/**` | B, Sonnet (mechanical) | M (2) | Dec 3-8, after WS7.4 | **P10 Wed Dec 9** |
 | **#47-4** Cut-over | D5, D8, D9, D6's `grant-guard` and D11's removal: mount the library, retire `McpOAuthProvider`, `iss-redirect`, the consent cookie and server-legacy, and update the tests (D13) | `as-router.ts` (O acks), `mcp-provider.ts` (deleted; S), `client-auth.ts` (S), `package.json` (B acks), tests | S, Opus | L (3) | Dec 12-15 | **P12 Wed Dec 16** |
 | **#64a, re-scoped** | D6's `refresh-guard` and the rest of #64a's row in D14 | `src/auth/oidc/**`, `src/config/http/oauth.ts` (C acks) | S, Opus | M (2) | Dec 14-18 | **P13 Sat Dec 19** |
@@ -357,7 +365,7 @@ What an upgrading instance holds, and what happens to it:
 | Docs | REMOTE_HOSTING: the new routes and cookies, the client-visible changes, the upgrade path; the CHANGELOG lines in each PR | docs | A, Sonnet (Opus signs off) | S (1) | Dec 16-22 | P14 Tue Dec 22 |
 
 - **Dependency order:**
-  - #47-1 ∥ #47-2, both after the sign-off; #47-3 after WS7.4;
+  - #47-1 and #47-2, both after the sign-off. #47-1 opens with B's `package.json` and lockfile hunk as its first commit, and #47-2 branches from that commit, so the two are built in parallel; #47-2 merges after #47-1. #47-3 comes after WS7.4;
   - #47-4 after #47-1, #47-2, #47-3, #55 and #59;
   - #64a and #46 after #47-4.
 - **New dates** (decision 7). The three new packets (P11 Sat Dec 12, P12 Wed Dec 16, P13 Sat Dec 19) and P14 (Tue Dec 22, fixes) follow the plan's Wednesday and Saturday rhythm. The maintainer approved these dates and asked that none move earlier (Q7). Dropping the token carry-over (Q3) frees its slot in P13: that slot is **buffer**, held for a slip in #47-1 to #47-4 or for fixes from WS7.9b. It doesn't pull any date forward.
@@ -378,8 +386,8 @@ What an upgrading instance holds, and what happens to it:
 | RFC 8707 resource binding | `resourceIndicators` with an exact `getResourceServerInfo`; the verifier's exact `aud` check | Config + ours | `http-oauth-resource`; spike 11, 20, 27 |
 | RFC 9207 `iss` | Every authorization response, errors included | Library | `http-oauth-iss`; spike 3, 9-11, 14, 37 |
 | Refresh rotation, reuse detection (RFC 9700) | `rotateRefreshToken`; the reuse revocation; the adapter's compare-and-set | Config + library + adapter | conformance suite; spike 25, 26, 28, 29, 32 |
-| Another client presenting a live refresh token revokes the family | `grant-guard` stage | Ours | new stage tests |
-| #42 code replay revocation | The library's consumed check; the adapter's compare-and-set and grant check; `grant-guard` for another client | Library + adapter + ours | `http-oauth-code-replay`, conformance; spike 22, 35 |
+| Another client presenting a live refresh token revokes the family; a consumed refresh token or code replayed after it expired revokes the grant (the library checks expiry first) | `grant-guard` stage, looking the row up ignoring expiry | Ours | new stage tests: one per credential type, including the expired replay |
+| #42 code replay revocation | The library's consumed check; the adapter's compare-and-set and grant check; `grant-guard` for another client and for a replay after expiry | Library + adapter + ours | `http-oauth-code-replay`, conformance; spike 22, 35 |
 | The YNAB legs and their limit | Interaction routes under `/oauth`; `oauth-leg-limiter` | Ours (interaction hook) | `http-oauth-security`, `http-oauth-rate-limit`; spike 13, 36, 37 |
 | Consent, read-only or read-write, `YNAB_OAUTH_ALLOW_WRITE` | The interaction page and the `Grant` scopes; `scopeCeiling` | Ours | `http-oauth-write-policy`; spike 13, 18, 23, 24 |
 | #52 hashed tokens and codes | Adapter `h1.` keys; no `jti` stored; shape refusal | Adapter | conformance, `token-hashing-migration`; spike 15, 21 |
@@ -431,7 +439,7 @@ What an upgrading instance holds, and what happens to it:
 - **M4 mis-converts a client.** Mitigation: the fixtures, and the DB-copy upgrade at rc time. A client that fails validation is dropped and logged and registers again, never converted wrongly.
 - **Operators and users are surprised by the forced sign-in.** Mitigation: the CHANGELOG and REMOTE_HOSTING say plainly that every user signs in again once per client, and rc.1 gives operators a preview.
 - **A client-visible change breaks a real client** (Desktop, the connector, the Inspector). Mitigation: WS7.9b on Dec 19-20, before the freeze, and WS7.9 in January.
-- **The schedule.** Three large and one medium PR from one author (S) inside a month, with the holidays in it. Mitigation: #47-1 and #47-2 are independent and built in parallel, with D on the drivers. #46 can move to 0.5.1 without blocking. P13's freed slot is buffer. Jan 12 still leaves 15 days to v1.x's end of support.
+- **The schedule.** Three large and one medium PR from one author (S) inside a month, with the holidays in it. Mitigation: #47-1 and #47-2 are built in parallel once #47-1's dependency hunk exists, with D on the drivers. #46 can move to 0.5.1 without blocking. P13's freed slot is buffer. Jan 12 still leaves 15 days to v1.x's end of support.
 - **A bus factor of one upstream** (panva). Mitigation: 10 years of releases and a broad user base. If it ever stalls, mcp-oauth-server and the port remain fallbacks.
 
 ## Alternatives considered
@@ -450,7 +458,7 @@ The ADR's nine open questions, answered on 2026-11-13. Eight take the recommenda
 
 1. **Library:** oidc-provider `~9.15.0`. mcp-oauth-server is rejected: too young, with one maintainer and little adoption, for security-critical code (D1).
 2. **Token values:** accept 43-character values without the `ymcp1_` prefix or tag. The `h1.` keys, the pepper and the shape check stay (D4).
-3. **Upgrade path: a middle path, not the recommendation to preserve.** M4 still converts the registered clients, so no client has to re-register. There is no token carry-over: 0.4.x access tokens, refresh tokens, codes and sign-ins in flight stop working at the cut-over, and each user signs in again once per client (U×C sign-ins, for example 6 for 3 users with 2 clients each). The old token rows are ignored, swept on STOR-1's retention and removed with the account (D12).
+3. **Upgrade path: a middle path, not the recommendation to preserve.** M4 still converts the registered clients, so no client has to re-register (a client that fails the library's schema validation is dropped, logged, and has to register again). There is no token carry-over: 0.4.x access tokens, refresh tokens, codes and sign-ins in flight stop working at the cut-over, and each user signs in again once per client (U×C sign-ins, for example 6 for 3 users with 2 clients each). The old token rows are ignored, swept on STOR-1's retention and removed with the account (D12).
 4. **Client-visible changes:** accepted and documented in the CHANGELOG. The 405 and the JSON errors stay. The staging check (WS7.9b) tests Desktop, the claude.ai connector and the Inspector before the freeze (D15).
 5. **Non-expiring client secrets:** accepted (D5).
 6. **#64a:** re-scoped onto the library, its old M4 dropped, its replay cache per process (D6, D14).
