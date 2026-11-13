@@ -7,6 +7,7 @@
  * ynab_update_category, which only changes a month's budgeted amount.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -69,7 +70,9 @@ To change how much is budgeted for a category in a given month, use ynab_update_
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
 
-Not possible through the YNAB API (do it in the YNAB app): target cadences other than monthly/weekly/yearly, due days, choosing the target type, snoozing, and hiding, unhiding, deleting or reordering categories.`,
+Not possible through the YNAB API (do it in the YNAB app): target cadences other than monthly/weekly/yearly, due days, choosing the target type, snoozing, and hiding, unhiding, deleting or reordering categories.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

@@ -11,6 +11,7 @@
  * tool wrote).
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -61,7 +62,9 @@ The amount is in dollars and must be greater than zero. The month is "current" o
 
 Internal categories (such as "Inflow: Ready to Assign") cannot be used as the source or target. To assign money from Ready to Assign to a category, set that category's budgeted amount with ynab_update_category.
 
-**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
+**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

@@ -4,6 +4,7 @@
  * Renames an existing payee.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
@@ -33,7 +34,9 @@ Requires a payee_id. Use ynab_list_payees first to find the payee ID.
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
 
-Not possible through the YNAB API (do it in the YNAB app): deleting or merging payees, and editing payee locations.`,
+Not possible through the YNAB API (do it in the YNAB app): deleting or merging payees, and editing payee locations.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

@@ -4,6 +4,7 @@
  * Returns category details for a specific month.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
@@ -38,7 +39,9 @@ Use when the user asks:
 Use first-of-month format for the month parameter (e.g., 2024-01-01 for January 2024).
 Requires a category_id. Use ynab_list_categories first to find the category ID.
 
-Not possible through the YNAB API (do it in the YNAB app): target cadences other than monthly/weekly/yearly, due days, choosing the target type, and snoozing a target.`,
+Not possible through the YNAB API (do it in the YNAB app): target cadences other than monthly/weekly/yearly, due days, choosing the target type, and snoozing a target.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

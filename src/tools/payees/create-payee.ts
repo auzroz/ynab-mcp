@@ -4,6 +4,7 @@
  * Creates a new payee.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -32,7 +33,9 @@ new payee_name. Use this tool when you need a payee to exist ahead of time.
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
 
-Not possible through the YNAB API (do it in the YNAB app): deleting or merging payees, and editing payee locations.`,
+Not possible through the YNAB API (do it in the YNAB app): deleting or merging payees, and editing payee locations.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

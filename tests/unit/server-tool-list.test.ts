@@ -9,6 +9,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { createServerForUser, type UserContext } from '../../src/server.js';
 import { tools } from '../../src/tools/index.js';
+import { UNTRUSTED_TEXT_NOTE } from '../../src/tools/untrusted-note.js';
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf8')) as { version: string };
 
@@ -95,5 +96,65 @@ describe('serverInfo', () => {
   it('advertises the ynab-mcp name and the package version', async () => {
     const client = await connect(true);
     expect(client.getServerVersion()).toMatchObject({ name: 'ynab-mcp', version: pkg.version });
+  });
+
+  it('sends the untrusted-text note as the server instructions', async () => {
+    const client = await connect(true);
+    expect(client.getInstructions()).toBe(UNTRUSTED_TEXT_NOTE);
+  });
+});
+
+describe('untrusted budget text note in tool descriptions', () => {
+  const countOccurrences = (text: string, needle: string): number => text.split(needle).length - 1;
+
+  // Rule (#61b): every read tool whose output carries a memo or note field from
+  // the budget (passed through sanitizeMemo on the way out, directly or via
+  // accounts/account-fields.ts or transactions/format.ts) carries the note too.
+  // Name-only tools rely on the server instructions (tested above).
+  const freeTextReadTools = [
+    'ynab_list_transactions',
+    'ynab_get_transaction',
+    'ynab_list_account_transactions',
+    'ynab_list_category_transactions',
+    'ynab_list_payee_transactions',
+    'ynab_transaction_search',
+    'ynab_list_scheduled_transactions',
+    'ynab_get_scheduled_transaction',
+    'ynab_reconciliation_helper',
+    'ynab_get_category',
+    'ynab_get_month_category',
+    'ynab_list_money_movement_groups',
+    'ynab_list_money_movements',
+    'ynab_get_month',
+    'ynab_list_months',
+    'ynab_get_account',
+    'ynab_list_accounts',
+  ];
+
+  const writeTools = tools.filter((t) => t.annotations?.readOnlyHint !== true);
+
+  it('appends the note exactly once to every non-read-only tool', () => {
+    expect(writeTools.length).toBeGreaterThan(0);
+    for (const t of writeTools) {
+      const desc = t.description ?? '';
+      expect(desc.endsWith(`\n\n${UNTRUSTED_TEXT_NOTE}`), t.name).toBe(true);
+      expect(countOccurrences(desc, UNTRUSTED_TEXT_NOTE), t.name).toBe(1);
+    }
+  });
+
+  it('appends the note to the free-text read tools', () => {
+    expect(freeTextReadTools.length).toBe(17);
+    for (const name of freeTextReadTools) {
+      const tool = tools.find((t) => t.name === name);
+      expect(tool, name).toBeDefined();
+      expect(tool!.description?.endsWith(`\n\n${UNTRUSTED_TEXT_NOTE}`), name).toBe(true);
+    }
+  });
+
+  it('adds the note to exactly the write tools plus the free-text read tools', () => {
+    const expected = new Set([...writeTools.map((t) => t.name), ...freeTextReadTools]);
+    const withNote = tools.filter((t) => t.description?.includes(UNTRUSTED_TEXT_NOTE)).map((t) => t.name);
+    expect(new Set(withNote)).toEqual(expected);
+    expect(withNote.length).toBe(expected.size);
   });
 });

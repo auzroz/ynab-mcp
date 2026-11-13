@@ -4,6 +4,7 @@
  * Creates a new scheduled transaction in a budget.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
@@ -67,7 +68,9 @@ Use when the user asks:
 Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
 Date must be in the future and within 5 years.
 Amount should be negative for expenses/outflows and positive for income/inflows.
-Split limitation: YNAB cannot create scheduled transactions with splits, so a scheduled transaction has a single category. Splits are only supported when creating a regular transaction (ynab_create_transaction).`,
+Split limitation: YNAB cannot create scheduled transactions with splits, so a scheduled transaction has a single category. Splits are only supported when creating a regular transaction (ynab_create_transaction).
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

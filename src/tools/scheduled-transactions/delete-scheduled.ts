@@ -4,6 +4,7 @@
  * Deletes a scheduled transaction from a budget.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
@@ -32,7 +33,9 @@ Use when the user asks:
 - "Stop the scheduled bill"
 
 Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
-This action cannot be undone.`,
+This action cannot be undone.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

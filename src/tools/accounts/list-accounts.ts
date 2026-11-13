@@ -9,6 +9,7 @@
  * with the budget's currency_format settings (requires additional API call).
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -45,7 +46,9 @@ Use when the user asks:
 Returns account names, types, and current/cleared/uncleared balances, plus on_budget, closed, note, last_reconciled_at, direct import status, transfer_payee_id (use it as payee_id to record a transfer), and debt details (original balance, interest rates, minimum payments, escrow) when present.
 Pass since_server_knowledge (the server_knowledge of an earlier response) to get only the accounts changed since then.
 
-Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening accounts, setting up loan accounts, and changing interest rates.`,
+Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening accounts, setting up loan accounts, and changing interest rates.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

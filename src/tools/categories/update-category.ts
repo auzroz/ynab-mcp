@@ -4,6 +4,7 @@
  * Updates the budgeted amount for a category in a specific month.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -44,7 +45,9 @@ Use first-of-month format for the month parameter (e.g., 2024-01-01 for January 
 The budgeted amount is in dollars (e.g., 500.00 for $500).
 Requires a category_id. Use ynab_list_categories first to find the category ID.
 
-**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.`,
+**Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

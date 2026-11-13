@@ -9,6 +9,7 @@
  * with the budget's currency_format settings (requires additional API call).
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import * as ynab from 'ynab';
@@ -54,7 +55,9 @@ Account types (only these can be created via the YNAB API): checking, savings, c
 
 Balance should be provided in dollars (e.g., 1000.50). For credit cards and liability accounts, use a negative balance for amounts owed.
 
-Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening accounts, setting up loan accounts, and changing interest rates.`,
+Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening accounts, setting up loan accounts, and changing interest rates.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

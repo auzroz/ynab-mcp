@@ -4,6 +4,7 @@
  * Updates an existing scheduled transaction in a budget.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
@@ -68,7 +69,9 @@ Use when the user asks:
 
 Requires READ_ONLY mode to be disabled (YNAB_READ_ONLY=false).
 Only provided fields will be updated.
-Split limitation: YNAB scheduled transactions cannot have splits, and the splits of an existing split scheduled transaction cannot be edited through the API.`,
+Split limitation: YNAB scheduled transactions cannot have splits, and the splits of an existing split scheduled transaction cannot be edited through the API.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

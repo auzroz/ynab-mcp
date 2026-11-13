@@ -5,6 +5,7 @@
  * together) for a budget, optionally limited to one budget month.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -30,7 +31,9 @@ Use when the user asks:
 - "Show my money move groups for [month]"
 - "What were the notes on my category fund moves?"
 
-Each group has an id, creation time, month, note and who performed it (performed_by_user_id, masked). Use the group id to match entries from ynab_list_money_movements (money_movement_group_id). Pass month (YYYY-MM-01 or "current") to limit to one budget month.`,
+Each group has an id, creation time, month, note and who performed it (performed_by_user_id, masked). Use the group id to match entries from ynab_list_money_movements (money_movement_group_id). Pass month (YYYY-MM-01 or "current") to limit to one budget month.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

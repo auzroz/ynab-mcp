@@ -4,6 +4,7 @@
  * Returns detailed information about a specific budget month.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -40,7 +41,9 @@ Use when the user asks:
 - "How much did I have to budget in [month]?"
 
 Use first-of-month format for the month parameter (e.g., 2024-01-01 for January 2024).
-Use "current" for the current month.`,
+Use "current" for the current month.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

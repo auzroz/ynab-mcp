@@ -4,6 +4,7 @@
  * Returns details about a specific account.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
@@ -35,7 +36,9 @@ Also returns transfer_payee_id: set it as payee_id on ynab_create_transaction to
 
 Requires an account_id. Use ynab_list_accounts first to find the account ID.
 
-Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening an account, setting up loan accounts, and changing interest rates.`,
+Not possible through the YNAB API (do it in the YNAB app): editing, closing or reopening an account, setting up loan accounts, and changing interest rates.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

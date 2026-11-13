@@ -4,6 +4,7 @@
  * Powerful search across transactions with multiple filters.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -76,7 +77,9 @@ Use when the user asks:
 
 Supports filtering by payee, category, amount range, date range, and text search.
 
-NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). If only until_date is given, the search starts at the budget's first month so older ranges work (may fetch many transactions; still one request).`,
+NOTE: If since_date is omitted, YNAB returns only the last 12 months of transactions (API 1.85 default). If only until_date is given, the search starts at the budget's first month so older ranges work (may fetch many transactions; still one request).
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {

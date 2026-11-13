@@ -4,6 +4,7 @@
  * Creates a new category group.
  */
 
+import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
@@ -32,7 +33,9 @@ After creating a group, use ynab_create_category to add categories to it.
 
 **Note:** This is a write operation. Requires YNAB_READ_ONLY=false.
 
-Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering category groups.`,
+Not possible through the YNAB API (do it in the YNAB app): hiding, unhiding, deleting or reordering category groups.
+
+${UNTRUSTED_TEXT_NOTE}`,
   inputSchema: {
     type: 'object',
     properties: {
