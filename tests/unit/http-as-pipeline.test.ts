@@ -32,9 +32,9 @@ const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
   { route: '/.well-known/oauth-protected-resource', stages: ['host-validation', 'bounded-parser', 'metadata'] },
   { route: '/.well-known/oauth-authorization-server', stages: ['host-validation', 'bounded-parser', 'metadata'] },
   { route: '/authorize', stages: ['host-validation', 'bounded-parser', 'iss-redirect', 'sdk-router'] },
-  { route: '/token', stages: ['host-validation', 'bounded-parser', 'route-limiter', 'client-auth', 'sdk-router'] },
+  { route: '/token', stages: ['host-validation', 'bounded-parser', 'cors-origin', 'route-limiter', 'client-auth', 'sdk-router'] },
   { route: '/register', stages: ['host-validation', 'bounded-parser', 'sdk-router'] },
-  { route: '/revoke', stages: ['host-validation', 'bounded-parser', 'route-limiter', 'client-auth', 'sdk-router'] },
+  { route: '/revoke', stages: ['host-validation', 'bounded-parser', 'cors-origin', 'route-limiter', 'client-auth', 'sdk-router'] },
   { route: '/oauth', stages: ['host-validation', 'oauth-leg-limiter', 'bounded-parser', 'ynab-federation'] },
 ];
 const stagesOf = (route: string): readonly string[] => EXPECTED.find((e) => e.route === route)!.stages;

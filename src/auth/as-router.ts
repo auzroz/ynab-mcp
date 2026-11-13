@@ -280,6 +280,16 @@ export function mountAuthorizationServer(
       })
     );
   const clientAuth = (): Stage => stage('client-auth', clientAuthentication(provider.clientsStore));
+  // The SDK's handlers send `Access-Control-Allow-Origin: *` (its cors()
+  // default) from inside sdk-router. The route-limiter and client-auth stages
+  // can answer a POST before that, so this sets the same header first; a
+  // browser client can then read their 429 and invalid_client errors.
+  // Preflights pass through to the SDK, which answers them.
+  const corsOrigin = (): Stage =>
+    stage('cors-origin', (req, res, next) => {
+      if (req.method !== 'OPTIONS') res.setHeader('Access-Control-Allow-Origin', '*');
+      next();
+    });
 
   // The SDK's handlers are mounted one per route, exactly as its mcpAuthRouter
   // composes them (it mounts /register and /revoke only when the provider
@@ -306,7 +316,7 @@ export function mountAuthorizationServer(
     {
       path: pathOf(oauthMetadata.token_endpoint),
       parser: boundedFormParser(),
-      slots: [routeLimiter('token'), clientAuth()],
+      slots: [corsOrigin(), routeLimiter('token'), clientAuth()],
       router: sdkRouter(tokenHandler({ provider, rateLimit: false })),
     },
   ];
@@ -321,7 +331,7 @@ export function mountAuthorizationServer(
     routes.push({
       path: pathOf(oauthMetadata.revocation_endpoint),
       parser: boundedFormParser(),
-      slots: [routeLimiter('token revocation'), clientAuth()],
+      slots: [corsOrigin(), routeLimiter('token revocation'), clientAuth()],
       router: sdkRouter(revocationHandler({ provider, rateLimit: false })),
     });
   }

@@ -167,6 +167,8 @@ describe('/token client authentication', () => {
     const res = await token(codeGrant(client.client_id, code, secretOf(client, hash)));
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: 'invalid_client', error_description: description });
+    // Answered before the SDK's cors(), so a browser client can still read it.
+    expect(res.headers['access-control-allow-origin']).toBe('*');
     expect(trace).not.toContain('sdk-router');
     expect(JSON.stringify(res.body)).not.toContain(hash);
     // The code was not spent: the right secret still redeems it.
@@ -228,8 +230,9 @@ describe('/token client authentication', () => {
     const res = await token(codeGrant(client.client_id, 'x', client.client_secret));
     expect(res.status).toBe(429);
     expect(res.body.error).toBe('too_many_requests');
+    expect(res.headers['access-control-allow-origin']).toBe('*');
     // Host validation is off in this config, so the parser is the first stage.
-    expect(trace).toEqual(['bounded-parser', 'route-limiter']);
+    expect(trace).toEqual(['bounded-parser', 'cors-origin', 'route-limiter']);
     // /revoke has its own budget.
     const revoke = await request(handle.app)
       .post('/revoke')
@@ -264,6 +267,7 @@ describe('/revoke client authentication', () => {
     const refused = await revoke(hash);
     expect(refused.status).toBe(400);
     expect(refused.body.error).toBe('invalid_client');
+    expect(refused.headers['access-control-allow-origin']).toBe('*');
   });
 });
 
