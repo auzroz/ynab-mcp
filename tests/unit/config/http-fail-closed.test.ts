@@ -96,6 +96,11 @@ describe('numeric bounds', () => {
     ['MCP_MAX_SESSIONS', ['0'], ['1']],
     ['MCP_MAX_SESSIONS_PER_USER', ['0'], ['1']],
     ['MCP_SESSION_IDLE_TIMEOUT_MS', ['0'], ['1']],
+    ['MCP_MAX_INFLIGHT', ['0', '1025'], ['1', '1024']],
+    ['MCP_MAX_INFLIGHT_PER_USER', ['0', '65'], ['1', '64']],
+    // Its upper bound (64) also needs a per-user cap that high: http-config-limits.test.ts.
+    ['MCP_MAX_INFLIGHT_PER_CLIENT', ['0', '65'], ['1', '4']],
+    ['MCP_REQUEST_TIMEOUT_MS', ['0', '4999', '300001'], ['5000', '300000']],
     ['CACHE_TTL_MS', ['0'], ['1']],
     ['PORT', ['0', '65536'], ['1', '65535']],
     ['TRUST_PROXY', ['11'], ['0', '10']],
@@ -239,10 +244,11 @@ describe('loadHttpConfig composition', () => {
     const c = loadHttpConfig(OAUTH_ENV);
     expect(Object.keys(c).sort()).toEqual([
       'accessTokenTtlSec', 'allowAnonymousFallback', 'allowWrite', 'allowedHosts', 'allowedOrigins', 'authCodeTtlSec',
-      'authMode', 'bindHost', 'cacheTtlMs', 'databaseUrl', 'defaultBudgetId', 'enableDnsRebindingProtection',
-      'encryptionKey', 'fallbackAccessToken', 'logLevel', 'maxSessions', 'maxSessionsPerUser', 'oauthClientId',
-      'oauthClientSecret', 'port', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour', 'readOnly', 'resourceUrl', 'sessionIdleTimeoutMs',
-      'sqlitePath', 'storageDriver', 'tokenPepper', 'trustProxy',
+      'authMode', 'bindHost', 'cacheTtlMs', 'databaseUrl', 'defaultBudgetId', 'deprecatedSessionSettings',
+      'enableDnsRebindingProtection', 'encryptionKey', 'fallbackAccessToken', 'logLevel', 'maxInflight',
+      'maxInflightPerClient', 'maxInflightPerUser', 'maxSessions', 'maxSessionsPerUser', 'oauthClientId',
+      'oauthClientSecret', 'port', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour', 'readOnly', 'requestTimeoutMs',
+      'resourceUrl', 'sessionIdleTimeoutMs', 'sqlitePath', 'storageDriver', 'tokenPepper', 'trustProxy',
     ]);
   });
 });

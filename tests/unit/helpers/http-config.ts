@@ -34,6 +34,12 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     storageDriver: 'memory',
     sqlitePath: undefined,
     databaseUrl: undefined,
+    // The loader's defaults (ADR-0001 D6).
+    maxInflightPerUser: 8,
+    maxInflightPerClient: 4,
+    maxInflight: 64,
+    requestTimeoutMs: 60_000,
+    deprecatedSessionSettings: [],
     ...overrides,
   };
 }

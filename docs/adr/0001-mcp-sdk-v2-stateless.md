@@ -380,4 +380,15 @@ The ADR's nine open questions, answered with the recommendations. The numbers ma
 
 ## Addenda
 
-None yet.
+### 2026-11-13: WS7.4 implementation notes
+
+WS7.4 (`feat/stateless-http`) builds the decisions above as written. No SDK gap was found: every behaviour the ADR assumes from `@modelcontextprotocol/server` 2.4.0 and `@modelcontextprotocol/node` 2.1.2 holds, including the routing defect's exact answers (D1: `-32602` for the envelope key alone, `-32022` for the full envelope; pinned in `tests/unit/http-v2-client.test.ts`). Where the ADR left a detail open, or stated an SDK fact imprecisely, this is what was built:
+
+- **`toNodeHandler` and the parsed body (D1, D12).** It does not read `req.body` itself: mounted as Express middleware its third argument is `next`, which it ignores. The `mcp-handler` stage passes `req.body` explicitly. A body `express.json` skipped (not `application/json`) is still read by the adapter under its own 512 KB bound, and answered `415` by the handler.
+- **Mounting (D1).** The pipeline is one route, `app.route('/mcp').all(…)`: exactly `/mcp`, every method. (`app.all` would register the handlers once per HTTP method.) A path under `/mcp` is a plain `404`. The app-wide JSON parser is mounted after `/mcp`, so a `/mcp` body is read only by `json-512kb`, inside the ceiling.
+- **Ceiling answers (D6).** Not set by the ADR: `504` with the JSON-RPC error echoing the id when the request had fully arrived, `408` with `Connection: close` and `id: null` when its body had not. JSON-RPC code `-32000` for the timeout and for the `429`. A started stream is ended with `res.end()`.
+- **Handler deadline (D6, Q8).** The request's absolute deadline less `min(1000 ms, MCP_REQUEST_TIMEOUT_MS / 10)`. A call whose deadline has passed before it starts (a slow `resolve`), or whose request has already closed, is not started, and its result says only "Request timed out": nothing ran, so the outcome is known.
+- **`MCP_MAX_INFLIGHT` (D6, Q5).** Range 1-1024, default 64. Two cross-rules, like `MCP_MAX_SESSIONS_PER_USER`'s: the per-client cap may not exceed the per-user cap, nor the per-user cap the process-wide one; a default follows a smaller explicit cap.
+- **The 401 from `request-context` (D3, G6).** The same body and challenge as an invalid token (`invalid_token`, "Invalid or expired access token"), so a client can't tell a revoked YNAB grant from a bad token. Header mode keeps its JSON-RPC `401` (`-32001`) with no challenge.
+- **Account generation (D3).** `request-context` pins the request's `YnabClient` token source to the account generation its `resolve` returned (`accessTokenFor(userId, generation)`), instead of the first YNAB call's.
+- **Shutdown (D1, D5).** `close()` waits until every request is released (its response closed and its started work settled, so a timed-out write's YNAB call is not cut off; the process entry's 10 s deadline bounds the wait), then closes idle connections and calls `mcp.close()`.

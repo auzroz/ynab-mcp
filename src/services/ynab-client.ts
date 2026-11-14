@@ -31,6 +31,12 @@ import {
  */
 export type AccessTokenSource = string | (() => Promise<string>);
 
+/** What YNAB has told us about the transaction change feed; shared per user in HTTP mode. */
+export interface TransactionFeedState {
+  /** YNAB rejected FEED_SINCE_DATE: the feed starts at the budget's first month instead. */
+  sinceDateRejected: boolean;
+}
+
 /**
  * ynab.API built from a ready Configuration, so SDK middleware (the 429 hook)
  * can be attached for both fixed and per-request tokens.
@@ -299,9 +305,10 @@ export class YnabClient {
   private readonly readOnly: boolean;
   private readonly auditLog: AuditLog;
   private readonly deltaCache: DeltaCache;
-  // Set once YNAB has rejected FEED_SINCE_DATE: the change feed then starts at
-  // the budget's first month (see transactionChangeFeed).
-  private feedSinceDateRejected = false;
+  // sinceDateRejected is set once YNAB has rejected FEED_SINCE_DATE: the change
+  // feed then starts at the budget's first month (see transactionChangeFeed).
+  // Per user in HTTP mode (UserComponents), so it outlives this client.
+  private readonly feedState: TransactionFeedState;
 
   // Track server knowledge for delta sync. Keyed by budget, resource and any
   // request parameters that change the result set (see knowledgeKey), because a
@@ -318,9 +325,12 @@ export class YnabClient {
     // single-user (stdio) usage is unchanged; multi-tenant callers pass a
     // per-user instance so one user's write history never leaks to another.
     auditLog: AuditLog = getAuditLog(),
-    // Delta-sync snapshots. Per user like the cache (HTTP sessions of one user
+    // Delta-sync snapshots. Per user like the cache (HTTP requests of one user
     // share it); a client built without one gets its own.
-    deltaCache: DeltaCache = new DeltaCache()
+    deltaCache: DeltaCache = new DeltaCache(),
+    // The transaction feed state, per user like the delta cache; a client
+    // built without one gets its own.
+    feedState: TransactionFeedState = { sinceDateRejected: false }
   ) {
     // Every YNAB response passes this hook; a 429 marks the limiter exhausted.
     // The SDK parses every error body as JSON, so a non-JSON one (a proxy's
@@ -363,6 +373,7 @@ export class YnabClient {
     this.readOnly = readOnly;
     this.auditLog = auditLog;
     this.deltaCache = deltaCache;
+    this.feedState = feedState;
   }
 
   /**
@@ -722,13 +733,13 @@ export class YnabClient {
   ): Promise<{ since: string; transactions: ynab.TransactionDetail[]; knowledge: number } | undefined> {
     let since: string | undefined = FEED_SINCE_DATE;
     let delta: ynab.TransactionsResponse | undefined;
-    if (!this.feedSinceDateRejected) {
+    if (!this.feedState.sinceDateRejected) {
       await this.rateLimiter.acquire();
       try {
         delta = await this.api.transactions.getTransactions(budgetId, since, undefined, undefined, knowledge);
       } catch (error) {
         if (!isBadRequest(error)) throw error;
-        this.feedSinceDateRejected = true;
+        this.feedState.sinceDateRejected = true;
       }
     }
     if (delta === undefined) {

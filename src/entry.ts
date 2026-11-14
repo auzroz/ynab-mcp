@@ -88,7 +88,7 @@ async function closeAll(): Promise<void> {
   if (stdioHandle) await stdioHandle.close();
   if (httpServer) {
     const http = httpServer;
-    // HttpServer.close (see startHttpServer) also stops the sessions and the extension jobs before calling back.
+    // HttpServer.close (see startHttpServer) lets /mcp requests in flight finish and stops the extension jobs before calling back.
     await new Promise<void>((resolve) => http.close(() => resolve()));
   }
 }

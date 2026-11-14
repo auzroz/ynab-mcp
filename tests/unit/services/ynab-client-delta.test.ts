@@ -591,6 +591,36 @@ describe('per-user sharing (HTTP components)', () => {
     await buildYnabClient(ctx, bob).getAccounts(B);
     expect(fake.knowledgeSent('getAccounts')).toEqual([undefined, first.data.server_knowledge, undefined]);
   });
+
+  it("a rejected feed since_date is remembered for the user across requests, not retried by each request's new client", async () => {
+    // Stateless HTTP builds a YnabClient per request (ADR-0001 D5): the flag
+    // lives in the user's components, so request two does not repeat the 400.
+    const fake = new FakeYnab();
+    holder.api = fake.api;
+    fake.rejectFarPastSinceDate = true;
+    fake.putTransaction(txn('t1', '2024-02-01'));
+    const registry = new UserRegistry({ rateLimitPerHour: 1_000_000, cacheTtlMs: TTL });
+
+    const request1 = registry.acquire('alice');
+    await buildYnabClient(ctx, request1.components).getTransactions(B, { sinceDate: '2024-01-01' });
+    advance(TTL + 1);
+    await buildYnabClient(ctx, request1.components).getTransactions(B, { sinceDate: '2024-01-01' });
+    request1.release();
+
+    advance(TTL + 1);
+    const request2 = registry.acquire('alice');
+    await buildYnabClient(ctx, request2.components).getTransactions(B, { sinceDate: '2024-01-01' });
+    request2.release();
+
+    const feedSince = fake.calls
+      .filter((c) => c.method === 'getTransactions' && c.args[4] !== undefined)
+      .map((c) => c.args[1]);
+    // The far-past since_date was tried once (rejected); every later feed starts at the first month.
+    expect(feedSince).toEqual(['1900-01-01', fake.firstMonth, fake.firstMonth]);
+
+    // Another user's components start fresh.
+    expect(registry.acquire('bob').components.feedState.sinceDateRejected).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
