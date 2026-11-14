@@ -53,6 +53,19 @@ describe('CircuitBreaker', () => {
     expect(breaker.state()).toBe('open');
   });
 
+  it('counts a burst that straddles the window boundary', () => {
+    const { breaker, advance } = make();
+    fail(breaker, 1);
+    advance(30_000);
+    fail(breaker, 18);
+    advance(31_000); // the first failure is now older than the window
+    fail(breaker, 1);
+    expect(breaker.state()).toBe('closed');
+    fail(breaker, 1);
+    // 18 + 2 failures, all within the last 60 s
+    expect(breaker.state()).toBe('open');
+  });
+
   it('fails fast for 30 s, reporting the time left', () => {
     const { breaker, advance } = make();
     fail(breaker, 20);

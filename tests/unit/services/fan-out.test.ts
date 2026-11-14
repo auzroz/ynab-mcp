@@ -22,24 +22,17 @@ function fakeClockLimiter(perHour: number, maxWaitMs = 2000) {
 }
 
 describe('RateLimiter.acquireMany', () => {
-  it('takes all tokens at once', () => {
+  it('takes all tokens at once', async () => {
     const { limiter } = fakeClockLimiter(10);
-    expect(limiter.acquireMany(4)).toBe(4);
+    await expect(limiter.acquireMany(4)).resolves.toBe(4);
     expect(limiter.getStatus().available).toBe(6);
     expect(limiter.getStatus().sentLastHour).toBe(4);
   });
 
-  it('takes nothing and reports the retry time when the bucket is short', () => {
+  it('takes nothing and reports the retry time when the bucket is short', async () => {
     const { limiter } = fakeClockLimiter(10);
-    limiter.acquireMany(8);
-    const error = (() => {
-      try {
-        limiter.acquireMany(4);
-      } catch (e) {
-        return e as RateLimitError;
-      }
-      return undefined;
-    })();
+    await limiter.acquireMany(8);
+    const error = (await limiter.acquireMany(4).catch((e: unknown) => e)) as RateLimitError;
     expect(error).toBeInstanceOf(RateLimitError);
     // Two tokens short at 10 per hour: 12 minutes.
     expect(error!.retryAfterMs).toBe(Math.ceil((2 / 10) * HOUR));
@@ -47,29 +40,29 @@ describe('RateLimiter.acquireMany', () => {
     expect(limiter.getStatus().rejectedLastHour).toBe(1);
   });
 
-  it('succeeds once the refill covers it', () => {
+  it('succeeds once the refill covers it', async () => {
     const { limiter, advance } = fakeClockLimiter(10);
-    limiter.acquireMany(8);
+    await limiter.acquireMany(8);
     advance(Math.ceil(0.2 * HOUR));
-    expect(limiter.acquireMany(4)).toBe(4);
+    await expect(limiter.acquireMany(4)).resolves.toBe(4);
   });
 
-  it('never waits, even with a wait allowance', () => {
+  it('never waits, even with a wait allowance', async () => {
     const { limiter } = fakeClockLimiter(3600, 2000);
-    limiter.acquireMany(3600);
-    expect(() => limiter.acquireMany(2)).toThrow(RateLimitError);
+    await limiter.acquireMany(3600);
+    await expect(limiter.acquireMany(2)).rejects.toBeInstanceOf(RateLimitError);
   });
 
-  it('refuses a request larger than the whole bucket, taking nothing', () => {
+  it('refuses a request larger than the whole bucket, taking nothing', async () => {
     const { limiter } = fakeClockLimiter(5);
-    expect(() => limiter.acquireMany(9)).toThrow(RateLimitError);
+    await expect(limiter.acquireMany(9)).rejects.toBeInstanceOf(RateLimitError);
     expect(limiter.getStatus().available).toBe(5);
   });
 
-  it('refuses while YNAB has said 429', () => {
+  it('refuses while YNAB has said 429', async () => {
     const { limiter } = fakeClockLimiter(10);
     limiter.markExhaustedByYnab(5000);
-    expect(() => limiter.acquireMany(2)).toThrow(RateLimitError);
+    await expect(limiter.acquireMany(2)).rejects.toBeInstanceOf(RateLimitError);
     expect(limiter.getStatus().available).toBe(10);
   });
 
@@ -77,11 +70,11 @@ describe('RateLimiter.acquireMany', () => {
     vi.useFakeTimers();
     try {
       const limiter = new RateLimiter(3600, Date.now, 2000);
-      limiter.acquireMany(3600);
+      await limiter.acquireMany(3600);
       limiter.release(0);
       const waiter = limiter.acquire();
       // One token is due in 1 s; a reservation of 1 would take it from the waiter.
-      expect(() => limiter.acquireMany(1)).toThrow(RateLimitError);
+      await expect(limiter.acquireMany(1)).rejects.toBeInstanceOf(RateLimitError);
       await vi.advanceTimersByTimeAsync(1000);
       await expect(waiter).resolves.toBeUndefined();
     } finally {
@@ -93,14 +86,10 @@ describe('RateLimiter.acquireMany', () => {
     vi.useFakeTimers();
     try {
       const limiter = new RateLimiter(3600, Date.now, 2000);
-      limiter.acquireMany(3600);
+      await limiter.acquireMany(3600);
       const waiter = limiter.acquire(); // takes the token due in 1 s
-      let retryMs = 0;
-      try {
-        limiter.acquireMany(2);
-      } catch (e) {
-        retryMs = (e as RateLimitError).retryAfterMs ?? 0;
-      }
+      const error = (await limiter.acquireMany(2).catch((e: unknown) => e)) as RateLimitError;
+      const retryMs = error.retryAfterMs ?? 0;
       // Two for the reservation plus one for the waiter, at one token per second.
       expect(retryMs).toBe(3000);
       await vi.advanceTimersByTimeAsync(1000);
@@ -110,15 +99,15 @@ describe('RateLimiter.acquireMany', () => {
     }
   });
 
-  it('rejects a non-positive or fractional count', () => {
+  it('rejects a non-positive or fractional count', async () => {
     const { limiter } = fakeClockLimiter(10);
-    expect(() => limiter.acquireMany(0)).toThrow();
-    expect(() => limiter.acquireMany(1.5)).toThrow();
+    await expect(limiter.acquireMany(0)).rejects.toThrow();
+    await expect(limiter.acquireMany(1.5)).rejects.toThrow();
   });
 
-  it('release(n) gives n tokens back, capped at the bucket', () => {
+  it('release(n) gives n tokens back, capped at the bucket', async () => {
     const { limiter } = fakeClockLimiter(10);
-    limiter.acquireMany(5);
+    await limiter.acquireMany(5);
     limiter.release(3);
     expect(limiter.getStatus().available).toBe(8);
     expect(limiter.getStatus().sentLastHour).toBe(2);
@@ -184,6 +173,23 @@ describe('YnabClient.withFanOut and handleToolCall', () => {
     const mapped = JSON.parse(formatErrorResponse(error)) as Record<string, unknown>;
     expect(mapped['type']).toBe('rate_limited');
     expect(mapped['retry_after_seconds']).toBeGreaterThanOrEqual(1);
+  });
+
+  it('refuses the rest of a fan-out once YNAB answers 429', async () => {
+    const { client, limiter } = make(10);
+    fetchMock.mockImplementationOnce(
+      async () => new Response('{}', { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '30' } })
+    );
+    const error = await client
+      .withFanOut(4, async () => {
+        await client.getUser().catch(() => undefined);
+        await client.getUser();
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RateLimitError);
+    // Only the 429'd call was sent; the reserved tokens that went unused came back.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(limiter.getStatus().sentLastHour).toBe(1);
   });
 
   it('gives the tokens back when the work throws', async () => {

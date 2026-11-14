@@ -6,7 +6,7 @@
 
 import * as ynab from 'ynab';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { RateLimiter } from './rate-limiter.js';
+import type { RequestLimiter } from './rate-limiter.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
 import { outboundFetch } from './outbound.js';
 import type { Cache } from './cache.js';
@@ -324,7 +324,7 @@ export class YnabClient {
   private readonly api: ynab.API;
   // Resolved per request (the SDK Configuration calls it too); never logged.
   private readonly getAccessToken: () => Promise<string>;
-  private readonly rateLimiter: RateLimiter;
+  private readonly rateLimiter: RequestLimiter;
   private readonly cache: Cache;
   private readonly defaultBudgetId: string;
   private readonly readOnly: boolean;
@@ -344,7 +344,7 @@ export class YnabClient {
   constructor(
     accessToken: AccessTokenSource,
     defaultBudgetId: string | undefined,
-    rateLimiter: RateLimiter,
+    rateLimiter: RequestLimiter,
     cache: Cache,
     readOnly = true,
     // Injected per-instance audit log. Defaults to the process-wide singleton so
@@ -434,6 +434,12 @@ export class YnabClient {
   private takeToken(): Promise<void> {
     const reservation = this.fanOut.getStore();
     if (reservation !== undefined && !reservation.closed && reservation.remaining > 0) {
+      // A 429 mid-fan-out starts YNAB's cooldown; the reserved calls honour it too.
+      try {
+        this.rateLimiter.throwIfExhaustedByYnab();
+      } catch (error) {
+        return Promise.reject(error);
+      }
       reservation.remaining--;
       return Promise.resolve();
     }
@@ -457,7 +463,7 @@ export class YnabClient {
    */
   async withFanOut<T>(requests: number, work: () => Promise<T>): Promise<T> {
     if (requests <= 1) return work();
-    const taken = this.rateLimiter.acquireMany(requests);
+    const taken = await this.rateLimiter.acquireMany(requests);
     const reservation: FanOutReservation = { remaining: taken, closed: false };
     try {
       return await this.fanOut.run(reservation, work);
@@ -484,7 +490,7 @@ export class YnabClient {
   /**
    * Get rate limit status.
    */
-  getRateLimitStatus(): ReturnType<RateLimiter['getStatus']> {
+  getRateLimitStatus(): ReturnType<RequestLimiter['getStatus']> {
     return this.rateLimiter.getStatus();
   }
 
