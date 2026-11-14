@@ -523,23 +523,32 @@ const CASES: Case[] = [
     },
   },
   {
-    name: 'D4: revokeByGrantId deletes the grant\'s tokens and codes, live or consumed, and keeps the Grant row; destroying the grant deletes everything',
+    name: 'D4: revokeByGrantId and a grant\'s destroy delete every row of the grant, the Grant row included, so a save racing the revocation is refused',
     async run(ctx) {
       const s = await signedIn(ctx);
       const other = await signedIn(ctx, s.accountId);
       await ctx.adapter('AuthorizationCode').consume(s.code);
       const at = await saveToken(ctx, 'AccessToken', s);
       const rt = await saveToken(ctx, 'RefreshToken', s, 86_400);
-      await ctx.adapter('RefreshToken').revokeByGrantId(s.grantId);
+      // A refresh passed its checks and consumed its token before the revocation...
+      await ctx.adapter('RefreshToken').consume(rt);
+      // ...then the library revokes the grant's tokens (as it does after revoking an access token).
+      await ctx.adapter('AccessToken').revokeByGrantId(s.grantId);
       for (const [model, id] of [['AccessToken', at], ['RefreshToken', rt], ['AuthorizationCode', s.code]] as const) {
         expect(await ctx.adapter(model).find(id)).toBeUndefined();
       }
-      expect(await ctx.adapter('Grant').find(s.grantId)).toBeDefined();
-      expect(await ctx.adapter('AuthorizationCode').find(other.code)).toBeDefined();
-      await ctx.adapter('AccessToken').revokeByGrantId(s.grantId); // idempotent (the library calls it per model)
-      await ctx.adapter('Grant').destroy(s.grantId);
+      expect(await ctx.adapter('Grant').find(s.grantId)).toBeUndefined();
+      // The refresh now saves its successor: refused, nothing written.
+      await expect(saveToken(ctx, 'RefreshToken', s, 86_400)).rejects.toBeInstanceOf(errors.InvalidGrant);
+      await expect(saveToken(ctx, 'AccessToken', s)).rejects.toBeInstanceOf(errors.InvalidGrant);
       expect((await oauthRows(ctx.handle)).filter((r) => r.grant_id === s.grantId)).toEqual([]);
+      // Idempotent (the library calls it once per model, in parallel), and another grant is untouched.
+      await ctx.adapter('RefreshToken').revokeByGrantId(s.grantId);
+      await ctx.adapter('Grant').destroy(s.grantId);
       expect(await ctx.adapter('Grant').find(other.grantId)).toBeDefined();
+      expect(await ctx.adapter('AuthorizationCode').find(other.code)).toBeDefined();
+      await ctx.adapter('Grant').destroy(other.grantId);
+      expect((await oauthRows(ctx.handle)).filter((r) => r.grant_id === other.grantId)).toEqual([]);
     },
   },
 
@@ -942,8 +951,30 @@ const CASES: Case[] = [
 
       const foundAt = await provider.AccessToken.find(atValue);
       expect(foundAt).toMatchObject({ accountId: 'u1', clientId, aud: R, jti: atValue, grantId });
+
+      // A session and an interaction as authorization makes them: the interaction
+      // carries its own id in returnTo and the session's id in session.cookie.
+      const session = new provider.Session();
+      session.loginAccount({ accountId: 'u1' });
+      await session.save(600);
+      const uid = libId();
+      const interaction = new provider.Interaction(uid, {
+        returnTo: `https://as.example.com/auth/${uid}`,
+        prompt: { name: 'consent', reasons: [], details: {} },
+        params: { client_id: clientId, redirect_uri: REDIRECT },
+        session,
+        grant,
+      });
+      await interaction.save(600);
+      const foundInteraction = await provider.Interaction.find(uid);
+      expect(foundInteraction?.returnTo).toBe(`https://as.example.com/auth/${uid}`);
+      expect(foundInteraction?.session?.accountId).toBe('u1');
+      expect(foundInteraction?.session).not.toHaveProperty('cookie');
+      expect(foundInteraction?.grantId).toBe(grantId);
+      expect((await provider.Session.find(session.jti))?.accountId).toBe('u1');
+
       const dump = JSON.stringify(await oauthRows(ctx.handle));
-      for (const value of [codeValue, atValue, rtValue, secret]) expect(dump).not.toContain(value);
+      for (const value of [codeValue, atValue, rtValue, secret, uid, session.jti]) expect(dump).not.toContain(value);
 
       // Consume through the models; the second consume revokes the grant.
       const foundCode = await provider.AuthorizationCode.find(codeValue);
@@ -959,6 +990,7 @@ const CASES: Case[] = [
       expect(await provider.AccessToken.find(atValue)).toBeUndefined();
       await expect(foundRt!.consume()).rejects.toBeInstanceOf(errors.InvalidGrant);
       expect(await provider.Grant.find(grantId, { ignoreExpiration: true })).toBeUndefined();
+      expect(await provider.Interaction.find(uid)).toBeUndefined(); // expired
       expect(await provider.RefreshToken.find(rtValue, { ignoreExpiration: true })).toBeUndefined();
     },
   },

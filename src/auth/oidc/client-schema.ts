@@ -25,7 +25,7 @@ export const CLIENT_AUTH_METHODS = ['client_secret_post', 'none'] as const;
  * registration omits, the `code` response type, refresh tokens for clients
  * allowed them, and the feature flags that change which metadata is
  * recognized (registration and revocation on; RP-initiated logout, PAR,
- * introspection, userinfo and dev interactions off). An ID token is never
+ * DPoP, introspection, userinfo and dev interactions off). An ID token is never
  * signed (D7), but the schema still defaults its algorithm, so the default
  * names the ephemeral key's (ES256).
  */
@@ -51,6 +51,8 @@ export const CLIENT_SCHEMA_CONFIGURATION = {
     claimsParameter: { enabled: false },
     deviceFlow: { enabled: false },
     clientCredentials: { enabled: false },
+    // On by default in the library; its proof replay check needs a model the adapter doesn't serve.
+    dPoP: { enabled: false },
   },
 } satisfies Configuration;
 

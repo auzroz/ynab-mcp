@@ -590,6 +590,12 @@ export interface OAuthRowStore {
    * {@link Storage.upsertUser}, `created_at` from the same clock instant as
    * the code's `createdAt`), the staged row is deleted and the code is
    * inserted. Anything else writes nothing.
+   *
+   * One code per staged sign-in: the sign-in is spent with its code. D2 allows
+   * no silent sign-in (`loadExistingGrant` returns only the grant the current
+   * interaction created), so every code follows its own interaction, which
+   * stages its own sign-in under a new grant. A second code for one grant is
+   * refused (`no-sign-in`, answered as `server_error`): it fails closed.
    */
   saveAuthorizationCode(row: OAuthRowWrite): Promise<CodeSaveOutcome>;
   /**
@@ -616,11 +622,10 @@ export interface OAuthRowStore {
   /** Delete one row (not a grant's: use {@link revokeOAuthGrant}). */
   destroyOAuthRow(key: string): Promise<void>;
   /**
-   * The library's `revokeByGrantId`: delete the grant-bound and staged rows of
-   * a grant, live or consumed, and keep the `Grant` row (the library destroys
-   * it separately when its policy says so). Returns the rows deleted.
+   * Delete every row of a grant, live or consumed, its `Grant` row included,
+   * so a token save racing the revocation is refused. The adapter uses it for
+   * the library's `revokeByGrantId` and for destroying a grant. Returns the
+   * rows deleted.
    */
-  revokeOAuthGrantTokens(grantId: string): Promise<number>;
-  /** Delete every row of a grant, its `Grant` row included. Returns the rows deleted. */
   revokeOAuthGrant(grantId: string): Promise<number>;
 }

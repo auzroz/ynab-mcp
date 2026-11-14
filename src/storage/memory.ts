@@ -596,17 +596,6 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     this.oauthRows.delete(key);
   }
 
-  async revokeOAuthGrantTokens(grantId: string): Promise<number> {
-    let n = 0;
-    for (const [key, row] of this.oauthRows) {
-      if (row.grantId !== grantId) continue;
-      if (!GRANT_TOKEN_MODELS.has(row.model) && row.model !== 'SignIn') continue;
-      this.oauthRows.delete(key);
-      n++;
-    }
-    return n;
-  }
-
   async revokeOAuthGrant(grantId: string): Promise<number> {
     return this.revokeGrantSync(grantId);
   }

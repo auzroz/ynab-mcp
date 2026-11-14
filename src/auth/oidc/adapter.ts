@@ -8,8 +8,10 @@
  *     tokens) is keyed by the `h1.` HMAC of its kind and id. An id that isn't
  *     43 base64url characters is refused before any storage read. The library
  *     keeps a token's value in its payload as `jti`; it is never stored, and
- *     `find` puts it back from the id presented. Grants and clients are keyed
- *     by their (non-secret) ids.
+ *     `find` puts it back from the id presented. An Interaction's copies of
+ *     credentials (its id in `returnTo`, the session's id in `session.cookie`)
+ *     are not stored either. Grants and clients are keyed by their
+ *     (non-secret) ids.
  *   - **Client secrets (#52).** A DCR secret is stored as its `s256.` hash
  *     and returned as `client_secret`, so the library's own comparison only
  *     passes after the `client-auth` stage has verified the real secret and
@@ -20,7 +22,8 @@
  *     read-then-consume leaves open.
  *   - **Tokens only for a live grant (#42).** An access or refresh token is
  *     saved only while its grant row exists, and read only while it still
- *     does; a code likewise.
+ *     does; a code likewise. Every revocation (`revokeByGrantId`, a grant's
+ *     destroy, a replayed consume) deletes the grant row with its tokens.
  *   - **Issued under the user (STOR-1).** A token or code reads as unknown
  *     once its user row is gone or was re-created after it.
  *   - **Atomic sign-in (#94).** A code is saved with `completeAuthorization`'s
@@ -75,6 +78,13 @@ export const ADAPTER_MODELS: readonly string[] = Object.keys(SPECS);
  */
 const LIBRARY_ID = /^[A-Za-z0-9_-]{43}$/;
 const CLIENT_ID = /^[\x21-\x7e]{1,255}$/;
+
+/**
+ * An Interaction's `returnTo` URL carries the interaction's own id (a
+ * credential: the URL segment and the resume cookie). At rest the id is
+ * replaced by this marker, and `find` puts it back from the id presented.
+ */
+const ID_MARKER = '{jti}';
 
 /** A code the adapter could not save: the library answers `server_error`. */
 export class AuthorizationNotCompletedError extends Error {
@@ -195,7 +205,12 @@ export class OidcAdapter implements Adapter {
 
   async revokeByGrantId(grantId: string): Promise<void> {
     if (typeof grantId !== 'string' || !LIBRARY_ID.test(grantId)) return;
-    await this.deps.store.revokeOAuthGrantTokens(grantId);
+    // The whole grant, its Grant row included, whatever the library's
+    // revokeGrantPolicy says: a refresh that passed its checks before the
+    // revocation then can't save a successor. The library keeps the row only
+    // after revoking an access token, when every token of the grant is gone
+    // and nothing can use the grant again.
+    await this.deps.store.revokeOAuthGrant(grantId);
   }
 
   /** The row to store: the indexed columns, and the payload without `jti` or `consumed`. */
@@ -212,6 +227,16 @@ export class OidcAdapter implements Adapter {
       }
     } else {
       delete stored['jti'];
+    }
+    if (model === 'Interaction') {
+      if (typeof stored['returnTo'] === 'string') stored['returnTo'] = stored['returnTo'].split(id).join(ID_MARKER);
+      // `session.cookie` is the session's id (its cookie, a credential). The
+      // library writes it for the application and never reads it; we don't
+      // use it, so it is not stored.
+      if (isObject(stored['session'])) {
+        const { cookie: _cookie, ...session } = stored['session'];
+        stored['session'] = session;
+      }
     }
 
     let grantId: string | undefined;
@@ -274,6 +299,9 @@ export class OidcAdapter implements Adapter {
     }
     if (id !== undefined) out['jti'] = id;
     else delete out['jti'];
+    if (this.spec.model === 'Interaction' && id !== undefined && typeof out['returnTo'] === 'string') {
+      out['returnTo'] = out['returnTo'].split(ID_MARKER).join(id);
+    }
     if (row.consumedAt !== undefined) out['consumed'] = Math.max(1, Math.floor(row.consumedAt / 1000));
     return out as AdapterPayload;
   }
