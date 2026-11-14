@@ -383,7 +383,12 @@ class Refusal<T> {
   constructor(readonly value: T) {}
 }
 
-/** One-key session advisory lock held by a running {@link PostgresStorage.sweepExpired}. */
+/**
+ * First key of the two-key session advisory lock a running
+ * {@link PostgresStorage.sweepExpired} holds; the second is
+ * `hashtext(current_schema())`, so one schema has one sweeper and schemas
+ * sharing a database do not skip each other.
+ */
 export const SWEEP_LOCK_KEY = 0x73776570; // "swep"
 
 /** The migration transaction's handle on one pooled connection. */
@@ -928,9 +933,9 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     const client = await this.connect();
     let broken: Error | undefined;
     try {
-      const lock = await client.query<{ locked: boolean }>('SELECT pg_try_advisory_lock($1) AS locked', [
-        SWEEP_LOCK_KEY,
-      ]);
+      const lock = await client.query<{ locked: boolean }>('SELECT pg_try_advisory_lock($1, hashtext(current_schema())) AS locked',
+        [SWEEP_LOCK_KEY]
+      );
       if (!lock.rows[0]?.locked) return { ran: false, deleted: emptySweepCounts() };
       try {
         const deleted = await runSqlSweep(
@@ -946,7 +951,7 @@ export class PostgresStorage implements Storage, OAuthRowStore {
         );
         return { ran: true, deleted };
       } finally {
-        await client.query('SELECT pg_advisory_unlock($1)', [SWEEP_LOCK_KEY]).catch((err: unknown) => {
+        await client.query('SELECT pg_advisory_unlock($1, hashtext(current_schema()))', [SWEEP_LOCK_KEY]).catch((err: unknown) => {
           // A connection that can't unlock is discarded, which releases the lock.
           broken = err instanceof Error ? err : new Error('sweep unlock failed');
         });
