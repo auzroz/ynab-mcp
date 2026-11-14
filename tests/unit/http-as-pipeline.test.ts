@@ -19,12 +19,16 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import express from 'express';
 import request from 'supertest';
 import type { Express } from 'express';
 import { buildHttpApp, MAX_JSON_BODY, OAUTH_LEG_RATE_LIMIT, type HttpApp } from '../../src/http.js';
 import { AS_MAX_BODY, stageOfHandler } from '../../src/http/pipeline.js';
-import { AUTHORIZE_RATE_LIMIT, CLIENT_AUTH_ROUTE_RATE_LIMIT } from '../../src/auth/as-router.js';
-import { CEILING_FACTOR } from '../../src/middleware/rate-limiters.js';
+import { CLIENT_AUTH_ROUTE_RATE_LIMIT, mountAuthorizationServer } from '../../src/auth/as-router.js';
+import { CEILING_FACTOR, type LimiterStoreFactory } from '../../src/middleware/rate-limiters.js';
+import { MemoryStorage } from '../../src/storage/memory.js';
+import { Encryptor } from '../../src/crypto.js';
+import { TEST_TOKEN_HASHER } from './helpers/token-hasher.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 
 const HOST = 'mcp.example.com';
@@ -278,46 +282,67 @@ describe('G21: what each position does', () => {
     expect(res.body.pad).toBeUndefined();
   });
 
-  // Each AS route's ip-limiter is its own budget, ahead of the parser (#59,
-  // #55a): a malformed body past it is answered 429 without being parsed.
-  const IP_CEILINGS: ReadonlyArray<{
-    route: string;
-    ceiling: number;
-    send: (app: Express) => request.Test;
-    cors: boolean;
-  }> = [
-    { route: '/authorize', ceiling: AUTHORIZE_RATE_LIMIT * CEILING_FACTOR, send: (app) => request(app).get('/authorize'), cors: false },
-    { route: '/token', ceiling: CLIENT_AUTH_ROUTE_RATE_LIMIT * CEILING_FACTOR, send: (app) => request(app).post('/token'), cors: true },
-    { route: '/revoke', ceiling: CLIENT_AUTH_ROUTE_RATE_LIMIT * CEILING_FACTOR, send: (app) => request(app).post('/revoke'), cors: true },
-    { route: '/register', ceiling: 5, send: (app) => request(app).post('/register'), cors: true },
-  ];
-  it.each(IP_CEILINGS)(
-    '$route: ip-limiter answers past its ceiling before the parser reads the body, in a budget of its own',
-    async ({ route, ceiling, send, cors }) => {
-      handle = await buildHttpApp(oauthConfig({ registerRateLimitPerIp: 5 }), { observeStage: (stage) => trace.push(stage) });
-      for (let i = 0; i < ceiling; i++) {
-        // Preflights are not counted.
-        if (i % 100 === 0) await request(handle.app).options(route).set('Host', HOST);
-        await send(handle.app).set('Host', HOST);
-      }
-      const { res, stages } = await traced(() => send(handle.app).set('Content-Type', 'application/json').send('{not json'));
-      expect(res.status).toBe(429);
-      expect(res.body.error).toBe('too_many_requests');
-      expect(res.headers['retry-after']).toBeDefined();
-      expect(stages).toEqual(['host-validation', 'ip-limiter']);
-      // Readable by a browser client on the routes it fetches; /authorize is a
-      // navigation, and the SDK's handler sends no CORS header there either.
-      expect(res.headers['access-control-allow-origin']).toBe(cors ? '*' : undefined);
-      // The other AS routes keep their budgets, and the metadata documents and
-      // the /oauth legs have none of these.
-      for (const other of IP_CEILINGS.filter((o) => o.route !== route)) {
-        const { stages: otherStages } = await traced(() => other.send(handle.app));
-        expect(otherStages.length, other.route).toBeGreaterThan(2);
-      }
-      expect((await request(handle.app).get('/.well-known/oauth-authorization-server').set('Host', HOST)).status).toBe(200);
-      expect((await request(handle.app).get('/oauth/cancel').set('Host', HOST)).status).toBe(400);
+  // Each AS route's ip-limiter answers before the parser reads the body (#59,
+  // #55a). A store that reports every address over its limit makes it answer
+  // the first request, so no route has to be spent request by request.
+  it.each([
+    { route: '/authorize', method: 'get' as const, cors: false },
+    { route: '/token', method: 'post' as const, cors: true },
+    { route: '/revoke', method: 'post' as const, cors: true },
+    { route: '/register', method: 'post' as const, cors: true },
+  ])('$route: ip-limiter answers past its limit before the parser reads the body', async ({ route, method, cors }) => {
+    const spent: LimiterStoreFactory = (name) =>
+      name.endsWith(':ip')
+        ? {
+            async increment() {
+              return { totalHits: Number.MAX_SAFE_INTEGER, resetTime: new Date(Date.now() + 60_000) };
+            },
+            async decrement() {},
+            async resetKey() {},
+          }
+        : undefined;
+    const app = express();
+    const seen: string[] = [];
+    mountAuthorizationServer(app, {
+      config: oauthConfig(),
+      storage: new MemoryStorage(),
+      encryptor: new Encryptor(randomBytes(32).toString('base64')),
+      tokenHasher: TEST_TOKEN_HASHER,
+      ynab: { clientId: 'cid', clientSecret: 'sec' },
+      observeStage: (stage) => seen.push(stage),
+      limiterStore: spent,
+    });
+    const res = await request(app)[method](route).set('Content-Type', 'application/json').send('{not json');
+    expect(res.status).toBe(429);
+    expect(res.body.error).toBe('too_many_requests');
+    expect(res.headers['retry-after']).toBeDefined();
+    expect(seen).toEqual(['ip-limiter']);
+    // Readable by a browser client on the routes it fetches; /authorize is a
+    // navigation, and the SDK's handler sends no CORS header there either.
+    expect(res.headers['access-control-allow-origin']).toBe(cors ? '*' : undefined);
+  });
+
+  it('ip-limiter: /token spent leaves /revoke, /register and /authorize their own budgets', async () => {
+    for (let i = 0; i < CLIENT_AUTH_ROUTE_RATE_LIMIT * CEILING_FACTOR; i++) {
+      // Preflights are not counted.
+      if (i % 100 === 0) await request(handle.app).options('/token').set('Host', HOST);
+      await request(handle.app).post('/token').set('Host', HOST);
     }
-  );
+    const { res, stages } = await traced(() =>
+      request(handle.app).post('/token').set('Content-Type', 'application/json').send('{not json')
+    );
+    expect(res.status).toBe(429);
+    expect(stages).toEqual(['host-validation', 'ip-limiter']);
+    for (const path of ['/revoke', '/register']) {
+      const other = await traced(() => request(handle.app).post(path));
+      expect(other.stages.slice(0, 3), path).toEqual(['host-validation', 'ip-limiter', 'bounded-parser']);
+    }
+    const authorize = await traced(() => request(handle.app).get('/authorize'));
+    expect(authorize.stages.slice(0, 3)).toEqual(['host-validation', 'ip-limiter', 'bounded-parser']);
+    // The metadata documents and the /oauth legs have none of these.
+    expect((await request(handle.app).get('/.well-known/oauth-authorization-server').set('Host', HOST)).status).toBe(200);
+    expect((await request(handle.app).get('/oauth/cancel').set('Host', HOST)).status).toBe(400);
+  });
 
   it('dcr-validator answers an invalid registration before register-host-limiter counts it', async () => {
     const { res, stages } = await traced(() =>

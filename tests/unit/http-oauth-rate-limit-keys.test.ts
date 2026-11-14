@@ -7,15 +7,22 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import express from 'express';
 import request from 'supertest';
 import type { Express } from 'express';
+import type { Store } from 'express-rate-limit';
 import { createHttpApp } from '../../src/http.js';
 import {
   CLIENT_AUTH_ROUTE_RATE_LIMIT,
   AUTHORIZE_RATE_LIMIT,
+  OAUTH_LEG_RATE_LIMIT,
+  mountAuthorizationServer,
 } from '../../src/auth/as-router.js';
-import { CEILING_FACTOR } from '../../src/middleware/rate-limiters.js';
+import { CEILING_FACTOR, type LimiterStoreFactory } from '../../src/middleware/rate-limiters.js';
+import { MemoryStorage } from '../../src/storage/memory.js';
+import { Encryptor } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
+import { TEST_TOKEN_HASHER } from './helpers/token-hasher.js';
 
 const HOST = 'mcp.example.com';
 
@@ -288,5 +295,90 @@ describe('/register: per-IP limit and per-redirect-host limit', () => {
     for (let i = 0; i < 2; i++) await register(app, '198.51.100.1', 'http://127.0.0.1:5000/cb');
     expect((await register(app, '198.51.100.1', 'http://localhost:6000/cb')).status).toBe(429);
     expect((await register(app, '198.51.100.2', 'http://127.0.0.1:5000/cb')).status).not.toBe(429);
+  });
+});
+
+describe('every AS limiter keys by the client address, through the injected store', () => {
+  /** A store factory that records, per limiter name, the keys it was asked to count. */
+  function recordingStores(): { factory: LimiterStoreFactory; keys: Map<string, string[]> } {
+    const keys = new Map<string, string[]>();
+    const factory: LimiterStoreFactory = (name) => {
+      keys.set(name, []);
+      const hits = new Map<string, number>();
+      const store: Store = {
+        async increment(key) {
+          keys.get(name)!.push(key);
+          hits.set(key, (hits.get(key) ?? 0) + 1);
+          return { totalHits: hits.get(key)!, resetTime: new Date(Date.now() + 60_000) };
+        },
+        async decrement() {},
+        async resetKey() {},
+      };
+      return store;
+    };
+    return { factory, keys };
+  }
+
+  /** The AS alone on an app, as http.ts mounts it (trust proxy set first). */
+  function mountWith(overrides: Parameters<typeof config>[0], limiterStore: LimiterStoreFactory): Express {
+    const cfg = config(overrides);
+    const app = express();
+    app.set('trust proxy', cfg.trustProxy);
+    mountAuthorizationServer(app, {
+      config: cfg,
+      storage: new MemoryStorage(),
+      encryptor: new Encryptor(randomBytes(32).toString('base64')),
+      tokenHasher: TEST_TOKEN_HASHER,
+      ynab: { clientId: 'cid', clientSecret: 'sec' },
+      limiterStore,
+    });
+    return app;
+  }
+
+  /** One request per AS route, each reaching every limiter on its route. */
+  const PER_ROUTE: ReadonlyArray<(app: Express) => request.Test> = [
+    (app) => request(app).get('/authorize').query({ client_id: 'c' }),
+    (app) => request(app).post('/token').type('form').send({ grant_type: 'authorization_code', client_id: 'c' }),
+    (app) => request(app).post('/revoke').type('form').send({ token: 't', client_id: 'c' }),
+    // A verified host, so register:host keys by host and address too.
+    (app) => request(app).post('/register').send({ redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] }),
+    (app) => request(app).get('/oauth/cancel'),
+  ];
+
+  it.each([
+    { setup: 'TRUST_PROXY=1, X-Forwarded-For', overrides: { trustProxy: 1 }, header: 'X-Forwarded-For' },
+    // req.ip is the socket peer for every request here: only clientKey tells them apart.
+    {
+      setup: 'TRUST_CF_CONNECTING_IP=true, CF-Connecting-IP',
+      overrides: { trustProxy: 0, trustCfConnectingIp: true },
+      header: 'CF-Connecting-IP',
+    },
+  ])('$setup: every limiter counts each address in its own bucket', async ({ overrides, header }) => {
+    const { factory, keys } = recordingStores();
+    const app = mountWith(overrides, factory);
+    for (const ip of ['198.51.100.1', '198.51.100.2']) {
+      for (const send of PER_ROUTE) await send(app).set(header, ip);
+    }
+    expect([...keys.keys()].sort()).toEqual(
+      [
+        'oauth-leg',
+        'route:token:ip',
+        'route:token:client',
+        'authorize:ip',
+        'authorize:client',
+        'route:token revocation:ip',
+        'route:token revocation:client',
+        'register:ip',
+        'register:host',
+      ].sort()
+    );
+    for (const [name, counted] of keys) {
+      // Each limiter saw both addresses, under different keys that name them.
+      expect(counted, name).toHaveLength(2);
+      expect(counted[0], name).toMatch(/ip:198\.51\.100\.1$/);
+      expect(counted[1], name).toMatch(/ip:198\.51\.100\.2$/);
+    }
+    expect(keys.get('register:host')).toEqual(['verified:claude.ai|ip:198.51.100.1', 'verified:claude.ai|ip:198.51.100.2']);
+    expect(keys.get('route:token:client')).toEqual(['client:c|ip:198.51.100.1', 'client:c|ip:198.51.100.2']);
   });
 });
