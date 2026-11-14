@@ -127,6 +127,8 @@ export interface RegisterLimiterOptions {
   readonly windowMs: number;
   readonly perIp: number;
   readonly perHost: number;
+  /** Redirect hosts counted per (host, IP) instead of per host (see redirectHostKeys). */
+  readonly verifiedHosts?: ReadonlySet<string> | undefined;
   readonly message: unknown;
   /** The 400 for a registration that names too many redirect URIs. */
   readonly tooManyRedirects: unknown;
@@ -152,10 +154,11 @@ export function registerIpLimiter(options: RegisterLimiterOptions): RequestHandl
 }
 
 /**
- * /register, after the body is parsed: a budget per redirect-URI host (see
- * redirectHostKeys), counted once for each distinct host the registration
- * names. The registration is refused as soon as any of them is spent. A list
- * of more than MAX_REDIRECT_URIS entries is refused with 400.
+ * /register, after the body is parsed and validated: a budget per
+ * redirect-URI host (see redirectHostKeys; verified and loopback hosts per
+ * host and IP), counted once for each distinct host the registration names.
+ * The registration is refused as soon as any of them is spent. A list of more
+ * than MAX_REDIRECT_URIS entries is refused with 400.
  */
 export function registerHostLimiter(options: RegisterLimiterOptions): RequestHandler {
   const limiter = createLimiter(
@@ -188,7 +191,7 @@ export function registerHostLimiter(options: RegisterLimiterOptions): RequestHan
       return;
     }
     void (async () => {
-      const keys = redirectHostKeys(req.body, clientIp(req, options.key));
+      const keys = redirectHostKeys(req.body, clientIp(req, options.key), options.verifiedHosts);
       if (!keys) {
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.status(400).json(options.tooManyRedirects);

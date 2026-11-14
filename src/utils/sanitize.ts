@@ -23,6 +23,28 @@ export function stripBidi(input: string): string {
 }
 
 /**
+ * Characters that render as nothing: every format character (Unicode category
+ * Cf: zero-width space and joiners, word joiner, BOM, soft hyphen, the bidi
+ * controls above, and the invisible tag characters U+E0000-U+E007F) plus the
+ * invisible fillers that are letters or marks (combining grapheme joiner
+ * U+034F, Hangul fillers U+115F, U+1160, U+3164 and U+FFA0).
+ */
+const INVISIBLE_PATTERN = /[\p{Cf}͏ᅟᅠㅤﾠ]/gu;
+
+/**
+ * Remove characters that render as nothing (see INVISIBLE_PATTERN), so a name
+ * shown to a user reads exactly as it is spelled. A superset of stripBidi.
+ */
+export function stripInvisible(input: string): string {
+  return input.replace(INVISIBLE_PATTERN, '');
+}
+
+/** Whether `input` contains a character stripInvisible() would remove. */
+export function hasInvisible(input: string): boolean {
+  return new RegExp(INVISIBLE_PATTERN.source, 'u').test(input);
+}
+
+/**
  * Sanitize a user-provided string for safe output.
  *
  * - Removes control characters (except common whitespace)

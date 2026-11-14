@@ -7,14 +7,17 @@
  * Every route is a pipeline of named stages, always in this order:
  *
  *   [host-validation]  mounted by http.ts on the whole app, before this router
- *   ...limiters        rate limits, before any body is read (today only the
- *                      /oauth legs' oauth-leg-limiter; #55a adds an AS-wide
- *                      as-limiter ahead of it on every route)
- *   bounded-parser     the request-body parser, with its size limit
- *   ...slots           route-specific checks: iss-redirect on /authorize; on
- *                      /token and /revoke the route limiter and then client
- *                      authentication (#52); later the /authorize and DCR
- *                      validators
+ *   ...limiters        rate limits, before any body is read: an IP-only
+ *                      ip-limiter on /authorize, /token, /register and
+ *                      /revoke (#59, #55a), the oauth-leg-limiter on /oauth
+ *   bounded-parser     the request-body parser, at AS_MAX_BODY (8kb), with
+ *                      OAuth-shaped errors (413 for a body over the limit)
+ *   ...slots           route-specific checks: on /authorize the (client_id,
+ *                      IP) route-limiter, the bounds (authorize-validation),
+ *                      the open-redirect guard (authorize-guard) and
+ *                      iss-redirect; on /token and /revoke the route limiter
+ *                      and then client authentication (#52); on /register the
+ *                      DCR validator and then the per-redirect-host limit
  *   router             the handler that answers: the SDK's (sdk-router), the
  *                      metadata document, or the YNAB federation legs
  *
@@ -47,6 +50,10 @@ import { clientAuthentication } from './client-auth.js';
 import type { TokenHasher } from './token-hash.js';
 import type { YnabOAuthConfig } from './ynab-oauth.js';
 import { issOnAuthorizationRedirects } from '../middleware/iss-redirect.js';
+import { redirectPolicyFrom } from './client-metadata.js';
+import { dcrValidator } from './dcr-validator.js';
+import { authorizeValidation } from './authorize-validation.js';
+import { authorizeGuard } from './authorize-guard.js';
 import {
   CEILING_FACTOR,
   keyedLimiter,
@@ -54,9 +61,9 @@ import {
   registerIpLimiter,
   type LimiterStoreFactory,
 } from '../middleware/rate-limiters.js';
-import { authorizeClientId, bodyClientId } from '../middleware/rate-limit-key.js';
+import { authorizeClientId, bodyClientId, verifiedRedirectHosts } from '../middleware/rate-limit-key.js';
 import {
-  MAX_JSON_BODY,
+  AS_MAX_BODY,
   mountStages,
   stage,
   type RoutePipeline,
@@ -68,9 +75,10 @@ import {
 export const OAUTH_LEG_RATE_LIMIT = 100;
 
 /**
- * Requests per client IP per 15 minutes on /token and on /revoke (each its own
- * budget): the SDK's per-route default, now applied by the route-limiter stage
- * ahead of client authentication instead of inside the SDK handler.
+ * Requests per (client_id, IP) per 15 minutes on /token and on /revoke (each
+ * its own budget): the SDK's per-route default, now applied by the
+ * route-limiter stage ahead of client authentication instead of inside the SDK
+ * handler. Each route's ip-limiter allows CEILING_FACTOR times this per IP.
  */
 export const CLIENT_AUTH_ROUTE_RATE_LIMIT = 50;
 
@@ -86,6 +94,34 @@ interface AsRoute {
   readonly parser: Stage;
   readonly slots?: readonly Stage[];
   readonly router: Stage;
+}
+
+/**
+ * Wrap a body parser so its failures answer as OAuth errors (RFC 6749 section
+ * 5.2 shape) instead of reaching the app's JSON-RPC error handler: 413 with
+ * `invalid_request` for a body over the limit, 400 (or the parser's own 4xx)
+ * for a body that doesn't parse. Nothing from the body is echoed. The parser
+ * runs before cors-origin, so the answer carries `Access-Control-Allow-Origin:
+ * *` itself and a browser client can read it (no credentials ride on it).
+ */
+function oauthShapedParseErrors(parse: express.RequestHandler): express.RequestHandler {
+  return (req, res, next) => {
+    void parse(req, res, (err?: unknown) => {
+      if (err === undefined || err === null) {
+        next();
+        return;
+      }
+      const e = err as { type?: unknown; status?: unknown };
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      if (e.type === 'entity.too.large') {
+        res.status(413).json({ error: 'invalid_request', error_description: 'Request body too large' });
+        return;
+      }
+      const status = typeof e.status === 'number' && e.status >= 400 && e.status < 500 ? e.status : 400;
+      res.status(status).json({ error: 'invalid_request', error_description: 'Malformed request body' });
+    });
+  };
 }
 
 /** The stages of a route, in the one order every route uses. */
@@ -198,6 +234,8 @@ export function mountAuthorizationServer(
   // The issuer identifier: published in AS metadata and sent as `iss` on every
   // authorization response (RFC 9207), so both must use this exact string.
   const issuerUrl = new URL(publicUrl);
+  // #55: how registrations, authorization errors and the consent page treat redirect URIs.
+  const redirectPolicy = redirectPolicyFrom(config);
   const provider = new McpOAuthProvider({
     storage,
     encryptor,
@@ -210,6 +248,7 @@ export function mountAuthorizationServer(
     globalReadOnly: config.readOnly,
     accessTokenTtlSec: config.accessTokenTtlSec,
     authCodeTtlSec: config.authCodeTtlSec,
+    redirectPolicy,
   });
 
   // Protected-resource metadata (RFC 9728) describes the MCP endpoint, so it is
@@ -238,20 +277,18 @@ export function mountAuthorizationServer(
   };
   const pathOf = (endpoint: string): string => new URL(endpoint).pathname;
 
-  // One body parser per route, with the app-wide limit (unchanged from when
-  // the global parser read these bodies). express.json skips a body that an
-  // earlier parser read, so the global parser after this router doesn't
-  // parse it twice.
-  const boundedParser = (): Stage => stage('bounded-parser', express.json({ limit: MAX_JSON_BODY }));
-  // /token and /revoke take form bodies, which client authentication reads
-  // before the SDK handler does: the SDK's own form parser (extended: false,
-  // its default 100kb) moves into this stage, and the SDK's then skips the
-  // already-read body.
-  const boundedFormParser = (): Stage =>
+  // One body parser per route, at AS_MAX_BODY (8kb, #55a): no OAuth request
+  // comes near it. express.json and express.urlencoded skip a body that an
+  // earlier parser read, so neither the SDK handlers' own parsers (100kb) nor
+  // the global parser after this router parse it again. Every route takes
+  // both JSON and form bodies (/authorize, /token and /revoke read forms;
+  // /register reads JSON), so a larger SDK parser never sees an unread one.
+  const boundedParser = (): Stage =>
     stage(
       'bounded-parser',
-      express.json({ limit: MAX_JSON_BODY }),
-      express.urlencoded({ extended: false })
+      ...[express.json({ limit: AS_MAX_BODY }), express.urlencoded({ extended: false, limit: AS_MAX_BODY })].map(
+        oauthShapedParseErrors
+      )
     );
   const metadata = (doc: Parameters<typeof metadataHandler>[0]): Stage => stage('metadata', metadataHandler(doc));
   const sdkRouter = (handler: express.RequestHandler): Stage => stage('sdk-router', handler);
@@ -281,11 +318,11 @@ export function mountAuthorizationServer(
 
   // /token and /revoke: the SDK's per-route limit (50 per 15 minutes), moved
   // ahead of client authentication so wrong-secret attempts are counted and
-  // refused with 429 past it (G21). Keyed by (client_id, IP) with an IP-only
-  // ceiling (#59). The SDK handler's own limiter is turned off, so each
-  // request is counted once. Only POSTs carry credentials; the SDK's own
-  // limiter ran after its CORS handler, so preflights were never counted and
-  // still aren't.
+  // refused with 429 past it (G21). Keyed by (client_id, IP) (#59); the
+  // IP-only ceiling is the route's ip-limiter, ahead of the parser. The SDK
+  // handler's own limiter is turned off, so each request is counted once.
+  // Only POSTs carry credentials; the SDK's own limiter ran after its CORS
+  // handler, so preflights were never counted and still aren't.
   const routeLimiter = (what: string): Stage =>
     stage(
       'route-limiter',
@@ -297,6 +334,7 @@ export function mountAuthorizationServer(
         key: keyOptions,
         // The body client_id: the one client authentication checks.
         clientId: bodyClientId,
+        ceiling: false,
         store: limiterStore,
         skip: (req) => req.method !== 'POST',
       })
@@ -329,13 +367,33 @@ export function mountAuthorizationServer(
       store: limiterStore,
     })
   );
+  // /token and /revoke: route-limiter's IP-only ceiling, ahead of the parser
+  // like /authorize's (#55a), so a flood of bodies, well-formed or not, costs
+  // no parsing. Each route has its own. Its 429 carries the CORS header the
+  // later cors-origin stage would have set, so a browser client can read it.
+  const clientAuthIpLimiter = (what: string): Stage =>
+    stage(
+      'ip-limiter',
+      ...keyedLimiter({
+        name: `route:${what}:ip`,
+        windowMs: WINDOW_15_MIN,
+        limit: CLIENT_AUTH_ROUTE_RATE_LIMIT * CEILING_FACTOR,
+        message: tooMany(what),
+        key: keyOptions,
+        cors: true,
+        store: limiterStore,
+      })
+    );
   // /register: a per-IP limit above the SDK's 20/h before the body is read,
-  // then a per-redirect-host limit once it is (hosted clients share an IP
-  // range but not a redirect host).
+  // then a per-redirect-host limit once the DCR validator has accepted it
+  // (hosted clients share an IP range but not a redirect host). A verified
+  // host is shared by every user of that client, so it is counted per host
+  // and IP, like loopback.
   const registerLimits = {
     windowMs: 60 * 60 * 1000,
     perIp: config.registerRateLimitPerIp,
     perHost: config.registerRateLimitPerHost,
+    verifiedHosts: verifiedRedirectHosts(config.verifiedRedirectUris),
     message: tooMany('client registration'),
     tooManyRedirects: {
       error: 'invalid_client_metadata',
@@ -348,9 +406,10 @@ export function mountAuthorizationServer(
   const registerHost = stage('register-host-limiter', registerHostLimiter(registerLimits));
   const clientAuth = (): Stage => stage('client-auth', clientAuthentication(provider.clientsStore));
   // The SDK's handlers send `Access-Control-Allow-Origin: *` (its cors()
-  // default) from inside sdk-router. The route-limiter and client-auth stages
-  // can answer a POST before that, so this sets the same header first; a
-  // browser client can then read their 429 and invalid_client errors.
+  // default) from inside sdk-router. The stages after it (route-limiter,
+  // client-auth, dcr-validator, register-host-limiter) can answer a POST
+  // before that, so this sets the same header first; a browser client can
+  // then read their 429 and 400 errors.
   // Preflights pass through to the SDK, which answers them.
   const corsOrigin = (): Stage =>
     stage('cors-origin', (req, res, next) => {
@@ -361,12 +420,10 @@ export function mountAuthorizationServer(
   // The SDK's handlers are mounted one per route, exactly as its mcpAuthRouter
   // composes them (it mounts /register and /revoke only when the provider
   // supports them), without its own metadata routes, which the ones here
-  // replace. Each SDK handler still applies its own CORS, method check, form
-  // parser and (except on /token and /revoke, whose limit is the route-limiter
-  // stage) per-route rate limit inside the sdk-router stage.
-  // The limiters position on these routes is empty for now (#55a adds an
-  // as-limiter ahead of the parser on every route, /oauth included, where it
-  // goes before oauth-leg-limiter).
+  // replace. Each SDK handler still applies its own CORS, method check and
+  // form parser inside the sdk-router stage; its own rate limit is off,
+  // replaced by the limiter stages here.
+  // The metadata documents are static and get no limiter; /oauth has its own.
   const routes: AsRoute[] = [
     { path: pathOf(resourceMetadataUrl), parser: boundedParser(), router: metadata(protectedResourceMetadata) },
     // Root alias for clients that probe the non-path-aware location.
@@ -375,15 +432,26 @@ export function mountAuthorizationServer(
     {
       path: pathOf(oauthMetadata.authorization_endpoint),
       limiters: [authorizeIpLimiter],
-      parser: boundedFormParser(),
-      // The SDK's /authorize handler redirects errors to the client without
-      // `iss`; iss-redirect adds it to every redirect from the endpoint.
-      slots: [authorizeLimiter, stage('iss-redirect', issOnAuthorizationRedirects(oauthMetadata.issuer))],
+      parser: boundedParser(),
+      slots: [
+        authorizeLimiter,
+        // #55a: bounds, and the refusal of grandfathered plain-http clients.
+        stage(
+          'authorize-validation',
+          authorizeValidation({ clients: provider.clientsStore, policy: redirectPolicy, issuer: oauthMetadata.issuer })
+        ),
+        // #55b: no error redirect to an unverified client's redirect URI.
+        stage('authorize-guard', authorizeGuard()),
+        // The SDK's /authorize handler redirects errors to the client without
+        // `iss`; this adds it to every redirect from the authorization endpoint.
+        stage('iss-redirect', issOnAuthorizationRedirects(oauthMetadata.issuer)),
+      ],
       router: sdkRouter(authorizationHandler({ provider, rateLimit: false })),
     },
     {
       path: pathOf(oauthMetadata.token_endpoint),
-      parser: boundedFormParser(),
+      limiters: [clientAuthIpLimiter('token')],
+      parser: boundedParser(),
       slots: [corsOrigin(), routeLimiter('token'), clientAuth()],
       router: sdkRouter(tokenHandler({ provider, rateLimit: false })),
     },
@@ -393,14 +461,18 @@ export function mountAuthorizationServer(
       path: pathOf(oauthMetadata.registration_endpoint),
       limiters: [registerIp],
       parser: boundedParser(),
-      slots: [registerHost],
+      // cors-origin first, so a browser client can read the validator's 400;
+      // the validator before the host limit, so a refused registration spends
+      // no redirect host's budget.
+      slots: [corsOrigin(), stage('dcr-validator', dcrValidator(redirectPolicy)), registerHost],
       router: sdkRouter(clientRegistrationHandler({ clientsStore: provider.clientsStore, rateLimit: false })),
     });
   }
   if (oauthMetadata.revocation_endpoint) {
     routes.push({
       path: pathOf(oauthMetadata.revocation_endpoint),
-      parser: boundedFormParser(),
+      limiters: [clientAuthIpLimiter('token revocation')],
+      parser: boundedParser(),
       slots: [corsOrigin(), routeLimiter('token revocation'), clientAuth()],
       router: sdkRouter(revocationHandler({ provider, rateLimit: false })),
     });

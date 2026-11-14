@@ -5,9 +5,11 @@
  * test pins the exact list for every route, both as declared (HttpApp's
  * asPipeline) and as run (the stages a request actually enters, recorded
  * through the observeStage hook), and checks what each position does: Host
- * validation answers before anything else runs, the /oauth limiter answers
- * before the body is read, and the bounded parser refuses a body over the
- * limit before the route's handler runs. It also walks the app's layer stack,
+ * validation answers before anything else runs, each AS route's ip-limiter
+ * and the /oauth limiter answer before the body is read, the DCR validator
+ * runs before /register's host limit, and the bounded parser refuses a
+ * body over the limit (8kb, #55a) with an OAuth-shaped 413 before the route's
+ * handler runs. It also walks the app's layer stack,
  * so a handler mounted on an AS path without going through a stage (an
  * app.use('/token', ...) ahead of the AS) fails here too.
  *
@@ -17,10 +19,16 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import express from 'express';
 import request from 'supertest';
 import type { Express } from 'express';
 import { buildHttpApp, MAX_JSON_BODY, OAUTH_LEG_RATE_LIMIT, type HttpApp } from '../../src/http.js';
-import { stageOfHandler } from '../../src/http/pipeline.js';
+import { AS_MAX_BODY, stageOfHandler } from '../../src/http/pipeline.js';
+import { CLIENT_AUTH_ROUTE_RATE_LIMIT, mountAuthorizationServer } from '../../src/auth/as-router.js';
+import { CEILING_FACTOR, type LimiterStoreFactory } from '../../src/middleware/rate-limiters.js';
+import { MemoryStorage } from '../../src/storage/memory.js';
+import { Encryptor } from '../../src/crypto.js';
+import { TEST_TOKEN_HASHER } from './helpers/token-hasher.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 
 const HOST = 'mcp.example.com';
@@ -31,10 +39,39 @@ const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
   { route: '/.well-known/oauth-protected-resource/mcp', stages: ['host-validation', 'bounded-parser', 'metadata'] },
   { route: '/.well-known/oauth-protected-resource', stages: ['host-validation', 'bounded-parser', 'metadata'] },
   { route: '/.well-known/oauth-authorization-server', stages: ['host-validation', 'bounded-parser', 'metadata'] },
-  { route: '/authorize', stages: ['host-validation', 'ip-limiter', 'bounded-parser', 'route-limiter', 'iss-redirect', 'sdk-router'] },
-  { route: '/token', stages: ['host-validation', 'bounded-parser', 'cors-origin', 'route-limiter', 'client-auth', 'sdk-router'] },
-  { route: '/register', stages: ['host-validation', 'ip-limiter', 'bounded-parser', 'register-host-limiter', 'sdk-router'] },
-  { route: '/revoke', stages: ['host-validation', 'bounded-parser', 'cors-origin', 'route-limiter', 'client-auth', 'sdk-router'] },
+  {
+    route: '/authorize',
+    stages: [
+      'host-validation',
+      'ip-limiter',
+      'bounded-parser',
+      'route-limiter',
+      'authorize-validation',
+      'authorize-guard',
+      'iss-redirect',
+      'sdk-router',
+    ],
+  },
+  {
+    route: '/token',
+    stages: ['host-validation', 'ip-limiter', 'bounded-parser', 'cors-origin', 'route-limiter', 'client-auth', 'sdk-router'],
+  },
+  {
+    route: '/register',
+    stages: [
+      'host-validation',
+      'ip-limiter',
+      'bounded-parser',
+      'cors-origin',
+      'dcr-validator',
+      'register-host-limiter',
+      'sdk-router',
+    ],
+  },
+  {
+    route: '/revoke',
+    stages: ['host-validation', 'ip-limiter', 'bounded-parser', 'cors-origin', 'route-limiter', 'client-auth', 'sdk-router'],
+  },
   { route: '/oauth', stages: ['host-validation', 'oauth-leg-limiter', 'bounded-parser', 'ynab-federation'] },
 ];
 const stagesOf = (route: string): readonly string[] => EXPECTED.find((e) => e.route === route)!.stages;
@@ -44,9 +81,14 @@ const PROBES: ReadonlyArray<{ route: string; name: string; send: (app: Express) 
   { route: '/.well-known/oauth-protected-resource/mcp', name: 'GET PRM (path-aware)', send: (app) => request(app).get('/.well-known/oauth-protected-resource/mcp') },
   { route: '/.well-known/oauth-protected-resource', name: 'GET PRM (root alias)', send: (app) => request(app).get('/.well-known/oauth-protected-resource') },
   { route: '/.well-known/oauth-authorization-server', name: 'GET AS metadata', send: (app) => request(app).get('/.well-known/oauth-authorization-server') },
-  { route: '/authorize', name: 'GET /authorize', send: (app) => request(app).get('/authorize') },
+  // A client_id the stages accept (and the store doesn't know), so the handler answers.
+  { route: '/authorize', name: 'GET /authorize', send: (app) => request(app).get('/authorize').query({ client_id: 'unknown' }) },
   { route: '/token', name: 'POST /token', send: (app) => request(app).post('/token').type('form').send({ grant_type: 'authorization_code' }) },
-  { route: '/register', name: 'POST /register', send: (app) => request(app).post('/register').send({}) },
+  {
+    route: '/register',
+    name: 'POST /register',
+    send: (app) => request(app).post('/register').send({ redirect_uris: ['https://client.example/cb'] }),
+  },
   { route: '/revoke', name: 'POST /revoke', send: (app) => request(app).post('/revoke').type('form').send({ token: 'x' }) },
   { route: '/oauth', name: 'GET /oauth/ynab/start', send: (app) => request(app).get('/oauth/ynab/start').query({ state: 'bogus' }) },
   { route: '/oauth', name: 'GET /oauth/ynab/callback', send: (app) => request(app).get('/oauth/ynab/callback').query({ state: 'bogus', code: 'c' }) },
@@ -65,10 +107,10 @@ const BODY_PROBES: ReadonlyArray<{ route: string; method: 'get' | 'post'; path: 
   { route: '/oauth', method: 'get', path: '/oauth/cancel' },
 ];
 
-/** A JSON body over MAX_JSON_BODY (512kb). */
-const OVERSIZED = JSON.stringify({ pad: 'x'.repeat(600 * 1024) });
-/** A JSON body under it. */
-const UNDERSIZED = JSON.stringify({ pad: 'x'.repeat(400 * 1024) });
+/** A JSON body over AS_MAX_BODY (8kb). */
+const OVERSIZED = JSON.stringify({ pad: 'x'.repeat(9 * 1024) });
+/** A registration under it, padded with a field the DCR rules drop. */
+const UNDERSIZED = JSON.stringify({ redirect_uris: ['https://client.example/cb'], pad: 'x'.repeat(7 * 1024) });
 
 const oauthConfig = (overrides: Parameters<typeof makeHttpConfig>[0] = {}) =>
   makeHttpConfig({
@@ -104,7 +146,8 @@ describe('G21: AS stage list per route', () => {
     expect(handle.asPipeline).toEqual(EXPECTED);
   });
 
-  it('keeps the bounded parser at 512kb', () => {
+  it('bounds AS bodies at 8kb (#55a); /mcp keeps 512kb', () => {
+    expect(AS_MAX_BODY).toBe('8kb');
     expect(MAX_JSON_BODY).toBe('512kb');
   });
 
@@ -194,24 +237,122 @@ describe('G21: what each position does', () => {
   });
 
   it.each(BODY_PROBES)(
-    'bounded-parser refuses a JSON body over 512kb on $method $path before the route answers',
+    'bounded-parser refuses a JSON body over 8kb on $method $path with an OAuth-shaped 413 before the route answers',
     async ({ route, method, path }) => {
       const { res, stages } = await traced(() =>
         request(handle.app)[method](path).set('Content-Type', 'application/json').send(OVERSIZED)
       );
       expect(res.status).toBe(413);
+      expect(res.body).toEqual({ error: 'invalid_request', error_description: 'Request body too large' });
+      expect(res.headers['cache-control']).toBe('no-store');
+      // Readable by a browser client although cors-origin comes later.
+      expect(res.headers['access-control-allow-origin']).toBe('*');
       const all = stagesOf(route);
       expect(stages).toEqual(all.slice(0, all.indexOf('bounded-parser') + 1));
     }
   );
 
-  it('bounded-parser lets a JSON body under 512kb through to the SDK handler', async () => {
+  it.each(BODY_PROBES.filter((p) => p.method === 'post'))(
+    'bounded-parser refuses a form body over 8kb on post $path with an OAuth-shaped 413',
+    async ({ route, path }) => {
+      const { res, stages } = await traced(() =>
+        request(handle.app).post(path).type('form').send({ pad: 'x'.repeat(9 * 1024) })
+      );
+      expect(res.status).toBe(413);
+      expect(res.body.error).toBe('invalid_request');
+      const all = stagesOf(route);
+      expect(stages).toEqual(all.slice(0, all.indexOf('bounded-parser') + 1));
+    }
+  );
+
+  it('bounded-parser answers a malformed JSON body with an OAuth-shaped 400', async () => {
+    const { res, stages } = await traced(() =>
+      request(handle.app).post('/register').set('Content-Type', 'application/json').send('{not json')
+    );
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'invalid_request', error_description: 'Malformed request body' });
+    expect(stages).toEqual(['host-validation', 'ip-limiter', 'bounded-parser']);
+  });
+
+  it('bounded-parser lets a body under 8kb through; the DCR validator drops the padding', async () => {
     const { res, stages } = await traced(() =>
       request(handle.app).post('/register').set('Content-Type', 'application/json').send(UNDERSIZED)
     );
     expect(stages).toEqual(stagesOf('/register'));
-    // The SDK's DCR validation answers (the padded body is not client metadata).
+    expect(res.status).toBe(201);
+    expect(res.body.pad).toBeUndefined();
+  });
+
+  // Each AS route's ip-limiter answers before the parser reads the body (#59,
+  // #55a). A store that reports every address over its limit makes it answer
+  // the first request, so no route has to be spent request by request.
+  it.each([
+    { route: '/authorize', method: 'get' as const, cors: false },
+    { route: '/token', method: 'post' as const, cors: true },
+    { route: '/revoke', method: 'post' as const, cors: true },
+    { route: '/register', method: 'post' as const, cors: true },
+  ])('$route: ip-limiter answers past its limit before the parser reads the body', async ({ route, method, cors }) => {
+    const spent: LimiterStoreFactory = (name) =>
+      name.endsWith(':ip')
+        ? {
+            async increment() {
+              return { totalHits: Number.MAX_SAFE_INTEGER, resetTime: new Date(Date.now() + 60_000) };
+            },
+            async decrement() {},
+            async resetKey() {},
+          }
+        : undefined;
+    const app = express();
+    const seen: string[] = [];
+    mountAuthorizationServer(app, {
+      config: oauthConfig(),
+      storage: new MemoryStorage(),
+      encryptor: new Encryptor(randomBytes(32).toString('base64')),
+      tokenHasher: TEST_TOKEN_HASHER,
+      ynab: { clientId: 'cid', clientSecret: 'sec' },
+      observeStage: (stage) => seen.push(stage),
+      limiterStore: spent,
+    });
+    const res = await request(app)[method](route).set('Content-Type', 'application/json').send('{not json');
+    expect(res.status).toBe(429);
+    expect(res.body.error).toBe('too_many_requests');
+    expect(res.headers['retry-after']).toBeDefined();
+    expect(seen).toEqual(['ip-limiter']);
+    // Readable by a browser client on the routes it fetches; /authorize is a
+    // navigation, and the SDK's handler sends no CORS header there either.
+    expect(res.headers['access-control-allow-origin']).toBe(cors ? '*' : undefined);
+  });
+
+  it('ip-limiter: /token spent leaves /revoke, /register and /authorize their own budgets', async () => {
+    for (let i = 0; i < CLIENT_AUTH_ROUTE_RATE_LIMIT * CEILING_FACTOR; i++) {
+      // Preflights are not counted.
+      if (i % 100 === 0) await request(handle.app).options('/token').set('Host', HOST);
+      await request(handle.app).post('/token').set('Host', HOST);
+    }
+    const { res, stages } = await traced(() =>
+      request(handle.app).post('/token').set('Content-Type', 'application/json').send('{not json')
+    );
+    expect(res.status).toBe(429);
+    expect(stages).toEqual(['host-validation', 'ip-limiter']);
+    for (const path of ['/revoke', '/register']) {
+      const other = await traced(() => request(handle.app).post(path));
+      expect(other.stages.slice(0, 3), path).toEqual(['host-validation', 'ip-limiter', 'bounded-parser']);
+    }
+    const authorize = await traced(() => request(handle.app).get('/authorize'));
+    expect(authorize.stages.slice(0, 3)).toEqual(['host-validation', 'ip-limiter', 'bounded-parser']);
+    // The metadata documents and the /oauth legs have none of these.
+    expect((await request(handle.app).get('/.well-known/oauth-authorization-server').set('Host', HOST)).status).toBe(200);
+    expect((await request(handle.app).get('/oauth/cancel').set('Host', HOST)).status).toBe(400);
+  });
+
+  it('dcr-validator answers an invalid registration before register-host-limiter counts it', async () => {
+    const { res, stages } = await traced(() =>
+      request(handle.app).post('/register').send({ redirect_uris: ['http://client.example/cb'] })
+    );
     expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_redirect_uri');
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+    expect(stages).toEqual(['host-validation', 'ip-limiter', 'bounded-parser', 'cors-origin', 'dcr-validator']);
   });
 
   it('oauth-leg-limiter answers /oauth/* past the limit before the parser reads the body', async () => {

@@ -21,6 +21,12 @@
  * screen or from YNAB, a failed YNAB exchange) carries `iss`. The SDK's own
  * `/authorize` error redirects get it from the iss-redirect middleware.
  *
+ * Client metadata (#55): `registerClient` stores only what the registration
+ * rules in client-metadata.ts keep, and refuses what they refuse, so a
+ * registration that skipped the dcr-validator stage stores nothing it would
+ * refuse. The consent page (auth-pages.ts) names the host the authorization
+ * returns to, and shows an unverified client's name as what it "calls itself".
+ *
  * Browser binding: the consent page sets a per-authorization cookie (see
  * consent-cookie.ts) and every later leg (start, callback, cancel) requires
  * it, so a pending authorization can't be completed from a browser that was
@@ -73,6 +79,8 @@ import type {
 } from '@modelcontextprotocol/server';
 import { OAuthError, OAuthErrorCode } from '@modelcontextprotocol/server';
 import {
+  CustomOAuthError,
+  InvalidClientMetadataError,
   InvalidGrantError,
   InvalidScopeError,
   InvalidTargetError,
@@ -103,6 +111,8 @@ import { ConsentCookie, consentNonceMatches, newConsentNonce } from './consent-c
 import { withIssuer } from '../middleware/iss-redirect.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { YNAB_CALLBACK_DEADLINE_MS } from './retention-defaults.js';
+import { redirectTrust, validateClientMetadata, type RedirectPolicy } from './client-metadata.js';
+import { HTML_CONTENT_TYPE, PAGE_HEADERS, renderConsentPage } from './auth-pages.js';
 
 export interface McpProviderOptions {
   storage: Storage;
@@ -129,7 +139,19 @@ export interface McpProviderOptions {
   globalReadOnly: boolean;
   accessTokenTtlSec: number;
   authCodeTtlSec: number;
+  /**
+   * Redirect-URI rules (#55): the private-use schemes a registration may use,
+   * and which redirect URIs are verified on the consent page. Default: no
+   * private-use scheme and nothing verified.
+   */
+  redirectPolicy?: RedirectPolicy;
 }
+
+const NO_REDIRECT_TRUST: RedirectPolicy = {
+  verifiedRedirectUris: new Set(),
+  privateUseSchemes: [],
+  trustLoopbackRedirects: false,
+};
 
 /** A stored client: the DCR metadata plus, for a confidential client, its secret's hash. */
 type StoredClient = OAuthClientInformationFull & { client_secret_hash?: unknown };
@@ -235,12 +257,6 @@ const DENIAL_DESCRIPTIONS: Record<AuthorizationDenial, string> = {
   server_error: 'Could not complete YNAB authorization',
 };
 
-function htmlEscape(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string
-  );
-}
-
 export class McpOAuthProvider implements OAuthServerProvider {
   private readonly opts: McpProviderOptions;
   // Bridges challengeForAuthorizationCode -> exchangeAuthorizationCode within a
@@ -336,16 +352,39 @@ export class McpOAuthProvider implements OAuthServerProvider {
     return `${this.opts.publicUrl}/oauth/ynab/callback`;
   }
 
+  private get redirectPolicy(): RedirectPolicy {
+    return this.opts.redirectPolicy ?? NO_REDIRECT_TRUST;
+  }
+
   get clientsStore(): OAuthRegisteredClientsStore {
     const storage = this.opts.storage;
+    const policy = this.redirectPolicy;
     return {
       getClient: async (clientId: string) => {
         const stored = await storage.getClient(clientId);
         return stored ? clientFromStorage(stored) : undefined;
       },
       registerClient: async (client) => {
+        // #55: the same rules as the dcr-validator stage, so they hold even if
+        // that stage is not mounted. Only the kept fields are stored.
+        const {
+          client_secret: secret,
+          client_secret_expires_at: secretExpiresAt,
+          client_id: _clientId,
+          client_id_issued_at: _issuedAt,
+          ...metadata
+        } = client as OAuthClientInformationFull;
+        const checked = validateClientMetadata(metadata, policy);
+        if (!checked.ok) {
+          const { error, error_description: description } = checked.error;
+          throw error === 'invalid_redirect_uri'
+            ? new CustomOAuthError(error, description)
+            : new InvalidClientMetadataError(description);
+        }
         const full: OAuthClientInformationFull = {
-          ...client,
+          ...checked.metadata,
+          ...(secret !== undefined ? { client_secret: secret } : {}),
+          ...(secretExpiresAt !== undefined ? { client_secret_expires_at: secretExpiresAt } : {}),
           client_id: randomUUID(),
           client_id_issued_at: Math.floor(Date.now() / 1000),
         };
@@ -395,26 +434,20 @@ export class McpOAuthProvider implements OAuthServerProvider {
       this.opts.allowWrite && !this.opts.globalReadOnly && scopeCeiling(scopes) === 'read-write';
 
     res.append('Set-Cookie', this.consentCookie.serialize(state, nonce));
-    // The consent page must not be framed (clickjacking) or leak its URL onward.
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
-    res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(`<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Connect YNAB</title>
-<style>body{font-family:system-ui,sans-serif;max-width:34rem;margin:4rem auto;padding:0 1rem;line-height:1.5}
-.btn{display:block;padding:.75rem 1rem;margin:.75rem 0;border:1px solid #ccc;border-radius:.5rem;text-decoration:none;color:#111}
-.btn:hover{background:#f5f5f5}.muted{color:#666;font-size:.9rem}</style></head>
-<body>
-<h1>Connect your YNAB budget</h1>
-<p>Client <code>${htmlEscape(client.client_name ?? client.client_id)}</code> is requesting access to your YNAB data. Choose the access level:</p>
-<p class="muted">After you approve, you will be returned to <code>${htmlEscape(params.redirectUri)}</code>. Continue only if you started this connection and recognize that address.</p>
-<a class="btn" href="${htmlEscape(roLink)}"><strong>Read-only</strong><br><span class="muted">View budgets, accounts, and transactions. No changes.</span></a>
-${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; write</strong><br><span class="muted">View and modify (create/update/delete) your budget data.</span></a>` : ''}
-<p class="muted">You'll be sent to YNAB to authorize. To end this access later, open your YNAB settings at app.ynab.com/settings, find Authorized Applications, and choose Revoke next to this server's app. It's listed under the name its owner gave it when registering it with YNAB.</p>
-<p><a href="${htmlEscape(cancelLink)}">Cancel</a></p>
-</body></html>`);
+    // Strict CSP (nothing loads, no framing), no-store, no referrer (#55).
+    for (const [name, value] of Object.entries(PAGE_HEADERS)) res.setHeader(name, value);
+    res.setHeader('Content-Type', HTML_CONTENT_TYPE);
+    res.send(
+      renderConsentPage({
+        clientName: client.client_name,
+        clientId: client.client_id,
+        redirectUri: params.redirectUri,
+        trust: redirectTrust(params.redirectUri, this.redirectPolicy),
+        readOnlyLink: roLink,
+        readWriteLink: offerWrite ? rwLink : undefined,
+        cancelLink,
+      })
+    );
   }
 
   /**

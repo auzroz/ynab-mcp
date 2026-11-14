@@ -1146,8 +1146,13 @@ describe('McpOAuthProvider consent cookie', () => {
     expect(html).toContain('https://attacker.example/cb?x=&lt;b&gt;');
     expect(html).not.toContain('<b>');
     expect(res.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
-    expect(res.setHeader).toHaveBeenCalledWith('Content-Security-Policy', "frame-ancestors 'none'");
+    // #55: a strict CSP that still forbids framing, and no-store.
+    expect(res.setHeader).toHaveBeenCalledWith(
+      'Content-Security-Policy',
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    );
     expect(res.setHeader).toHaveBeenCalledWith('Referrer-Policy', 'no-referrer');
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
   });
 
   it('start without the cookie fails, and the state is then spent', async () => {

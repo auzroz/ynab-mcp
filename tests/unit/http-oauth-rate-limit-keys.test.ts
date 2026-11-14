@@ -1,20 +1,28 @@
 /**
  * #59: the AS limiters key by (client_id, IP) behind a proxy, /register by IP
  * and by redirect host, and the client address follows TRUST_PROXY and
- * TRUST_CF_CONNECTING_IP.
+ * TRUST_CF_CONNECTING_IP. #55: a verified redirect host is keyed by host and
+ * IP, and a registration the DCR validator refuses spends no host's budget.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import express from 'express';
 import request from 'supertest';
 import type { Express } from 'express';
+import type { Store } from 'express-rate-limit';
 import { createHttpApp } from '../../src/http.js';
 import {
   CLIENT_AUTH_ROUTE_RATE_LIMIT,
   AUTHORIZE_RATE_LIMIT,
+  OAUTH_LEG_RATE_LIMIT,
+  mountAuthorizationServer,
 } from '../../src/auth/as-router.js';
-import { CEILING_FACTOR } from '../../src/middleware/rate-limiters.js';
+import { CEILING_FACTOR, type LimiterStoreFactory } from '../../src/middleware/rate-limiters.js';
+import { MemoryStorage } from '../../src/storage/memory.js';
+import { Encryptor } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
+import { TEST_TOKEN_HASHER } from './helpers/token-hasher.js';
 
 const HOST = 'mcp.example.com';
 
@@ -196,6 +204,7 @@ describe('/register: per-IP limit and per-redirect-host limit', () => {
   });
 
   it('refuses a registration with too many redirect URIs, and counts none of them', async () => {
+    // The DCR validator's bound (5) refuses it, before any host is counted.
     const app = await createHttpApp(config({ trustProxy: 1, registerRateLimitPerHost: 1 }));
     const uris = [...Array.from({ length: 11 }, (_, i) => `https://pad${i}.example/cb`), 'https://target.example/cb'];
     const res = await request(app).post('/register').set('Host', HOST).set('X-Forwarded-For', '198.51.100.1').send({ redirect_uris: uris });
@@ -205,16 +214,67 @@ describe('/register: per-IP limit and per-redirect-host limit', () => {
     expect((await register(app, '198.51.100.2', 'https://target.example/cb')).status).not.toBe(429);
   });
 
-  it('limits one redirect host across IPs', async () => {
+  it('limits one unverified redirect host across IPs', async () => {
     const app = await createHttpApp(config({ trustProxy: 1, registerRateLimitPerHost: 3 }));
     for (let i = 0; i < 3; i++) {
-      expect((await register(app, `198.51.100.${i + 1}`, 'https://claude.ai/cb')).status).not.toBe(429);
+      expect((await register(app, `198.51.100.${i + 1}`, 'https://shared.example/cb')).status).not.toBe(429);
     }
-    const limited = await register(app, '198.51.100.99', 'https://claude.ai/cb');
+    const limited = await register(app, '198.51.100.99', 'https://shared.example/cb');
     expect(limited.status).toBe(429);
     expect(limited.headers['access-control-allow-origin']).toBe('*');
     // Another host is untouched.
     expect((await register(app, '198.51.100.99', 'https://other.example/cb')).status).not.toBe(429);
+  });
+
+  it('keys a verified redirect host by host and IP, so one IP spending it does not lock out another (#55)', async () => {
+    // claude.ai is on the default MCP_VERIFIED_REDIRECT_URIS.
+    const app = await createHttpApp(config({ trustProxy: 1, registerRateLimitPerHost: 3 }));
+    const callback = 'https://claude.ai/api/mcp/auth_callback';
+    for (let i = 0; i < 3; i++) {
+      expect((await register(app, '198.51.100.1', callback)).status, `request ${i + 1}`).toBe(201);
+    }
+    const limited = await register(app, '198.51.100.1', callback);
+    expect(limited.status).toBe(429);
+    expect(limited.headers['access-control-allow-origin']).toBe('*');
+    // Any path on the host is the same bucket for that IP.
+    expect((await register(app, '198.51.100.1', 'https://claude.ai/other')).status).toBe(429);
+    // Another IP has its own budget for the host.
+    for (let i = 0; i < 3; i++) {
+      expect((await register(app, '198.51.100.2', callback)).status, `other IP, request ${i + 1}`).toBe(201);
+    }
+    expect((await register(app, '198.51.100.2', callback)).status).toBe(429);
+  });
+
+  it('takes the verified hosts from MCP_VERIFIED_REDIRECT_URIS', async () => {
+    const app = await createHttpApp(
+      config({ trustProxy: 1, registerRateLimitPerHost: 1, verifiedRedirectUris: ['https://app.example/cb'] })
+    );
+    // claude.ai is not verified here: shared across IPs.
+    expect((await register(app, '198.51.100.1', 'https://claude.ai/cb')).status).toBe(201);
+    expect((await register(app, '198.51.100.2', 'https://claude.ai/cb')).status).toBe(429);
+    // app.example is: one budget per IP.
+    expect((await register(app, '198.51.100.1', 'https://app.example/cb')).status).toBe(201);
+    expect((await register(app, '198.51.100.2', 'https://app.example/cb')).status).toBe(201);
+    expect((await register(app, '198.51.100.2', 'https://app.example/cb')).status).toBe(429);
+  });
+
+  it('spends no redirect host budget on a registration the DCR validator refuses', async () => {
+    const app = await createHttpApp(config({ trustProxy: 1, registerRateLimitPerHost: 1 }));
+    const target = 'https://target.example/cb';
+    const invalid = [
+      { client_name: 'bell\u0007', redirect_uris: [target] },
+      { client_name: 'x', redirect_uris: [target, 'http://plain.example/cb'] },
+      { client_name: 'x', redirect_uris: [target], token_endpoint_auth_method: 'has space' },
+    ];
+    for (const body of invalid) {
+      const res = await request(app).post('/register').set('Host', HOST).set('X-Forwarded-For', '198.51.100.1').send(body);
+      expect(res.status).toBe(400);
+      expect(['invalid_client_metadata', 'invalid_redirect_uri']).toContain(res.body.error);
+    }
+    // The host's single registration is still there for a valid one...
+    expect((await register(app, '198.51.100.2', target)).status).toBe(201);
+    // ...and that one did spend it.
+    expect((await register(app, '198.51.100.3', target)).status).toBe(429);
   });
 
   it('counts every host a registration names', async () => {
@@ -235,5 +295,90 @@ describe('/register: per-IP limit and per-redirect-host limit', () => {
     for (let i = 0; i < 2; i++) await register(app, '198.51.100.1', 'http://127.0.0.1:5000/cb');
     expect((await register(app, '198.51.100.1', 'http://localhost:6000/cb')).status).toBe(429);
     expect((await register(app, '198.51.100.2', 'http://127.0.0.1:5000/cb')).status).not.toBe(429);
+  });
+});
+
+describe('every AS limiter keys by the client address, through the injected store', () => {
+  /** A store factory that records, per limiter name, the keys it was asked to count. */
+  function recordingStores(): { factory: LimiterStoreFactory; keys: Map<string, string[]> } {
+    const keys = new Map<string, string[]>();
+    const factory: LimiterStoreFactory = (name) => {
+      keys.set(name, []);
+      const hits = new Map<string, number>();
+      const store: Store = {
+        async increment(key) {
+          keys.get(name)!.push(key);
+          hits.set(key, (hits.get(key) ?? 0) + 1);
+          return { totalHits: hits.get(key)!, resetTime: new Date(Date.now() + 60_000) };
+        },
+        async decrement() {},
+        async resetKey() {},
+      };
+      return store;
+    };
+    return { factory, keys };
+  }
+
+  /** The AS alone on an app, as http.ts mounts it (trust proxy set first). */
+  function mountWith(overrides: Parameters<typeof config>[0], limiterStore: LimiterStoreFactory): Express {
+    const cfg = config(overrides);
+    const app = express();
+    app.set('trust proxy', cfg.trustProxy);
+    mountAuthorizationServer(app, {
+      config: cfg,
+      storage: new MemoryStorage(),
+      encryptor: new Encryptor(randomBytes(32).toString('base64')),
+      tokenHasher: TEST_TOKEN_HASHER,
+      ynab: { clientId: 'cid', clientSecret: 'sec' },
+      limiterStore,
+    });
+    return app;
+  }
+
+  /** One request per AS route, each reaching every limiter on its route. */
+  const PER_ROUTE: ReadonlyArray<(app: Express) => request.Test> = [
+    (app) => request(app).get('/authorize').query({ client_id: 'c' }),
+    (app) => request(app).post('/token').type('form').send({ grant_type: 'authorization_code', client_id: 'c' }),
+    (app) => request(app).post('/revoke').type('form').send({ token: 't', client_id: 'c' }),
+    // A verified host, so register:host keys by host and address too.
+    (app) => request(app).post('/register').send({ redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] }),
+    (app) => request(app).get('/oauth/cancel'),
+  ];
+
+  it.each([
+    { setup: 'TRUST_PROXY=1, X-Forwarded-For', overrides: { trustProxy: 1 }, header: 'X-Forwarded-For' },
+    // req.ip is the socket peer for every request here: only clientKey tells them apart.
+    {
+      setup: 'TRUST_CF_CONNECTING_IP=true, CF-Connecting-IP',
+      overrides: { trustProxy: 0, trustCfConnectingIp: true },
+      header: 'CF-Connecting-IP',
+    },
+  ])('$setup: every limiter counts each address in its own bucket', async ({ overrides, header }) => {
+    const { factory, keys } = recordingStores();
+    const app = mountWith(overrides, factory);
+    for (const ip of ['198.51.100.1', '198.51.100.2']) {
+      for (const send of PER_ROUTE) await send(app).set(header, ip);
+    }
+    expect([...keys.keys()].sort()).toEqual(
+      [
+        'oauth-leg',
+        'route:token:ip',
+        'route:token:client',
+        'authorize:ip',
+        'authorize:client',
+        'route:token revocation:ip',
+        'route:token revocation:client',
+        'register:ip',
+        'register:host',
+      ].sort()
+    );
+    for (const [name, counted] of keys) {
+      // Each limiter saw both addresses, under different keys that name them.
+      expect(counted, name).toHaveLength(2);
+      expect(counted[0], name).toMatch(/ip:198\.51\.100\.1$/);
+      expect(counted[1], name).toMatch(/ip:198\.51\.100\.2$/);
+    }
+    expect(keys.get('register:host')).toEqual(['verified:claude.ai|ip:198.51.100.1', 'verified:claude.ai|ip:198.51.100.2']);
+    expect(keys.get('route:token:client')).toEqual(['client:c|ip:198.51.100.1', 'client:c|ip:198.51.100.2']);
   });
 });
