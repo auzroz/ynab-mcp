@@ -88,6 +88,25 @@ describe('YNAB_OAUTH_ALLOW_WRITE', () => {
   });
 });
 
+describe('TRUST_CF_CONNECTING_IP and the /register limits (#59)', () => {
+  it('defaults: CF-Connecting-IP untrusted, 100 per IP and 20 per redirect host', () => {
+    const c = loadHttpConfig(OAUTH_ENV);
+    expect([c.trustCfConnectingIp, c.registerRateLimitPerIp, c.registerRateLimitPerHost]).toEqual([false, 100, 20]);
+  });
+  it('is on only with true; a typo is refused, naming the variable and not the value', () => {
+    expect(loadHttpConfig({ ...OAUTH_ENV, TRUST_CF_CONNECTING_IP: 'true' }).trustCfConnectingIp).toBe(true);
+    const msg = failure({ ...OAUTH_ENV, TRUST_CF_CONNECTING_IP: 'ture' });
+    expect(msg).toMatch(/TRUST_CF_CONNECTING_IP/);
+    expect(msg).not.toContain('ture');
+  });
+  it('is part of the combined startup error', () => {
+    const msg = failure({ ...OAUTH_ENV, TRUST_CF_CONNECTING_IP: 'ture', REGISTER_RATE_LIMIT_PER_HOST: '0', TRUST_PROXY: '99' });
+    expect(msg).toMatch(/TRUST_CF_CONNECTING_IP/);
+    expect(msg).toMatch(/REGISTER_RATE_LIMIT_PER_HOST/);
+    expect(msg).toMatch(/TRUST_PROXY/);
+  });
+});
+
 describe('numeric bounds', () => {
   const cases: Array<[string, string[], string[]]> = [
     ['RATE_LIMIT_PER_HOUR', ['0', '196', '1000'], ['1', '195']],
@@ -104,6 +123,8 @@ describe('numeric bounds', () => {
     ['CACHE_TTL_MS', ['0'], ['1']],
     ['PORT', ['0', '65536'], ['1', '65535']],
     ['TRUST_PROXY', ['11'], ['0', '10']],
+    ['REGISTER_RATE_LIMIT_PER_IP', ['0', '100001'], ['1', '100000']],
+    ['REGISTER_RATE_LIMIT_PER_HOST', ['0', '100001'], ['1', '100000']],
   ];
   it.each(cases)('%s: out of range refuses to start, naming the variable and range', (name, bad) => {
     for (const v of bad) {
@@ -247,8 +268,10 @@ describe('loadHttpConfig composition', () => {
       'authMode', 'bindHost', 'cacheTtlMs', 'databaseUrl', 'defaultBudgetId', 'deprecatedSessionSettings',
       'enableDnsRebindingProtection', 'encryptionKey', 'fallbackAccessToken', 'logLevel', 'maxInflight',
       'maxInflightPerClient', 'maxInflightPerUser', 'maxSessions', 'maxSessionsPerUser', 'oauthClientId',
-      'oauthClientSecret', 'port', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour', 'readOnly', 'requestTimeoutMs',
-      'resourceUrl', 'sessionIdleTimeoutMs', 'sqlitePath', 'storageDriver', 'tokenPepper', 'trustProxy',
+      'oauthClientSecret', 'port', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour', 'readOnly',
+      'registerRateLimitPerHost', 'registerRateLimitPerIp', 'requestTimeoutMs', 'resourceUrl', 'securityContacts',
+      'securityPolicyUrl', 'sessionIdleTimeoutMs', 'sqlitePath', 'storageDriver', 'tokenPepper',
+      'trustCfConnectingIp', 'trustProxy',
     ]);
   });
 });

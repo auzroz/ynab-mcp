@@ -13,6 +13,8 @@
 import { ConfigProblems, type Env } from '../parse.js';
 import { HTTP_CHECKS } from './checks.js';
 import { loadAuthSettings } from './auth.js';
+import { loadRateLimitSettings } from './rate-limit.js';
+import { loadSecurityTxtSettings } from './security-txt.js';
 import { loadServerSettings } from './server.js';
 import { loadSessionSettings } from './sessions.js';
 import { loadStorageSettings } from './storage.js';
@@ -21,6 +23,8 @@ import { loadYnabSettings } from './ynab.js';
 import { loadLimitSettings } from './limits.js';
 
 export type { HttpAuthMode, AuthSettings } from './auth.js';
+export type { RateLimitSettings } from './rate-limit.js';
+export type { SecurityTxtSettings } from './security-txt.js';
 export type { LogLevel, ServerSettings } from './server.js';
 export type { SessionSettings } from './sessions.js';
 export type { StorageDriver, StorageSettings } from './storage.js';
@@ -36,6 +40,8 @@ const LOADERS = [
   loadAuthSettings,
   loadStorageSettings,
   loadTokenSettings,
+  loadRateLimitSettings,
+  loadSecurityTxtSettings,
   loadLimitSettings,
 ] as const;
 
