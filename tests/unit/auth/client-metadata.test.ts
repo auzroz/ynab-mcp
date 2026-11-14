@@ -113,6 +113,61 @@ describe('redirectUriMatches: exact, except the port of an http loopback URI (RF
     expect(redirectUriMatches('http://127.0.0.1:5555/cb#extra', REG)).toBe(false);
   });
 
+  it('refuses a fragment on the registered side, even for the identical string', () => {
+    // A client stored under older rules can still hold one (only logged).
+    expect(redirectUriMatches('https://c.example/cb#x', 'https://c.example/cb#x')).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:1234/cb#x', 'http://127.0.0.1:1234/cb#x')).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:1234/cb', 'http://127.0.0.1:1234/cb#x')).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:5555/cb', 'http://127.0.0.1:1234/cb#')).toBe(false);
+  });
+
+  it('compares the path and query as written: dot segments, encodings and case never match', () => {
+    for (const requested of [
+      // Dot segments, which URL parsing removes.
+      'http://127.0.0.1:1234/a/../cb',
+      'http://127.0.0.1:5555/a/../cb',
+      'http://127.0.0.1:5555/./cb',
+      'http://127.0.0.1:5555/a/%2e%2e/cb',
+      // Percent-encoding differences.
+      'http://127.0.0.1:5555/c%62',
+      'http://127.0.0.1:5555/%63b',
+      // Case.
+      'http://127.0.0.1:5555/CB',
+      'http://127.0.0.1:5555/Cb',
+      // A backslash, which URL parsing turns into a slash.
+      'http://127.0.0.1:5555\\cb',
+    ]) {
+      expect(redirectUriMatches(requested, REG), requested).toBe(false);
+    }
+    // Characters URL parsing would percent-encode, in the path and the query.
+    expect(redirectUriMatches('http://127.0.0.1:5555/c b', 'http://127.0.0.1:1234/c%20b')).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:5555/cb?x=a b', 'http://127.0.0.1:1234/cb?x=a%20b')).toBe(false);
+    expect(redirectUriMatches("http://127.0.0.1:5555/cb?x='", 'http://127.0.0.1:1234/cb?x=%27')).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:5555/cb?X=1', 'http://127.0.0.1:1234/cb?x=1')).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:5555/cb?x=%2F', 'http://127.0.0.1:1234/cb?x=%2f')).toBe(false);
+    // An empty path is not "/".
+    expect(redirectUriMatches('http://127.0.0.1:5555', 'http://127.0.0.1:1234/')).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:5555', 'http://127.0.0.1:1234')).toBe(true);
+  });
+
+  it('gives the port exception to localhost, 127.0.0.1 and [::1] as written, and to no other spelling', () => {
+    expect(redirectUriMatches('http://localhost:5555/cb?x=1', 'http://localhost:1234/cb?x=1')).toBe(true);
+    expect(redirectUriMatches('http://127.0.0.1:5555/cb?x=1', 'http://127.0.0.1:1234/cb?x=1')).toBe(true);
+    expect(redirectUriMatches('http://[::1]:5555/cb?x=1', 'http://[::1]:1234/cb?x=1')).toBe(true);
+    expect(redirectUriMatches('http://[::1]/cb', 'http://[::1]:1234/cb')).toBe(true);
+    // Spellings URL parsing would turn into a loopback host.
+    expect(redirectUriMatches('http://127.1:5555/cb', REG)).toBe(false);
+    expect(redirectUriMatches('http://0x7f.0.0.1:5555/cb', REG)).toBe(false);
+    expect(redirectUriMatches('http://LOCALHOST:5555/cb', 'http://localhost:1234/cb')).toBe(false);
+    expect(redirectUriMatches('HTTP://localhost:5555/cb', 'http://localhost:1234/cb')).toBe(false);
+    expect(redirectUriMatches('http://[0:0:0:0:0:0:0:1]:5555/cb', 'http://[::1]:1234/cb')).toBe(false);
+    // Uppercase on both sides still matches only as the exact string.
+    expect(redirectUriMatches('http://LOCALHOST:1234/cb', 'http://LOCALHOST:1234/cb')).toBe(true);
+    expect(redirectUriMatches('http://LOCALHOST:5555/cb', 'http://LOCALHOST:1234/cb')).toBe(false);
+    // An invalid port is not a port change.
+    expect(redirectUriMatches('http://127.0.0.1:99999/cb', REG)).toBe(false);
+  });
+
   it('refuses userinfo', () => {
     expect(redirectUriMatches('http://user@127.0.0.1:1234/cb', REG)).toBe(false);
     expect(redirectUriMatches('http://user:pw@127.0.0.1:5555/cb', REG)).toBe(false);

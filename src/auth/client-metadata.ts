@@ -144,30 +144,37 @@ export function isPlainHttpRedirectUri(raw: string): boolean {
 }
 
 /**
+ * An http loopback URI as written: 1 the scheme and host, 2 the port (if
+ * any), 3 everything after (path and query, if any). Only the three loopback
+ * spellings LOOPBACK_HOSTNAMES holds; anything else (another case, userinfo,
+ * an IPv4 shorthand) does not match, so it gets no port exception.
+ */
+const RAW_HTTP_LOOPBACK = /^(http:\/\/(?:localhost|127\.0\.0\.1|\[::1\]))(?::(\d{1,5}))?([/?].*)?$/s;
+
+/**
  * Whether a requested redirect URI matches a registered one (RFC 6749
  * section 3.1.2.3, RFC 9700 section 2.1): the exact string, or, for an
  * `http://` loopback redirect URI only, the same URI on another port (RFC 8252
- * section 7.3, for a native app's ephemeral port). Nothing else may differ:
- * scheme, userinfo, host, path and query must be equal, and neither may carry
- * a fragment. Stricter than server-legacy's matcher, which also relaxes the
- * port for https loopback URIs and ignores userinfo and fragments; the
+ * section 7.3, for a native app's ephemeral port). Nothing else may differ,
+ * and it is compared as written, never after URL parsing: `/a/../cb`,
+ * `/c%62` or `/CB` is not `/cb`, and `127.1` is not `127.0.0.1`. The port
+ * exception applies only to `http://localhost`, `http://127.0.0.1` and
+ * `http://[::1]` spelled exactly so, with no userinfo. A fragment on either
+ * side never matches, not even the same string (RFC 6749 section 3.1.2; a
+ * client stored under older rules can still hold one). Stricter than
+ * server-legacy's matcher, which also relaxes the port for https loopback
+ * URIs, compares parsed paths and ignores userinfo and fragments; the
  * authorize-validation stage refuses what this refuses before the handler
  * runs.
  */
 export function redirectUriMatches(requested: string, registered: string): boolean {
-  if (requested === registered) return true;
   if (requested.includes('#') || registered.includes('#')) return false;
-  const req = parseUrl(requested);
-  const reg = parseUrl(registered);
-  if (req === undefined || reg === undefined) return false;
-  if (req.protocol !== 'http:' || reg.protocol !== 'http:' || !LOOPBACK_HOSTNAMES.has(reg.hostname)) return false;
-  return (
-    req.username === reg.username &&
-    req.password === reg.password &&
-    req.hostname === reg.hostname &&
-    req.pathname === reg.pathname &&
-    req.search === reg.search
-  );
+  if (requested === registered) return true;
+  const req = RAW_HTTP_LOOPBACK.exec(requested);
+  const reg = RAW_HTTP_LOOPBACK.exec(registered);
+  if (req === null || reg === null || !URL.canParse(requested) || !URL.canParse(registered)) return false;
+  // Equal outside the port, character for character.
+  return req[1] === reg[1] && (req[3] ?? '') === (reg[3] ?? '');
 }
 
 /**

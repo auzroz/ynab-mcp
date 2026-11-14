@@ -380,6 +380,13 @@ describe('/authorize bounds (55a)', () => {
       ['userinfo', 'http://user@127.0.0.1:1234/cb'],
       ['a different path', 'http://127.0.0.1:1234/other'],
       ['a different query', 'http://127.0.0.1:1234/cb?x=1'],
+      // Compared as written, not after URL parsing (which would make these equal).
+      ['dot segments', 'http://127.0.0.1:1234/a/../cb'],
+      ['dot segments on another port', 'http://127.0.0.1:5555/x/../cb'],
+      ['an encoded dot segment', 'http://127.0.0.1:5555/x/%2e%2e/cb'],
+      ['a percent-encoded path', 'http://127.0.0.1:5555/c%62'],
+      ['another case in the path', 'http://127.0.0.1:1234/CB'],
+      ['an IPv4 shorthand for the host', 'http://127.1:5555/cb'],
     ])('refuses %s with a direct 400 before the handler', async (_name, requested) => {
       const clientId = await register([REG]);
       const save = vi.spyOn(storage(), 'savePendingAuth');
@@ -402,6 +409,58 @@ describe('/authorize bounds (55a)', () => {
       const res = await authorize(clientId, 'http://127.0.0.1:5555/cb');
       expect(res.status).toBe(200);
       expect(res.text).toContain('returned to <strong>127.0.0.1:5555</strong>');
+    });
+
+    it('keeps the port exception for localhost and [::1]', async () => {
+      const clientId = await register(['http://localhost:1234/cb?x=1', 'http://[::1]:1234/cb']);
+      expect((await authorize(clientId, 'http://localhost:5555/cb?x=1')).status).toBe(200);
+      expect((await authorize(clientId, 'http://[::1]:5555/cb')).status).toBe(200);
+    });
+
+    /** The request's parameters without redirect_uri: the handler then uses the only registered one. */
+    const implicitQuery = (clientId: string): Record<string, unknown> => {
+      const { redirect_uri: _omitted, ...rest } = authorizeQuery(clientId, CALLBACK);
+      return rest;
+    };
+
+    it.each([
+      ['an https URI', 'https://client.example/cb#frag'],
+      ['a loopback URI', 'http://127.0.0.1:1234/cb#frag'],
+      ['an empty fragment', 'https://client.example/cb#'],
+    ])('refuses a stored redirect URI with a fragment (%s) when the request names it, with a direct 400', async (_name, uri) => {
+      // Stored under older rules: the fragment is only logged at lookup.
+      const clientId = await plant({ redirect_uris: [uri] });
+      const save = vi.spyOn(storage(), 'savePendingAuth');
+      const res = await authorize(clientId, uri);
+      expect(res.status).toBe(400);
+      expect(res.headers['location']).toBeUndefined();
+      expect(res.body).toEqual({ error: 'invalid_request', error_description: 'Unregistered redirect_uri' });
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['an https URI', 'https://client.example/cb#frag'],
+      ['a loopback URI', 'http://127.0.0.1:1234/cb#frag'],
+    ])('refuses the only stored redirect URI when it has a fragment (%s) and none is requested, with a direct 400', async (_name, uri) => {
+      const clientId = await plant({ redirect_uris: [uri] });
+      const save = vi.spyOn(storage(), 'savePendingAuth');
+      for (const res of [
+        await request(app).get('/authorize').query(implicitQuery(clientId)),
+        await request(app).post('/authorize').type('form').send(implicitQuery(clientId)),
+      ]) {
+        expect(res.status).toBe(400);
+        expect(res.headers['location']).toBeUndefined();
+        expect(res.headers['cache-control']).toBe('no-store');
+        expect(res.body).toEqual({ error: 'invalid_request', error_description: 'Unregistered redirect_uri' });
+      }
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    it('still uses the only registered redirect URI when none is requested', async () => {
+      const clientId = await register([CALLBACK]);
+      const res = await request(app).get('/authorize').query(implicitQuery(clientId));
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('returned to <strong>client.example</strong>');
     });
   });
 

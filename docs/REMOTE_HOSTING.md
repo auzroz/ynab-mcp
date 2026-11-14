@@ -167,16 +167,22 @@ addresses and rate limits".
 
 `/authorize` refuses a `state` over 512 characters, a `code_challenge` that
 isn't 43 base64url characters, and more than 5 scopes; unknown scopes are
-ignored. An error found once the client and redirect URI are known is
-redirected back to the client only when that redirect URI is verified
+ignored. A `client_id` that is missing, empty, repeated or over 255
+characters is refused before any lookup. The `redirect_uri` must equal a
+registered one character for character; only an `http://localhost`,
+`http://127.0.0.1` or `http://[::1]` URI may differ in its port. A redirect URI
+with a fragment never matches. These refusals are a `400`, never a redirect.
+An error found once the client and redirect URI are known is redirected back
+to the client only when that redirect URI is verified
 (`MCP_VERIFIED_REDIRECT_URIS`, or loopback while `MCP_TRUST_LOOPBACK_REDIRECTS`
 is on). For any other client the error is shown on this server's own page,
 with a link back the user can choose to follow, so a crafted link can't use
 your server to bounce a browser to an arbitrary site.
 
-Clients registered before 0.5.0 keep working, with one exception: a client
+Clients registered before 0.5.0 keep working, with two exceptions: a client
 with an `http://` redirect URI to a host other than loopback is refused at
-`/authorize` and has to register again. The server logs, once per client, any
+`/authorize`, and a redirect URI with a fragment can't be used. Such a client
+has to register again. The server logs, once per client, any
 other rule an older registration breaks.
 
 ### Access level per connection

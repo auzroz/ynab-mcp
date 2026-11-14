@@ -15,11 +15,12 @@
  *      page and never by redirect; its other rule failures are logged once
  *      per process and the client keeps working (#55, batch 3).
  *   2. **The redirect URI.** A requested one must match a registered one
- *      exactly, except the port of an `http://` loopback URI
- *      (client-metadata.ts redirectUriMatches); otherwise the request gets the
- *      handler's direct 400, never a redirect. The context (redirect URI and
- *      whether errors may redirect there) is recorded for the authorize-guard
- *      stage.
+ *      as written, except the port of an `http://` loopback URI, and neither
+ *      may have a fragment (client-metadata.ts redirectUriMatches); with none
+ *      requested, the only registered one must pass the same rules. Otherwise
+ *      the request gets the handler's direct 400, never a redirect. The
+ *      context (redirect URI and whether errors may redirect there) is
+ *      recorded for the authorize-guard stage.
  *   3. `state`: one string of at most MAX_STATE_LENGTH characters.
  *   4. `code_challenge`: exactly 43 base64url characters (an S256 challenge).
  *   5. `scope`: at most MAX_SCOPES space-separated values. Unknown values are
@@ -136,7 +137,10 @@ function setParam(req: Request, name: string, value: string | undefined): void {
  *     http loopback one on another port), or the only registered one when
  *     none was requested;
  *   - `unregistered`: a requested URI that matches none (redirectUriMatches is
- *     stricter than the handler's matcher, so this stage answers it);
+ *     stricter than the handler's matcher, so this stage answers it), or, when
+ *     none was requested, an only registered one that the matcher would not
+ *     accept as itself (a fragment, from a client stored under older rules)
+ *     or that isn't a URL;
  *   - `handler`: anything the handler refuses itself (no URI with several
  *     registered, a value that isn't a URL, a malformed client row).
  */
@@ -146,8 +150,11 @@ function resolveRedirectUri(requested: unknown, registered: unknown): RedirectRe
   if (!Array.isArray(registered)) return { kind: 'handler' };
   const uris = registered.filter((u): u is string => typeof u === 'string');
   if (requested === undefined) {
-    const only = uris.length === 1 ? uris[0] : undefined;
-    return only !== undefined && URL.canParse(only) ? { kind: 'resolved', uri: only } : { kind: 'handler' };
+    // The handler uses the only registered URI as it is, without its matcher:
+    // it gets the same rules here as a requested one would.
+    if (registered.length !== 1 || uris.length !== 1) return { kind: 'handler' };
+    const only = uris[0] as string;
+    return URL.canParse(only) && redirectUriMatches(only, only) ? { kind: 'resolved', uri: only } : { kind: 'unregistered' };
   }
   if (typeof requested !== 'string' || !URL.canParse(requested)) return { kind: 'handler' };
   return uris.some((r) => redirectUriMatches(requested, r)) ? { kind: 'resolved', uri: requested } : { kind: 'unregistered' };
