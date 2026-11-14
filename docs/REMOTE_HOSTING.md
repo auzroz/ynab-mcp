@@ -58,7 +58,7 @@ Set these environment variables (see `.env.example`):
 | `TRUST_PROXY` | if behind a reverse proxy | Number of proxies between the client and this server whose `X-Forwarded-For` to trust (integer 0-10, default `0`; e.g. `1` behind a single Traefik/Caddy/nginx). Too low and every client shares one rate-limit bucket, so one client can lock out the others; too high and clients can spoof their address. Set it only when the app is reachable solely through the proxy. See "Client addresses and rate limits" |
 | `TRUST_CF_CONNECTING_IP` | no | `true` to take the client address from `CF-Connecting-IP` (default `false`). Separate from `TRUST_PROXY`; turn it on only when the server is reachable solely through Cloudflare. See "Client addresses and rate limits" |
 | `REGISTER_RATE_LIMIT_PER_IP` | no | `/register` requests per client address per hour (integer 1-100000, default `100`) |
-| `REGISTER_RATE_LIMIT_PER_HOST` | no | `/register` requests per redirect URI host per hour (integer 1-100000, default `20`). See "Client addresses and rate limits" |
+| `REGISTER_RATE_LIMIT_PER_HOST` | no | `/register` requests per redirect URI host per hour (integer 1-100000, default `20`). A verified host (`MCP_VERIFIED_REDIRECT_URIS`) or loopback counts per host and client address. See "Client addresses and rate limits" |
 | `SECURITY_CONTACT` | no | Where to report a security issue in **your** deployment: one or more comma-separated email addresses or `mailto:`, `tel:` or `https:` URIs (at most 5). When set, the server serves `/.well-known/security.txt` (RFC 9116) with a `Contact` line for each, an `Expires` of 180 days from each request, and `Canonical` from `PUBLIC_URL`. Unset (default): the path is a 404. A value with a control character or line break is refused at startup |
 | `SECURITY_POLICY_URL` | no | An https URL for your disclosure policy, served as `Policy` in `security.txt`. Only used when `SECURITY_CONTACT` is set |
 | `MCP_VERIFIED_REDIRECT_URIS` | no | Comma-separated redirect URIs of trusted clients. Default: Claude's connector callbacks, `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`. An authorization error at `/authorize` is redirected back only to these (and to loopback, see below); for any other client it is shown on this server's own page with a "Return to" link, so the server can't be used as an open redirector. The consent page names a verified client plainly and any other as "calls itself". `none` empties the list. Each entry must be https (http only for loopback), at most 512 characters, with no userinfo or fragment |
@@ -419,7 +419,10 @@ lock their users out of each other, while the redirect host is what they
 share. A registration naming several hosts is counted against each of them.
 Loopback redirects (`localhost`, `127.0.0.1`, `[::1]`) and private-use schemes
 are shared by native clients everywhere, so they are keyed by host **and**
-address instead of by host alone.
+address instead of by host alone. So is a verified host: the host of an entry
+on `MCP_VERIFIED_REDIRECT_URIS` (by default `claude.ai` and `claude.com`).
+Every user of that client shares it and anyone can name it, so keyed by host
+alone, one caller could lock that client out for everyone.
 
 The `client_id` for `/token` and `/revoke` is the `client_id` form field (the
 one client authentication checks; an HTTP Basic user is not read). For
@@ -432,9 +435,9 @@ errors") before any redirect host is counted, so a refused one uses none of a
 host's budget; it still counts against the per-address limit. A body with more
 than 5 `redirect_uris` is refused with 400 `invalid_client_metadata`.
 
-An unverified redirect host is shared across addresses by design, so someone
-can spend a host's `/register` budget by naming it; the per-address limit
-bounds how fast. Keying verified hosts by host and address lands with #55.
+Any other redirect host is shared across addresses by design, so someone can
+spend that host's `/register` budget by naming it; the per-address limit bounds
+how fast.
 
 ## Host and Origin validation
 

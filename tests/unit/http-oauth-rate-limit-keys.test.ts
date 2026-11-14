@@ -1,7 +1,8 @@
 /**
  * #59: the AS limiters key by (client_id, IP) behind a proxy, /register by IP
  * and by redirect host, and the client address follows TRUST_PROXY and
- * TRUST_CF_CONNECTING_IP.
+ * TRUST_CF_CONNECTING_IP. #55: a verified redirect host is keyed by host and
+ * IP, and a registration the DCR validator refuses spends no host's budget.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -196,6 +197,7 @@ describe('/register: per-IP limit and per-redirect-host limit', () => {
   });
 
   it('refuses a registration with too many redirect URIs, and counts none of them', async () => {
+    // The DCR validator's bound (5) refuses it, before any host is counted.
     const app = await createHttpApp(config({ trustProxy: 1, registerRateLimitPerHost: 1 }));
     const uris = [...Array.from({ length: 11 }, (_, i) => `https://pad${i}.example/cb`), 'https://target.example/cb'];
     const res = await request(app).post('/register').set('Host', HOST).set('X-Forwarded-For', '198.51.100.1').send({ redirect_uris: uris });
@@ -205,16 +207,67 @@ describe('/register: per-IP limit and per-redirect-host limit', () => {
     expect((await register(app, '198.51.100.2', 'https://target.example/cb')).status).not.toBe(429);
   });
 
-  it('limits one redirect host across IPs', async () => {
+  it('limits one unverified redirect host across IPs', async () => {
     const app = await createHttpApp(config({ trustProxy: 1, registerRateLimitPerHost: 3 }));
     for (let i = 0; i < 3; i++) {
-      expect((await register(app, `198.51.100.${i + 1}`, 'https://claude.ai/cb')).status).not.toBe(429);
+      expect((await register(app, `198.51.100.${i + 1}`, 'https://shared.example/cb')).status).not.toBe(429);
     }
-    const limited = await register(app, '198.51.100.99', 'https://claude.ai/cb');
+    const limited = await register(app, '198.51.100.99', 'https://shared.example/cb');
     expect(limited.status).toBe(429);
     expect(limited.headers['access-control-allow-origin']).toBe('*');
     // Another host is untouched.
     expect((await register(app, '198.51.100.99', 'https://other.example/cb')).status).not.toBe(429);
+  });
+
+  it('keys a verified redirect host by host and IP, so one IP spending it does not lock out another (#55)', async () => {
+    // claude.ai is on the default MCP_VERIFIED_REDIRECT_URIS.
+    const app = await createHttpApp(config({ trustProxy: 1, registerRateLimitPerHost: 3 }));
+    const callback = 'https://claude.ai/api/mcp/auth_callback';
+    for (let i = 0; i < 3; i++) {
+      expect((await register(app, '198.51.100.1', callback)).status, `request ${i + 1}`).toBe(201);
+    }
+    const limited = await register(app, '198.51.100.1', callback);
+    expect(limited.status).toBe(429);
+    expect(limited.headers['access-control-allow-origin']).toBe('*');
+    // Any path on the host is the same bucket for that IP.
+    expect((await register(app, '198.51.100.1', 'https://claude.ai/other')).status).toBe(429);
+    // Another IP has its own budget for the host.
+    for (let i = 0; i < 3; i++) {
+      expect((await register(app, '198.51.100.2', callback)).status, `other IP, request ${i + 1}`).toBe(201);
+    }
+    expect((await register(app, '198.51.100.2', callback)).status).toBe(429);
+  });
+
+  it('takes the verified hosts from MCP_VERIFIED_REDIRECT_URIS', async () => {
+    const app = await createHttpApp(
+      config({ trustProxy: 1, registerRateLimitPerHost: 1, verifiedRedirectUris: ['https://app.example/cb'] })
+    );
+    // claude.ai is not verified here: shared across IPs.
+    expect((await register(app, '198.51.100.1', 'https://claude.ai/cb')).status).toBe(201);
+    expect((await register(app, '198.51.100.2', 'https://claude.ai/cb')).status).toBe(429);
+    // app.example is: one budget per IP.
+    expect((await register(app, '198.51.100.1', 'https://app.example/cb')).status).toBe(201);
+    expect((await register(app, '198.51.100.2', 'https://app.example/cb')).status).toBe(201);
+    expect((await register(app, '198.51.100.2', 'https://app.example/cb')).status).toBe(429);
+  });
+
+  it('spends no redirect host budget on a registration the DCR validator refuses', async () => {
+    const app = await createHttpApp(config({ trustProxy: 1, registerRateLimitPerHost: 1 }));
+    const target = 'https://target.example/cb';
+    const invalid = [
+      { client_name: 'bell\u0007', redirect_uris: [target] },
+      { client_name: 'x', redirect_uris: [target, 'http://plain.example/cb'] },
+      { client_name: 'x', redirect_uris: [target], token_endpoint_auth_method: 'has space' },
+    ];
+    for (const body of invalid) {
+      const res = await request(app).post('/register').set('Host', HOST).set('X-Forwarded-For', '198.51.100.1').send(body);
+      expect(res.status).toBe(400);
+      expect(['invalid_client_metadata', 'invalid_redirect_uri']).toContain(res.body.error);
+    }
+    // The host's single registration is still there for a valid one...
+    expect((await register(app, '198.51.100.2', target)).status).toBe(201);
+    // ...and that one did spend it.
+    expect((await register(app, '198.51.100.3', target)).status).toBe(429);
   });
 
   it('counts every host a registration names', async () => {

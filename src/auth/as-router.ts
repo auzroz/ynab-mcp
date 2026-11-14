@@ -61,7 +61,7 @@ import {
   registerIpLimiter,
   type LimiterStoreFactory,
 } from '../middleware/rate-limiters.js';
-import { authorizeClientId, bodyClientId } from '../middleware/rate-limit-key.js';
+import { authorizeClientId, bodyClientId, verifiedRedirectHosts } from '../middleware/rate-limit-key.js';
 import {
   AS_MAX_BODY,
   mountStages,
@@ -386,11 +386,14 @@ export function mountAuthorizationServer(
     );
   // /register: a per-IP limit above the SDK's 20/h before the body is read,
   // then a per-redirect-host limit once the DCR validator has accepted it
-  // (hosted clients share an IP range but not a redirect host).
+  // (hosted clients share an IP range but not a redirect host). A verified
+  // host is shared by every user of that client, so it is counted per host
+  // and IP, like loopback.
   const registerLimits = {
     windowMs: 60 * 60 * 1000,
     perIp: config.registerRateLimitPerIp,
     perHost: config.registerRateLimitPerHost,
+    verifiedHosts: verifiedRedirectHosts(config.verifiedRedirectUris),
     message: tooMany('client registration'),
     tooManyRedirects: {
       error: 'invalid_client_metadata',

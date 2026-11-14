@@ -4,6 +4,7 @@ import {
   clientIp,
   clientKey,
   redirectHostKeys,
+  verifiedRedirectHosts,
   bodyClientId,
   authorizeClientId,
   MAX_REDIRECT_URIS,
@@ -140,6 +141,34 @@ describe('redirectHostKeys (/register)', () => {
     const uris = Array.from({ length: MAX_REDIRECT_URIS + 1 }, (_, i) => `https://h${i}.example/cb`);
     expect(redirectHostKeys({ redirect_uris: uris }, ip)).toBeUndefined();
     expect(redirectHostKeys({ redirect_uris: uris.slice(0, MAX_REDIRECT_URIS) }, ip)).toHaveLength(MAX_REDIRECT_URIS);
+  });
+  it('keys a verified host by host and IP (#55), any path on it, so one caller cannot spend it for everyone', () => {
+    const verified = verifiedRedirectHosts(['https://claude.ai/api/mcp/auth_callback']);
+    expect(redirectHostKeys({ redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] }, ip, verified)).toEqual([
+      `verified:claude.ai|ip:${ip}`,
+    ]);
+    expect(redirectHostKeys({ redirect_uris: ['https://CLAUDE.ai/elsewhere'] }, '198.51.100.1', verified)).toEqual([
+      'verified:claude.ai|ip:198.51.100.1',
+    ]);
+    // An unverified host next to it is still shared across IPs.
+    expect(redirectHostKeys({ redirect_uris: ['https://claude.ai/cb', 'https://other.example/cb'] }, ip, verified)!.sort()).toEqual([
+      'host:other.example',
+      `verified:claude.ai|ip:${ip}`,
+    ]);
+    // A subdomain is another host.
+    expect(redirectHostKeys({ redirect_uris: ['https://evil.claude.ai/cb'] }, ip, verified)).toEqual(['host:evil.claude.ai']);
+  });
+  it('verifiedRedirectHosts takes the lowercase host of each http(s) entry', () => {
+    expect([
+      ...verifiedRedirectHosts([
+        'https://claude.ai/api/mcp/auth_callback',
+        'https://Claude.com:8443/api/mcp/auth_callback',
+        'https://claude.ai/other',
+        'com.example.app:/cb',
+        'not a url',
+      ]),
+    ]).toEqual(['claude.ai', 'claude.com']);
+    expect(verifiedRedirectHosts([]).size).toBe(0);
   });
   it('falls back to the IP when the body has no usable redirect URI', () => {
     for (const body of [undefined, {}, { redirect_uris: 'x' }, { redirect_uris: [1, 'not a url'] }]) {
