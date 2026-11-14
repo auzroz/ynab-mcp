@@ -435,6 +435,8 @@ export class YnabClient {
 
   // In-flight budget alias lookups, so concurrent callers share one request.
   private readonly aliasLookups = new Map<string, Promise<string>>();
+  private aliasLookupSeq = 0;
+  private readonly aliasAppliedSeq = new Map<string, number>();
 
   // The fan-out reservation of the current async call chain, if any.
   private readonly fanOut = new AsyncLocalStorage<FanOutReservation>();
@@ -547,8 +549,8 @@ export class YnabClient {
    * BUDGET_ALIAS_TTL_MS in the user's cache, so tool calls do not each cost a
    * request; a changed "last-used" budget is picked up within that time.
    *
-   * Writes pass `{ fresh: true }`: the cached entry is skipped (a lookup
-   * already in flight is still joined) and the answer replaces it, so a write
+   * Writes pass `{ fresh: true }`: the cached entry is skipped, a lookup
+   * already in flight is not joined (it may predate a switch) and the answer replaces it, so a write
    * never targets a budget that stopped being last-used since the last read.
    */
   async resolveBudgetId(budgetId?: string, options: { fresh?: boolean } = {}): Promise<string> {
@@ -561,10 +563,13 @@ export class YnabClient {
       if (cached !== undefined) return cached;
     }
 
-    // Concurrent callers in this client share one lookup.
+    // Concurrent reads in this client share one lookup. A fresh call never
+    // joins one: a lookup that started earlier could still answer with a budget
+    // that has stopped being last-used, and a write would go to it.
+    if (options.fresh === true) return this.lookUpBudgetAlias(requested, cacheKey, true);
     let pending = this.aliasLookups.get(requested);
     if (pending === undefined) {
-      pending = this.lookUpBudgetAlias(requested, cacheKey).finally(() => {
+      pending = this.lookUpBudgetAlias(requested, cacheKey, false).finally(() => {
         this.aliasLookups.delete(requested);
       });
       this.aliasLookups.set(requested, pending);
@@ -572,10 +577,13 @@ export class YnabClient {
     return pending;
   }
 
-  private async lookUpBudgetAlias(alias: BudgetIdSentinel, cacheKey: string): Promise<string> {
+  private async lookUpBudgetAlias(alias: BudgetIdSentinel, cacheKey: string, fresh: boolean): Promise<string> {
     // Same guard as the other caches: a write that finished while the lookup
     // was in flight keeps its result out of the cache.
     const generation = this.cache.generation();
+    // Lookups apply their result in start order: one that started earlier and
+    // finished later must not replace the answer of one that started after it.
+    const started = ++this.aliasLookupSeq;
     let id: string | undefined;
     try {
       // A knowledge value no budget has reached makes this a delta with no
@@ -587,7 +595,13 @@ export class YnabClient {
     }
     id ??= await this.fetchPlanId(alias, undefined);
     if (id === undefined) throw new YnabApiError('YNAB did not identify the budget', 'budget_not_found');
-    if (generation === this.cache.generation()) this.cache.set(cacheKey, id, BUDGET_ALIAS_TTL_MS);
+    const newest = this.aliasAppliedSeq.get(alias) ?? 0;
+    // A read's answer only fills a gap; a fresh one replaces what is there.
+    const mayStore = fresh || this.cache.get<string>(cacheKey) === undefined;
+    if (generation === this.cache.generation() && started > newest && mayStore) {
+      this.aliasAppliedSeq.set(alias, started);
+      this.cache.set(cacheKey, id, BUDGET_ALIAS_TTL_MS);
+    }
     return id;
   }
 

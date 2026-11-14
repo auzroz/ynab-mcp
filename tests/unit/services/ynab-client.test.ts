@@ -1256,7 +1256,7 @@ describe('budget alias resolution (#66)', () => {
     expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(2);
   });
 
-  it('fresh skips the cached entry, refreshes it, and still joins an in-flight lookup', async () => {
+  it('fresh skips the cached entry and refreshes it', async () => {
     const client = makeClient(true);
     asMock(mockApi.plans.getPlanById).mockResolvedValueOnce(planResponse(U1)).mockResolvedValueOnce(planResponse(U2));
 
@@ -1266,14 +1266,44 @@ describe('budget alias resolution (#66)', () => {
     await expect(client.resolveBudgetId()).resolves.toBe(U2);
     expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(2);
 
-    asMock(mockApi.plans.getPlanById).mockClear();
-    setResolve(mockApi.plans.getPlanById, planResponse(U1));
-    const both = await Promise.all([
-      client.resolveBudgetId('last-used', { fresh: true }),
-      client.resolveBudgetId('last-used', { fresh: true }),
-    ]);
-    expect(both).toEqual([U1, U1]);
-    expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(1);
+  });
+
+  it('a fresh call never joins an earlier lookup, so a write after a switch gets the new budget', async () => {
+    const client = makeClient(false);
+    let releaseRead: (v: unknown) => void = () => undefined;
+    asMock(mockApi.plans.getPlanById)
+      // The read's lookup: sent while U1 was last-used, answered late.
+      .mockImplementationOnce(() => new Promise((resolve) => (releaseRead = resolve)))
+      // The write's own lookup, after the user switched to U2.
+      .mockResolvedValueOnce(planResponse(U2));
+    setResolve(mockApi.accounts.createAccount, { data: { account: { id: 'a' } } });
+
+    const read = client.resolveBudgetId();
+    const writeBudget = await client.resolveBudgetId('last-used', { fresh: true });
+    expect(writeBudget).toBe(U2);
+    await client.createAccount(writeBudget, newAccount);
+    expect(asMock(mockApi.accounts.createAccount).mock.calls[0]?.[0]).toBe(U2);
+
+    // The stale read finishes last: it answers its caller, but must not
+    // replace the newer entry.
+    releaseRead(planResponse(U1));
+    await expect(read).resolves.toBe(U1);
+    await expect(client.resolveBudgetId()).resolves.toBe(U2);
+    expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(2);
+  });
+
+  it('an earlier fresh lookup that finishes late does not replace a later one', async () => {
+    const client = makeClient(true);
+    let releaseFirst: (v: unknown) => void = () => undefined;
+    asMock(mockApi.plans.getPlanById)
+      .mockImplementationOnce(() => new Promise((resolve) => (releaseFirst = resolve)))
+      .mockResolvedValueOnce(planResponse(U2));
+
+    const first = client.resolveBudgetId('last-used', { fresh: true });
+    await expect(client.resolveBudgetId('last-used', { fresh: true })).resolves.toBe(U2);
+    releaseFirst(planResponse(U1));
+    await expect(first).resolves.toBe(U1);
+    await expect(client.resolveBudgetId()).resolves.toBe(U2);
   });
 
   it('fresh costs no request for a UUID', async () => {
