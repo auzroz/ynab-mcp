@@ -829,6 +829,8 @@ export class PostgresStorage implements Storage, OAuthRowStore {
   async stageSignIn(signIn: StagedSignIn): Promise<boolean> {
     return this.refusable(async (client) => {
       await client.query(LOCK_ACCOUNT, [signIn.user.userId]);
+      // The grant's lock too, so a grant-only revocation waits for the staging and deletes its row.
+      await client.query(LOCK_FAMILY, [signIn.grantId]);
       const grant = await client.query<{ client_id: string | null }>(
         "SELECT client_id FROM oauth_rows WHERE key = $1 AND model = 'Grant' AND account_id = $2 FOR KEY SHARE",
         [plainRowKey('Grant', signIn.grantId), signIn.user.userId]
