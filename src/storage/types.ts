@@ -295,7 +295,7 @@ export interface AccountStore {
   deleteUserData(userId: string): Promise<void>;
 }
 
-export interface Storage {
+export interface Storage extends OAuthRowStore {
   init(): Promise<void>;
   close(): Promise<void>;
 

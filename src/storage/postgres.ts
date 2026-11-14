@@ -28,12 +28,29 @@ import type {
   StorageDriverOptions,
   SweepOptions,
   SweepResult,
+  OAuthRowStore,
+  OAuthRowWrite,
+  OAuthRowRecord,
+  OAuthModel,
+  StagedSignIn,
+  CodeSaveOutcome,
+  ConsumeOutcome,
 } from './types.js';
 import { resolveStorageTimeouts } from './timeouts.js';
 import { applyMigrations, MIGRATION_PLAN, type MigrationDeps, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 import { retentionPolicy, type RetentionPolicy } from '../auth/retention-defaults.js';
+import {
+  CONSUMABLE_MODELS,
+  GRANT_TOKEN_MODELS,
+  connectionsFromGrantRows,
+  plainRowKey,
+  signInPayload,
+  sortConnections,
+  userFromSignIn,
+  type GrantConnectionRow,
+} from './oauth-rows.js';
 import {
   connectionsFromRows,
   emptySweepCounts,
@@ -297,6 +314,75 @@ const FAMILY_LOCK_SPACE = 0x666d6c79; // "fmly"
 /** Takes the family lock (`$1` = family id) until the transaction ends. */
 export const LOCK_FAMILY = `SELECT pg_advisory_xact_lock(${FAMILY_LOCK_SPACE}, hashtext($1))`;
 
+/**
+ * First key of the two-key advisory lock that serializes an account's
+ * oidc-provider writes with its erasure (the second is the user id's hash).
+ * The order is: this lock, then the grants' {@link LOCK_FAMILY} locks (sorted
+ * when there are several), then the user row ({@link HOLD_USER}), then rows.
+ */
+const ACCOUNT_LOCK_SPACE = 0x61636374; // "acct"
+
+/** Takes the account lock (`$1` = user id) until the transaction ends. */
+export const LOCK_ACCOUNT = `SELECT pg_advisory_xact_lock(${ACCOUNT_LOCK_SPACE}, hashtext($1))`;
+
+/** One `oauth_rows` row as `pg` returns it (BIGINT columns are strings). */
+interface OAuthRowRow {
+  key: string;
+  model: string;
+  payload: string;
+  grant_id: string | null;
+  account_id: string | null;
+  client_id: string | null;
+  uid: string | null;
+  expires_at: string | number | null;
+  consumed_at: string | number | null;
+  created_at: string | number;
+  authorized_at: string | number | null;
+}
+
+function oauthRowFromRow(row: OAuthRowRow): OAuthRowRecord {
+  return {
+    key: row.key,
+    model: row.model as OAuthModel,
+    payload: row.payload,
+    grantId: row.grant_id ?? undefined,
+    accountId: row.account_id ?? undefined,
+    clientId: row.client_id ?? undefined,
+    uid: row.uid ?? undefined,
+    expiresAt: optionalMillis(row.expires_at),
+    consumedAt: optionalMillis(row.consumed_at),
+    createdAt: toMillis(row.created_at),
+    authorizedAt: optionalMillis(row.authorized_at),
+  };
+}
+
+/** The shared row upsert: an update keeps created_at, consumed_at and authorized_at. */
+const UPSERT_OAUTH_ROW = `INSERT INTO oauth_rows (key, model, payload, grant_id, account_id, client_id, uid, expires_at, created_at)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+  ON CONFLICT (key) DO UPDATE SET model = EXCLUDED.model, payload = EXCLUDED.payload,
+    grant_id = EXCLUDED.grant_id, account_id = EXCLUDED.account_id, client_id = EXCLUDED.client_id,
+    uid = EXCLUDED.uid, expires_at = EXCLUDED.expires_at`;
+
+const oauthRowParams = (row: OAuthRowWrite, createdAt: number): unknown[] => [
+  row.key,
+  row.model,
+  row.payload,
+  row.grantId ?? null,
+  row.accountId ?? null,
+  row.clientId ?? null,
+  row.uid ?? null,
+  row.expiresAt ?? null,
+  createdAt,
+];
+
+/** The grant row a grant-bound row names, for the same account and client, held against deletion. */
+const LIVE_GRANT_SQL = `SELECT 1 FROM oauth_rows WHERE key = $1 AND model = 'Grant' AND account_id = $2 AND client_id = $3 FOR KEY SHARE`;
+
+/** Thrown inside a transaction to roll it back and return `value` from {@link PostgresStorage.refusable}. */
+class Refusal<T> {
+  constructor(readonly value: T) {}
+}
+
 /** One-key session advisory lock held by a running {@link PostgresStorage.sweepExpired}. */
 export const SWEEP_LOCK_KEY = 0x73776570; // "swep"
 
@@ -426,7 +512,7 @@ function guardClient(client: PoolClient): PoolClient {
   return client;
 }
 
-export class PostgresStorage implements Storage {
+export class PostgresStorage implements Storage, OAuthRowStore {
   private pool: PgPool | undefined;
   private readonly retention: RetentionPolicy;
 
@@ -527,6 +613,7 @@ export class PostgresStorage implements Storage {
 
   async deleteUserData(userId: string): Promise<void> {
     await this.inTransaction(async (client) => {
+      await client.query(LOCK_ACCOUNT, [userId]);
       // The user's family locks, in sorted order (deleteUserData is the only
       // transaction that takes more than one), so a rotation, code exchange or
       // replay of a known family finishes first or runs after.
@@ -571,12 +658,29 @@ export class PostgresStorage implements Storage {
        WHERE t.user_id = $1 AND t.family_id IS NOT NULL AND ${issuedUnderUserSql('t')}`,
       [userId]
     );
-    return connectionsFromRows(res.rows, this.retention, Date.now());
+    const now = Date.now();
+    const grants = await this.db.query<GrantConnectionRow & QueryResultRow>(
+      `SELECT g.grant_id, g.client_id, g.payload AS grant_payload, g.created_at AS grant_created_at,
+              c.payload AS client_payload, t.created_at AS token_created_at, t.expires_at AS token_expires_at
+       FROM oauth_rows g
+       JOIN oauth_rows t ON t.grant_id = g.grant_id AND t.model IN ('AccessToken','RefreshToken')
+         AND t.consumed_at IS NULL AND t.expires_at >= $2
+       JOIN users u ON u.user_id = t.account_id AND t.created_at >= COALESCE(u.created_at, 0)
+       LEFT JOIN oauth_rows c ON c.model = 'Client' AND c.client_id = g.client_id
+       WHERE g.model = 'Grant' AND g.account_id = $1`,
+      [userId, now]
+    );
+    return sortConnections([
+      ...connectionsFromRows(res.rows, this.retention, now),
+      ...connectionsFromGrantRows(grants.rows),
+    ]);
   }
 
   async revokeUserFamily(userId: string, familyId: string): Promise<boolean> {
     // user_id is in every WHERE: another user's family is a no-op.
     return this.inTransaction(async (client) => {
+      // The account lock first, as every oidc-provider write takes it.
+      await client.query(LOCK_ACCOUNT, [userId]);
       await client.query(LOCK_FAMILY, [familyId]);
       const access = await client.query('DELETE FROM access_tokens WHERE family_id = $1 AND user_id = $2', [
         familyId,
@@ -591,12 +695,21 @@ export class PostgresStorage implements Storage {
          WHERE family_id = $1 AND user_id = $2 AND NOT revoked`,
         [familyId, userId]
       );
-      return (access.rowCount ?? 0) + (refresh.rowCount ?? 0) + (codes.rowCount ?? 0) > 0;
+      const oldRevoked = (access.rowCount ?? 0) + (refresh.rowCount ?? 0) + (codes.rowCount ?? 0) > 0;
+      // The library's grants: only the user's own grant is revoked (its lock is held above).
+      const owned = await client.query(
+        "SELECT 1 FROM oauth_rows WHERE key = $1 AND model = 'Grant' AND account_id = $2",
+        [plainRowKey('Grant', familyId), userId]
+      );
+      if ((owned.rowCount ?? 0) === 0) return oldRevoked;
+      const deleted = await client.query('DELETE FROM oauth_rows WHERE grant_id = $1', [familyId]);
+      return oldRevoked || (deleted.rowCount ?? 0) > 0;
     });
   }
 
   async deleteTokenFamiliesForClient(userId: string, clientId: string): Promise<number> {
     return this.inTransaction(async (client) => {
+      await client.query(LOCK_ACCOUNT, [userId]);
       const found = await client.query<{ family_id: string }>(
         `SELECT family_id FROM access_tokens WHERE user_id = $1 AND client_id = $2 AND family_id IS NOT NULL
          UNION SELECT family_id FROM refresh_tokens WHERE user_id = $1 AND client_id = $2 AND family_id IS NOT NULL
@@ -604,7 +717,15 @@ export class PostgresStorage implements Storage {
         [userId, clientId]
       );
       const families = found.rows.map((r) => r.family_id).sort();
-      for (const familyId of families) await client.query(LOCK_FAMILY, [familyId]);
+      const grantRows = await client.query<{ grant_id: string }>(
+        "SELECT grant_id FROM oauth_rows WHERE model = 'Grant' AND account_id = $1 AND client_id = $2 AND grant_id IS NOT NULL",
+        [userId, clientId]
+      );
+      const grants = grantRows.rows.map((r) => r.grant_id).sort();
+      for (const id of [...new Set([...families, ...grants])].sort()) await client.query(LOCK_FAMILY, [id]);
+      if (grants.length > 0) {
+        await client.query('DELETE FROM oauth_rows WHERE grant_id = ANY($1::text[])', [grants]);
+      }
       await client.query('DELETE FROM access_tokens WHERE user_id = $1 AND client_id = $2', [userId, clientId]);
       // A pre-0.4.0 refresh token has no family; each counts as one grant.
       const unfamilied = await client.query(
@@ -616,7 +737,185 @@ export class PostgresStorage implements Storage {
         'UPDATE consumed_auth_codes SET revoked = TRUE WHERE user_id = $1 AND client_id = $2 AND NOT revoked',
         [userId, clientId]
       );
-      return families.length + (unfamilied.rowCount ?? 0);
+      return families.length + (unfamilied.rowCount ?? 0) + grants.length;
+    });
+  }
+
+  // oidc-provider rows (OAuthRowStore, ADR-0002 D4). The lock order of every
+  // transaction here and in deleteUserData, revokeUserFamily and
+  // deleteTokenFamiliesForClient: LOCK_ACCOUNT, then LOCK_FAMILY per grant
+  // (sorted), then HOLD_USER, then rows. A grant-only revocation takes only
+  // LOCK_FAMILY(grant).
+
+  /** Run `fn` in a transaction; a thrown {@link Refusal} rolls it back and returns its value. */
+  private async refusable<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    try {
+      return await this.inTransaction(fn);
+    } catch (err) {
+      if (err instanceof Refusal) return err.value as T;
+      throw err;
+    }
+  }
+
+  async upsertOAuthRow(row: OAuthRowWrite): Promise<void> {
+    if (GRANT_TOKEN_MODELS.has(row.model) || row.model === 'SignIn') {
+      throw new Error(`upsertOAuthRow cannot write a ${row.model} row`);
+    }
+    await this.db.query(UPSERT_OAUTH_ROW, oauthRowParams(row, Date.now()));
+  }
+
+  /** Whether the grant row a grant-bound row names exists for its account and client (held FOR KEY SHARE). */
+  private async liveGrantFor(client: PoolClient, row: OAuthRowWrite): Promise<boolean> {
+    if (row.grantId === undefined || row.accountId === undefined || row.clientId === undefined) return false;
+    const res = await client.query(LIVE_GRANT_SQL, [plainRowKey('Grant', row.grantId), row.accountId, row.clientId]);
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async saveGrantToken(row: OAuthRowWrite): Promise<boolean> {
+    if (row.model !== 'AccessToken' && row.model !== 'RefreshToken') {
+      throw new Error(`saveGrantToken cannot write a ${row.model} row`);
+    }
+    if (row.accountId === undefined || row.grantId === undefined) return false;
+    const accountId = row.accountId;
+    const grantId = row.grantId;
+    return this.refusable(async (client) => {
+      await client.query(LOCK_ACCOUNT, [accountId]);
+      await client.query(LOCK_FAMILY, [grantId]);
+      const user = await client.query(HOLD_USER, [accountId]);
+      if (user.rowCount === 0) throw new Refusal(false);
+      if (!(await this.liveGrantFor(client, row))) throw new Refusal(false);
+      await client.query(UPSERT_OAUTH_ROW, oauthRowParams(row, Date.now()));
+      return true;
+    });
+  }
+
+  async saveAuthorizationCode(row: OAuthRowWrite): Promise<CodeSaveOutcome> {
+    if (row.model !== 'AuthorizationCode') throw new Error(`saveAuthorizationCode cannot write a ${row.model} row`);
+    if (row.accountId === undefined || row.grantId === undefined) return 'grant-gone';
+    const accountId = row.accountId;
+    const grantId = row.grantId;
+    return this.refusable<CodeSaveOutcome>(async (client) => {
+      const now = Date.now();
+      await client.query(LOCK_ACCOUNT, [accountId]);
+      await client.query(LOCK_FAMILY, [grantId]);
+      // An UPDATE, not a bare lock: a sweep DELETE already waiting on this row
+      // re-checks its predicate against the new version. A refusal below rolls
+      // the stamp back.
+      const stamped =
+        row.clientId === undefined
+          ? undefined
+          : await client.query(
+              "UPDATE oauth_rows SET authorized_at = $2 WHERE key = $1 AND model = 'Client' RETURNING key",
+              [plainRowKey('Client', row.clientId), now]
+            );
+      if (!stamped || stamped.rowCount === 0) throw new Refusal<CodeSaveOutcome>('client-gone');
+      if (!(await this.liveGrantFor(client, row))) throw new Refusal<CodeSaveOutcome>('grant-gone');
+      const signInKey = plainRowKey('SignIn', grantId);
+      const signIn = await client.query<{ payload: string }>(
+        `SELECT payload FROM oauth_rows
+         WHERE key = $1 AND model = 'SignIn' AND account_id = $2 AND expires_at >= $3 FOR UPDATE`,
+        [signInKey, accountId, now]
+      );
+      const staged = signIn.rows[0];
+      const user = staged && userFromSignIn(accountId, staged.payload);
+      if (!user) throw new Refusal<CodeSaveOutcome>('no-sign-in');
+      await applyStagedUser(client, user, now);
+      await client.query('DELETE FROM oauth_rows WHERE key = $1', [signInKey]);
+      await client.query(UPSERT_OAUTH_ROW, oauthRowParams(row, now));
+      return 'saved';
+    });
+  }
+
+  async stageSignIn(signIn: StagedSignIn): Promise<boolean> {
+    return this.refusable(async (client) => {
+      await client.query(LOCK_ACCOUNT, [signIn.user.userId]);
+      const grant = await client.query<{ client_id: string | null }>(
+        "SELECT client_id FROM oauth_rows WHERE key = $1 AND model = 'Grant' AND account_id = $2 FOR KEY SHARE",
+        [plainRowKey('Grant', signIn.grantId), signIn.user.userId]
+      );
+      if (grant.rowCount === 0) throw new Refusal(false);
+      const key = plainRowKey('SignIn', signIn.grantId);
+      await client.query('DELETE FROM oauth_rows WHERE key = $1', [key]);
+      await client.query(
+        UPSERT_OAUTH_ROW,
+        oauthRowParams(
+          {
+            key,
+            model: 'SignIn',
+            payload: signInPayload(signIn.user),
+            grantId: signIn.grantId,
+            accountId: signIn.user.userId,
+            clientId: grant.rows[0]?.client_id ?? undefined,
+            uid: undefined,
+            expiresAt: signIn.expiresAt,
+          },
+          Date.now()
+        )
+      );
+      return true;
+    });
+  }
+
+  async findOAuthRow(key: string): Promise<OAuthRowRecord | undefined> {
+    const res = await this.db.query<OAuthRowRow & QueryResultRow>(
+      `SELECT r.* FROM oauth_rows r WHERE r.key = $1
+         AND (r.model NOT IN ('AccessToken','RefreshToken','AuthorizationCode')
+           OR (EXISTS (SELECT 1 FROM oauth_rows g WHERE g.grant_id = r.grant_id AND g.model = 'Grant')
+               AND EXISTS (SELECT 1 FROM users u WHERE u.user_id = r.account_id
+                           AND r.created_at >= COALESCE(u.created_at, 0))))`,
+      [key]
+    );
+    const row = res.rows[0];
+    return row && oauthRowFromRow(row);
+  }
+
+  async findOAuthRowByUid(uid: string): Promise<OAuthRowRecord | undefined> {
+    const res = await this.db.query<OAuthRowRow & QueryResultRow>(
+      "SELECT * FROM oauth_rows WHERE uid = $1 AND model = 'Session' ORDER BY created_at DESC LIMIT 1",
+      [uid]
+    );
+    const row = res.rows[0];
+    return row && oauthRowFromRow(row);
+  }
+
+  async consumeOAuthRow(key: string): Promise<ConsumeOutcome> {
+    return this.inTransaction<ConsumeOutcome>(async (client) => {
+      // Compare-and-set: under READ COMMITTED a concurrent second UPDATE waits
+      // for this row's lock, rechecks consumed_at IS NULL against the committed
+      // version and matches nothing.
+      const won = await client.query(
+        `UPDATE oauth_rows SET consumed_at = $2
+         WHERE key = $1 AND consumed_at IS NULL AND model IN ('RefreshToken','AuthorizationCode') RETURNING key`,
+        [key, Date.now()]
+      );
+      if (won.rowCount === 1) return 'consumed';
+      const found = await client.query<{ model: OAuthModel; grant_id: string | null }>(
+        'SELECT model, grant_id FROM oauth_rows WHERE key = $1',
+        [key]
+      );
+      const row = found.rows[0];
+      if (!row) return 'missing';
+      if (!CONSUMABLE_MODELS.has(row.model)) throw new Error(`consumeOAuthRow cannot consume a ${row.model} row`);
+      // Lost the compare-and-set: someone consumed it first. That is reuse.
+      if (row.grant_id === null) {
+        await client.query('DELETE FROM oauth_rows WHERE key = $1', [key]);
+      } else {
+        await client.query(LOCK_FAMILY, [row.grant_id]);
+        await client.query('DELETE FROM oauth_rows WHERE grant_id = $1', [row.grant_id]);
+      }
+      return 'replayed';
+    });
+  }
+
+  async destroyOAuthRow(key: string): Promise<void> {
+    await this.db.query('DELETE FROM oauth_rows WHERE key = $1', [key]);
+  }
+
+  async revokeOAuthGrant(grantId: string): Promise<number> {
+    return this.inTransaction(async (client) => {
+      await client.query(LOCK_FAMILY, [grantId]);
+      const res = await client.query('DELETE FROM oauth_rows WHERE grant_id = $1', [grantId]);
+      return res.rowCount ?? 0;
     });
   }
 

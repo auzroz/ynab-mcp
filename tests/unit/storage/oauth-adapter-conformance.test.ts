@@ -39,7 +39,7 @@ import type { OAuthRowRecord, OAuthRowStore, Storage } from '../../../src/storag
  * Which drivers implement OAuthRowStore. #47-1's driver step sets sqlite and
  * postgres to true when SqliteStorage and PostgresStorage implement it.
  */
-const ADAPTER_READY: Record<DriverKind, boolean> = { memory: true, sqlite: false, postgres: false };
+const ADAPTER_READY: Record<DriverKind, boolean> = { memory: true, sqlite: true, postgres: true };
 
 const R = 'https://mcp.example.com/mcp';
 const DAY = 86_400_000;
