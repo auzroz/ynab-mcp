@@ -4,8 +4,10 @@
  * clients with a plain-http redirect URI.
  *
  * A `client_id` that is missing, empty, longer than MAX_CLIENT_ID_LENGTH or
- * repeated passes through, unlooked-up, for the handler's 400 JSON; so does an
- * unknown client. For a known client:
+ * repeated is answered here, never looked up: the handler would pass any
+ * string to the client store, so it never gets the request. The answer is the
+ * handler's own 400 JSON (HANDLER_CLIENT_PARAMS). An unknown client goes on to
+ * the handler's 400. For a known client:
  *
  *   1. **Grandfathered clients.** A stored client is checked against today's
  *      registration rules (client-metadata.ts checkStoredClient). One with a
@@ -48,6 +50,23 @@ import {
 export const MAX_CLIENT_ID_LENGTH = 255;
 
 const ClientIdSchema = z.string().min(1).max(MAX_CLIENT_ID_LENGTH);
+
+/**
+ * The first check server-legacy 2.4.0's authorization handler makes
+ * (ClientAuthorizationParamsSchema), copied so this stage answers a client_id
+ * it refuses exactly as the handler would: 400 `invalid_request` with the same
+ * description when the parameters fail it, and otherwise (an empty or overlong
+ * string the handler would look up and not find) 400 `invalid_client`,
+ * "Invalid client_id". tests/unit/auth/authorize-validation.test.ts compares
+ * both with the handler's own answers.
+ */
+const HANDLER_CLIENT_PARAMS = z.object({
+  client_id: z.string(),
+  redirect_uri: z
+    .string()
+    .optional()
+    .refine((value) => value === undefined || URL.canParse(value), { message: 'redirect_uri must be a valid URL' }),
+});
 
 /** The longest `state` accepted (#55). */
 export const MAX_STATE_LENGTH = 512;
@@ -156,9 +175,18 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
     }
     const params = paramsOf(req);
     const parsedClientId = ClientIdSchema.safeParse(params?.['client_id']);
-    // Missing, empty, overlong or repeated: the handler's 400, with no lookup here.
+    // Missing, empty, overlong or repeated: the handler's 400, from here, with
+    // no lookup and without the handler (which would look up any string).
     if (params === undefined || !parsedClientId.success) {
-      next();
+      const asHandler = HANDLER_CLIENT_PARAMS.safeParse(req.method === 'POST' ? req.body : req.query);
+      res.setHeader('Cache-Control', 'no-store');
+      res
+        .status(400)
+        .json(
+          asHandler.success
+            ? { error: 'invalid_client', error_description: 'Invalid client_id' }
+            : { error: 'invalid_request', error_description: asHandler.error.message }
+        );
       return;
     }
     const clientId = parsedClientId.data;

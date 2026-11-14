@@ -81,7 +81,8 @@ const PROBES: ReadonlyArray<{ route: string; name: string; send: (app: Express) 
   { route: '/.well-known/oauth-protected-resource/mcp', name: 'GET PRM (path-aware)', send: (app) => request(app).get('/.well-known/oauth-protected-resource/mcp') },
   { route: '/.well-known/oauth-protected-resource', name: 'GET PRM (root alias)', send: (app) => request(app).get('/.well-known/oauth-protected-resource') },
   { route: '/.well-known/oauth-authorization-server', name: 'GET AS metadata', send: (app) => request(app).get('/.well-known/oauth-authorization-server') },
-  { route: '/authorize', name: 'GET /authorize', send: (app) => request(app).get('/authorize') },
+  // A client_id the stages accept (and the store doesn't know), so the handler answers.
+  { route: '/authorize', name: 'GET /authorize', send: (app) => request(app).get('/authorize').query({ client_id: 'unknown' }) },
   { route: '/token', name: 'POST /token', send: (app) => request(app).post('/token').type('form').send({ grant_type: 'authorization_code' }) },
   {
     route: '/register',

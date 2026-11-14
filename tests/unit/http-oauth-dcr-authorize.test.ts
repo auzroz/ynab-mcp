@@ -31,7 +31,7 @@ import { createHttpApp } from '../../src/http.js';
 import { McpOAuthProvider } from '../../src/auth/mcp-provider.js';
 import { MemoryStorage } from '../../src/storage/memory.js';
 import { Encryptor } from '../../src/crypto.js';
-import { MAX_SCOPES, MAX_STATE_LENGTH } from '../../src/auth/authorize-validation.js';
+import { MAX_CLIENT_ID_LENGTH, MAX_SCOPES, MAX_STATE_LENGTH } from '../../src/auth/authorize-validation.js';
 import { PAGE_CSP } from '../../src/auth/auth-pages.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_HASHER } from './helpers/token-hasher.js';
@@ -307,6 +307,59 @@ describe('/authorize bounds (55a)', () => {
     );
     expect(noState.searchParams.has('state')).toBe(false);
     expectErrorRedirect(await authorize(clientId, CALLBACK, { scope: 'a b c d e f' }, verified), CALLBACK, 'invalid_scope');
+  });
+
+  describe('client_id: an invalid one never reaches the client store (GET and POST)', () => {
+    const overlong = 'a'.repeat(MAX_CLIENT_ID_LENGTH + 1);
+    // The rest of a valid authorization request, so only client_id is wrong.
+    const rest = { response_type: 'code', redirect_uri: CALLBACK, code_challenge: CHALLENGE, code_challenge_method: 'S256' };
+    const qs = new URLSearchParams(rest).toString();
+    const SHAPES: ReadonlyArray<{ name: string; error: string; send: () => request.Test }> = [
+      { name: 'GET missing', error: 'invalid_request', send: () => request(app).get(`/authorize?${qs}`) },
+      { name: 'GET empty', error: 'invalid_client', send: () => request(app).get(`/authorize?${qs}&client_id=`) },
+      { name: 'GET overlong', error: 'invalid_client', send: () => request(app).get(`/authorize?${qs}&client_id=${overlong}`) },
+      { name: 'GET repeated', error: 'invalid_request', send: () => request(app).get(`/authorize?${qs}&client_id=a&client_id=b`) },
+      { name: 'POST missing', error: 'invalid_request', send: () => request(app).post('/authorize').type('form').send(rest) },
+      { name: 'POST empty', error: 'invalid_client', send: () => request(app).post('/authorize').type('form').send({ ...rest, client_id: '' }) },
+      {
+        name: 'POST overlong',
+        error: 'invalid_client',
+        send: () => request(app).post('/authorize').type('form').send({ ...rest, client_id: overlong }),
+      },
+      {
+        name: 'POST repeated',
+        error: 'invalid_request',
+        send: () => request(app).post('/authorize').type('form').send(`${qs}&client_id=a&client_id=b`),
+      },
+    ];
+
+    it.each(SHAPES)('$name: the handler-shaped 400, with no getClient call', async ({ error, send }) => {
+      const lookup = vi.spyOn(storage(), 'getClient');
+      const res = await send();
+      expect(res.status).toBe(400);
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(res.headers['location']).toBeUndefined();
+      expect(res.body.error).toBe(error);
+      if (error === 'invalid_client') expect(res.body.error_description).toBe('Invalid client_id');
+      expect(lookup).not.toHaveBeenCalled();
+    });
+
+    it('a valid client_id is still looked up as before: once by the stage, once by the handler', async () => {
+      const clientId = await register([CALLBACK]);
+      const lookup = vi.spyOn(storage(), 'getClient');
+      expect((await authorize(clientId, CALLBACK)).status).toBe(200);
+      expect(lookup.mock.calls).toEqual([[clientId], [clientId]]);
+      lookup.mockClear();
+      const post = await request(app).post('/authorize').type('form').send(authorizeQuery(clientId, CALLBACK));
+      expect(post.status).toBe(200);
+      expect(lookup.mock.calls).toEqual([[clientId], [clientId]]);
+      lookup.mockClear();
+      const id = 'b'.repeat(MAX_CLIENT_ID_LENGTH);
+      const unknown = await authorize(id, CALLBACK);
+      expect(unknown.status).toBe(400);
+      expect(unknown.body).toEqual({ error: 'invalid_client', error_description: 'Invalid client_id' });
+      expect(lookup.mock.calls).toEqual([[id], [id]]);
+    });
   });
 
   it('a storage failure looking up the client is a generic 500, never a redirect', async () => {
