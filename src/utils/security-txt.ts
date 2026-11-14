@@ -58,7 +58,7 @@ export function parseSecurityContacts(raw: string | undefined, varName = 'SECURI
       // RFC 6068: a reserved character in the address must be percent-encoded, or `?` and `#`
       // would start the URI's header fields and fragment instead of staying part of the recipient.
       const at = item.lastIndexOf('@');
-      const local = item.slice(0, at).replace(/[%?#&=/]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+      const local = encodeURIComponent(item.slice(0, at));
       return `mailto:${local}${item.slice(at)}`;
     }
     let url: URL;

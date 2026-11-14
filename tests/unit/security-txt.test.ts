@@ -32,7 +32,10 @@ describe('parseSecurityContacts', () => {
     expect(parseSecurityContacts('sec?ops@example.com')).toEqual(['mailto:sec%3Fops@example.com']);
     expect(parseSecurityContacts('a#b@example.com')).toEqual(['mailto:a%23b@example.com']);
     expect(parseSecurityContacts('100%@example.com')).toEqual(['mailto:100%25@example.com']);
-    expect(parseSecurityContacts('first+tag@example.com')).toEqual(['mailto:first+tag@example.com']);
+    expect(parseSecurityContacts('first+tag@example.com')).toEqual(['mailto:first%2Btag@example.com']);
+    expect(parseSecurityContacts('a^b@example.com')).toEqual(['mailto:a%5Eb@example.com']);
+    expect(parseSecurityContacts('a|b@example.com')).toEqual(['mailto:a%7Cb@example.com']);
+    expect(parseSecurityContacts('plain.name@example.com')).toEqual(['mailto:plain.name@example.com']);
   });
   it('refuses a control character or line break anywhere, without echoing the value', () => {
     for (const bad of [
