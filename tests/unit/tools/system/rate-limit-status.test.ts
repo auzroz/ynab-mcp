@@ -56,6 +56,8 @@ describe('handleRateLimitStatus', () => {
     const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
     expect(parsed.upstream).toEqual({ circuit: 'open', consecutive_failures: 20, retry_after_seconds: 13 });
     expect(parsed.cache).toEqual({ bytes: 1024, max_bytes: 8_388_608 });
+    expect(parsed.timing.can_make_request_now).toBe(false);
+    expect(parsed.timing.wait_time_seconds).toBe(13);
   });
 
   it('reports warning status between 50% and 80% usage', async () => {

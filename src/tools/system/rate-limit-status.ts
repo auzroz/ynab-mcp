@@ -48,7 +48,8 @@ export async function handleRateLimitStatus(
   const upstream = client.getUpstreamStatus();
 
   // Calculate human-readable times
-  const waitTimeSeconds = Math.ceil(status.waitTimeMs / 1000);
+  const circuitRetrySeconds = upstream.circuit ? Math.ceil(upstream.circuit.retryAfterMs / 1000) : 0;
+  const waitTimeSeconds = Math.max(Math.ceil(status.waitTimeMs / 1000), circuitRetrySeconds);
   const resetTimeMinutes = Math.ceil(status.resetTimeMs / 60000);
 
   // Determine status level
@@ -110,7 +111,7 @@ export async function handleRateLimitStatus(
         ? { bytes: upstream.cache.bytes, max_bytes: upstream.cache.maxBytes }
         : null,
       timing: {
-        can_make_request_now: status.canMakeRequest,
+        can_make_request_now: status.canMakeRequest && upstream.circuit?.state !== 'open',
         wait_time_seconds: waitTimeSeconds,
         full_reset_minutes: resetTimeMinutes,
       },

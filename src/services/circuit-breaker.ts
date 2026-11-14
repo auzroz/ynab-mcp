@@ -1,8 +1,8 @@
 /**
  * Circuit breaker for one user's YNAB traffic (#58).
  *
- * After `threshold` consecutive failures (5xx responses or timeouts) with the
- * first of them less than `windowMs` old, the breaker opens and every request
+ * After `threshold` consecutive failures (5xx responses or timeouts), all within
+ * the last `windowMs` (each failure expires on its own), the breaker opens and every request
  * fails fast with a CircuitOpenError for `openMs`, so a YNAB outage is not
  * answered with a full timeout per request (each of which would hold an
  * in-flight slot, ADR-0001 D5). When that time is over it half-opens: one
@@ -46,8 +46,8 @@ export class CircuitBreaker {
   private readonly windowMs: number;
   private readonly openMs: number;
   private readonly now: () => number;
-  private failures = 0;
-  private firstFailureAt = 0;
+  // Times of the current streak's failures, oldest first (at most `threshold`).
+  private failureTimes: number[] = [];
   /** 0 while closed; otherwise when the open period ends (half-open afterwards). */
   private openUntil = 0;
   private probing = false;
@@ -98,7 +98,7 @@ export class CircuitBreaker {
     const now = this.now();
     return {
       state: this.state(),
-      consecutiveFailures: this.failures,
+      consecutiveFailures: this.failureTimes.filter((t) => now - t <= this.windowMs).length,
       retryAfterMs: this.openUntil > now ? this.openUntil - now : 0,
       trips: this.trips,
     };
@@ -107,8 +107,7 @@ export class CircuitBreaker {
   private onSuccess(probe: boolean): void {
     // A request admitted before the breaker opened says nothing about now.
     if (this.openUntil !== 0 && !probe) return;
-    this.failures = 0;
-    this.firstFailureAt = 0;
+    this.failureTimes = [];
     this.openUntil = 0;
     this.probing = false;
   }
@@ -121,14 +120,15 @@ export class CircuitBreaker {
       return;
     }
     if (this.openUntil !== 0) return;
-    // A streak whose first failure is older than the window starts over.
-    if (this.failures > 0 && now - this.firstFailureAt > this.windowMs) this.failures = 0;
-    if (this.failures === 0) this.firstFailureAt = now;
-    this.failures++;
-    if (this.failures >= this.threshold) this.open(now);
+    // Failures expire one by one: only those older than the window drop out,
+    // so a burst that straddles the window boundary still counts.
+    this.failureTimes = this.failureTimes.filter((t) => now - t <= this.windowMs);
+    this.failureTimes.push(now);
+    if (this.failureTimes.length >= this.threshold) this.open(now);
   }
 
   private open(now: number): void {
+    this.failureTimes = [];
     this.openUntil = now + this.openMs;
     this.trips++;
   }
