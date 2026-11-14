@@ -54,7 +54,13 @@ export function parseSecurityContacts(raw: string | undefined, varName = 'SECURI
   }
   return items.map((item) => {
     assertSingleLine(item, varName);
-    if (EMAIL.test(item)) return `mailto:${item}`;
+    if (EMAIL.test(item)) {
+      // RFC 6068: a reserved character in the address must be percent-encoded, or `?` and `#`
+      // would start the URI's header fields and fragment instead of staying part of the recipient.
+      const at = item.lastIndexOf('@');
+      const local = item.slice(0, at).replace(/[%?#&=/]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+      return `mailto:${local}${item.slice(at)}`;
+    }
     let url: URL;
     try {
       url = new URL(item);

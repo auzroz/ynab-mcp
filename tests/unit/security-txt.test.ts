@@ -28,6 +28,12 @@ describe('parseSecurityContacts', () => {
       parseSecurityContacts('mailto:sec@example.com, https://example.com/report, tel:+1-201-555-0123')
     ).toEqual(['mailto:sec@example.com', 'https://example.com/report', 'tel:+1-201-555-0123']);
   });
+  it('percent-encodes reserved characters in the local part of an email', () => {
+    expect(parseSecurityContacts('sec?ops@example.com')).toEqual(['mailto:sec%3Fops@example.com']);
+    expect(parseSecurityContacts('a#b@example.com')).toEqual(['mailto:a%23b@example.com']);
+    expect(parseSecurityContacts('100%@example.com')).toEqual(['mailto:100%25@example.com']);
+    expect(parseSecurityContacts('first+tag@example.com')).toEqual(['mailto:first+tag@example.com']);
+  });
   it('refuses a control character or line break anywhere, without echoing the value', () => {
     for (const bad of [
       'a@example.com\nExpires: 2099-01-01T00:00:00Z',
@@ -121,6 +127,16 @@ describe('GET /.well-known/security.txt', () => {
     expect(res.text).toContain('Expires: 2027-05-12T12:34:56Z\n');
     expect(res.text).toContain('Policy: https://example.com/policy\n');
     expect(res.text).toContain('Canonical: https://mcp.example.com/.well-known/security.txt\n');
+  });
+
+  it('builds Canonical from the origin, so a query on PUBLIC_URL cannot swallow the path', async () => {
+    const { app } = await buildHttpApp(
+      config({ securityContacts: ['mailto:sec@example.com'], publicUrl: 'https://mcp.example.com?deployment=blue' }),
+      { routes: [securityTxtRoute(() => NOW)] }
+    );
+    const res = await request(app).get('/.well-known/security.txt');
+    expect(res.text).toContain('Canonical: https://mcp.example.com/.well-known/security.txt\n');
+    expect(res.text).not.toContain('deployment');
   });
 
   it('is registered by default and computes Expires from the current time', async () => {

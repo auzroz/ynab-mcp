@@ -17,6 +17,16 @@ export const SECURITY_TXT_PATH = '/.well-known/security.txt';
 
 type Settings = Pick<HttpConfig, 'securityContacts' | 'securityPolicyUrl' | 'publicUrl'>;
 
+/**
+ * Where the file is served: PUBLIC_URL's origin with the well-known path. The
+ * URL's own path and query are dropped, so a `?x=y` on PUBLIC_URL cannot end
+ * up in front of the path. (The route is served at the root, so a PUBLIC_URL
+ * with a path prefix is not part of the retrieval URL either.)
+ */
+export function canonicalUrl(publicUrl: string): string {
+  return new URL(SECURITY_TXT_PATH, new URL(publicUrl).origin).href;
+}
+
 /** The route extension; `clock` is only for tests. */
 export function securityTxtRoute(clock: () => Date = () => new Date()): RouteExtension {
   return {
@@ -24,7 +34,7 @@ export function securityTxtRoute(clock: () => Date = () => new Date()): RouteExt
     mount(router, { config }) {
       const { securityContacts, securityPolicyUrl, publicUrl } = config as Settings;
       if (securityContacts.length === 0) return;
-      const canonical = publicUrl ? `${publicUrl}${SECURITY_TXT_PATH}` : undefined;
+      const canonical = publicUrl ? canonicalUrl(publicUrl) : undefined;
       router.get(SECURITY_TXT_PATH, (_req: Request, res: Response) => {
         res
           .status(200)
