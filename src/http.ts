@@ -42,6 +42,7 @@ import { sanitizeErrorMessage } from './utils/sanitize.js';
 import { createServerForRequest, type RequestContext, type UserContext } from './server.js';
 import { UserRegistry, headerUserKey } from './services/user-registry.js';
 import { InflightLimiter, RequestLifetime } from './services/inflight-limiter.js';
+import { OUTBOUND_TIMEOUT_MS } from './services/outbound.js';
 import type { HttpConfig } from './config/environment.js';
 import { deprecatedSessionSettingsWarning } from './config/http/limits.js';
 import { Encryptor } from './crypto.js';
@@ -253,6 +254,9 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     const ynab = {
       clientId: config.oauthClientId as string,
       clientSecret: config.oauthClientSecret as string,
+      // No YNAB call outlives the request ceiling (a refresh is shared by a
+      // user's requests, so it is bounded by the setting, not one request's deadline).
+      timeoutMs: Math.min(OUTBOUND_TIMEOUT_MS, config.requestTimeoutMs),
     };
     oauth = {
       as: mountAuthorizationServer(app, {

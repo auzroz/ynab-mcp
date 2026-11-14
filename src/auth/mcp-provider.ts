@@ -486,7 +486,7 @@ ${offerWrite ? `<a class="btn" href="${htmlEscape(rwLink)}"><strong>Read &amp; w
         code,
         redirectUri: this.callbackUrl,
       });
-      const userId = await getYnabUserId(tokens.accessToken, this.opts.ynab.endpoints);
+      const userId = await getYnabUserId(tokens.accessToken, this.opts.ynab.endpoints, this.opts.ynab.timeoutMs);
 
       // A callback that is already late changes nothing: not the user's stored
       // grant (a failed authorization must not narrow it), and not the code.

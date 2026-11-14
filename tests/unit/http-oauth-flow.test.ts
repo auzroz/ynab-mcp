@@ -369,7 +369,7 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
 
     // Register, authorize (PKCE S256, resource), consent, YNAB, and exchange the code.
     const grant = await authorize('read-write', 'read-only read-write');
-    expect(vi.mocked(getYnabUserId)).toHaveBeenCalledWith('ynab-access-0', undefined);
+    expect(vi.mocked(getYnabUserId)).toHaveBeenCalledWith('ynab-access-0', undefined, 10_000);
     const tokens = await exchange(grant);
     expect(tokens.scope).toBe('read-only read-write');
 
