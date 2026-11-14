@@ -291,7 +291,7 @@ describe('McpOAuthProvider.handleYnabCallback', () => {
       { clientId: 'cid', clientSecret: 'sec' },
       { code: 'ynabcode', redirectUri: 'https://mcp.example.com/oauth/ynab/callback' }
     );
-    expect(getYnabUserIdMock).toHaveBeenCalledWith('ya', undefined);
+    expect(getYnabUserIdMock).toHaveBeenCalledWith('ya', undefined, undefined);
   });
 
   it('records the granted scope from the read-only consent choice', async () => {

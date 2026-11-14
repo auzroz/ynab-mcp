@@ -64,9 +64,10 @@ describe('handleImportTransactions', () => {
     expect(parsed.transaction_ids).toEqual([]);
   });
 
-  it('still validates and resolves budget_id', async () => {
+  it('still validates budget_id but resolves nothing, so it costs no request', async () => {
     await handleImportTransactions({ budget_id: 'custom-budget' }, mockClient as never);
+    expect(mockClient.resolveBudgetId).not.toHaveBeenCalled();
 
-    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
+    await expect(handleImportTransactions({ budget_id: 'x'.repeat(65) }, mockClient as never)).rejects.toThrow();
   });
 });

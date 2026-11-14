@@ -49,21 +49,29 @@ Set these environment variables (see `.env.example`):
 | `MCP_RESOURCE_URL` | no | Absolute URL of the MCP endpoint (the OAuth resource/audience). Default `PUBLIC_URL` + `/mcp`. Must be https (http only for `localhost`, `127.0.0.1`, `[::1]`), no fragment |
 | `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | no | Comma-separated Host / Origin allowlists. Explicit values **replace** the derived defaults. Defaults: host and origin of `PUBLIC_URL`, plus `localhost`, `127.0.0.1`, `[::1]` (bare and with `:PORT`) when `PUBLIC_URL` is unset or loopback |
 | `ENABLE_DNS_REBINDING_PROTECTION` | no | Host/Origin validation, **on by default** (previously off; a breaking default in 0.4.0). `false` disables it entirely. **Unsafe**: see "Host and Origin validation" |
-| `MCP_MAX_SESSIONS` | no | Global cap on concurrent MCP sessions (integer >= 1, default `100`). At the cap an `initialize` is refused with `503` and `Retry-After`. See "Sessions" |
-| `MCP_MAX_SESSIONS_PER_USER` | no | Cap on one user's concurrent sessions (integer >= 1 and at most `MCP_MAX_SESSIONS`, default `10` or `MCP_MAX_SESSIONS` if smaller). Past it the user's least recently used session is closed to make room. Set it below `MCP_MAX_SESSIONS` so one user can't take every slot. See "Sessions" |
-| `MCP_SESSION_IDLE_TIMEOUT_MS` | no | Idle time before a session is closed (integer >= 1, default `1800000`, 30 min). See "Sessions" |
+| `MCP_MAX_INFLIGHT_PER_USER` | no | Requests one user can have in flight at `/mcp` (integer 1-64, default `8`). Past it: `429` with `Retry-After: 1`. See "Requests, limits and timeouts" |
+| `MCP_MAX_INFLIGHT_PER_CLIENT` | no | Requests one client of a user can have in flight, OAuth mode only (integer 1-64 and at most `MCP_MAX_INFLIGHT_PER_USER`, default `4`, or the per-user cap if smaller). See "Requests, limits and timeouts" |
+| `MCP_MAX_INFLIGHT` | no | Requests in flight across the server (integer 1-1024 and at least `MCP_MAX_INFLIGHT_PER_USER`, default `64`). See "Requests, limits and timeouts" |
+| `MCP_REQUEST_TIMEOUT_MS` | no | Longest a `/mcp` request runs (integer 5000-300000, default `60000`). See "Requests, limits and timeouts" |
+| `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` / `MCP_SESSION_IDLE_TIMEOUT_MS` | no | **Deprecated, no effect** since 0.5.0 (`/mcp` is stateless). Still parsed, so a malformed value refuses to start; a set value logs a warning once at startup. Removed in 0.6 |
 | `RATE_LIMIT_MAX_WAIT_MS` | no | Longest a request waits for a per-user YNAB rate-limit token (integer 0-60000, default `2000`). `0` never waits. Past that, or when another request is already waiting, the tool returns `rate_limited` with `retry_after_seconds` at once, so a burst can't pile up behind the limiter |
+| `TRUST_PROXY` | if behind a reverse proxy | Number of proxies between the client and this server whose `X-Forwarded-For` to trust (integer 0-10, default `0`; e.g. `1` behind a single Traefik/Caddy/nginx). Too low and every client shares one rate-limit bucket, so one client can lock out the others; too high and clients can spoof their address. Set it only when the app is reachable solely through the proxy. See "Client addresses and rate limits" |
+| `TRUST_CF_CONNECTING_IP` | no | `true` to take the client address from `CF-Connecting-IP` (default `false`). Separate from `TRUST_PROXY`; turn it on only when the server is reachable solely through Cloudflare. See "Client addresses and rate limits" |
+| `REGISTER_RATE_LIMIT_PER_IP` | no | `/register` requests per client address per hour (integer 1-100000, default `100`) |
+| `REGISTER_RATE_LIMIT_PER_HOST` | no | `/register` requests per redirect URI host per hour (integer 1-100000, default `20`). See "Client addresses and rate limits" |
+| `SECURITY_CONTACT` | no | Where to report a security issue in **your** deployment: one or more comma-separated email addresses or `mailto:`, `tel:` or `https:` URIs (at most 5). When set, the server serves `/.well-known/security.txt` (RFC 9116) with a `Contact` line for each, an `Expires` of 180 days from each request, and `Canonical` from `PUBLIC_URL`. Unset (default): the path is a 404. A value with a control character or line break is refused at startup |
+| `SECURITY_POLICY_URL` | no | An https URL for your disclosure policy, served as `Policy` in `security.txt`. Only used when `SECURITY_CONTACT` is set |
 | `MCP_VERIFIED_REDIRECT_URIS` | no | Comma-separated redirect URIs of trusted clients. Default: Claude's connector callbacks, `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`. An authorization error at `/authorize` is redirected back only to these (and to loopback, see below); for any other client it is shown on this server's own page with a "Return to" link, so the server can't be used as an open redirector. The consent page names a verified client plainly and any other as "calls itself". `none` empties the list. Each entry must be https (http only for loopback), at most 512 characters, with no userinfo or fragment |
 | `MCP_DCR_PRIVATE_USE_SCHEMES` | no | Comma-separated private-use URI schemes (RFC 8252, e.g. `com.example.app`) a registering native app may use for its redirect URI. Default: none, so registrations need `https://` or `http://` to `localhost`, `127.0.0.1` or `[::1]` |
 | `MCP_TRUST_LOOPBACK_REDIRECTS` | no | Redirect authorization errors back to loopback redirect URIs (default `true`). The consent page labels a loopback address either way |
-| `TRUST_PROXY` | if behind a reverse proxy | Hop count to trust for `X-Forwarded-*` (e.g. `1` behind a single Traefik/Caddy/nginx). Without it, every client behind the proxy shares one rate limit on the OAuth endpoints, so one client can lock out the others. Set it only when the app is reachable solely through the proxy, or clients can spoof `X-Forwarded-For` |
 
 OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
 `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL`; startup is refused if any is missing.
 Numeric settings are bounds-checked (for example `RATE_LIMIT_PER_HOUR` 1-195,
-`MCP_ACCESS_TOKEN_TTL_SEC` 60-3600, `MCP_AUTH_CODE_TTL_SEC` 30-600); an out-of-range value is refused, naming the variable and range. Use a
+`MCP_ACCESS_TOKEN_TTL_SEC` 60-3600, `MCP_AUTH_CODE_TTL_SEC` 30-600,
+`MCP_REQUEST_TIMEOUT_MS` 5000-300000); an out-of-range value is refused, naming the variable and range. Use a
 **durable** driver (`sqlite`/`postgres`) in production — `memory` loses all
-sessions and connected accounts on restart.
+tokens and connected accounts on restart.
 
 ## 3. Serve over TLS
 
@@ -154,8 +162,8 @@ few short fields (`token_endpoint_auth_method`, `grant_types`,
 `software_version`). Other fields (`jwks`, `contacts`, `logo_uri`,
 `software_statement` and so on) are dropped. A refusal is `400` with
 `invalid_redirect_uri` or `invalid_client_metadata`. Every authorization
-server route refuses a body over 8 KB (`413`), and the four endpoints share a
-per-IP limit of 220 requests per 15 minutes, checked before the body is read.
+server route refuses a body over 8 KB (`413`). The rate limits are in "Client
+addresses and rate limits".
 
 `/authorize` refuses a `state` over 512 characters, a `code_challenge` that
 isn't 43 base64url characters, and more than 5 scopes; unknown scopes are
@@ -177,7 +185,7 @@ The read-only / read-write choice belongs to each connection (each client
 grant), not to the user. It is recorded on the authorization code and the
 tokens issued from it, and a refresh never widens it. So if a user connects
 client A read-only and later connects client B read-write, client A stays
-read-only. A session gets write tools only when all of these hold: write is
+read-only. A request gets write tools only when all of these hold: write is
 enabled (`YNAB_READ_ONLY=false`), the token's grant is read-write, and the
 user's current YNAB connection is read-write. A client that asks for the
 `read-only` scope (and not `read-write`) is only offered read-only at consent.
@@ -189,58 +197,71 @@ treated as **read-only**. Users who had read-write access must reconnect once
 (remove and re-add the connector, or re-run `mcp-remote`) to get write access
 back. Read access keeps working without reconnecting.
 
-### Sessions
+### Requests, limits and timeouts
 
-Each MCP session (`mcp-session-id`) belongs to the client and user whose token
-created it. A request that presents a session id with a token for a different
-user or client gets the same `404` as an unknown session id, so a leaked
-session id (from proxy or access logs) can't be used to drive someone else's
-session. In header-auth mode a session belongs to the YNAB token that opened it
-(`X-YNAB-Token`, or the `YNAB_ACCESS_TOKEN` fallback): a request presenting a
-different token, or none when there is no fallback, gets the same `404`.
+`/mcp` is stateless (since 0.5.0). The server issues no `Mcp-Session-Id` and
+keeps no session between requests: every request is authenticated by its own
+token (in OAuth mode the MCP access token, in header mode `X-YNAB-Token` or the
+`YNAB_ACCESS_TOKEN` fallback) and served as that client and user. A session id
+a client still sends is ignored. `GET /mcp` (a server-to-client stream) and
+`DELETE /mcp` (ending a session) answer `405`. Nothing needs sticky sessions at
+a load balancer or proxy. Clients on protocol revision 2026-07-28 and 2025-era
+clients are both served.
 
-A request with an `Mcp-Session-Id` the server doesn't hold (expired, closed,
-never existed, or owned by someone else) gets `404`, as the MCP spec says, so
-the client initializes a new session. A request with no session id that isn't an
-`initialize` stays `400`.
+A request's read-only state is computed on every request, so a token or grant
+downgraded to read-only loses the write tools on its next request.
+`YNAB_OAUTH_ALLOW_WRITE` and `YNAB_READ_ONLY` are read at startup: changing them
+takes effect on the first request after a restart.
 
-Session limits:
+Limits:
 
-- `MCP_MAX_SESSIONS` is a global cap. When it is reached, `initialize` is
-  answered `503` with a `Retry-After` header and a generic JSON-RPC error;
-  existing sessions are not touched.
-- `MCP_MAX_SESSIONS_PER_USER` caps each user (in OAuth mode the YNAB user, in
-  header mode the YNAB token). A new session beyond it closes that user's least
-  recently used session instead of being refused, so a client that leaks
-  sessions doesn't lock itself out. It must not exceed `MCP_MAX_SESSIONS`
-  (startup fails otherwise); left unset, it defaults to 10 or
-  `MCP_MAX_SESSIONS`, whichever is smaller. Only a per-user cap below the
-  global one stops one family member from taking every slot.
-- `MCP_SESSION_IDLE_TIMEOUT_MS` closes a session with no request for that long.
-  A session with an open request, including the standalone `GET` stream clients
-  hold open for server notifications, counts as active and is not closed; the
-  clock starts when its last request ends. Clients get `404` on their next
-  request and re-initialize.
-- On shutdown (`SIGINT`/`SIGTERM`) all sessions are closed.
+- **In flight.** `MCP_MAX_INFLIGHT_PER_USER` (default 8) caps the requests one
+  user (the YNAB user in OAuth mode, the YNAB token in header mode) has in
+  flight; `MCP_MAX_INFLIGHT_PER_CLIENT` (default 4) caps one client of that user
+  in OAuth mode, so one client can't take all of a user's slots; and
+  `MCP_MAX_INFLIGHT` (default 64) caps the whole server. A request past any cap
+  gets `429` with `Retry-After: 1` and a JSON-RPC error, before any storage read.
+- **Ceiling.** `MCP_REQUEST_TIMEOUT_MS` (default 60 s) bounds every request,
+  from its first byte: a slow upload, a stalled token check and a slow tool
+  call all hit the same deadline. A tool call returns a timeout result shortly
+  before it; for a write tool the result says the change may still have been
+  applied, so check (for example with `ynab_list_transactions`) before
+  retrying. A request whose response hasn't started gets a JSON-RPC
+  `Request timed out` error instead.
+- A slot (and the request's hold on the user's shared state) is released only
+  once the response has closed **and** the work the request started has
+  finished. The YNAB call behind a timed-out or abandoned request keeps its
+  slot until it completes or YNAB's own fetch timeout ends it, so abandoned
+  work can't pile up past the caps.
+- On shutdown (`SIGINT`/`SIGTERM`) the server stops accepting connections and
+  lets the requests in flight finish, including YNAB calls that outlived their
+  response (a timed-out write); the process exits after 10 s regardless.
 
-In header mode `initialize` doesn't validate the token, so any client that can
-reach `/mcp` can fill the global cap with made-up tokens and get other clients
-`503`. Don't expose header mode publicly: use OAuth mode, or restrict access at
-the proxy. A lower `MCP_SESSION_IDLE_TIMEOUT_MS` shortens the lockout on
-exposed instances.
+Unauthenticated requests are bounded in time by the ceiling, but not in
+number: there is no pre-authentication cap. Keep Node's own request timeouts,
+and limit connections at your reverse proxy if the server is exposed. In header
+mode any non-empty token counts as a user, so `MCP_MAX_INFLIGHT` is what bounds
+it; don't expose header mode publicly.
 
-All sessions of one user (in OAuth mode the YNAB user, in header mode the YNAB
-token) share one rate limit, one cache (including the delta-sync snapshots, see
-README "Caching") and one audit log, so several clients or a reconnecting client
-can't exceed the per-user YNAB budget (`RATE_LIMIT_PER_HOUR`), a snapshot one
-session built saves the others a full fetch, and `ynab_audit_log` shows the
-user's writes from every session. Users never share any of it. Snapshots are
-bounded per user (32 snapshots, 20,000 entities, dropped after 30 minutes
-unused), so budget roughly that much memory per active user. This state is kept for an hour after the user's last session closes,
-so reconnecting doesn't reset the rate limit. In OAuth mode a session looks up
-the user's YNAB access token on every request, refreshing it when it expires,
-so long sessions keep working; once the user's YNAB grant is gone (or the token
-can't be refreshed), tool calls fail with an `auth_error`.
+`MCP_MAX_SESSIONS`, `MCP_MAX_SESSIONS_PER_USER` and
+`MCP_SESSION_IDLE_TIMEOUT_MS` have no effect since 0.5.0 and are removed in 0.6.
+A set value logs a warning once at startup; a malformed one still refuses to
+start.
+
+All requests of one user share one rate limit, one cache (including the
+delta-sync snapshots, see README "Caching") and one audit log, so several
+clients can't exceed the per-user YNAB budget (`RATE_LIMIT_PER_HOUR`), a
+snapshot one request built saves the next a full fetch, and `ynab_audit_log`
+shows the user's writes from every client. Users never share any of it.
+Snapshots are bounded per user (32 snapshots, 20,000 entities, dropped after 30
+minutes unused), so budget roughly that much memory per active user. This state
+is kept for an hour after the user's last request, so a quiet hour doesn't reset
+the rate limit. With several replicas, these caps, the rate limit and the caches
+are per process. In OAuth mode every request looks up the user's YNAB grant and
+access token, refreshing the token when it expires; once the user's YNAB grant
+is gone (or the token can't be refreshed), requests are refused with `401` and
+the client re-authorizes, and a tool call whose token can't be refreshed
+midway fails with an `auth_error`.
 
 ### Discovery (RFC 9728 / RFC 8414)
 
@@ -314,6 +335,106 @@ mix-up attacks. The redirect to YNAB's own authorize page carries no `iss`.
 Error descriptions are fixed text; nothing from YNAB is forwarded. If you put
 the server behind a proxy, set `PUBLIC_URL` to the exact URL clients use: it
 is both the issuer and the `iss` value. No new environment variables.
+
+## Client addresses and rate limits
+
+The OAuth endpoints are rate limited per client, so the server has to know the
+client's address. It takes it from the socket, or, behind a reverse proxy, from
+`X-Forwarded-For` as far as `TRUST_PROXY` says to trust it.
+
+**Get this wrong and one of two things happens.**
+
+- `TRUST_PROXY` too low (the default `0` behind a proxy): every client appears
+  to connect from the proxy, so all of them share one bucket and one client's
+  burst locks everyone out of `/register`, `/authorize`, `/token` and `/revoke`.
+  The server logs a warning at startup when `TRUST_PROXY=0` and `PUBLIC_URL` is
+  not localhost.
+- `TRUST_PROXY` too high: the server trusts entries that the client wrote
+  itself, so anyone can pick a fresh address per request and never be limited.
+
+### Which address is used
+
+`TRUST_PROXY=N` trusts the last N hops, counting the socket peer as the first.
+The address used is the first one past those hops: with `X-Forwarded-For:
+a, b, c` and `TRUST_PROXY=1`, the socket peer is trusted and the address is
+`c`; with `2` it is `b`. Entries to the left of that are ignored, because the
+client could have written them.
+
+| Your setup | `TRUST_PROXY` | `TRUST_CF_CONNECTING_IP` | Address used |
+|---|---|---|---|
+| Clients connect straight to the server (no proxy) | `0` (default) | `false` | The socket peer. `X-Forwarded-For` and `CF-Connecting-IP` are ignored |
+| One proxy: Caddy, nginx or Traefik, no CDN | `1` | `false` | The right-most `X-Forwarded-For` entry, the address the proxy saw connect |
+| Two proxies: a load balancer, then nginx | `2` | `false` | The second entry from the right, the address the first proxy saw connect |
+| Cloudflare straight to the server | `1` | `false` | The right-most `X-Forwarded-For` entry, which Cloudflare appends |
+| Cloudflare straight to the server, header preferred | `1` | `true` | `CF-Connecting-IP`, when it is a valid IP; else as the row above |
+| Cloudflare, then one proxy of yours | `2` | `false` | The second entry from the right |
+| Cloudflare, then one proxy of yours, header preferred | `2` | `true` | `CF-Connecting-IP`, when valid; else as the row above |
+
+Rules that apply to every row:
+
+- With two or more proxies, **each downstream proxy must append to the
+  `X-Forwarded-For` chain it received, not overwrite it.** A proxy that
+  replaces the header with its own socket peer discards the earlier addresses,
+  and no hop count can recover them: every client then shares the address of
+  the first proxy. (nginx: `proxy_set_header X-Forwarded-For
+  $proxy_add_x_forwarded_for;`. Caddy and Traefik append by default.)
+
+- `TRUST_PROXY` is the number of proxies **between the client and this server**
+  (Cloudflare counts as one). A proxy of yours that overwrites
+  `X-Forwarded-For` instead of appending is still one hop.
+- `CF-Connecting-IP` is read **only** with `TRUST_CF_CONNECTING_IP=true`, and
+  it is independent of `TRUST_PROXY`. Turn it on only when the server can be
+  reached **only** through Cloudflare (a Cloudflare Tunnel, or a firewall that
+  admits Cloudflare's address ranges alone). Otherwise anyone who connects
+  directly can send the header and choose their own address. A header that is
+  not a single valid IP is ignored.
+- IPv6 clients are keyed by their `/64`, so one host cannot get a new bucket
+  by changing the low 64 bits of its address. An IPv4-mapped IPv6 address
+  (`::ffff:a.b.c.d`) is keyed as the IPv4.
+- To check your setting, send a request through the proxy and read the
+  `RateLimit` headers on a `/token` response from two different networks: they
+  should count separately.
+
+### What is limited, and by what key
+
+An unauthenticated endpoint is keyed by **(client_id, address)**, never by
+`client_id` alone: a `client_id` is public, so anyone who knew one could spend
+its budget. Each such endpoint also has an address-only ceiling of ten times
+its limit, so rotating `client_id` does not give one address unlimited buckets.
+The ceilings and the per-address `/register` limit are checked before the body
+is read, so a request past them costs no parsing.
+
+| Endpoint | Limit | Key |
+|---|---|---|
+| `/authorize` | 100 per 15 minutes | (`client_id`, address) |
+| `/token` | 50 per 15 minutes | (`client_id`, address) |
+| `/revoke` | 50 per 15 minutes | (`client_id`, address) |
+| `/oauth/*` (YNAB login legs) | 100 per 15 minutes | address |
+| `/register` | `REGISTER_RATE_LIMIT_PER_IP` per hour (default 100) | address |
+| `/register` | `REGISTER_RATE_LIMIT_PER_HOST` per hour (default 20) | each redirect URI host |
+
+`/register` has two limits because hosted MCP clients such as claude.ai
+register from one small range of addresses, so a low per-address limit would
+lock their users out of each other, while the redirect host is what they
+share. A registration naming several hosts is counted against each of them.
+Loopback redirects (`localhost`, `127.0.0.1`, `[::1]`) and private-use schemes
+are shared by native clients everywhere, so they are keyed by host **and**
+address instead of by host alone.
+
+The `client_id` for `/token` and `/revoke` is the `client_id` form field (the
+one client authentication checks; an HTTP Basic user is not read). For
+`/authorize` it is the query parameter on GET and the form field on POST.
+The address-only ceilings are 1000 per 15 minutes on `/authorize` and 500 on
+`/token` and on `/revoke`.
+
+A registration is checked (see "Client registration and authorization
+errors") before any redirect host is counted, so a refused one uses none of a
+host's budget; it still counts against the per-address limit. A body with more
+than 5 `redirect_uris` is refused with 400 `invalid_client_metadata`.
+
+An unverified redirect host is shared across addresses by design, so someone
+can spend a host's `/register` budget by naming it; the per-address limit
+bounds how fast. Keying verified hosts by host and address lands with #55.
 
 ## Host and Origin validation
 
@@ -432,15 +553,16 @@ any MCP client that supports the `prompts` capability:
   and DCR client secrets only as SHA-256 hashes, so a copy of the database holds
   no usable MCP credential. A value that isn't a correctly tagged `ymcp1_` token
   (or a 0.4.x-shaped one) is refused without a database read. `/token` and
-  `/revoke` verify client secrets behind a per-IP limit (50 per 15 minutes per
-  route).
+  `/revoke` verify client secrets behind a per-(client_id, address) limit (50
+  per 15 minutes per route); see "Client addresses and rate limits".
 - Access is read-only or read-write **per connection**, per the consent choice
   for that client; the server also honors a global `YNAB_READ_ONLY=true`
   override.
 - Always run behind TLS; enable DNS-rebinding protection with an allowlist.
 - `memory` storage is for evaluation only — it is not durable and not shared across
-  replicas. For multiple replicas, use `postgres` (session/token cache is currently
-  in-process; a shared cache would be a future enhancement).
+  replicas. For multiple replicas, use `postgres` (the in-flight caps, rate
+  limits and caches are currently in-process; a shared store would be a future
+  enhancement).
 
 ## Interim header mode (single-user)
 
@@ -460,6 +582,6 @@ Serve behind TLS; this mode has no per-user isolation beyond the token you send.
 > passes while every request through it without `X-YNAB-Token` acts as you.
 > Behind a proxy, omit `YNAB_ACCESS_TOKEN` or restrict access at the proxy.
 
-Tokens aren't validated at `initialize`, so anyone who can reach `/mcp` can use up
-`MCP_MAX_SESSIONS` (see [Sessions](#sessions)); keep it off the public internet or
+Any non-empty token is accepted as a user, so anyone who can reach `/mcp` can use up
+`MCP_MAX_INFLIGHT` (see [Requests, limits and timeouts](#requests-limits-and-timeouts)); keep it off the public internet or
 restrict access at the proxy.

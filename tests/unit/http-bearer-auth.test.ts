@@ -7,7 +7,9 @@
  *
  * Storage is the app's own (memory, or Postgres for the real timeouts); the
  * factory is wrapped only to reach it. No YNAB call is made: every request
- * here stops at or just after the bearer stage.
+ * here stops at or just after the bearer stage; one that passes it has its
+ * YNAB grant resolved (stateless /mcp, ADR-0001 D3), with YNAB's token
+ * refresh mocked.
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -15,6 +17,14 @@ import { randomBytes } from 'node:crypto';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { Storage } from '../../src/storage/types.js';
+
+vi.mock('../../src/auth/ynab-oauth.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/auth/ynab-oauth.js')>('../../src/auth/ynab-oauth.js');
+  return {
+    ...actual,
+    refreshAccessToken: vi.fn(async () => ({ accessToken: 'ynab-access', refreshToken: 'ynab-refresh-2', expiresAt: Date.now() + 7_200_000 })),
+  };
+});
 
 const factory = vi.hoisted(() => ({
   storage: undefined as Storage | undefined,
@@ -33,6 +43,7 @@ vi.mock('../../src/storage/index.js', async () => {
 });
 
 import { createHttpApp } from '../../src/http.js';
+import { Encryptor } from '../../src/crypto.js';
 import { MemoryStorage } from '../../src/storage/memory.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER, legacyToken } from './helpers/token-hasher.js';
@@ -61,10 +72,13 @@ function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
 
 /** The app and the storage it opened, with the user every seeded token belongs to. */
 async function startApp(overrides: Partial<HttpConfig> = {}): Promise<{ app: Express; storage: Storage }> {
-  const app = await createHttpApp(makeConfig(overrides));
+  const config = makeConfig(overrides);
+  const app = await createHttpApp(config);
   const storage = factory.storage;
   if (!storage) throw new Error('the app opened no storage');
-  await storage.upsertUser({ userId: USER, grantedScope: 'read-write', encryptedRefreshToken: 'x', updatedAt: Date.now() });
+  // A grant the request-context stage can resolve (its refresh is mocked above).
+  const encryptedRefreshToken = new Encryptor(config.encryptionKey).encrypt('ynab-refresh-1');
+  await storage.upsertUser({ userId: USER, grantedScope: 'read-write', encryptedRefreshToken, updatedAt: Date.now() });
   return { app, storage };
 }
 

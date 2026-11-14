@@ -7,16 +7,17 @@
  * Every route is a pipeline of named stages, always in this order:
  *
  *   [host-validation]  mounted by http.ts on the whole app, before this router
- *   ...limiters        rate limits, before any body is read: the AS-wide
- *                      as-limiter on /authorize, /token, /register and
- *                      /revoke (#55a), the oauth-leg-limiter on /oauth
+ *   ...limiters        rate limits, before any body is read: an IP-only
+ *                      ip-limiter on /authorize, /token, /register and
+ *                      /revoke (#59, #55a), the oauth-leg-limiter on /oauth
  *   bounded-parser     the request-body parser, at AS_MAX_BODY (8kb), with
  *                      OAuth-shaped errors (413 for a body over the limit)
- *   ...slots           route-specific checks: on /authorize the bounds
- *                      (authorize-validation), the open-redirect guard
- *                      (authorize-guard) and iss-redirect; on /token and
- *                      /revoke the route limiter and then client
- *                      authentication (#52); on /register the DCR validator
+ *   ...slots           route-specific checks: on /authorize the (client_id,
+ *                      IP) route-limiter, the bounds (authorize-validation),
+ *                      the open-redirect guard (authorize-guard) and
+ *                      iss-redirect; on /token and /revoke the route limiter
+ *                      and then client authentication (#52); on /register the
+ *                      DCR validator and then the per-redirect-host limit
  *   router             the handler that answers: the SDK's (sdk-router), the
  *                      metadata document, or the YNAB federation legs
  *
@@ -31,7 +32,6 @@
  */
 
 import express, { type Request, type Response, type Router } from 'express';
-import { rateLimit } from 'express-rate-limit';
 import {
   TooManyRequestsError,
   createOAuthMetadata,
@@ -55,6 +55,14 @@ import { dcrValidator } from './dcr-validator.js';
 import { authorizeValidation } from './authorize-validation.js';
 import { authorizeGuard } from './authorize-guard.js';
 import {
+  CEILING_FACTOR,
+  keyedLimiter,
+  registerHostLimiter,
+  registerIpLimiter,
+  type LimiterStoreFactory,
+} from '../middleware/rate-limiters.js';
+import { authorizeClientId, bodyClientId } from '../middleware/rate-limit-key.js';
+import {
   AS_MAX_BODY,
   mountStages,
   stage,
@@ -67,21 +75,15 @@ import {
 export const OAUTH_LEG_RATE_LIMIT = 100;
 
 /**
- * Requests per client IP per 15 minutes on /token and on /revoke (each its own
- * budget): the SDK's per-route default, now applied by the route-limiter stage
- * ahead of client authentication instead of inside the SDK handler.
+ * Requests per (client_id, IP) per 15 minutes on /token and on /revoke (each
+ * its own budget): the SDK's per-route default, now applied by the
+ * route-limiter stage ahead of client authentication instead of inside the SDK
+ * handler. Each route's ip-limiter allows CEILING_FACTOR times this per IP.
  */
 export const CLIENT_AUTH_ROUTE_RATE_LIMIT = 50;
 
-/**
- * Requests per client IP per 15 minutes across /authorize, /token, /register
- * and /revoke together (#55a), counted by the as-limiter stage before any body
- * is read. It is the sum of those routes' own limits (100 + 50 + 20 + 50), so
- * a client that stays within each route's limit stays within this one, while
- * a flood across the routes is cut off before parsing. Preflights aren't
- * counted.
- */
-export const AS_RATE_LIMIT = 220;
+/** Requests per (client_id, IP) per 15 minutes on /authorize, the SDK's default, now applied by the limiter stage. */
+export const AUTHORIZE_RATE_LIMIT = 100;
 
 /** One AS route. The positions are fixed; routePipeline() puts them in order. */
 interface AsRoute {
@@ -142,6 +144,8 @@ export interface AuthorizationServerOptions {
   ynab: YnabOAuthConfig;
   /** Tests only: reports each stage as a request enters it (see StageObserver). */
   observeStage?: StageObserver | undefined;
+  /** A shared store for the rate limiters (#67b); the in-memory default when absent. */
+  limiterStore?: LimiterStoreFactory | undefined;
 }
 
 export interface AuthorizationServer {
@@ -223,7 +227,7 @@ export function mountAuthorizationServer(
   app: Router,
   options: AuthorizationServerOptions
 ): AuthorizationServer {
-  const { config, storage, encryptor, tokenHasher, ynab, observeStage } = options;
+  const { config, storage, encryptor, tokenHasher, ynab, observeStage, limiterStore } = options;
   const publicUrl = config.publicUrl as string;
   // The protected resource (RFC 8707 audience) every token is bound to.
   const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
@@ -296,57 +300,113 @@ export function mountAuthorizationServer(
   // Ahead of the parser so a limited request costs no parsing. The client IP
   // comes from req.ip, so TRUST_PROXY must match the proxy hops, or every
   // client behind the proxy shares one budget. One limiter for all the legs.
+  const keyOptions = { trustCfConnectingIp: config.trustCfConnectingIp };
+  const WINDOW_15_MIN = 15 * 60 * 1000;
+  const tooMany = (what: string): unknown =>
+    new TooManyRequestsError(`You have exceeded the rate limit for ${what} requests`).toResponseObject();
   const oauthLegLimiter = stage(
     'oauth-leg-limiter',
-    rateLimit({
-      windowMs: 15 * 60 * 1000,
+    ...keyedLimiter({
+      name: 'oauth-leg',
+      windowMs: WINDOW_15_MIN,
       limit: OAUTH_LEG_RATE_LIMIT,
-      standardHeaders: true,
-      legacyHeaders: false,
       message: 'Too many authorization requests. Please wait and try again.',
+      key: keyOptions,
+      store: limiterStore,
     })
   );
 
-  // /token and /revoke: the SDK's per-route limit (50 per 15 minutes per IP),
-  // moved ahead of client authentication so wrong-secret attempts are counted
-  // and refused with 429 past it (G21). IP-keyed until #59. The SDK handler's
-  // own limiter is turned off, so each request is counted once.
+  // /token and /revoke: the SDK's per-route limit (50 per 15 minutes), moved
+  // ahead of client authentication so wrong-secret attempts are counted and
+  // refused with 429 past it (G21). Keyed by (client_id, IP) (#59); the
+  // IP-only ceiling is the route's ip-limiter, ahead of the parser. The SDK
+  // handler's own limiter is turned off, so each request is counted once.
+  // Only POSTs carry credentials; the SDK's own limiter ran after its CORS
+  // handler, so preflights were never counted and still aren't.
   const routeLimiter = (what: string): Stage =>
     stage(
       'route-limiter',
-      rateLimit({
-        windowMs: 15 * 60 * 1000,
+      ...keyedLimiter({
+        name: `route:${what}`,
+        windowMs: WINDOW_15_MIN,
         limit: CLIENT_AUTH_ROUTE_RATE_LIMIT,
-        standardHeaders: true,
-        legacyHeaders: false,
-        // Only POSTs carry credentials. The SDK's own limiter ran after its
-        // CORS handler, so preflights were never counted; they still aren't.
+        message: tooMany(what),
+        key: keyOptions,
+        // The body client_id: the one client authentication checks.
+        clientId: bodyClientId,
+        ceiling: false,
+        store: limiterStore,
         skip: (req) => req.method !== 'POST',
-        message: new TooManyRequestsError(`You have exceeded the rate limit for ${what} requests`).toResponseObject(),
       })
     );
-  // Ahead of the parser, so a request past the limit costs no parsing (#55a).
-  // One limiter (one budget) shared by the four AS endpoints.
-  const asLimiterHandler = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: AS_RATE_LIMIT,
-    standardHeaders: true,
-    legacyHeaders: false,
-    skip: (req) => req.method === 'OPTIONS',
-    // It runs before cors-origin, so its 429 carries the CORS header itself,
-    // readable by a browser client like every other OAuth error here.
-    handler: (_req, res, _next, options) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.status(options.statusCode).json(options.message);
+  // /authorize: the SDK's 100 per 15 minutes. An IP-only guard ahead of the
+  // parser (ten times the budget, so a limited request costs no parsing), then
+  // the (client_id, IP) budget once the form body is read, so a POST is keyed
+  // by its body's client_id as the SDK reads it; a GET by its query's.
+  const authorizeIpLimiter = stage(
+    'ip-limiter',
+    ...keyedLimiter({
+      name: 'authorize:ip',
+      windowMs: WINDOW_15_MIN,
+      limit: AUTHORIZE_RATE_LIMIT * CEILING_FACTOR,
+      message: tooMany('authorization'),
+      key: keyOptions,
+      store: limiterStore,
+    })
+  );
+  const authorizeLimiter = stage(
+    'route-limiter',
+    ...keyedLimiter({
+      name: 'authorize',
+      windowMs: WINDOW_15_MIN,
+      limit: AUTHORIZE_RATE_LIMIT,
+      message: tooMany('authorization'),
+      key: keyOptions,
+      clientId: authorizeClientId,
+      ceiling: false,
+      store: limiterStore,
+    })
+  );
+  // /token and /revoke: route-limiter's IP-only ceiling, ahead of the parser
+  // like /authorize's (#55a), so a flood of bodies, well-formed or not, costs
+  // no parsing. Each route has its own. Its 429 carries the CORS header the
+  // later cors-origin stage would have set, so a browser client can read it.
+  const clientAuthIpLimiter = (what: string): Stage =>
+    stage(
+      'ip-limiter',
+      ...keyedLimiter({
+        name: `route:${what}:ip`,
+        windowMs: WINDOW_15_MIN,
+        limit: CLIENT_AUTH_ROUTE_RATE_LIMIT * CEILING_FACTOR,
+        message: tooMany(what),
+        key: keyOptions,
+        cors: true,
+        store: limiterStore,
+      })
+    );
+  // /register: a per-IP limit above the SDK's 20/h before the body is read,
+  // then a per-redirect-host limit once the DCR validator has accepted it
+  // (hosted clients share an IP range but not a redirect host).
+  const registerLimits = {
+    windowMs: 60 * 60 * 1000,
+    perIp: config.registerRateLimitPerIp,
+    perHost: config.registerRateLimitPerHost,
+    message: tooMany('client registration'),
+    tooManyRedirects: {
+      error: 'invalid_client_metadata',
+      error_description: 'Too many redirect_uris',
     },
-    message: new TooManyRequestsError('You have exceeded the rate limit for authorization server requests').toResponseObject(),
-  });
-  const asLimiter = (): Stage => stage('as-limiter', asLimiterHandler);
+    key: keyOptions,
+    store: limiterStore,
+  };
+  const registerIp = stage('ip-limiter', ...registerIpLimiter(registerLimits));
+  const registerHost = stage('register-host-limiter', registerHostLimiter(registerLimits));
   const clientAuth = (): Stage => stage('client-auth', clientAuthentication(provider.clientsStore));
   // The SDK's handlers send `Access-Control-Allow-Origin: *` (its cors()
-  // default) from inside sdk-router. The route-limiter and client-auth stages
-  // can answer a POST before that, so this sets the same header first; a
-  // browser client can then read their 429 and invalid_client errors.
+  // default) from inside sdk-router. The stages after it (route-limiter,
+  // client-auth, dcr-validator, register-host-limiter) can answer a POST
+  // before that, so this sets the same header first; a browser client can
+  // then read their 429 and 400 errors.
   // Preflights pass through to the SDK, which answers them.
   const corsOrigin = (): Stage =>
     stage('cors-origin', (req, res, next) => {
@@ -357,11 +417,10 @@ export function mountAuthorizationServer(
   // The SDK's handlers are mounted one per route, exactly as its mcpAuthRouter
   // composes them (it mounts /register and /revoke only when the provider
   // supports them), without its own metadata routes, which the ones here
-  // replace. Each SDK handler still applies its own CORS, method check, form
-  // parser and (except on /token and /revoke, whose limit is the route-limiter
-  // stage) per-route rate limit inside the sdk-router stage.
-  // The AS-wide as-limiter goes on the four AS endpoints (ADR-0002 D8's
-  // lists); the metadata documents are static and /oauth has its own limiter.
+  // replace. Each SDK handler still applies its own CORS, method check and
+  // form parser inside the sdk-router stage; its own rate limit is off,
+  // replaced by the limiter stages here.
+  // The metadata documents are static and get no limiter; /oauth has its own.
   const routes: AsRoute[] = [
     { path: pathOf(resourceMetadataUrl), parser: boundedParser(), router: metadata(protectedResourceMetadata) },
     // Root alias for clients that probe the non-path-aware location.
@@ -369,9 +428,10 @@ export function mountAuthorizationServer(
     { path: '/.well-known/oauth-authorization-server', parser: boundedParser(), router: metadata(oauthMetadata) },
     {
       path: pathOf(oauthMetadata.authorization_endpoint),
-      limiters: [asLimiter()],
+      limiters: [authorizeIpLimiter],
       parser: boundedParser(),
       slots: [
+        authorizeLimiter,
         // #55a: bounds, and the refusal of grandfathered plain-http clients.
         stage(
           'authorize-validation',
@@ -383,11 +443,11 @@ export function mountAuthorizationServer(
         // `iss`; this adds it to every redirect from the authorization endpoint.
         stage('iss-redirect', issOnAuthorizationRedirects(oauthMetadata.issuer)),
       ],
-      router: sdkRouter(authorizationHandler({ provider })),
+      router: sdkRouter(authorizationHandler({ provider, rateLimit: false })),
     },
     {
       path: pathOf(oauthMetadata.token_endpoint),
-      limiters: [asLimiter()],
+      limiters: [clientAuthIpLimiter('token')],
       parser: boundedParser(),
       slots: [corsOrigin(), routeLimiter('token'), clientAuth()],
       router: sdkRouter(tokenHandler({ provider, rateLimit: false })),
@@ -396,17 +456,19 @@ export function mountAuthorizationServer(
   if (oauthMetadata.registration_endpoint) {
     routes.push({
       path: pathOf(oauthMetadata.registration_endpoint),
-      limiters: [asLimiter()],
+      limiters: [registerIp],
       parser: boundedParser(),
-      // cors-origin first, so a browser client can read the validator's 400.
-      slots: [corsOrigin(), stage('dcr-validator', dcrValidator(redirectPolicy))],
-      router: sdkRouter(clientRegistrationHandler({ clientsStore: provider.clientsStore })),
+      // cors-origin first, so a browser client can read the validator's 400;
+      // the validator before the host limit, so a refused registration spends
+      // no redirect host's budget.
+      slots: [corsOrigin(), stage('dcr-validator', dcrValidator(redirectPolicy)), registerHost],
+      router: sdkRouter(clientRegistrationHandler({ clientsStore: provider.clientsStore, rateLimit: false })),
     });
   }
   if (oauthMetadata.revocation_endpoint) {
     routes.push({
       path: pathOf(oauthMetadata.revocation_endpoint),
-      limiters: [asLimiter()],
+      limiters: [clientAuthIpLimiter('token revocation')],
       parser: boundedParser(),
       slots: [corsOrigin(), routeLimiter('token revocation'), clientAuth()],
       router: sdkRouter(revocationHandler({ provider, rateLimit: false })),

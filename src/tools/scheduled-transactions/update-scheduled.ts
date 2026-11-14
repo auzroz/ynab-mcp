@@ -148,7 +148,7 @@ export async function handleUpdateScheduledTransaction(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
   // Validate date constraints if date is being updated
   if (validated.date !== undefined) {

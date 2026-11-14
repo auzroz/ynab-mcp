@@ -90,7 +90,7 @@ export async function handleSpendingTrends(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const monthCount = validated.months ?? 6;
 
   // Generate list of months to fetch

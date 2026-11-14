@@ -7,7 +7,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
-import { createServerForUser, type UserContext } from '../../src/server.js';
+import { buildYnabClient, createServerFromClient, type UserContext } from '../../src/server.js';
+
+/** A server on a client of its own for `ctx` (what HTTP builds per request, minus the request bounds). */
+const serverFor = (ctx: UserContext) => createServerFromClient(buildYnabClient(ctx));
 import { tools } from '../../src/tools/index.js';
 import { UNTRUSTED_TEXT_NOTE } from '../../src/tools/untrusted-note.js';
 
@@ -23,7 +26,7 @@ const baseCtx: Omit<UserContext, 'readOnly'> = {
 const closers: Array<() => Promise<void>> = [];
 
 async function connect(readOnly: boolean): Promise<Client> {
-  const server = createServerForUser({ ...baseCtx, readOnly });
+  const server = serverFor({ ...baseCtx, readOnly });
   const client = new Client({ name: 'test', version: '1.0.0' });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(a), client.connect(b)]);

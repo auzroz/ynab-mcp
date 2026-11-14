@@ -176,12 +176,13 @@ describe('validateClientMetadata', () => {
     for (const k of Object.keys(metadata)) expect(CLIENT_METADATA_FIELDS).toContain(k);
   });
 
-  it(`requires 1 to ${MAX_REDIRECT_URIS} redirect URIs (invalid_redirect_uri)`, () => {
+  it(`requires 1 to ${MAX_REDIRECT_URIS} redirect URIs (too many: invalid_client_metadata)`, () => {
     const uris = (n: number) => Array.from({ length: n }, (_, i) => `https://client.example/cb${i}`);
     expect(ok({ redirect_uris: uris(1) }).redirect_uris).toHaveLength(1);
     expect(ok({ redirect_uris: uris(MAX_REDIRECT_URIS) }).redirect_uris).toHaveLength(MAX_REDIRECT_URIS);
+    // The list's length, not a URI's value: the code the /register host limit (#59) uses too.
     expect(refused({ redirect_uris: uris(MAX_REDIRECT_URIS + 1) })).toEqual({
-      error: 'invalid_redirect_uri',
+      error: 'invalid_client_metadata',
       error_description: 'redirect_uris: at most 5 are allowed',
     });
     expect(refused({ redirect_uris: [] }).error).toBe('invalid_redirect_uri');

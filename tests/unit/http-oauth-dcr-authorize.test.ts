@@ -170,7 +170,7 @@ describe('/register: our DCR rules (55a)', () => {
   });
 
   it.each([
-    ['six redirect URIs', { redirect_uris: Array.from({ length: 6 }, (_, i) => `${CALLBACK}${i}`) }, 'invalid_redirect_uri'],
+    ['six redirect URIs', { redirect_uris: Array.from({ length: 6 }, (_, i) => `${CALLBACK}${i}`) }, 'invalid_client_metadata'],
     ['no redirect URI', { redirect_uris: [] }, 'invalid_redirect_uri'],
     ['a redirect URI over 512 characters', { redirect_uris: [`${CALLBACK}/${'a'.repeat(512)}`] }, 'invalid_redirect_uri'],
     ['plain http to a remote host', { redirect_uris: ['http://client.example/cb'] }, 'invalid_redirect_uri'],

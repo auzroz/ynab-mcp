@@ -6,7 +6,9 @@
  * the authorization server (src/auth/as-router.ts) adds middleware, so the
  * stage names it reports are exactly what runs, in that order. The names are
  * asserted per route by tests/unit/http-as-pipeline.test.ts (gate G21): a PR
- * that changes a route's stages changes that test on purpose.
+ * that changes a route's stages changes that test on purpose. /mcp's pipeline
+ * (src/http.ts, ADR-0001) is mounted the same way, through mountRoute(), and
+ * asserted by tests/unit/http-mcp-pipeline.test.ts.
  */
 
 import type { NextFunction, Request, RequestHandler, Response, Router } from 'express';
@@ -16,6 +18,9 @@ import type { NextFunction, Request, RequestHandler, Response, Router } from 'ex
  * is on the order of 100KB, so 512kb leaves headroom without accepting multi-MB bodies.
  */
 export const MAX_JSON_BODY = '512kb';
+
+/** MAX_JSON_BODY in bytes, for the MCP SDK's own body bounds (ADR-0001 D12). */
+export const MAX_JSON_BODY_BYTES = 512 * 1024;
 
 /**
  * Max request body on the authorization server's routes (#55a), JSON or form.
@@ -73,6 +78,27 @@ export function mountStages(
   stages: readonly Stage[],
   observe?: StageObserver
 ): string[] {
+  const handlers = stageHandlers(stages, observe);
+  if (handlers.length > 0) {
+    if (path === undefined) router.use(...handlers);
+    else router.use(path, ...handlers);
+  }
+  return stages.map((s) => s.name);
+}
+
+/**
+ * Like mountStages, but for exactly `path` and every HTTP method (one route,
+ * `route(path).all`), not the prefix: /mcp's pipeline, so /mcp/anything is
+ * not served by it. Returns the stage names.
+ */
+export function mountRoute(router: Router, path: string, stages: readonly Stage[], observe?: StageObserver): string[] {
+  const handlers = stageHandlers(stages, observe);
+  if (handlers.length > 0) router.route(path).all(...handlers);
+  return stages.map((s) => s.name);
+}
+
+/** The stages' handlers in order, each preceded by its observer pass-through when there is one. */
+function stageHandlers(stages: readonly Stage[], observe: StageObserver | undefined): RequestHandler[] {
   const handlers: RequestHandler[] = [];
   for (const s of stages) {
     if (observe) {
@@ -87,9 +113,5 @@ export function mountStages(
     }
     handlers.push(...s.handlers);
   }
-  if (handlers.length > 0) {
-    if (path === undefined) router.use(...handlers);
-    else router.use(path, ...handlers);
-  }
-  return stages.map((s) => s.name);
+  return handlers;
 }

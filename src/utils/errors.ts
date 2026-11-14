@@ -77,6 +77,30 @@ export class RateLimitError extends Error {
 }
 
 /**
+ * An outbound call to YNAB hit its deadline (#58). The message is fixed:
+ * nothing from the upstream is carried. `outcomeUnknown` is true for a call that
+ * may have changed something (any non-GET): it is never retried, and the caller
+ * is told to check before trying again (ADR-0001 D6).
+ */
+export class OutboundTimeoutError extends Error {
+  constructor(public readonly outcomeUnknown: boolean) {
+    super('YNAB did not respond in time');
+    this.name = 'OutboundTimeoutError';
+  }
+}
+
+/**
+ * The circuit breaker is open: YNAB has been failing for this user, so requests
+ * fail fast for a while (#58). The message is fixed.
+ */
+export class CircuitOpenError extends Error {
+  constructor(public readonly retryAfterMs: number) {
+    super('YNAB is not responding; requests are paused briefly');
+    this.name = 'CircuitOpenError';
+  }
+}
+
+/**
  * Error thrown when a resource is not found.
  */
 export class NotFoundError extends Error {
@@ -158,6 +182,31 @@ export function formatErrorResponse(error: unknown): string {
         error.retryAfterMs === undefined ? undefined : Math.max(1, Math.ceil(error.retryAfterMs / 1000)),
       // Note: Server uses 180 req/hr budget (10% below YNAB's 200 limit) for safety margin
       suggestion: 'Wait before making more requests. Check ynab_rate_limit_status for current limits.',
+    }, null, 2);
+  }
+
+  if (error instanceof OutboundTimeoutError) {
+    return JSON.stringify({
+      error: true,
+      type: 'upstream_timeout',
+      message: error.outcomeUnknown
+        ? 'YNAB did not respond in time; the change may still have been applied'
+        : 'YNAB did not respond in time',
+      ...(error.outcomeUnknown ? { outcome: 'unknown' } : {}),
+      suggestion: error.outcomeUnknown
+        ? 'Check whether the change was applied (for example by listing the resource) before retrying it.'
+        : 'Try again shortly.',
+    }, null, 2);
+  }
+
+  if (error instanceof CircuitOpenError) {
+    return JSON.stringify({
+      error: true,
+      type: 'upstream_unavailable',
+      message: 'YNAB is not responding; requests are paused briefly',
+      retry_after_ms: error.retryAfterMs,
+      retry_after_seconds: Math.max(1, Math.ceil(error.retryAfterMs / 1000)),
+      suggestion: 'Try again after the retry time.',
     }, null, 2);
   }
 

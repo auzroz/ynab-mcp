@@ -61,7 +61,7 @@ export async function handleDeleteTransaction(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
   const response = await client.deleteTransaction(budgetId, validated.transaction_id);
   const txn = response.data.transaction;

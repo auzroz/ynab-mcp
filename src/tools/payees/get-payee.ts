@@ -55,7 +55,7 @@ export async function handleGetPayee(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   const response = await client.getPayeeById(budgetId, validated.payee_id);
   const payee = response.data.payee;

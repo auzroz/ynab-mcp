@@ -332,7 +332,7 @@ export async function handlePreviewScheduledTransaction(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const validationErrors: string[] = [];
 
   // Determine start date

@@ -86,8 +86,9 @@ The server is configured via environment variables:
 
 By default the server speaks **stdio** (local). Set `MCP_TRANSPORT=http` to run it
 as a **remote** server over the MCP Streamable HTTP transport at `POST /mcp`, with a
-plain `GET /health` for load balancers. Each session gets its own client; all
-sessions of one user share one cache, rate limiter and audit log, never shared
+plain `GET /health` for load balancers. `/mcp` is stateless: no `Mcp-Session-Id`,
+and `GET`/`DELETE /mcp` answer `405`. Each request gets its own client; all
+requests of one user share one cache, rate limiter and audit log, never shared
 between users.
 
 | Variable | Description |
@@ -102,8 +103,9 @@ between users.
 | `ALLOWED_ORIGINS` | Comma-separated `Origin` allowlist for `/mcp` (default: the `PUBLIC_URL` origin; without `PUBLIC_URL`, `https://` for each allowed host, plus `http://` for localhost). Requests with no `Origin` header aren't checked |
 | `ENABLE_DNS_REBINDING_PROTECTION` | Origin/Host checks, on by default (0.4.0 breaking default; behind a proxy forward `Host` or set `ALLOWED_HOSTS`); `false` disables them (unsafe). See docs/REMOTE_HOSTING.md |
 | `MCP_RESOURCE_URL` | Resource URL (default `PUBLIC_URL`/mcp) |
-| `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` | Global cap on concurrent sessions (default 100; at the cap `initialize` gets `503` + `Retry-After`) and per-user cap (default 10; past it the user's least recently used session is closed). See docs/REMOTE_HOSTING.md |
-| `MCP_SESSION_IDLE_TIMEOUT_MS` | Idle time before a session is closed (default 30 min); a session with an open request or SSE stream is not idle |
+| `MCP_MAX_INFLIGHT_PER_USER` / `MCP_MAX_INFLIGHT_PER_CLIENT` / `MCP_MAX_INFLIGHT` | Requests in flight per user (default 8), per client of a user in OAuth mode (default 4) and across the server (default 64); past a cap `/mcp` answers `429` with `Retry-After: 1`. See docs/REMOTE_HOSTING.md |
+| `MCP_REQUEST_TIMEOUT_MS` | Longest a `/mcp` request runs (default 60 s, 5000-300000); a tool call that reaches it returns a timeout result |
+| `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` / `MCP_SESSION_IDLE_TIMEOUT_MS` | Deprecated: no effect since 0.5.0 (a startup warning names them); removed in 0.6 |
 
 **Multi-user (YNAB OAuth).** Set `AUTH_MODE=oauth` and configure a YNAB OAuth app + `ENCRYPTION_KEY` +
 `PUBLIC_URL` and the server becomes an OAuth 2.1 Authorization Server federated to

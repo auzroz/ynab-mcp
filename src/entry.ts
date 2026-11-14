@@ -10,7 +10,8 @@ import { createStdioServerFactory } from './server.js';
 import { redactSecretEnvValues } from './utils/sanitize.js';
 import { startHttpServer } from './http.js';
 import { loadConfig, loadHttpConfig } from './config/environment.js';
-import type { Env } from './config/parse.js';
+import { LOOPBACK_HOSTNAMES, type Env } from './config/parse.js';
+import type { HttpConfig } from './config/environment.js';
 
 export type Transport = 'stdio' | 'http';
 
@@ -80,6 +81,34 @@ export async function shutdownWithDeadline(deps: ShutdownDeps): Promise<void> {
   deps.exit(0);
 }
 
+/**
+ * Operator warnings about proxy trust (#59), shown at HTTP startup. With
+ * TRUST_PROXY=0 and a public (non-loopback) PUBLIC_URL the server is probably
+ * behind a proxy, so every client shares the proxy's address and one
+ * rate-limit bucket. Fixed text: it repeats no value from the environment.
+ * Not shown when TRUST_CF_CONNECTING_IP is on, which names the client address
+ * another way.
+ */
+export function proxyWarnings(
+  config: Pick<HttpConfig, 'publicUrl' | 'trustProxy' | 'trustCfConnectingIp'>
+): string[] {
+  if (!config.publicUrl || config.trustProxy !== 0 || config.trustCfConnectingIp) return [];
+  let hostname: string;
+  try {
+    hostname = new URL(config.publicUrl).hostname;
+  } catch {
+    return [];
+  }
+  // URL keeps the brackets of an IPv6 host; LOOPBACK_HOSTNAMES lists '[::1]'.
+  if (LOOPBACK_HOSTNAMES.has(hostname)) return [];
+  return [
+    'TRUST_PROXY=0 with a non-localhost PUBLIC_URL: if this server is behind a reverse proxy, ' +
+      "every client shares the proxy's address, so one client can exhaust the OAuth rate limits for all. " +
+      'Set TRUST_PROXY to the number of proxy hops (see docs/REMOTE_HOSTING.md, "Client addresses and rate limits"), ' +
+      'or leave it at 0 if clients connect to this server directly.',
+  ];
+}
+
 // What shutdown closes, set as each transport starts.
 let stdioHandle: StdioServerHandle | null = null;
 let httpServer: HttpServer | null = null;
@@ -88,7 +117,7 @@ async function closeAll(): Promise<void> {
   if (stdioHandle) await stdioHandle.close();
   if (httpServer) {
     const http = httpServer;
-    // HttpServer.close (see startHttpServer) also stops the sessions and the extension jobs before calling back.
+    // HttpServer.close (see startHttpServer) lets /mcp requests in flight finish and stops the extension jobs before calling back.
     await new Promise<void>((resolve) => http.close(() => resolve()));
   }
 }
@@ -117,7 +146,9 @@ export async function main(env: Env = process.env): Promise<void> {
 
   if (transport === 'http') {
     // A stdin that closes (a detached container, a service manager) says nothing about an HTTP server.
-    httpServer = await startHttpServer(loadHttpConfig(env));
+    const httpConfig = loadHttpConfig(env);
+    for (const warning of proxyWarnings(httpConfig)) console.error(`Warning: ${warning}`);
+    httpServer = await startHttpServer(httpConfig);
     return;
   }
 

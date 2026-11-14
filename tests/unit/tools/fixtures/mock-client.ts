@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import type { YnabClient } from '../../../../src/services/ynab-client.js';
 
 /**
  * Default rate-limiter status used by system/health-check tools.
@@ -23,6 +24,7 @@ export function createMockClient() {
     getDefaultBudgetId: vi.fn(() => 'test-budget-id'),
     isReadOnly: vi.fn(() => true),
     getRateLimitStatus: vi.fn(() => ({ ...defaultRateLimitStatus })),
+    getUpstreamStatus: vi.fn((): ReturnType<YnabClient['getUpstreamStatus']> => ({ circuit: undefined, cache: undefined })),
     getServerKnowledge: vi.fn((): number | undefined => undefined),
     updateServerKnowledge: vi.fn(),
 

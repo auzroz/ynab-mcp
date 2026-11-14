@@ -145,7 +145,7 @@ async function issueTokens(
   return { clientId, access: res.body.access_token, refresh: res.body.refresh_token };
 }
 
-/** A non-initialize POST with no session: 400 means the bearer check passed. */
+/** A non-initialize POST with no session: served (200) means the bearer check passed (stateless /mcp). */
 async function probeMcp(app: Express, accessToken: string): Promise<request.Response> {
   return request(app)
     .post('/mcp')
@@ -191,7 +191,7 @@ describe('/token resource and scope checks', () => {
       authorize: { resource: RESOURCE },
       token: { resource: RESOURCE },
     });
-    expect((await probeMcp(app, access)).status).toBe(400);
+    expect((await probeMcp(app, access)).status).toBe(200);
 
     const init = await request(app)
       .post('/mcp')
@@ -199,7 +199,7 @@ describe('/token resource and scope checks', () => {
       .set('Accept', 'application/json, text/event-stream')
       .send(initializeBody);
     expect(init.status).toBe(200);
-    expect(init.headers['mcp-session-id']).toBeTruthy();
+    expect(init.headers['mcp-session-id']).toBeUndefined();
   });
 
   it('rejects a token request whose resource differs from the authorized one', async () => {
@@ -334,7 +334,7 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('/mcp with shared SQLite st
     );
     const { access } = await issueTokens(appA, { authorize: { resource: RESOURCE } });
 
-    expect((await probeMcp(appA, access)).status).toBe(400);
+    expect((await probeMcp(appA, access)).status).toBe(200);
     const res = await probeMcp(appB, access);
     expect(res.status).toBe(401);
     expect(res.headers['www-authenticate']).toContain('error="invalid_token"');

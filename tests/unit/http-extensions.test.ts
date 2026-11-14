@@ -98,12 +98,16 @@ describe('route extensions', () => {
   it('never runs for /mcp or under it, so it cannot get ahead of the bearer check (oauth mode)', async () => {
     const { app } = await buildHttpApp(oauthConfig(), { routes: [echoRoute()] });
     for (const path of ['/mcp/ext-probe', '/MCP/ext-probe', '/mcp/ext-probe/']) {
+      // The MCP endpoint is exactly /mcp (ADR-0001 D1); under it nothing
+      // answers, the extension's handler included.
       const res = await request(app).get(path);
-      expect(res.status, path).toBe(401);
-      expect(res.headers['www-authenticate'], path).toContain('Bearer');
+      expect(res.status, path).toBe(404);
+      expect(res.text, path).not.toContain('"ok":true');
     }
     // /mcp itself is unchanged: still the bearer check, not the extension's handler.
-    expect((await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' })).status).toBe(401);
+    const mcp = await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+    expect(mcp.status).toBe(401);
+    expect(mcp.headers['www-authenticate']).toContain('Bearer');
     // The module's other routes still answer.
     expect((await request(app).get('/ext/echo')).status).toBe(200);
   });
@@ -111,8 +115,10 @@ describe('route extensions', () => {
   it('never runs for /mcp or under it (header mode)', async () => {
     const { app } = await buildHttpApp(makeHttpConfig(), { routes: [echoRoute()] });
     expect((await request(app).get('/mcp/ext-probe')).status).toBe(404);
-    // /mcp's own handler answers: no session, not an initialize.
-    expect((await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' })).status).toBe(400);
+    // /mcp's own pipeline answers: no YNAB token.
+    const mcp = await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+    expect(mcp.status).toBe(401);
+    expect(mcp.text).not.toContain('"ok":true');
   });
 });
 

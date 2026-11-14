@@ -148,7 +148,9 @@ describe('HTTP app wiring (header mode)', () => {
       .set('Accept', 'application/json, text/event-stream')
       .send(initializeBody);
     expect(res.status).toBeLessThan(400);
-    expect(res.headers['mcp-session-id']).toBeDefined();
+    // Served: the initialize result (stateless, so no session id).
+    expect(res.text).toContain('"serverInfo"');
+    expect(res.headers['mcp-session-id']).toBeUndefined();
   });
 
   it('is checked before body parsing and session lookup', async () => {

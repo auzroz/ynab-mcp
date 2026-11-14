@@ -319,6 +319,11 @@ export function validateClientMetadata(body: unknown, policy: ClientMetadataPoli
     const issue = parsed.error.issues[0];
     const where = issue ? fieldPath(issue.path) : '';
     const message = issue?.message ?? 'is invalid';
+    // Too many redirect URIs is a problem with the list, not with any one URI:
+    // invalid_client_metadata, as the /register host limit has always answered it.
+    if (issue?.code === 'too_big' && issue.path.length === 1 && issue.path[0] === 'redirect_uris') {
+      return metadataError(`redirect_uris: ${message}`);
+    }
     if (issue?.path[0] === 'redirect_uris') {
       return redirectError(`redirect_uris: ${'redirect_uris' in body ? message : 'is required'}`);
     }
