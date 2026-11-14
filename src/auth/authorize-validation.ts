@@ -3,16 +3,21 @@
  * checked ahead of the handler (gate G21), plus the refusal of grandfathered
  * clients with a plain-http redirect URI.
  *
- * For a request whose client and redirect URI are known (the handler's own
- * first checks; anything else passes through for the handler's 400 JSON):
+ * A `client_id` that is missing, empty, longer than MAX_CLIENT_ID_LENGTH or
+ * repeated passes through, unlooked-up, for the handler's 400 JSON; so does an
+ * unknown client. For a known client:
  *
  *   1. **Grandfathered clients.** A stored client is checked against today's
  *      registration rules (client-metadata.ts checkStoredClient). One with a
  *      non-loopback `http://` redirect URI is refused here, on this server's
  *      page and never by redirect; its other rule failures are logged once
  *      per process and the client keeps working (#55, batch 3).
- *   2. The context (redirect URI and whether errors may redirect there) is
- *      recorded for the authorize-guard stage.
+ *   2. **The redirect URI.** A requested one must match a registered one
+ *      exactly, except the port of an `http://` loopback URI
+ *      (client-metadata.ts redirectUriMatches); otherwise the request gets the
+ *      handler's direct 400, never a redirect. The context (redirect URI and
+ *      whether errors may redirect there) is recorded for the authorize-guard
+ *      stage.
  *   3. `state`: one string of at most MAX_STATE_LENGTH characters.
  *   4. `code_challenge`: exactly 43 base64url characters (an S256 challenge).
  *   5. `scope`: at most MAX_SCOPES space-separated values. Unknown values are
@@ -26,6 +31,7 @@
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import { z } from 'zod';
 import { checkStoredClient, errorsMayRedirect, redirectUriMatches, type RedirectPolicy } from './client-metadata.js';
 import {
   sendAuthorizationError,
@@ -34,6 +40,14 @@ import {
   type AuthorizationError,
   type AuthorizeContext,
 } from './authorize-guard.js';
+
+/**
+ * The longest `client_id` looked up. Ours are UUIDs (36 characters); a longer
+ * or empty value never reaches storage from this stage.
+ */
+export const MAX_CLIENT_ID_LENGTH = 255;
+
+const ClientIdSchema = z.string().min(1).max(MAX_CLIENT_ID_LENGTH);
 
 /** The longest `state` accepted (#55). */
 export const MAX_STATE_LENGTH = 512;
@@ -97,15 +111,27 @@ function setParam(req: Request, name: string, value: string | undefined): void {
   Object.defineProperty(req, 'query', { value: query, configurable: true, enumerable: true, writable: true });
 }
 
-/** The redirect URI the handler will use, by its rules, or undefined when it will refuse the request first. */
-function resolveRedirectUri(requested: unknown, registered: unknown): string | undefined {
-  if (!Array.isArray(registered)) return undefined;
+/**
+ * The redirect URI this authorization returns to:
+ *   - `resolved`: the requested one, matching a registered one exactly (or an
+ *     http loopback one on another port), or the only registered one when
+ *     none was requested;
+ *   - `unregistered`: a requested URI that matches none (redirectUriMatches is
+ *     stricter than the handler's matcher, so this stage answers it);
+ *   - `handler`: anything the handler refuses itself (no URI with several
+ *     registered, a value that isn't a URL, a malformed client row).
+ */
+type RedirectResolution = { kind: 'resolved'; uri: string } | { kind: 'unregistered' } | { kind: 'handler' };
+
+function resolveRedirectUri(requested: unknown, registered: unknown): RedirectResolution {
+  if (!Array.isArray(registered)) return { kind: 'handler' };
   const uris = registered.filter((u): u is string => typeof u === 'string');
-  let uri: string | undefined;
-  if (requested === undefined) uri = uris.length === 1 ? uris[0] : undefined;
-  else if (typeof requested === 'string' && uris.some((r) => redirectUriMatches(requested, r))) uri = requested;
-  if (uri === undefined || !URL.canParse(uri)) return undefined;
-  return uri;
+  if (requested === undefined) {
+    const only = uris.length === 1 ? uris[0] : undefined;
+    return only !== undefined && URL.canParse(only) ? { kind: 'resolved', uri: only } : { kind: 'handler' };
+  }
+  if (typeof requested !== 'string' || !URL.canParse(requested)) return { kind: 'handler' };
+  return uris.some((r) => redirectUriMatches(requested, r)) ? { kind: 'resolved', uri: requested } : { kind: 'unregistered' };
 }
 
 const PLAIN_HTTP_REFUSED =
@@ -129,11 +155,13 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
       return;
     }
     const params = paramsOf(req);
-    const clientId = params?.['client_id'];
-    if (params === undefined || typeof clientId !== 'string') {
+    const parsedClientId = ClientIdSchema.safeParse(params?.['client_id']);
+    // Missing, empty, overlong or repeated: the handler's 400, with no lookup here.
+    if (params === undefined || !parsedClientId.success) {
       next();
       return;
     }
+    const clientId = parsedClientId.data;
 
     let client: Record<string, unknown> | undefined;
     try {
@@ -167,12 +195,20 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
       );
     }
 
-    // 2. The context, once the handler would accept the client and redirect URI.
-    const redirectUri = resolveRedirectUri(params['redirect_uri'], client['redirect_uris']);
-    if (redirectUri === undefined) {
+    // 2. The context, once the client and redirect URI are accepted. An
+    // unregistered redirect URI is refused the way the handler refuses one:
+    // a direct 400, never a redirect.
+    const resolution = resolveRedirectUri(params['redirect_uri'], client['redirect_uris']);
+    if (resolution.kind === 'unregistered') {
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(400).json({ error: 'invalid_request', error_description: 'Unregistered redirect_uri' });
+      return;
+    }
+    if (resolution.kind === 'handler') {
       next();
       return;
     }
+    const redirectUri = resolution.uri;
     const ctx: AuthorizeContext = { redirectUri, mayRedirect: errorsMayRedirect(redirectUri, policy), state: undefined };
     setAuthorizeContext(res, ctx);
     const fail = (err: AuthorizationError): void => sendAuthorizationError(res, ctx, err, issuer);

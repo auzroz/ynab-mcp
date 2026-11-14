@@ -92,13 +92,48 @@ describe('checkRedirectUri', () => {
   });
 });
 
-describe('redirectUriMatches (the handler rule, for resolution)', () => {
-  it('matches exactly, or loopback on any port', () => {
+describe('redirectUriMatches: exact, except the port of an http loopback URI (RFC 8252 7.3)', () => {
+  const REG = 'http://127.0.0.1:1234/cb';
+
+  it('matches the exact string', () => {
     expect(redirectUriMatches('https://c.example/cb', 'https://c.example/cb')).toBe(true);
-    expect(redirectUriMatches('https://c.example:444/cb', 'https://c.example/cb')).toBe(false);
+    expect(redirectUriMatches(REG, REG)).toBe(true);
+  });
+
+  it('accepts an http loopback URI on another port, and nothing else that differs', () => {
+    expect(redirectUriMatches('http://127.0.0.1:5555/cb', REG)).toBe(true);
+    expect(redirectUriMatches('http://127.0.0.1/cb', REG)).toBe(true);
     expect(redirectUriMatches('http://localhost:5555/cb', 'http://localhost/cb')).toBe(true);
-    expect(redirectUriMatches('http://localhost:5555/other', 'http://localhost/cb')).toBe(false);
-    expect(redirectUriMatches('http://127.0.0.1:5555/cb', 'http://localhost/cb')).toBe(false);
+    expect(redirectUriMatches('http://[::1]:5555/cb?x=1', 'http://[::1]/cb?x=1')).toBe(true);
+  });
+
+  it('refuses a fragment, even on the same port', () => {
+    expect(redirectUriMatches('http://127.0.0.1:1234/cb#extra', REG)).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:1234/cb#', REG)).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:5555/cb#extra', REG)).toBe(false);
+  });
+
+  it('refuses userinfo', () => {
+    expect(redirectUriMatches('http://user@127.0.0.1:1234/cb', REG)).toBe(false);
+    expect(redirectUriMatches('http://user:pw@127.0.0.1:5555/cb', REG)).toBe(false);
+  });
+
+  it('refuses a different path or query', () => {
+    expect(redirectUriMatches('http://127.0.0.1:1234/other', REG)).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:1234/cb/', REG)).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:1234/cb?x=1', REG)).toBe(false);
+    expect(redirectUriMatches('http://127.0.0.1:5555/cb?x=2', 'http://127.0.0.1/cb?x=1')).toBe(false);
+  });
+
+  it('refuses another loopback host and another scheme', () => {
+    expect(redirectUriMatches('http://localhost:1234/cb', REG)).toBe(false);
+    expect(redirectUriMatches('https://127.0.0.1:1234/cb', REG)).toBe(false);
+  });
+
+  it('refuses an https loopback URI on another port, and any non-loopback port change', () => {
+    expect(redirectUriMatches('https://localhost:5555/cb', 'https://localhost/cb')).toBe(false);
+    expect(redirectUriMatches('https://127.0.0.1:5555/cb', 'https://127.0.0.1:1234/cb')).toBe(false);
+    expect(redirectUriMatches('https://c.example:444/cb', 'https://c.example/cb')).toBe(false);
   });
 });
 

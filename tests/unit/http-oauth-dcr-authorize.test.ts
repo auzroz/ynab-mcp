@@ -319,6 +319,39 @@ describe('/authorize bounds (55a)', () => {
     expect(res.text).not.toContain('db.internal');
   });
 
+  describe('redirect_uri matching (exact, except an http loopback port)', () => {
+    const REG = 'http://127.0.0.1:1234/cb';
+
+    it.each([
+      ['a fragment', 'http://127.0.0.1:1234/cb#extra'],
+      ['userinfo', 'http://user@127.0.0.1:1234/cb'],
+      ['a different path', 'http://127.0.0.1:1234/other'],
+      ['a different query', 'http://127.0.0.1:1234/cb?x=1'],
+    ])('refuses %s with a direct 400 before the handler', async (_name, requested) => {
+      const clientId = await register([REG]);
+      const save = vi.spyOn(storage(), 'savePendingAuth');
+      const res = await authorize(clientId, requested);
+      expect(res.status).toBe(400);
+      expect(res.headers['location']).toBeUndefined();
+      expect(res.body).toEqual({ error: 'invalid_request', error_description: 'Unregistered redirect_uri' });
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    it('refuses an https loopback redirect URI on another port', async () => {
+      const clientId = await register(['https://localhost:1234/cb']);
+      const res = await authorize(clientId, 'https://localhost:5555/cb');
+      expect(res.status).toBe(400);
+      expect(res.body.error_description).toBe('Unregistered redirect_uri');
+    });
+
+    it('accepts an http loopback redirect URI on another port', async () => {
+      const clientId = await register([REG]);
+      const res = await authorize(clientId, 'http://127.0.0.1:5555/cb');
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('returned to <strong>127.0.0.1:5555</strong>');
+    });
+  });
+
   it('leaves the handler 400 JSON for an unknown client and an unregistered redirect URI', async () => {
     const unknown = await authorize('no-such-client', CALLBACK);
     expect(unknown.status).toBe(400);

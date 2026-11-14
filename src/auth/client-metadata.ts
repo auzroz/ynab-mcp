@@ -144,18 +144,26 @@ export function isPlainHttpRedirectUri(raw: string): boolean {
 }
 
 /**
- * Whether a requested redirect URI matches a registered one: exactly, or for
- * loopback URIs on any port (RFC 8252 section 7.3), the same rule as
- * server-legacy's /authorize and RFC 8252.
+ * Whether a requested redirect URI matches a registered one (RFC 6749
+ * section 3.1.2.3, RFC 9700 section 2.1): the exact string, or, for an
+ * `http://` loopback redirect URI only, the same URI on another port (RFC 8252
+ * section 7.3, for a native app's ephemeral port). Nothing else may differ:
+ * scheme, userinfo, host, path and query must be equal, and neither may carry
+ * a fragment. Stricter than server-legacy's matcher, which also relaxes the
+ * port for https loopback URIs and ignores userinfo and fragments; the
+ * authorize-validation stage refuses what this refuses before the handler
+ * runs.
  */
 export function redirectUriMatches(requested: string, registered: string): boolean {
   if (requested === registered) return true;
+  if (requested.includes('#') || registered.includes('#')) return false;
   const req = parseUrl(requested);
   const reg = parseUrl(registered);
   if (req === undefined || reg === undefined) return false;
-  if (!LOOPBACK_HOSTNAMES.has(req.hostname) || !LOOPBACK_HOSTNAMES.has(reg.hostname)) return false;
+  if (req.protocol !== 'http:' || reg.protocol !== 'http:' || !LOOPBACK_HOSTNAMES.has(reg.hostname)) return false;
   return (
-    req.protocol === reg.protocol &&
+    req.username === reg.username &&
+    req.password === reg.password &&
     req.hostname === reg.hostname &&
     req.pathname === reg.pathname &&
     req.search === reg.search
