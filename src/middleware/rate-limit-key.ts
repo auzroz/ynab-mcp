@@ -59,58 +59,53 @@ export function clientKey(req: Request, options: ClientKeyOptions, subject: KeyS
 }
 
 /**
- * The client_id an OAuth request names: the HTTP Basic user (RFC 6749 2.3.1),
- * else the `client_id` body field, else the query's (`/authorize`). Strings
- * only; anything else counts as no client_id.
+ * The client_id of a /token or /revoke request: the `client_id` body field,
+ * which is the one client authentication checks (HTTP Basic is not read
+ * there, so it must not pick the bucket either). Strings only; anything else
+ * counts as no client_id.
  */
-export function requestClientId(req: Request): string | undefined {
-  const auth = req.header('authorization');
-  if (auth && /^basic /i.test(auth)) {
-    try {
-      const decoded = Buffer.from(auth.slice(6).trim(), 'base64').toString('utf8');
-      const user = decoded.split(':', 1)[0];
-      if (user) return safeDecode(user);
-    } catch {
-      // Not a usable Basic header: fall through to the fields.
-    }
-  }
+export function bodyClientId(req: Request): string | undefined {
   const body = req.body as { client_id?: unknown } | undefined;
-  if (typeof body?.client_id === 'string' && body.client_id) return body.client_id;
-  const q = req.query['client_id'];
-  if (typeof q === 'string' && q) return q;
-  return undefined;
+  return typeof body?.client_id === 'string' && body.client_id ? body.client_id : undefined;
 }
 
-/** RFC 6749 form-encodes the Basic user; decode it, or keep it raw when it isn't valid. */
-function safeDecode(value: string): string {
-  try {
-    return decodeURIComponent(value.replace(/\+/g, ' '));
-  } catch {
-    return value;
-  }
+/**
+ * The client_id of an /authorize request, read where the SDK's handler reads
+ * it: the query on GET, the (already parsed) body on POST. Basic credentials
+ * are never consulted.
+ */
+export function authorizeClientId(req: Request): string | undefined {
+  if (req.method === 'POST') return bodyClientId(req);
+  const q = req.query['client_id'];
+  return typeof q === 'string' && q ? q : undefined;
 }
 
 /**
  * The /register keys for a registration body: one per distinct redirect URI
  * host, so adding a second host does not dodge the first's budget.
  *
- *  - A public http(s) host keys by the host alone: `host:<hostname>` (hosted
- *    MCP clients register from one small IP range but share a redirect host).
+ *  - A public http(s) host keys by the host alone (hosted MCP clients register
+ *    from one small IP range but share a redirect host). This is the decided
+ *    trade-off: an unverified host can be named by anyone, so the per-IP limit
+ *    is what bounds a caller; keying verified hosts by host and IP lands with
+ *    #55.
  *  - A loopback host (localhost, 127.x, ::1) is shared by every native client
  *    on every machine, so it keys by (host, IP): `loopback|ip:<ip>`.
  *  - A private-use scheme (`com.example.app:/cb`) keys by (scheme, IP).
  *  - A body without a usable redirect URI keys by IP: `no-redirect|ip:<ip>`.
  *
- * At most MAX_REDIRECT_HOSTS distinct keys are returned (the body is
- * untrusted, and the DCR validator limits the count anyway).
+ * Returns undefined for a list longer than MAX_REDIRECT_URIS: the caller
+ * refuses it, rather than counting part of it, so padding the list ahead of a
+ * host cannot leave that host out of the count.
  */
-export const MAX_REDIRECT_HOSTS = 10;
+export const MAX_REDIRECT_URIS = 10;
 
-export function redirectHostKeys(body: unknown, ip: string): string[] {
+export function redirectHostKeys(body: unknown, ip: string): string[] | undefined {
   const uris = (body as { redirect_uris?: unknown } | undefined)?.redirect_uris;
   const keys = new Set<string>();
   if (Array.isArray(uris)) {
-    for (const uri of uris.slice(0, MAX_REDIRECT_HOSTS * 2)) {
+    if (uris.length > MAX_REDIRECT_URIS) return undefined;
+    for (const uri of uris) {
       if (typeof uri !== 'string') continue;
       let url: URL;
       try {
@@ -124,7 +119,6 @@ export function redirectHostKeys(body: unknown, ip: string): string[] {
       } else {
         keys.add(`scheme:${url.protocol}|ip:${ip}`);
       }
-      if (keys.size >= MAX_REDIRECT_HOSTS) break;
     }
   }
   return keys.size > 0 ? [...keys] : [`no-redirect|ip:${ip}`];

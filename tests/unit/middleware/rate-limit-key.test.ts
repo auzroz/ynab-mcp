@@ -4,8 +4,9 @@ import {
   clientIp,
   clientKey,
   redirectHostKeys,
-  requestClientId,
-  MAX_REDIRECT_HOSTS,
+  bodyClientId,
+  authorizeClientId,
+  MAX_REDIRECT_URIS,
 } from '../../../src/middleware/rate-limit-key.js';
 
 /** A request as far as the key functions read it. */
@@ -98,16 +99,22 @@ describe('CF-Connecting-IP', () => {
   });
 });
 
-describe('requestClientId', () => {
-  it('reads the Basic user, then the body, then the query', () => {
-    const basic = `Basic ${Buffer.from('basic-id:secret').toString('base64')}`;
-    expect(requestClientId(fakeReq({ headers: { Authorization: basic }, body: { client_id: 'body-id' } }))).toBe('basic-id');
-    expect(requestClientId(fakeReq({ body: { client_id: 'body-id' }, query: { client_id: 'q' } }))).toBe('body-id');
-    expect(requestClientId(fakeReq({ query: { client_id: 'q-id' } }))).toBe('q-id');
+describe('client_id extractors', () => {
+  const basic = `Basic ${Buffer.from('basic-id:secret').toString('base64')}`;
+  it('bodyClientId reads the body only: Basic and the query never pick the bucket', () => {
+    expect(bodyClientId(fakeReq({ headers: { Authorization: basic }, body: { client_id: 'body-id' }, query: { client_id: 'q' } }))).toBe('body-id');
+    expect(bodyClientId(fakeReq({ headers: { Authorization: basic }, query: { client_id: 'q' } }))).toBeUndefined();
+  });
+  it('authorizeClientId reads the query on GET and the body on POST, never Basic', () => {
+    const get = fakeReq({ headers: { Authorization: basic }, query: { client_id: 'q-id' }, body: { client_id: 'body-id' } });
+    expect(authorizeClientId(get)).toBe('q-id');
+    const post = { ...fakeReq({ headers: { Authorization: basic }, query: { client_id: 'q-id' }, body: { client_id: 'body-id' } }), method: 'POST' } as Request;
+    expect(authorizeClientId(post)).toBe('body-id');
   });
   it('ignores non-string values', () => {
-    expect(requestClientId(fakeReq({ body: { client_id: ['a'] }, query: { client_id: ['b'] } }))).toBeUndefined();
-    expect(requestClientId(fakeReq({ body: 'x' }))).toBeUndefined();
+    expect(bodyClientId(fakeReq({ body: { client_id: ['a'] } }))).toBeUndefined();
+    expect(bodyClientId(fakeReq({ body: 'x' }))).toBeUndefined();
+    expect(authorizeClientId(fakeReq({ query: { client_id: ['b'] } }))).toBeUndefined();
   });
 });
 
@@ -129,9 +136,10 @@ describe('redirectHostKeys (/register)', () => {
       'host:b.example',
     ]);
   });
-  it('caps the number of hosts counted', () => {
-    const uris = Array.from({ length: 50 }, (_, i) => `https://h${i}.example/cb`);
-    expect(redirectHostKeys({ redirect_uris: uris }, ip)).toHaveLength(MAX_REDIRECT_HOSTS);
+  it('refuses a list over the cap instead of counting part of it', () => {
+    const uris = Array.from({ length: MAX_REDIRECT_URIS + 1 }, (_, i) => `https://h${i}.example/cb`);
+    expect(redirectHostKeys({ redirect_uris: uris }, ip)).toBeUndefined();
+    expect(redirectHostKeys({ redirect_uris: uris.slice(0, MAX_REDIRECT_URIS) }, ip)).toHaveLength(MAX_REDIRECT_URIS);
   });
   it('falls back to the IP when the body has no usable redirect URI', () => {
     for (const body of [undefined, {}, { redirect_uris: 'x' }, { redirect_uris: [1, 'not a url'] }]) {

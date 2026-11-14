@@ -47,7 +47,14 @@ import { clientAuthentication } from './client-auth.js';
 import type { TokenHasher } from './token-hash.js';
 import type { YnabOAuthConfig } from './ynab-oauth.js';
 import { issOnAuthorizationRedirects } from '../middleware/iss-redirect.js';
-import { keyedLimiter, registerHostLimiter, registerIpLimiter } from '../middleware/rate-limiters.js';
+import {
+  CEILING_FACTOR,
+  keyedLimiter,
+  registerHostLimiter,
+  registerIpLimiter,
+  type LimiterStoreFactory,
+} from '../middleware/rate-limiters.js';
+import { authorizeClientId, bodyClientId } from '../middleware/rate-limit-key.js';
 import {
   MAX_JSON_BODY,
   mountStages,
@@ -101,6 +108,8 @@ export interface AuthorizationServerOptions {
   ynab: YnabOAuthConfig;
   /** Tests only: reports each stage as a request enters it (see StageObserver). */
   observeStage?: StageObserver | undefined;
+  /** A shared store for the rate limiters (#67b); the in-memory default when absent. */
+  limiterStore?: LimiterStoreFactory | undefined;
 }
 
 export interface AuthorizationServer {
@@ -182,7 +191,7 @@ export function mountAuthorizationServer(
   app: Router,
   options: AuthorizationServerOptions
 ): AuthorizationServer {
-  const { config, storage, encryptor, tokenHasher, ynab, observeStage } = options;
+  const { config, storage, encryptor, tokenHasher, ynab, observeStage, limiterStore } = options;
   const publicUrl = config.publicUrl as string;
   // The protected resource (RFC 8707 audience) every token is bound to.
   const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
@@ -261,11 +270,12 @@ export function mountAuthorizationServer(
   const oauthLegLimiter = stage(
     'oauth-leg-limiter',
     ...keyedLimiter({
+      name: 'oauth-leg',
       windowMs: WINDOW_15_MIN,
       limit: OAUTH_LEG_RATE_LIMIT,
       message: 'Too many authorization requests. Please wait and try again.',
       key: keyOptions,
-      byClient: false,
+      store: limiterStore,
     })
   );
 
@@ -280,24 +290,43 @@ export function mountAuthorizationServer(
     stage(
       'route-limiter',
       ...keyedLimiter({
+        name: `route:${what}`,
         windowMs: WINDOW_15_MIN,
         limit: CLIENT_AUTH_ROUTE_RATE_LIMIT,
         message: tooMany(what),
         key: keyOptions,
-        byClient: true,
+        // The body client_id: the one client authentication checks.
+        clientId: bodyClientId,
+        store: limiterStore,
         skip: (req) => req.method !== 'POST',
       })
     );
-  // /authorize: the SDK's 100 per 15 minutes, now keyed by (client_id, IP)
-  // from the query, ahead of the parser.
+  // /authorize: the SDK's 100 per 15 minutes. An IP-only guard ahead of the
+  // parser (ten times the budget, so a limited request costs no parsing), then
+  // the (client_id, IP) budget once the form body is read, so a POST is keyed
+  // by its body's client_id as the SDK reads it; a GET by its query's.
+  const authorizeIpLimiter = stage(
+    'ip-limiter',
+    ...keyedLimiter({
+      name: 'authorize:ip',
+      windowMs: WINDOW_15_MIN,
+      limit: AUTHORIZE_RATE_LIMIT * CEILING_FACTOR,
+      message: tooMany('authorization'),
+      key: keyOptions,
+      store: limiterStore,
+    })
+  );
   const authorizeLimiter = stage(
     'route-limiter',
     ...keyedLimiter({
+      name: 'authorize',
       windowMs: WINDOW_15_MIN,
       limit: AUTHORIZE_RATE_LIMIT,
       message: tooMany('authorization'),
       key: keyOptions,
-      byClient: true,
+      clientId: authorizeClientId,
+      ceiling: false,
+      store: limiterStore,
     })
   );
   // /register: a per-IP limit above the SDK's 20/h before the body is read,
@@ -308,9 +337,14 @@ export function mountAuthorizationServer(
     perIp: config.registerRateLimitPerIp,
     perHost: config.registerRateLimitPerHost,
     message: tooMany('client registration'),
+    tooManyRedirects: {
+      error: 'invalid_client_metadata',
+      error_description: 'Too many redirect_uris',
+    },
     key: keyOptions,
+    store: limiterStore,
   };
-  const registerIp = stage('route-limiter', ...registerIpLimiter(registerLimits));
+  const registerIp = stage('ip-limiter', ...registerIpLimiter(registerLimits));
   const registerHost = stage('register-host-limiter', registerHostLimiter(registerLimits));
   const clientAuth = (): Stage => stage('client-auth', clientAuthentication(provider.clientsStore));
   // The SDK's handlers send `Access-Control-Allow-Origin: *` (its cors()
@@ -340,11 +374,11 @@ export function mountAuthorizationServer(
     { path: '/.well-known/oauth-authorization-server', parser: boundedParser(), router: metadata(oauthMetadata) },
     {
       path: pathOf(oauthMetadata.authorization_endpoint),
-      limiters: [authorizeLimiter],
-      parser: boundedParser(),
+      limiters: [authorizeIpLimiter],
+      parser: boundedFormParser(),
       // The SDK's /authorize handler redirects errors to the client without
-      // `iss`; this adds it to every redirect from the authorization endpoint.
-      slots: [stage('iss-redirect', issOnAuthorizationRedirects(oauthMetadata.issuer))],
+      // `iss`; iss-redirect adds it to every redirect from the endpoint.
+      slots: [authorizeLimiter, stage('iss-redirect', issOnAuthorizationRedirects(oauthMetadata.issuer))],
       router: sdkRouter(authorizationHandler({ provider, rateLimit: false })),
     },
     {

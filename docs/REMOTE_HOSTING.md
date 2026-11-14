@@ -318,6 +318,13 @@ client could have written them.
 
 Rules that apply to every row:
 
+- With two or more proxies, **each downstream proxy must append to the
+  `X-Forwarded-For` chain it received, not overwrite it.** A proxy that
+  replaces the header with its own socket peer discards the earlier addresses,
+  and no hop count can recover them: every client then shares the address of
+  the first proxy. (nginx: `proxy_set_header X-Forwarded-For
+  $proxy_add_x_forwarded_for;`. Caddy and Traefik append by default.)
+
 - `TRUST_PROXY` is the number of proxies **between the client and this server**
   (Cloudflare counts as one). A proxy of yours that overwrites
   `X-Forwarded-For` instead of appending is still one hop.
@@ -358,8 +365,16 @@ Loopback redirects (`localhost`, `127.0.0.1`, `[::1]`) and private-use schemes
 are shared by native clients everywhere, so they are keyed by host **and**
 address instead of by host alone.
 
-The `client_id` for `/token` and `/revoke` is the HTTP Basic user or the
-`client_id` form field; for `/authorize`, the query parameter.
+The `client_id` for `/token` and `/revoke` is the `client_id` form field (the
+one client authentication checks; an HTTP Basic user is not read). For
+`/authorize` it is the query parameter on GET and the form field on POST.
+`/authorize` also has an address-only guard of 1000 per 15 minutes ahead of
+body parsing. A `/register` body with more than 10 `redirect_uris` is refused
+with 400 `invalid_client_metadata`.
+
+An unverified redirect host is shared across addresses by design, so someone
+can spend a host's `/register` budget by naming it; the per-address limit
+bounds how fast. Keying verified hosts by host and address lands with #55.
 
 ## Host and Origin validation
 

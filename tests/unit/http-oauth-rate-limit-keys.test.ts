@@ -129,14 +129,49 @@ describe('/revoke and /authorize', () => {
     expect((await revoke('198.51.100.2')).status).not.toBe(429);
   });
 
-  it('/authorize is keyed from the query client_id and the IP, ahead of the parser', async () => {
+  it('/authorize is keyed from the query client_id and the IP', async () => {
     const app = await createHttpApp(config({ trustProxy: 1 }));
-    const authorize = (xff: string, clientId: string) =>
-      request(app).get('/authorize').set('Host', HOST).set('X-Forwarded-For', xff).query({ client_id: clientId });
+    const authorize = (xff: string, clientId: string, headers: Record<string, string> = {}) =>
+      request(app).get('/authorize').set('Host', HOST).set('X-Forwarded-For', xff).set(headers).query({ client_id: clientId });
     for (let i = 0; i < AUTHORIZE_RATE_LIMIT; i++) await authorize('198.51.100.1', 'c');
     expect((await authorize('198.51.100.1', 'c')).status).toBe(429);
     expect((await authorize('198.51.100.2', 'c')).status).not.toBe(429);
     expect((await authorize('198.51.100.1', 'other')).status).not.toBe(429);
+    // Rotating a Basic user does not make a new bucket for the same client_id.
+    const basic = `Basic ${Buffer.from('rotated:x').toString('base64')}`;
+    expect((await authorize('198.51.100.1', 'c', { Authorization: basic })).status).toBe(429);
+  });
+
+  it('/authorize POST is keyed by its form body client_id', async () => {
+    const app = await createHttpApp(config({ trustProxy: 1 }));
+    const post = (clientId: string) =>
+      request(app).post('/authorize').set('Host', HOST).set('X-Forwarded-For', '198.51.100.1').type('form').send({ client_id: clientId });
+    for (let i = 0; i < AUTHORIZE_RATE_LIMIT; i++) await post('c');
+    expect((await post('c')).status).toBe(429);
+    expect((await post('other')).status).not.toBe(429);
+  });
+
+  it('/authorize has an IP-only guard ahead of the parser at ten times the budget', async () => {
+    const app = await createHttpApp(config({ trustProxy: 1 }));
+    const headers = { 'X-Forwarded-For': '198.51.100.1' };
+    for (let i = 0; i < AUTHORIZE_RATE_LIMIT * CEILING_FACTOR; i++) {
+      await request(app).get('/authorize').set('Host', HOST).set(headers).query({ client_id: `rot-${i}` });
+    }
+    expect((await request(app).get('/authorize').set('Host', HOST).set(headers).query({ client_id: 'rot-next' })).status).toBe(429);
+  });
+
+  it('/token ignores a rotating Basic user: the body client_id picks the bucket', async () => {
+    const app = await createHttpApp(config({ trustProxy: 1 }));
+    const send = (i: number) =>
+      request(app)
+        .post('/token')
+        .set('Host', HOST)
+        .set('X-Forwarded-For', '198.51.100.1')
+        .set('Authorization', `Basic ${Buffer.from(`rot-${i}:x`).toString('base64')}`)
+        .type('form')
+        .send({ grant_type: 'authorization_code', client_id: 'fixed' });
+    for (let i = 0; i < CLIENT_AUTH_ROUTE_RATE_LIMIT; i++) await send(i);
+    expect((await send(999)).status).toBe(429);
   });
 });
 
@@ -158,6 +193,16 @@ describe('/register: per-IP limit and per-redirect-host limit', () => {
     expect(limited.status).toBe(429);
     expect(limited.headers['access-control-allow-origin']).toBe('*');
     expect((await register(app, '198.51.100.2', 'https://h99.example/cb')).status).not.toBe(429);
+  });
+
+  it('refuses a registration with too many redirect URIs, and counts none of them', async () => {
+    const app = await createHttpApp(config({ trustProxy: 1, registerRateLimitPerHost: 1 }));
+    const uris = [...Array.from({ length: 11 }, (_, i) => `https://pad${i}.example/cb`), 'https://target.example/cb'];
+    const res = await request(app).post('/register').set('Host', HOST).set('X-Forwarded-For', '198.51.100.1').send({ redirect_uris: uris });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_client_metadata');
+    // The target host's budget is untouched.
+    expect((await register(app, '198.51.100.2', 'https://target.example/cb')).status).not.toBe(429);
   });
 
   it('limits one redirect host across IPs', async () => {
