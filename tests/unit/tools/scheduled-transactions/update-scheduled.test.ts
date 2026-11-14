@@ -60,7 +60,7 @@ describe('handleUpdateScheduledTransaction', () => {
       mockClient as never
     );
 
-    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
+    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget', { fresh: true });
     const body = mockClient.updateScheduledTransaction.mock.calls[0]![2];
     expect(body.scheduled_transaction).toMatchObject({
       account_id: ACCOUNT_ID,

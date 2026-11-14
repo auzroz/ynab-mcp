@@ -89,7 +89,7 @@ export async function handleSpendingAnalysis(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const months = validated.months ?? 3;
 
   // Calculate since_date using UTC to avoid timezone drift

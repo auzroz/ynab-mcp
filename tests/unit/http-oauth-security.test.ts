@@ -4,10 +4,11 @@
  *  - the federation legs only run in the browser that saw the consent page
  *    (no consent bypass by sending a victim a /oauth/ynab/start link);
  *  - write access comes from the token's own grant, not the user's latest consent;
- *  - an MCP session can only be used by the client and user that created it;
- *  - a session resolves the user's YNAB token per request (refreshed tokens are
- *    used; a lost grant fails calls with a generic error).
- * Only the YNAB network calls are mocked; createServerForUser is spied on.
+ *  - /mcp is stateless (ADR-0001): each request is served as the client and
+ *    user its own token names, at its own token's access level;
+ *  - each request resolves the user's YNAB token (refreshed tokens are used;
+ *    a lost grant refuses the request, or fails a call with a generic error).
+ * Only the YNAB network calls are mocked; createServerForRequest is spied on.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -30,7 +31,7 @@ vi.mock('../../src/auth/ynab-oauth.js', async () => {
 
 vi.mock('../../src/server.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/server.js')>('../../src/server.js');
-  return { ...actual, createServerForUser: vi.fn(actual.createServerForUser) };
+  return { ...actual, createServerForRequest: vi.fn(actual.createServerForRequest) };
 });
 
 import { createHttpApp } from '../../src/http.js';
@@ -43,7 +44,7 @@ import type { HttpConfig } from '../../src/config/environment.js';
 const exchangeCodeMock = vi.mocked(ynabOauth.exchangeCode);
 const getYnabUserIdMock = vi.mocked(ynabOauth.getYnabUserId);
 const refreshAccessTokenMock = vi.mocked(ynabOauth.refreshAccessToken);
-const createServerMock = vi.mocked(serverModule.createServerForUser);
+const createServerMock = vi.mocked(serverModule.createServerForRequest);
 
 const CALLBACK = 'https://client.example/cb';
 const ATTACKER_CALLBACK = 'https://attacker.example/cb';
@@ -162,12 +163,18 @@ function mcp(app: Express, method: 'post' | 'get' | 'delete', access: string, se
   return req;
 }
 
-async function initSession(app: Express, access: string): Promise<string> {
+/** An initialize, which a stateless server answers with no session id. */
+async function initialize(app: Express, access: string): Promise<void> {
   const res = await mcp(app, 'post', access).send(initializeBody);
   expect(res.status).toBe(200);
-  const sid = res.headers['mcp-session-id'] as string | undefined;
-  if (!sid) throw new Error('no session id');
-  return sid;
+  expect(res.headers['mcp-session-id']).toBeUndefined();
+}
+
+/** The context the last request's server was built from. */
+function lastContext(): serverModule.RequestContext {
+  const ctx = createServerMock.mock.calls.at(-1)?.[0];
+  if (!ctx) throw new Error('no server built');
+  return ctx;
 }
 
 const toolsList = { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} };
@@ -280,8 +287,8 @@ describe('consent cannot be skipped (browser binding)', () => {
 });
 
 describe('write access is per token grant', () => {
-  function readOnlyOfLastSession(): boolean | undefined {
-    return createServerMock.mock.calls.at(-1)?.[0].readOnly;
+  function readOnlyOfLastRequest(): boolean {
+    return lastContext().user.readOnly;
   }
 
   it("client A's read-only token stays read-only after the user connects client B read-write", async () => {
@@ -289,121 +296,107 @@ describe('write access is per token grant', () => {
     const a = await connect(app, 'read-only');
     const b = await connect(app, 'read-write');
 
-    await initSession(app, a.access);
-    expect(readOnlyOfLastSession()).toBe(true);
-    await initSession(app, b.access);
-    expect(readOnlyOfLastSession()).toBe(false);
+    await initialize(app, a.access);
+    expect(readOnlyOfLastRequest()).toBe(true);
+    await initialize(app, b.access);
+    expect(readOnlyOfLastRequest()).toBe(false);
+    // And A's next request is still read-only.
+    await mcp(app, 'post', a.access).send(toolsList);
+    expect(readOnlyOfLastRequest()).toBe(true);
   });
 
   it('a read-write grant is read-only when the user later reconnects YNAB read-only', async () => {
     const app = await createHttpApp(makeConfig());
     const b = await connect(app, 'read-write');
+    await initialize(app, b.access);
+    expect(readOnlyOfLastRequest()).toBe(false);
+    // The same token's next request after the read-only reconnect is read-only (D4).
     await connect(app, 'read-only');
-    await initSession(app, b.access);
-    expect(readOnlyOfLastSession()).toBe(true);
+    await mcp(app, 'post', b.access).send(toolsList);
+    expect(readOnlyOfLastRequest()).toBe(true);
   });
 
   it('YNAB_READ_ONLY=true overrides a read-write grant', async () => {
     const app = await createHttpApp(makeConfig({ readOnly: true }));
     const b = await connect(app, 'read-write');
-    await initSession(app, b.access);
-    expect(readOnlyOfLastSession()).toBe(true);
+    await initialize(app, b.access);
+    expect(readOnlyOfLastRequest()).toBe(true);
   });
 });
 
-describe('MCP sessions are bound to their creator', () => {
-  it("another user's token cannot use, stream from, or delete a session", async () => {
+describe('each request is served as the client and user of its own token', () => {
+  it("another user's token is served as that user, whatever session id it sends", async () => {
     const app = await createHttpApp(makeConfig());
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const alice = await connect(app, 'read-only');
     getYnabUserIdMock.mockResolvedValue('ynab-user-2');
     const bob = await connect(app, 'read-only');
-    const sid = await initSession(app, alice.access);
+    await initialize(app, alice.access);
+    const aliceCtx = lastContext();
 
-    const post = await mcp(app, 'post', bob.access, sid).send(toolsList);
-    expect(post.status).toBe(404);
-    expect(post.body.error.message).toBe('Session not found');
-    expect(JSON.stringify(post.body)).not.toContain('ynab_');
+    // A session id from before 0.5 (or anyone's) means nothing: Bob is Bob.
+    const post = await mcp(app, 'post', bob.access, 'alices-old-session-id').send(toolsList);
+    expect(post.status).toBe(200);
+    const bobCtx = lastContext();
+    expect(bobCtx.userKey).toBe('ynab-user-2');
+    expect(aliceCtx.userKey).toBe('ynab-user-1');
+    expect(bobCtx.components.auditLog).not.toBe(aliceCtx.components.auditLog);
+    expect(bobCtx.components.rateLimiter).not.toBe(aliceCtx.components.rateLimiter);
 
-    const get = await mcp(app, 'get', bob.access, sid);
-    expect(get.status).toBe(404);
-    expect(get.body.error.message).toBe('Session not found');
-
-    const del = await mcp(app, 'delete', bob.access, sid);
-    expect(del.status).toBe(404);
-
-    // Indistinguishable from an unknown session id.
-    const unknown = await mcp(app, 'post', bob.access, 'no-such-session').send(toolsList);
-    expect(unknown.status).toBe(post.status);
-    expect(unknown.body).toEqual(post.body);
-
-    // The owner's session survived the attempts.
-    const own = await mcp(app, 'post', alice.access, sid).send(toolsList);
-    expect(own.status).toBe(200);
-    expect(own.text).toContain('ynab_');
-
-    // Logged without identifiers.
-    const logged = errorSpy.mock.calls.flat().join(' ');
-    expect(logged).toContain('[Session] rejected');
-    expect(logged).not.toContain(sid);
-    expect(logged).not.toContain(bob.access);
-    errorSpy.mockRestore();
+    // There is no session to stream from or delete.
+    expect((await mcp(app, 'get', bob.access, 'alices-old-session-id')).status).toBe(405);
+    expect((await mcp(app, 'delete', bob.access, 'alices-old-session-id')).status).toBe(405);
   });
 
-  it("the same user's token from a different client cannot use the session", async () => {
+  it("the same user's token from a different client is served as that client", async () => {
     const app = await createHttpApp(makeConfig());
-    vi.spyOn(console, 'error').mockImplementation(() => {});
     const first = await connect(app, 'read-only');
     const second = await connect(app, 'read-only');
     expect(second.clientId).not.toBe(first.clientId);
-    const sid = await initSession(app, first.access);
-    const res = await mcp(app, 'post', second.access, sid).send(toolsList);
-    expect(res.status).toBe(404);
-    vi.mocked(console.error).mockRestore();
+    await initialize(app, first.access);
+    const firstCtx = lastContext();
+    const res = await mcp(app, 'post', second.access).send(toolsList);
+    expect(res.status).toBe(200);
+    const secondCtx = lastContext();
+    // Caps key on (client, user); the user's YNAB state is shared.
+    expect(firstCtx.clientId).toBe(first.clientId);
+    expect(secondCtx.clientId).toBe(second.clientId);
+    expect(secondCtx.userKey).toBe(firstCtx.userKey);
   });
 });
 
-describe('MCP sessions are bound to their access level', () => {
-  it('a read-only token of the same client and user cannot use a session a read-write token initialized', async () => {
+describe('each request has its own token\'s access level', () => {
+  it('a read-only token of the same client and user is read-only, before and after a read-write one', async () => {
     const app = await createHttpApp(makeConfig());
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const rw = await connect(app, 'read-write', 'read-write');
-    const sid = await initSession(app, rw.access);
-    expect(createServerMock.mock.calls.at(-1)?.[0].readOnly).toBe(false);
+    await initialize(app, rw.access);
+    expect(lastContext().user.readOnly).toBe(false);
 
     // Same client, same user, narrower token.
     const ro = await refresh(app, rw.clientId, rw.refresh, 'read-only');
     expect(ro.scope).toBe('read-only');
+    const post = await mcp(app, 'post', ro.access).send(toolsList);
+    expect(post.status).toBe(200);
+    expect(lastContext().user.readOnly).toBe(true);
+    expect(post.text).not.toContain('"name":"ynab_create_transaction"');
 
-    const post = await mcp(app, 'post', ro.access, sid).send(toolsList);
-    expect(post.status).toBe(404);
-    expect(post.body.error.message).toBe('Session not found');
-    const unknown = await mcp(app, 'post', ro.access, 'no-such-session').send(toolsList);
-    expect(post.body).toEqual(unknown.body);
-    const get = await mcp(app, 'get', ro.access, sid);
-    expect(get.status).toBe(404);
-    expect(get.body.error.message).toBe('Session not found');
-    const del = await mcp(app, 'delete', ro.access, sid);
-    expect(del.status).toBe(404);
-
-    // A read-write token from a later, same-level refresh keeps using the session.
+    // A read-write token from a later, same-level refresh is read-write again.
     const rw2 = await refresh(app, rw.clientId, ro.refresh);
     expect(rw2.scope).toBe('read-write');
-    const own = await mcp(app, 'post', rw2.access, sid).send(toolsList);
+    const own = await mcp(app, 'post', rw2.access).send(toolsList);
     expect(own.status).toBe(200);
-    expect(own.text).toContain('ynab_');
-    expect(errorSpy.mock.calls.flat().join(' ')).not.toContain(ro.access);
-    errorSpy.mockRestore();
+    expect(own.text).toContain('"name":"ynab_create_transaction"');
+    expect(lastContext().user.readOnly).toBe(false);
   });
 
+  // Title kept from 0.4 (WS7.4 protected list): "session" is now the token's next request.
   it('a token downscoped on refresh initializes a read-only session that refuses writes', async () => {
     const app = await createHttpApp(makeConfig());
     const rw = await connect(app, 'read-write', 'read-write');
     const ro = await refresh(app, rw.clientId, rw.refresh, 'read-only');
-    const sid = await initSession(app, ro.access);
-    expect(createServerMock.mock.calls.at(-1)?.[0].readOnly).toBe(true);
+    await initialize(app, ro.access);
+    expect(lastContext().user.readOnly).toBe(true);
 
-    const call = await mcp(app, 'post', ro.access, sid).send({
+    const call = await mcp(app, 'post', ro.access).send({
       jsonrpc: '2.0',
       id: 3,
       method: 'tools/call',
@@ -418,19 +411,19 @@ describe('MCP sessions are bound to their access level', () => {
 });
 
 describe('per-user state is keyed by YNAB user', () => {
-  it("one user's sessions from two clients share a rate limiter; another user's do not", async () => {
+  it("one user's requests from two clients share a rate limiter; another user's do not", async () => {
     const app = await createHttpApp(makeConfig());
     const first = await connect(app, 'read-only');
     const second = await connect(app, 'read-only');
     getYnabUserIdMock.mockResolvedValue('ynab-user-2');
     const bob = await connect(app, 'read-only');
 
-    await initSession(app, first.access);
-    const a = createServerMock.mock.calls.at(-1)?.[1];
-    await initSession(app, second.access);
-    const b = createServerMock.mock.calls.at(-1)?.[1];
-    await initSession(app, bob.access);
-    const c = createServerMock.mock.calls.at(-1)?.[1];
+    await initialize(app, first.access);
+    const a = lastContext().components;
+    await initialize(app, second.access);
+    const b = lastContext().components;
+    await initialize(app, bob.access);
+    const c = lastContext().components;
 
     expect(a?.rateLimiter).toBeDefined();
     expect(b?.rateLimiter).toBe(a?.rateLimiter);
@@ -482,13 +475,15 @@ describe('the YNAB token is resolved per request', () => {
     const app = await createHttpApp(makeConfig());
     const alice = await connect(app, 'read-only');
     rotateOnEveryResolve();
-    const sid = await initSession(app, alice.access); // resolves ya-1
+    await initialize(app, alice.access); // the request stage resolves ya-1
 
-    expect((await mcp(app, 'post', alice.access, sid).send(getUserCall(3))).status).toBe(200);
-    expect((await mcp(app, 'post', alice.access, sid).send(getUserCall(4))).status).toBe(200);
+    // Each request resolves the grant before its server is built (ya-2, ya-4),
+    // and the call resolves the token it sends to YNAB (ya-3, ya-5).
+    expect((await mcp(app, 'post', alice.access).send(getUserCall(3))).status).toBe(200);
+    expect((await mcp(app, 'post', alice.access).send(getUserCall(4))).status).toBe(200);
 
     const bearers = fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get('authorization'));
-    expect(bearers).toEqual(['Bearer ya-2', 'Bearer ya-3']);
+    expect(bearers).toEqual(['Bearer ya-3', 'Bearer ya-5']);
   });
 
   it('fails tool calls with a generic auth error once YNAB refuses the refresh', async () => {
@@ -496,16 +491,39 @@ describe('the YNAB token is resolved per request', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const alice = await connect(app, 'read-only');
     rotateOnEveryResolve();
-    const sid = await initSession(app, alice.access);
-    // The user revoked the app at YNAB: the stored refresh token no longer works.
-    refreshAccessTokenMock.mockRejectedValue(new Error('YNAB token request failed with status 400 (invalid_grant)'));
+    await initialize(app, alice.access);
+    // The request stage's resolve still gets a token; then the user revokes
+    // the app at YNAB and the call's own refresh is refused.
+    refreshAccessTokenMock
+      .mockImplementationOnce(async () => ({ accessToken: 'ya-x', refreshToken: 'yr-x', expiresAt: Date.now() + 30_000 }))
+      .mockRejectedValue(new Error('YNAB token request failed with status 400 (invalid_grant)'));
 
-    const call = await mcp(app, 'post', alice.access, sid).send(getUserCall(3));
+    const call = await mcp(app, 'post', alice.access).send(getUserCall(3));
     expect(call.status).toBe(200);
     expect(call.text).toContain('auth_error');
     expect(call.text).toContain('Could not get YNAB authorization for this request');
     expect(call.text).not.toContain('invalid_grant');
     expect(call.text).not.toContain('status 400');
+    expect(fetchMock).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('refuses the next request with the 401 challenge once YNAB refuses the refresh (G6)', async () => {
+    const app = await createHttpApp(makeConfig());
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const alice = await connect(app, 'read-only');
+    rotateOnEveryResolve();
+    await initialize(app, alice.access);
+    // The user revoked the app at YNAB: the stored refresh token no longer works.
+    refreshAccessTokenMock.mockRejectedValue(new Error('YNAB token request failed with status 400 (invalid_grant)'));
+
+    const call = await mcp(app, 'post', alice.access).send(getUserCall(3));
+    expect(call.status).toBe(401);
+    expect(call.body).toEqual({ error: 'invalid_token', error_description: 'Invalid or expired access token' });
+    expect(call.headers['www-authenticate']).toBe(
+      'Bearer error="invalid_token", error_description="Invalid or expired access token", resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"'
+    );
+    expect(`${call.text} ${String(call.headers['www-authenticate'])}`).not.toMatch(/invalid_grant|status 400/);
     expect(fetchMock).not.toHaveBeenCalled();
     errorSpy.mockRestore();
   });

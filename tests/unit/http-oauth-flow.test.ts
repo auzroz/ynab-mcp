@@ -1,10 +1,10 @@
 /**
  * The whole remote flow end to end in oauth mode, through the real Express app,
- * the SDK's auth handlers, the provider, the session manager and the real tool
+ * the SDK's auth handlers, the provider, stateless /mcp and the real tool
  * handlers: discovery, dynamic registration, authorization with PKCE and a
- * resource indicator, the YNAB federation legs, token exchange, an MCP session
- * (initialize, tools/list, tools/call), a YNAB token refresh under a live
- * session, refresh-token rotation and session teardown.
+ * resource indicator, the YNAB federation legs, token exchange, MCP requests
+ * (initialize, tools/list, tools/call), a YNAB token refresh between requests,
+ * and refresh-token rotation and reuse.
  *
  * Only YNAB's external endpoints are mocked: the OAuth functions (code
  * exchange, user id, refresh) and global fetch for the YNAB REST API. The clock
@@ -116,14 +116,13 @@ beforeEach(async () => {
       tokenPepper: TEST_TOKEN_PEPPER,
       // Longer than the clock jump below, so only the YNAB token expires.
       accessTokenTtlSec: 24 * 3600,
-      sessionIdleTimeoutMs: 24 * 3600_000,
     })
   );
   app = handle.app;
 });
 
 afterEach(async () => {
-  await handle.sessions.close();
+  await handle.mcp.close();
   await created.storage?.close();
   created.storage = undefined;
   vi.useRealTimers();
@@ -278,13 +277,14 @@ function rpcMessage(res: request.Response): Record<string, any> {
 function mcp(
   method: 'post' | 'delete',
   accessToken: string,
-  sessionId?: string
+  protocolVersion?: string
 ): request.Test {
   let req = request(app)[method]('/mcp').set('Authorization', `Bearer ${accessToken}`).set('Accept', ACCEPT);
-  if (sessionId !== undefined) req = req.set('mcp-session-id', sessionId).set('mcp-protocol-version', '2025-06-18');
+  if (protocolVersion !== undefined) req = req.set('mcp-protocol-version', protocolVersion);
   return req;
 }
 
+/** Initialize and acknowledge as a 2025 client does; returns the negotiated version (stateless: no session id). */
 async function initialize(accessToken: string): Promise<string> {
   const res = await mcp('post', accessToken).send({
     jsonrpc: '2.0',
@@ -299,18 +299,18 @@ async function initialize(accessToken: string): Promise<string> {
   expect(res.status).toBe(200);
   // The version, not the name: a rename of serverInfo must not break this flow test.
   expect(rpcMessage(res)['result']['serverInfo']['version']).toBe(pkg.version);
-  const sessionId = res.headers['mcp-session-id'] as string;
-  expect(sessionId).toBeTruthy();
-  const ack = await mcp('post', accessToken, sessionId).send({
+  expect(res.headers['mcp-session-id']).toBeUndefined();
+  const protocolVersion = rpcMessage(res)['result']['protocolVersion'] as string;
+  const ack = await mcp('post', accessToken, protocolVersion).send({
     jsonrpc: '2.0',
     method: 'notifications/initialized',
   });
   expect(ack.status).toBe(202);
-  return sessionId;
+  return protocolVersion;
 }
 
-async function listTools(accessToken: string, sessionId: string): Promise<string[]> {
-  const res = await mcp('post', accessToken, sessionId).send({
+async function listTools(accessToken: string, protocolVersion: string): Promise<string[]> {
+  const res = await mcp('post', accessToken, protocolVersion).send({
     jsonrpc: '2.0',
     id: 2,
     method: 'tools/list',
@@ -322,11 +322,11 @@ async function listTools(accessToken: string, sessionId: string): Promise<string
 
 async function callTool(
   accessToken: string,
-  sessionId: string,
+  protocolVersion: string,
   name: string,
   args: Record<string, unknown> = {}
 ): Promise<{ isError: boolean; text: string }> {
-  const res = await mcp('post', accessToken, sessionId).send({
+  const res = await mcp('post', accessToken, protocolVersion).send({
     jsonrpc: '2.0',
     id: 3,
     method: 'tools/call',
@@ -345,7 +345,7 @@ function ynabApiBearers(): (string | null)[] {
 // ---- The flow --------------------------------------------------------------
 
 describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
-  it('connects a client, serves a session across a YNAB token expiry, rotates tokens and ends the session', async () => {
+  it('connects a client, serves it across a YNAB token expiry and rotates tokens, with no session to end', async () => {
     // Discovery: an unauthenticated client is pointed at the resource metadata
     // (RFC 9728), which names the authorization server, whose metadata names
     // the endpoints it will use.
@@ -369,7 +369,7 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
 
     // Register, authorize (PKCE S256, resource), consent, YNAB, and exchange the code.
     const grant = await authorize('read-write', 'read-only read-write');
-    expect(vi.mocked(getYnabUserId)).toHaveBeenCalledWith('ynab-access-0', undefined);
+    expect(vi.mocked(getYnabUserId)).toHaveBeenCalledWith('ynab-access-0', undefined, 10_000);
     const tokens = await exchange(grant);
     expect(tokens.scope).toBe('read-only read-write');
 
@@ -379,7 +379,9 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     // A read-write grant sees every tool.
     const sessionId = await initialize(tokens.access);
     expect(await listTools(tokens.access, sessionId)).toEqual(ALL_TOOLS);
-    expect(handle.sessions.size).toBe(1);
+    // Nothing is held between requests: no slot, no registry lease.
+    expect(handle.inflight.inflight()).toBe(0);
+    expect(handle.registry.leases(ynabUserId)).toBe(0);
 
     // A read tool reaches YNAB with the user's access token. The token from the
     // code exchange is not cached, so the first call refreshes (ynab-access-1);
@@ -390,7 +392,7 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     expect(fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(['/v1/plans']);
     expect(ynabApiBearers()).toEqual(['Bearer ynab-access-1']);
 
-    // The YNAB token (2h) expires while the session lives on. The next call
+    // The YNAB token (2h) expires between requests. The next request
     // refreshes with the rotated refresh token, and uses the new access token.
     vi.setSystemTime(Date.now() + 3 * 3600_000);
     const second = await callTool(tokens.access, sessionId, 'ynab_list_budgets');
@@ -402,8 +404,8 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     ]);
     expect(ynabApiBearers()).toEqual(['Bearer ynab-access-1', 'Bearer ynab-access-2']);
 
-    // MCP refresh-token rotation: the new pair works on the same session (same
-    // client, user and access level), the old refresh token is spent.
+    // MCP refresh-token rotation: the new pair works (same client, user and
+    // access level), the old refresh token is spent.
     const refreshed = await tokenRequest({
       grant_type: 'refresh_token',
       client_id: tokens.clientId,
@@ -415,18 +417,16 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     expect(refreshed.body.refresh_token).not.toBe(tokens.refresh);
     expect(await listTools(refreshed.body.access_token, sessionId)).toEqual(ALL_TOOLS);
 
-    // DELETE ends the session; its id is then unknown (404), so the client re-initializes.
+    // There is no session to end: DELETE is 405, and the next request is served as before.
     const del = await mcp('delete', refreshed.body.access_token, sessionId);
-    expect(del.status).toBe(200);
-    expect(handle.sessions.size).toBe(0);
+    expect(del.status).toBe(405);
     const after = await mcp('post', refreshed.body.access_token, sessionId).send({
       jsonrpc: '2.0',
       id: 4,
       method: 'tools/list',
       params: {},
     });
-    expect(after.status).toBe(404);
-    expect((await mcp('delete', refreshed.body.access_token, sessionId)).status).toBe(404);
+    expect(after.status).toBe(200);
 
     // Replaying the spent refresh token is reuse (RFC 9700 section 4.14.2): it
     // fails like an unknown token and revokes the whole family, so the rotated
@@ -440,6 +440,10 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     expect(replayedRefresh.body.error).toBe('invalid_grant');
     expect(replayedRefresh.body.access_token).toBeUndefined();
     expect((await mcp('delete', refreshed.body.access_token, sessionId)).status).toBe(401);
+    expect(
+      (await mcp('post', refreshed.body.access_token, sessionId).send({ jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} }))
+        .status
+    ).toBe(401);
     const revokedRefresh = await tokenRequest({
       grant_type: 'refresh_token',
       client_id: tokens.clientId,
@@ -568,7 +572,8 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     expect(res.headers['www-authenticate']).toContain('error="invalid_token"');
     expect(res.headers['www-authenticate']).toContain(`resource_metadata="${METADATA_URL}"`);
     expect(JSON.stringify(res.body)).not.toContain(foreignToken);
-    expect(handle.sessions.size).toBe(0);
+    // Refused before anything was taken for the user.
+    expect(handle.registry.leases(ynabUserId)).toBe(0);
 
     // The twin with this server's resource is accepted, so the resource is the
     // only difference between the 401 and the 200.

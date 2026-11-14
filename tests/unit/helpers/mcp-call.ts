@@ -1,10 +1,16 @@
 /**
- * MCP over the HTTP app, for tests: initialize, then requests, notifications
- * and teardown, without a test ever handling the Mcp-Session-Id header.
+ * MCP over the HTTP app, for tests: initialize, then requests and
+ * notifications, the way a 2025-era client talks to a stateless server.
  *
- * Tests that only need "call this method as this user" go through here, so
- * when the transport changes (sessionful to stateless, WS7.4) this file and the
- * session-specific tests are what change, not every caller.
+ * /mcp is stateless (ADR-0001): no Mcp-Session-Id is issued, each request
+ * stands alone and is authorized by its own credentials, and there is nothing
+ * to tear down. A "connection" here is only the client's side of it: the
+ * negotiated protocol version, sent as MCP-Protocol-Version after initialize
+ * as a 2025 client does, and an id counter.
+ *
+ * Tests that only need "call this method as this user" go through here, so a
+ * transport change touches this file and the transport-specific tests, not
+ * every caller.
  */
 
 import request from 'supertest';
@@ -55,12 +61,14 @@ export interface McpReply {
 export interface McpRequestOptions {
   /** Send this request with other credentials than the connection's. */
   auth?: McpAuth;
+  /** Use this JSON-RPC id instead of the connection's next one. */
+  id?: string | number;
 }
 
 export interface McpConnection {
   /** The initialize result (serverInfo, capabilities, protocolVersion). */
   readonly initializeResult: Json;
-  /** A JSON-RPC request; ids are assigned per connection. */
+  /** A JSON-RPC request; ids are assigned per connection unless given. */
   request(method: string, params?: Json, options?: McpRequestOptions): Promise<McpReply>;
   /** A JSON-RPC notification (no id, no reply message). */
   notify(method: string, params?: Json, options?: McpRequestOptions): Promise<request.Response>;
@@ -68,8 +76,6 @@ export interface McpConnection {
   listTools(options?: McpRequestOptions): Promise<string[]>;
   /** tools/call, as the result's error flag and its first text block. */
   callTool(name: string, args?: Json, options?: McpRequestOptions): Promise<{ isError: boolean; text: string; reply: McpReply }>;
-  /** End the connection (HTTP DELETE); a no-op once closed. A refused DELETE keeps the session, so it can be retried. */
-  close(options?: McpRequestOptions): Promise<request.Response | undefined>;
 }
 
 function initializeBody(clientName: string): Json {
@@ -85,15 +91,16 @@ function initializeBody(clientName: string): Json {
   };
 }
 
-function post(app: Express, auth: McpAuth, body: unknown, sessionId?: string): request.Test {
+/** POST one JSON-RPC message to /mcp; `protocolVersion` is the MCP-Protocol-Version header a client sends after initialize. */
+export function mcpPost(app: Express, auth: McpAuth, body: unknown, protocolVersion?: string): request.Test {
   let req = request(app).post('/mcp').set(auth).set('Accept', MCP_ACCEPT);
-  if (sessionId !== undefined) req = req.set('mcp-session-id', sessionId).set('mcp-protocol-version', MCP_PROTOCOL_VERSION);
+  if (protocolVersion !== undefined) req = req.set('mcp-protocol-version', protocolVersion);
   return req.send(body as object);
 }
 
 /** Send an initialize and return the raw response (for tests of a refused initialize). */
 export async function mcpInitialize(app: Express, auth: McpAuth, clientName = 'mcp-call-test'): Promise<request.Response> {
-  return post(app, auth, initializeBody(clientName));
+  return mcpPost(app, auth, initializeBody(clientName));
 }
 
 /**
@@ -112,23 +119,25 @@ export async function mcpConnect(app: Express, auth: McpAuth, clientName = 'mcp-
         (challenge ? ` (WWW-Authenticate: ${challenge})` : '')
     );
   }
-  let sessionId = init.headers['mcp-session-id'] as string | undefined;
+  if (init.headers['mcp-session-id'] !== undefined) throw new Error('the server issued an Mcp-Session-Id');
+  const protocolVersion = (initMessage['result'] as Json)['protocolVersion'] as string;
   let nextId = 1;
 
-  const ack = await post(app, auth, { jsonrpc: '2.0', method: 'notifications/initialized' }, sessionId);
+  const ack = await mcpPost(app, auth, { jsonrpc: '2.0', method: 'notifications/initialized' }, protocolVersion);
   if (ack.status !== 202) throw new Error(`notifications/initialized refused: ${ack.status}`);
 
   const connection: McpConnection = {
     initializeResult: initMessage['result'] as Json,
 
     async request(method, params = {}, options = {}) {
-      const res = await post(app, options.auth ?? auth, { jsonrpc: '2.0', id: nextId++, method, params }, sessionId);
+      const id = options.id ?? nextId++;
+      const res = await mcpPost(app, options.auth ?? auth, { jsonrpc: '2.0', id, method, params }, protocolVersion);
       return { status: res.status, message: rpcMessageOrUndefined(res), res };
     },
 
     async notify(method, params, options = {}) {
       const body = params === undefined ? { jsonrpc: '2.0', method } : { jsonrpc: '2.0', method, params };
-      return post(app, options.auth ?? auth, body, sessionId);
+      return mcpPost(app, options.auth ?? auth, body, protocolVersion);
     },
 
     async listTools(options) {
@@ -143,18 +152,6 @@ export async function mcpConnect(app: Express, auth: McpAuth, clientName = 'mcp-
       if (reply.status !== 200 || !result) throw new Error(`tools/call ${name} failed: ${reply.status}`);
       const text = (result['content'] as Array<{ type: string; text?: string }> | undefined)?.find((c) => c.type === 'text')?.text ?? '';
       return { isError: result['isError'] === true, text, reply };
-    },
-
-    async close(options = {}) {
-      if (sessionId === undefined) return undefined;
-      const res = await request(app)
-        .delete('/mcp')
-        .set(options.auth ?? auth)
-        .set('Accept', MCP_ACCEPT)
-        .set('mcp-session-id', sessionId)
-        .set('mcp-protocol-version', MCP_PROTOCOL_VERSION);
-      if (res.status >= 200 && res.status < 300) sessionId = undefined;
-      return res;
     },
   };
   return connection;

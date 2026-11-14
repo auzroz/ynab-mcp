@@ -52,7 +52,7 @@ export async function handleAgeOfMoney(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   // Get budget details and accounts
   const [budgetResponse, accountsResponse] = await Promise.all([

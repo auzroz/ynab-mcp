@@ -76,7 +76,7 @@ export async function handleIncomeExpense(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const monthsToAnalyze = validated.months ?? 6;
 
   // Calculate date range

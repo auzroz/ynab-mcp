@@ -20,6 +20,7 @@ import { loadSessionSettings } from './sessions.js';
 import { loadStorageSettings } from './storage.js';
 import { loadTokenSettings } from './tokens.js';
 import { loadYnabSettings } from './ynab.js';
+import { loadLimitSettings } from './limits.js';
 
 export type { HttpAuthMode, AuthSettings } from './auth.js';
 export type { RateLimitSettings } from './rate-limit.js';
@@ -29,6 +30,7 @@ export type { SessionSettings } from './sessions.js';
 export type { StorageDriver, StorageSettings } from './storage.js';
 export type { TokenSettings } from './tokens.js';
 export type { YnabSettings } from './ynab.js';
+export type { LimitSettings } from './limits.js';
 
 /** Append-only: one line per topic. */
 const LOADERS = [
@@ -40,6 +42,7 @@ const LOADERS = [
   loadTokenSettings,
   loadRateLimitSettings,
   loadSecurityTxtSettings,
+  loadLimitSettings,
 ] as const;
 
 type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (k: infer I) => void ? I : never;

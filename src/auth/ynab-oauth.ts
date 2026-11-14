@@ -6,6 +6,8 @@
  * token-bearing failures throw sanitized errors that never echo secrets.
  */
 
+import { outboundFetch } from '../services/outbound.js';
+
 /** Default YNAB OAuth/API endpoints. Overridable per config for tests. */
 export const YNAB_AUTHORIZE_URL = 'https://app.ynab.com/oauth/authorize';
 export const YNAB_TOKEN_URL = 'https://app.ynab.com/oauth/token';
@@ -22,6 +24,13 @@ export interface YnabOAuthConfig {
   clientId: string;
   clientSecret: string;
   endpoints?: YnabOAuthEndpoints;
+  /**
+   * Timeout for each call to YNAB (token exchange, refresh, user lookup). HTTP
+   * mode sets it to the request ceiling when that is below 10 s, so a stalled
+   * call (a refresh shared by a user's concurrent requests) can't outlive it;
+   * unset (stdio has no ceiling): 10 s.
+   */
+  timeoutMs?: number;
 }
 
 /** A resolved token set with the expiry converted to epoch milliseconds. */
@@ -108,11 +117,16 @@ function parseTokenSet(body: unknown): YnabTokenSet {
 
 async function postToken(cfg: YnabOAuthConfig, form: URLSearchParams): Promise<YnabTokenSet> {
   const tokenUrl = cfg.endpoints?.tokenUrl ?? YNAB_TOKEN_URL;
-  const res = await fetch(tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: form.toString(),
-  });
+  // Every call here has a deadline (#58): a stalled YNAB must not hold a request's slot.
+  const res = await outboundFetch(
+    tokenUrl,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    },
+    { timeoutMs: cfg.timeoutMs }
+  );
   if (!res.ok) {
     throw await sanitizedError(res, 'YNAB token request');
   }
@@ -152,12 +166,15 @@ export function refreshAccessToken(
 /** Resolve the YNAB user id for a given access token. */
 export async function getYnabUserId(
   accessToken: string,
-  endpoints?: YnabOAuthEndpoints
+  endpoints?: YnabOAuthEndpoints,
+  timeoutMs?: number
 ): Promise<string> {
   const base = endpoints?.apiBaseUrl ?? YNAB_API_BASE_URL;
-  const res = await fetch(`${base}/user`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const res = await outboundFetch(
+    `${base}/user`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+    { timeoutMs }
+  );
   if (!res.ok) {
     throw await sanitizedError(res, 'YNAB user request');
   }

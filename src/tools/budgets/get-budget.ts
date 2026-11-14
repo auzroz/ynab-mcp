@@ -54,7 +54,7 @@ export async function handleGetBudget(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   
   // Always a full fetch: with last_knowledge_of_server YNAB returns only the
   // entities changed since then, and the totals below need the whole budget.

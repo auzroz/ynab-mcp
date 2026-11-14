@@ -46,7 +46,7 @@ describe('handleDeleteScheduledTransaction', () => {
       mockClient as never
     );
 
-    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
+    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget', { fresh: true });
     expect(mockClient.deleteScheduledTransaction).toHaveBeenCalledWith('custom-budget', SCHEDULED_ID);
   });
 

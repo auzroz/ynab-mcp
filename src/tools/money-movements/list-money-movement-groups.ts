@@ -59,7 +59,7 @@ export async function handleListMoneyMovementGroups(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const resolvedBudgetId = client.resolveBudgetId(validated.budget_id);
+  const resolvedBudgetId = await client.resolveBudgetId(validated.budget_id);
 
   const response =
     validated.month === undefined

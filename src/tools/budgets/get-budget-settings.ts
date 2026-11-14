@@ -60,7 +60,7 @@ export async function handleGetBudgetSettings(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   const response = await client.getBudgetSettingsById(budgetId);
   const settings = response.data.settings;

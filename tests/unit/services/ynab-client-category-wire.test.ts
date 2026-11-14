@@ -72,16 +72,16 @@ describe('category write payloads through the ynab SDK', () => {
   });
 });
 
-describe('category write deadline', () => {
+describe('category write deadline (the shared outbound timeout, #58)', () => {
   it.each([
     ['createCategory', (c: YnabClient) => c.createCategory(BUDGET, { category: { name: 'X', category_group_id: 'g-1' } })],
     ['updateCategory', (c: YnabClient) => c.updateCategory(BUDGET, 'cat-1', { category: { name: 'X' } })],
-  ])('%s passes an abort signal to fetch', async (_name, call) => {
+  ])('%s passes the 10 s outbound abort signal to fetch', async (_name, call) => {
     const timeout = vi.spyOn(AbortSignal, 'timeout');
     await call(makeClient());
     const [, init] = fetchMock.mock.calls[0]!;
     expect(init?.signal).toBeInstanceOf(AbortSignal);
-    expect(timeout).toHaveBeenCalledWith(30_000);
+    expect(timeout).toHaveBeenCalledWith(10_000);
     expect(init?.signal).toBe(timeout.mock.results[0]?.value);
   });
 });
