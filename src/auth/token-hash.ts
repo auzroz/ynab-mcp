@@ -36,8 +36,14 @@
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import { parseKey32 } from '../crypto.js';
 
-/** What a credential is for; part of both the tag and the storage key. */
-export type TokenKind = 'access' | 'refresh' | 'code' | 'state';
+/**
+ * What a credential is for; part of both the tag and the storage key. The
+ * first four are 0.4.x's; `session`, `interaction` and `registration` key the
+ * oidc-provider session, interaction and registration access token rows
+ * (ADR-0002 D4), whose ids are credentials too (a cookie, a URL segment, a
+ * bearer value).
+ */
+export type TokenKind = 'access' | 'refresh' | 'code' | 'state' | 'session' | 'interaction' | 'registration';
 
 /** Prefix of every value issued since 0.5.0. */
 export const TOKEN_PREFIX = 'ymcp1_';
@@ -95,6 +101,23 @@ export interface TokenKeyDeriver {
   fingerprintMatches(stored: string): boolean;
 }
 
+/**
+ * The shape of every id oidc-provider generates for the models the adapter
+ * keys by hash (nanoid with 256 bits: 43 base64url characters). The same
+ * shape as a 0.4.x value, so one value hashes to the same key in either
+ * generation, but the generations live in different tables.
+ */
+export const LIBRARY_ID_SHAPE = LEGACY_TOKEN_SHAPE;
+
+/** What the oidc-provider adapter (src/auth/oidc/adapter.ts) needs from the hasher. */
+export interface LibraryKeyDeriver {
+  /**
+   * The `h1.` key of a library id of `kind`, or undefined (refused before any
+   * storage read) when `id` isn't a string of {@link LIBRARY_ID_SHAPE}.
+   */
+  libraryStorageKey(kind: TokenKind, id: unknown): string | undefined;
+}
+
 /** Where the pepper comes from. */
 export interface PepperSource {
   /** `TOKEN_PEPPER`: 32 bytes as base64 or 64 hex characters. */
@@ -103,7 +126,7 @@ export interface PepperSource {
   encryptionKey?: string | undefined;
 }
 
-export class TokenHasher implements TokenKeyDeriver {
+export class TokenHasher implements TokenKeyDeriver, LibraryKeyDeriver {
   private readonly tagKey: Buffer;
   private readonly storageKeyKey: Buffer;
   readonly fingerprint: string;
@@ -168,6 +191,10 @@ export class TokenHasher implements TokenKeyDeriver {
 
   legacyStorageKey(kind: TokenKind, value: string): string | undefined {
     return LEGACY_TOKEN_SHAPE.test(value) ? this.storageKey(kind, value) : undefined;
+  }
+
+  libraryStorageKey(kind: TokenKind, id: unknown): string | undefined {
+    return typeof id === 'string' && LIBRARY_ID_SHAPE.test(id) ? this.storageKey(kind, id) : undefined;
   }
 
   clientSecretHash(secret: string): string {

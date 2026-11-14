@@ -550,6 +550,13 @@ for (const driver of testDrivers) {
             orphanTokens: 2,
             abandonedClients: 1,
             unusedClients: 1,
+            // oauth_rows (ADR-0002 D4) holds nothing here; its rules are in oauth-adapter-conformance.test.ts.
+            oauthExpired: 0,
+            oauthConsumed: 0,
+            oauthOrphans: 0,
+            oauthGrants: 0,
+            oauthAbandonedClients: 0,
+            oauthUnusedClients: 0,
           },
         });
 
@@ -820,15 +827,23 @@ describe.skipIf(!pgDriver?.enabled)('STOR-1 on Postgres: races on two pools', ()
     const holder = new pg.Client({ connectionString: h.connectionString });
     await holder.connect();
     try {
-      await holder.query('SELECT pg_advisory_lock($1)', [SWEEP_LOCK_KEY]);
+      await holder.query('SELECT pg_advisory_lock($1, hashtext(current_schema()))', [SWEEP_LOCK_KEY]);
       expect(await other.storage.sweepExpired()).toMatchObject({ ran: false });
-      await holder.query('SELECT pg_advisory_unlock($1)', [SWEEP_LOCK_KEY]);
+      await holder.query('SELECT pg_advisory_unlock($1, hashtext(current_schema()))', [SWEEP_LOCK_KEY]);
       expect(await other.storage.sweepExpired()).toMatchObject({ ran: true });
       // Concurrent sweeps never fail; at least one runs.
       const both = await Promise.all([h.storage.sweepExpired(), other.storage.sweepExpired()]);
       expect(both.some((r) => r.ran)).toBe(true);
     } finally {
       await holder.end();
+    }
+  });
+
+  it('sweepers in different schemas of one database never skip each other', async () => {
+    const stranger = await (pgDriver as NonNullable<typeof pgDriver>).open(); // its own schema
+    for (let i = 0; i < 5; i++) {
+      const both = await Promise.all([h.storage.sweepExpired(), stranger.storage.sweepExpired()]);
+      expect(both.map((r) => r.ran)).toEqual([true, true]);
     }
   });
 });
