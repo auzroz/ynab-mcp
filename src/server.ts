@@ -89,7 +89,9 @@ export interface RequestContext {
  */
 export function buildYnabClient(
   ctx: UserContext,
-  components: UserComponents = createUserComponents(ctx)
+  components: UserComponents = createUserComponents(ctx),
+  // The request's absolute deadline (HTTP): no YNAB call outlives it (#58).
+  deadline?: number
 ): YnabClient {
   return new YnabClient(
     ctx.accessToken,
@@ -99,7 +101,8 @@ export function buildYnabClient(
     ctx.readOnly,
     components.auditLog,
     components.deltaCache,
-    components.feedState
+    components.feedState,
+    { breaker: components.breaker, deadline }
   );
 }
 
@@ -269,7 +272,7 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
  * everything that can fail was resolved before the factory runs.
  */
 export function createServerForRequest(ctx: RequestContext): Server {
-  return createServerFromClient(buildYnabClient(ctx.user, ctx.components), ctx.toolCalls);
+  return createServerFromClient(buildYnabClient(ctx.user, ctx.components, ctx.toolCalls.deadline), ctx.toolCalls);
 }
 
 /**

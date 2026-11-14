@@ -171,3 +171,45 @@ describe('sanitized errors', () => {
     await expect(getYnabUserId('tok', cfg.endpoints)).rejects.toThrow(/user id/);
   });
 });
+
+describe('outbound deadlines (#58)', () => {
+  /** A fetch that never answers until its signal aborts. */
+  function stall(): void {
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+      (_url: unknown, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+        })
+    );
+  }
+
+  it('gives the token exchange, refresh and user calls a 10 s signal', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation(async (url: string) =>
+      String(url).endsWith('/user')
+        ? jsonResponse({ data: { user: { id: 'u1' } } })
+        : jsonResponse({ access_token: 'a', refresh_token: 'r', token_type: 'bearer', expires_in: 7200 })
+    );
+    await exchangeCode(cfg, { code: 'c', redirectUri: 'https://app/cb' });
+    await refreshAccessToken(cfg, 'r');
+    await getYnabUserId('a', cfg.endpoints);
+    expect(timeout).toHaveBeenCalledTimes(3);
+    expect(timeout.mock.calls.every(([ms]) => ms === 10_000)).toBe(true);
+    for (const [, init] of fetchMock.mock.calls) expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it.each([
+    ['exchangeCode', () => exchangeCode(cfg, { code: 'c', redirectUri: 'https://app/cb' })],
+    ['refreshAccessToken', () => refreshAccessToken(cfg, 'r')],
+    ['getYnabUserId', () => getYnabUserId('a', cfg.endpoints)],
+  ])('%s fails with a fixed timeout error when YNAB stalls', async (_name, call) => {
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => real(20));
+    stall();
+    const error = await call().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('YNAB did not respond in time');
+    expect(String(error)).not.toContain('secret-xyz');
+  });
+});

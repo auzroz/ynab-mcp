@@ -12,7 +12,8 @@
  * Owned by the per-user components next to Cache (see user-registry.ts), so in
  * HTTP mode all of a user's sessions share one store and users never share one.
  *
- * Memory is bounded per store (one per user):
+ * Memory is bounded per store (one per user), and, given a ByteBudget shared
+ * with the user's Cache, by serialized bytes (#58):
  * - at most DELTA_MAX_SNAPSHOTS snapshots and DELTA_MAX_ENTITIES entities in
  *   total; past either, least recently used snapshots are evicted, and a single
  *   result larger than the entity cap is not kept at all;
@@ -32,6 +33,8 @@
  * refuses a snapshot whose read began before the latest drop of its group, so
  * a read in flight across a rename can't store rows with the old names.
  */
+
+import { serializedBytes, type ByteBudget, type ByteBudgetMember } from './byte-budget.js';
 
 /** Max snapshots kept per user. */
 export const DELTA_MAX_SNAPSHOTS = 32;
@@ -73,6 +76,10 @@ export interface Snapshot<T = unknown> {
 interface Entry {
   snapshot: Snapshot;
   lastUsedAt: number;
+  /** Serialized size counted against the byte budget (0 without one). */
+  bytes: number;
+  /** Recency stamp from the byte budget (0 without one). */
+  tick: number;
 }
 
 export interface DeltaCacheOptions {
@@ -82,9 +89,11 @@ export interface DeltaCacheOptions {
   maxAgeMs?: number;
   denormalizedMaxAgeMs?: number;
   now?: () => number;
+  /** Shared with the user's Cache: caps the serialized size of both together (#58). */
+  budget?: ByteBudget;
 }
 
-export class DeltaCache {
+export class DeltaCache implements ByteBudgetMember {
   // Map order is recency order: get() and set() move a key to the end.
   private readonly entries = new Map<string, Entry>();
   private totalEntities = 0;
@@ -98,8 +107,11 @@ export class DeltaCache {
   private readonly maxAgeMs: number;
   private readonly denormalizedMaxAgeMs: number;
   private readonly clock: () => number;
+  private readonly budget: ByteBudget | undefined;
 
   constructor(opts: DeltaCacheOptions = {}) {
+    this.budget = opts.budget;
+    this.budget?.register(this);
     this.maxSnapshots = opts.maxSnapshots ?? DELTA_MAX_SNAPSHOTS;
     this.maxEntities = opts.maxEntities ?? DELTA_MAX_ENTITIES;
     this.idleMs = opts.idleMs ?? DELTA_IDLE_MS;
@@ -128,6 +140,7 @@ export class DeltaCache {
     const entry = this.entries.get(key);
     if (!entry) return undefined;
     entry.lastUsedAt = this.clock();
+    if (this.budget !== undefined) entry.tick = this.budget.tick();
     this.entries.delete(key);
     this.entries.set(key, entry);
     return entry.snapshot as Snapshot<T>;
@@ -151,9 +164,19 @@ export class DeltaCache {
     }
     if (current) this.remove(key, current);
     if (next.entities > this.maxEntities) return false;
-    this.entries.set(key, { snapshot: next, lastUsedAt: this.clock() });
+    let bytes = 0;
+    let tick = 0;
+    if (this.budget !== undefined) {
+      bytes = serializedBytes(next.data);
+      // Bigger than the user's whole byte budget: not kept.
+      if (!this.budget.fits(bytes)) return false;
+      tick = this.budget.tick();
+    }
+    this.entries.set(key, { snapshot: next, lastUsedAt: this.clock(), bytes, tick });
     this.totalEntities += next.entities;
+    this.budget?.add(bytes);
     this.evictOverflow();
+    this.budget?.enforce();
     return this.entries.get(key)?.snapshot === next;
   }
 
@@ -213,6 +236,7 @@ export class DeltaCache {
   }
 
   clear(): void {
+    for (const entry of this.entries.values()) this.budget?.sub(entry.bytes);
     this.entries.clear();
     this.totalEntities = 0;
     this.nameIndexes.clear();
@@ -232,6 +256,24 @@ export class DeltaCache {
   private remove(key: string, entry: Entry): void {
     this.entries.delete(key);
     this.totalEntities -= entry.snapshot.entities;
+    this.budget?.sub(entry.bytes);
+  }
+
+  /** Drop idle and over-age snapshots now; the registry's idle sweep calls this. Returns how many. */
+  prune(): number {
+    const before = this.entries.size;
+    this.sweep();
+    return before - this.entries.size;
+  }
+
+  budgetOldestTick(): number | undefined {
+    const first = this.entries.values().next();
+    return first.done === true ? undefined : first.value.tick;
+  }
+
+  budgetEvictOldest(): void {
+    const first = this.entries.entries().next();
+    if (first.done !== true) this.remove(first.value[0], first.value[1]);
   }
 
   /** Drop idle and over-age snapshots (lazy, on every access; at most maxSnapshots entries). */

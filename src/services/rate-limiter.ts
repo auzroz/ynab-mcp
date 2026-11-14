@@ -26,6 +26,26 @@ export const DEFAULT_MAX_WAIT_MS = 2000;
 /** Cap on remembered rejections so a flood cannot grow memory. */
 const MAX_TRACKED_REJECTIONS = 1000;
 
+/**
+ * What YnabClient needs from a request limiter. Async where a shared store (a
+ * Postgres-backed limiter for several instances, #67b) would have to be, so the
+ * token bucket can be swapped without touching callers; the in-process
+ * RateLimiter below is the one implementation today.
+ */
+export interface RequestLimiter {
+  /** Take one request's token, or throw a RateLimitError (fail fast). */
+  acquire(): Promise<void>;
+  /** Take `count` tokens all at once or throw a RateLimitError; returns the number taken. */
+  acquireMany(count: number): Promise<number>;
+  /** Give back tokens for requests that were never sent. */
+  release(count?: number): void;
+  /** Note YNAB's own 429; returns the exhaustion window in ms. */
+  markExhaustedByYnab(retryAfter?: number | string | null): number;
+  /** Throw a RateLimitError while YNAB's own 429 window is in force. */
+  throwIfExhaustedByYnab(): void;
+  getStatus(): ReturnType<RateLimiter['getStatus']>;
+}
+
 /** A 429 from YNAB, as the limiter remembers it. */
 export interface YnabExhaustion {
   /** True while requests are being refused locally because of the 429. */
@@ -38,7 +58,7 @@ export interface YnabExhaustion {
   retryAfterMs: number;
 }
 
-export class RateLimiter {
+export class RateLimiter implements RequestLimiter {
   private tokens: number;
   private lastRefill: number;
   private readonly maxTokens: number;
@@ -117,13 +137,42 @@ export class RateLimiter {
   }
 
   /**
-   * Give back a token taken by acquire() for a request that was never sent
-   * (e.g. its access token could not be resolved). Capped at the bucket size.
+   * Take `count` tokens at once or none: a fan-out reservation (#58). Never
+   * waits; when the bucket holds fewer than `count` it throws a RateLimitError
+   * carrying the time until `count` tokens are free, so a multi-request tool
+   * refuses up front instead of failing after some of its calls were sent. Give
+   * back what goes unused with release(n). Returns the number taken. A
+   * `count` beyond the bucket size can never be satisfied, so it is refused
+   * (with the time until the bucket is full, the best case) instead of being
+   * cut down to what a part-way failure would leave.
    */
-  release(): void {
-    this.sentAt.pop();
+  async acquireMany(count: number): Promise<number> {
+    if (!Number.isInteger(count) || count < 1) {
+      throw new Error(`Invalid token count: must be a positive integer, got ${count}`);
+    }
+    this.throwIfExhaustedByYnab();
     this.refill();
-    this.tokens = Math.min(this.maxTokens, this.tokens + 1);
+    const needed = count;
+    // A caller already waiting for a token has the next one; this reservation must not jump it.
+    const required = Math.min(needed, this.maxTokens) + (this.waiterActive ? 1 : 0);
+    // Tolerate float rounding, as acquire() does.
+    if (this.tokens < required - 1e-6 || needed > this.maxTokens) {
+      throw this.reject(Math.ceil((required - this.tokens) / this.refillRate));
+    }
+    this.tokens = Math.max(0, this.tokens - needed);
+    for (let i = 0; i < needed; i++) this.recordSent();
+    return needed;
+  }
+
+  /**
+   * Give back tokens taken by acquire() or acquireMany() for requests that were
+   * never sent (e.g. an access token that could not be resolved, a fan-out's
+   * unused share). Capped at the bucket size.
+   */
+  release(count = 1): void {
+    for (let i = 0; i < count; i++) this.sentAt.pop();
+    this.refill();
+    this.tokens = Math.min(this.maxTokens, this.tokens + count);
   }
 
   /**
@@ -243,7 +292,8 @@ export class RateLimiter {
     };
   }
 
-  private throwIfExhaustedByYnab(): void {
+  /** Throw a RateLimitError while YNAB's own 429 window is in force. */
+  throwIfExhaustedByYnab(): void {
     const remaining = this.ynabExhaustedUntil - this.now();
     if (remaining > 0) throw this.reject(remaining);
   }

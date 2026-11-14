@@ -89,8 +89,6 @@ vi.mock('ynab', async (importOriginal) => ({
 }));
 
 const BUDGET = 'budget-123';
-// Category writes carry a 30 s abort signal.
-const SIGNAL = { signal: expect.any(AbortSignal) };
 
 function makeClient(readOnly: boolean): YnabClient {
   return new YnabClient(
@@ -799,7 +797,7 @@ describe('updateCategory (write)', () => {
     } as never);
     expect(asMock(mockApi.categories.updateCategory)).toHaveBeenCalledWith(BUDGET, 'cat-1', {
       category: { name: 'Secret Name', note: null, goal_target: 5000, category_group_id: 'g-2' },
-    }, SIGNAL);
+    });
 
     await client.getCategories(BUDGET);
     expect(asMock(mockApi.categories.getCategories)).toHaveBeenCalledTimes(2);
@@ -854,7 +852,7 @@ describe('createCategory (write)', () => {
       },
     };
     await client.createCategory(BUDGET, body as never);
-    expect(mockApi.categories.createCategory).toHaveBeenCalledWith(BUDGET, body, SIGNAL);
+    expect(mockApi.categories.createCategory).toHaveBeenCalledWith(BUDGET, body);
     const entry = getAuditLog().getAll()[0];
     expect(entry?.details).toEqual({
       has_name: true,
@@ -1189,7 +1187,7 @@ describe('YnabClient category writes with goal_frequency', () => {
       category: { name: 'Dining Out', category_group_id: 'g-1', goal_target: 50000, goal_frequency: 'weekly' as const },
     };
     const result = await makeClient(false).createCategory(BUDGET, body);
-    expect(asMock(mockApi.categories.createCategory)).toHaveBeenCalledWith(BUDGET, body, SIGNAL);
+    expect(asMock(mockApi.categories.createCategory)).toHaveBeenCalledWith(BUDGET, body);
     expect(result).toEqual(okBody);
     const entry = JSON.stringify(getAuditLog().getAll().at(-1));
     expect(entry).toContain('has_goal_frequency');
@@ -1200,7 +1198,7 @@ describe('YnabClient category writes with goal_frequency', () => {
     setResolve(mockApi.categories.updateCategory, okBody);
     const body = { category: { goal_target: null, goal_frequency: 'yearly' as const } };
     await makeClient(false).updateCategory(BUDGET, 'cat-1', body);
-    expect(asMock(mockApi.categories.updateCategory)).toHaveBeenCalledWith(BUDGET, 'cat-1', body, SIGNAL);
+    expect(asMock(mockApi.categories.updateCategory)).toHaveBeenCalledWith(BUDGET, 'cat-1', body);
   });
 
   it('rejects in read-only mode before any SDK call', async () => {
