@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { YnabClient } from '../../../src/services/ynab-client.js';
+import { YnabClient, BUDGET_ALIAS_TTL_MS } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
 import { handleGetBudget } from '../../../src/tools/budgets/get-budget.js';
 import { Cache } from '../../../src/services/cache.js';
@@ -141,10 +141,11 @@ describe('YnabClient construction & simple accessors', () => {
     expect(client.getDefaultBudgetId()).toBe('last-used');
   });
 
-  it('resolveBudgetId uses provided id or default', () => {
-    const client = makeClient(true);
-    expect(client.resolveBudgetId('explicit')).toBe('explicit');
-    expect(client.resolveBudgetId()).toBe('last-used');
+  it('resolveBudgetId returns an explicit id or an explicit default without a request', async () => {
+    const client = new YnabClient('t', BUDGET, new RateLimiter(180), new Cache(300000));
+    await expect(client.resolveBudgetId('explicit')).resolves.toBe('explicit');
+    await expect(client.resolveBudgetId()).resolves.toBe(BUDGET);
+    expect(asMock(mockApi.plans.getPlanById)).not.toHaveBeenCalled();
   });
 
   it('getRateLimitStatus delegates to the rate limiter', () => {
@@ -1208,5 +1209,196 @@ describe('YnabClient category writes with goal_frequency', () => {
       })
     ).rejects.toBeInstanceOf(ReadOnlyModeError);
     expect(asMock(mockApi.categories.createCategory)).not.toHaveBeenCalled();
+  });
+});
+
+describe('budget alias resolution (#66)', () => {
+  const U1 = '11111111-1111-4111-8111-111111111111';
+  const U2 = '22222222-2222-4222-8222-222222222222';
+  const planResponse = (id: string) => ({ data: { plan: { id }, server_knowledge: 5 } });
+  const newAccount = { account: { name: 'A', type: 'checking', balance: 0 } } as never;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('resolves last-used with one cheap delta request, then reuses it', async () => {
+    const client = makeClient(true);
+    setResolve(mockApi.plans.getPlanById, planResponse(U1));
+
+    await expect(client.resolveBudgetId()).resolves.toBe(U1);
+    await expect(client.resolveBudgetId('last-used')).resolves.toBe(U1);
+
+    expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(1);
+    const [alias, knowledge] = asMock(mockApi.plans.getPlanById).mock.calls[0] as [string, number];
+    expect(alias).toBe('last-used');
+    expect(knowledge).toBeGreaterThan(1_000_000_000);
+  });
+
+  it('shares one lookup between concurrent callers', async () => {
+    const client = makeClient(true);
+    setResolve(mockApi.plans.getPlanById, planResponse(U1));
+    const ids = await Promise.all([client.resolveBudgetId(), client.resolveBudgetId(), client.resolveBudgetId()]);
+    expect(ids).toEqual([U1, U1, U1]);
+    expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(1);
+  });
+
+  it('picks up a changed last-used budget once the 5 minute window has passed', async () => {
+    vi.useFakeTimers();
+    const client = makeClient(true);
+    asMock(mockApi.plans.getPlanById).mockResolvedValueOnce(planResponse(U1)).mockResolvedValueOnce(planResponse(U2));
+
+    await expect(client.resolveBudgetId()).resolves.toBe(U1);
+    vi.advanceTimersByTime(BUDGET_ALIAS_TTL_MS - 1000);
+    await expect(client.resolveBudgetId()).resolves.toBe(U1);
+    vi.advanceTimersByTime(2000);
+    await expect(client.resolveBudgetId()).resolves.toBe(U2);
+    expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(2);
+  });
+
+  it('fresh skips the cached entry and refreshes it', async () => {
+    const client = makeClient(true);
+    asMock(mockApi.plans.getPlanById).mockResolvedValueOnce(planResponse(U1)).mockResolvedValueOnce(planResponse(U2));
+
+    await expect(client.resolveBudgetId()).resolves.toBe(U1);
+    await expect(client.resolveBudgetId('last-used', { fresh: true })).resolves.toBe(U2);
+    // The refreshed entry now serves reads.
+    await expect(client.resolveBudgetId()).resolves.toBe(U2);
+    expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(2);
+
+  });
+
+  it('a fresh call never joins an earlier lookup, so a write after a switch gets the new budget', async () => {
+    const client = makeClient(false);
+    let releaseRead: (v: unknown) => void = () => undefined;
+    asMock(mockApi.plans.getPlanById)
+      // The read's lookup: sent while U1 was last-used, answered late.
+      .mockImplementationOnce(() => new Promise((resolve) => (releaseRead = resolve)))
+      // The write's own lookup, after the user switched to U2.
+      .mockResolvedValueOnce(planResponse(U2));
+    setResolve(mockApi.accounts.createAccount, { data: { account: { id: 'a' } } });
+
+    const read = client.resolveBudgetId();
+    const writeBudget = await client.resolveBudgetId('last-used', { fresh: true });
+    expect(writeBudget).toBe(U2);
+    await client.createAccount(writeBudget, newAccount);
+    expect(asMock(mockApi.accounts.createAccount).mock.calls[0]?.[0]).toBe(U2);
+
+    // The stale read finishes last: it answers its caller, but must not
+    // replace the newer entry.
+    releaseRead(planResponse(U1));
+    await expect(read).resolves.toBe(U1);
+    await expect(client.resolveBudgetId()).resolves.toBe(U2);
+    expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(2);
+  });
+
+  it('an earlier fresh lookup that finishes late does not replace a later one', async () => {
+    const client = makeClient(true);
+    let releaseFirst: (v: unknown) => void = () => undefined;
+    asMock(mockApi.plans.getPlanById)
+      .mockImplementationOnce(() => new Promise((resolve) => (releaseFirst = resolve)))
+      .mockResolvedValueOnce(planResponse(U2));
+
+    const first = client.resolveBudgetId('last-used', { fresh: true });
+    await expect(client.resolveBudgetId('last-used', { fresh: true })).resolves.toBe(U2);
+    releaseFirst(planResponse(U1));
+    await expect(first).resolves.toBe(U1);
+    await expect(client.resolveBudgetId()).resolves.toBe(U2);
+  });
+
+  it('fresh costs no request for a UUID', async () => {
+    const client = makeClient(true);
+    await expect(client.resolveBudgetId(U1, { fresh: true })).resolves.toBe(U1);
+    expect(asMock(mockApi.plans.getPlanById)).not.toHaveBeenCalled();
+  });
+
+  it('shares the resolution between clients of one user through the cache', async () => {
+    const cache = new Cache(300000);
+    const a = new YnabClient('t', 'last-used', new RateLimiter(180), cache, true);
+    const b = new YnabClient('t', 'last-used', new RateLimiter(180), cache, true);
+    setResolve(mockApi.plans.getPlanById, planResponse(U1));
+    await a.resolveBudgetId();
+    await expect(b.resolveBudgetId()).resolves.toBe(U1);
+    expect(asMock(mockApi.plans.getPlanById)).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the full budget when YNAB rejects the probe cursor with a 400', async () => {
+    const client = makeClient(true);
+    asMock(mockApi.plans.getPlanById)
+      .mockRejectedValueOnce({ error: { id: '400', name: 'bad_request', detail: 'bad request' } })
+      .mockResolvedValueOnce(planResponse(U1));
+
+    await expect(client.resolveBudgetId()).resolves.toBe(U1);
+    expect(asMock(mockApi.plans.getPlanById).mock.calls[1]).toEqual(['last-used', undefined]);
+  });
+
+  it('takes its token outside a fan-out reservation, leaving the tool its full count', async () => {
+    const limiter = new RateLimiter(180);
+    const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+    setResolve(mockApi.plans.getPlanById, planResponse(U1));
+    const before = limiter.getStatus().available;
+    await client.withFanOut(2, async () => {
+      await client.resolveBudgetId();
+    });
+    // The lookup cost one token of its own; the unused two came back.
+    expect(before - limiter.getStatus().available).toBe(1);
+  });
+
+  it('fails when YNAB names no budget, and caches nothing', async () => {
+    const client = makeClient(true);
+    setResolve(mockApi.plans.getPlanById, { data: { plan: {} } });
+    await expect(client.resolveBudgetId()).rejects.toThrow('did not identify');
+    setResolve(mockApi.plans.getPlanById, planResponse(U1));
+    await expect(client.resolveBudgetId()).resolves.toBe(U1);
+  });
+
+  it('does not cache a resolution that raced with a write', async () => {
+    const client = makeClient(false);
+    let release: (v: unknown) => void = () => undefined;
+    asMock(mockApi.plans.getPlanById).mockImplementationOnce(
+      () => new Promise((resolve) => (release = resolve))
+    );
+    setResolve(mockApi.accounts.createAccount, { data: { account: { id: 'a' } } });
+
+    const pending = client.resolveBudgetId();
+    await client.createAccount(U1, newAccount);
+    release(planResponse(U1));
+    await expect(pending).resolves.toBe(U1);
+
+    setResolve(mockApi.plans.getPlanById, planResponse(U2));
+    await expect(client.resolveBudgetId()).resolves.toBe(U2);
+  });
+
+  it('keys caches by UUID, so a write by UUID invalidates what a last-used read cached', async () => {
+    const client = makeClient(false);
+    setResolve(mockApi.plans.getPlanById, planResponse(U1));
+    setResolve(mockApi.accounts.getAccounts, { data: { accounts: [] } });
+    setResolve(mockApi.accounts.createAccount, { data: { account: { id: 'a' } } });
+
+    await client.getAccounts(await client.resolveBudgetId());
+    await client.getAccounts(await client.resolveBudgetId());
+    expect(asMock(mockApi.accounts.getAccounts)).toHaveBeenCalledTimes(1);
+    expect(asMock(mockApi.accounts.getAccounts).mock.calls[0]?.[0]).toBe(U1);
+
+    await client.createAccount(await client.resolveBudgetId(), newAccount);
+    await client.getAccounts(await client.resolveBudgetId());
+    expect(asMock(mockApi.accounts.getAccounts)).toHaveBeenCalledTimes(2);
+  });
+
+  it('budget settings: a read that raced with a write is not cached', async () => {
+    const client = makeClient(false);
+    let release: (v: unknown) => void = () => undefined;
+    asMock(mockApi.plans.getPlanSettingsById)
+      .mockImplementationOnce(() => new Promise((resolve) => (release = resolve)))
+      .mockResolvedValue({ data: { settings: { fresh: true } } });
+    setResolve(mockApi.accounts.createAccount, { data: { account: { id: 'a' } } });
+
+    const stale = client.getBudgetSettingsById(U1);
+    await client.createAccount(U1, newAccount);
+    release({ data: { settings: { fresh: false } } });
+    await stale;
+
+    const next = await client.getBudgetSettingsById(U1);
+    expect(next.data.settings).toEqual({ fresh: true });
   });
 });

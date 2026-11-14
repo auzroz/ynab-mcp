@@ -13,7 +13,7 @@ import type { Cache } from './cache.js';
 import { CircuitOpenError, OutboundTimeoutError, ReadOnlyModeError, YnabApiError } from '../utils/errors.js';
 import { getAuditLog, type AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
-import { isBudgetIdSentinel } from '../utils/schemas.js';
+import { isBudgetIdSentinel, type BudgetIdSentinel } from '../utils/schemas.js';
 import { DeltaCache, type Snapshot } from './delta-cache.js';
 import {
   DeltaMergeError,
@@ -64,6 +64,15 @@ interface FanOutReservation {
   remaining: number;
   closed: boolean;
 }
+
+/** How long a read reuses a resolved "last-used" / "default" budget id (#66); writes resolve fresh. */
+export const BUDGET_ALIAS_TTL_MS = 300_000;
+
+/**
+ * server_knowledge no budget has reached: asking for changes since it returns
+ * the plan's id and an empty delta, not the whole budget.
+ */
+const ALIAS_PROBE_KNOWLEDGE = 2_000_000_000;
 
 /**
  * ynab.API built from a ready Configuration, so SDK middleware (the 429 hook)
@@ -424,6 +433,11 @@ export class YnabClient {
     this.breaker = options.breaker;
   }
 
+  // In-flight budget alias lookups, so concurrent callers share one request.
+  private readonly aliasLookups = new Map<string, Promise<string>>();
+  private aliasLookupSeq = 0;
+  private readonly aliasAppliedSeq = new Map<string, number>();
+
   // The fan-out reservation of the current async call chain, if any.
   private readonly fanOut = new AsyncLocalStorage<FanOutReservation>();
 
@@ -523,17 +537,83 @@ export class YnabClient {
   }
 
   /**
-   * Resolve a budget ID, using default if not provided.
+   * Resolve a tool's budget_id to the budget's concrete UUID. This is the one
+   * function tools (and per-budget lookups such as #49's currency format) use
+   * to name a budget: everything downstream, caches, delta snapshots and
+   * invalidation, is keyed by the UUID it returns.
    *
-   * Design Decision: budget_id is intentionally not validated as a UUID.
-   * The YNAB API accepts both UUIDs and the special sentinel value "last-used"
-   * to reference the most recently accessed budget. Rather than maintaining a
-   * union type that could break if YNAB adds more special values, we accept
-   * any string and let the YNAB API validate it. This provides better forward
-   * compatibility and clearer error messages from the source of truth.
+   * budget_id is intentionally not validated as a UUID by the schemas: YNAB
+   * accepts UUIDs and the sentinels "last-used" and "default". An explicit UUID
+   * (or the YNAB_BUDGET_ID default when it is one) is returned as is. A
+   * sentinel is resolved with one request and remembered for
+   * BUDGET_ALIAS_TTL_MS in the user's cache, so tool calls do not each cost a
+   * request; a changed "last-used" budget is picked up within that time.
+   *
+   * Writes pass `{ fresh: true }`: the cached entry is skipped, a lookup
+   * already in flight is not joined (it may predate a switch) and the answer replaces it, so a write
+   * never targets a budget that stopped being last-used since the last read.
    */
-  resolveBudgetId(budgetId?: string): string {
-    return budgetId ?? this.defaultBudgetId;
+  async resolveBudgetId(budgetId?: string, options: { fresh?: boolean } = {}): Promise<string> {
+    const requested = budgetId ?? this.defaultBudgetId;
+    if (!isBudgetIdSentinel(requested)) return requested;
+
+    const cacheKey = `budget-alias:${requested}`;
+    if (options.fresh !== true) {
+      const cached = this.cache.get<string>(cacheKey);
+      if (cached !== undefined) return cached;
+    }
+
+    // Concurrent reads in this client share one lookup. A fresh call never
+    // joins one: a lookup that started earlier could still answer with a budget
+    // that has stopped being last-used, and a write would go to it.
+    if (options.fresh === true) return this.lookUpBudgetAlias(requested, cacheKey, true);
+    let pending = this.aliasLookups.get(requested);
+    if (pending === undefined) {
+      pending = this.lookUpBudgetAlias(requested, cacheKey, false).finally(() => {
+        this.aliasLookups.delete(requested);
+      });
+      this.aliasLookups.set(requested, pending);
+    }
+    return pending;
+  }
+
+  private async lookUpBudgetAlias(alias: BudgetIdSentinel, cacheKey: string, fresh: boolean): Promise<string> {
+    // Same guard as the other caches: a write that finished while the lookup
+    // was in flight keeps its result out of the cache.
+    const generation = this.cache.generation();
+    // Lookups apply their result in start order: one that started earlier and
+    // finished later must not replace the answer of one that started after it.
+    const started = ++this.aliasLookupSeq;
+    let id: string | undefined;
+    try {
+      // A knowledge value no budget has reached makes this a delta with no
+      // changes: the plan's id without the whole budget in the response.
+      id = await this.fetchPlanId(alias, ALIAS_PROBE_KNOWLEDGE);
+    } catch (error) {
+      // Should YNAB reject that cursor, fall back to the full budget.
+      if (!isBadRequest(error)) throw error;
+    }
+    id ??= await this.fetchPlanId(alias, undefined);
+    if (id === undefined) throw new YnabApiError('YNAB did not identify the budget', 'budget_not_found');
+    const newest = this.aliasAppliedSeq.get(alias) ?? 0;
+    // A read's answer only fills a gap; a fresh one replaces what is there.
+    const mayStore = fresh || this.cache.get<string>(cacheKey) === undefined;
+    if (generation === this.cache.generation() && started > newest && mayStore) {
+      this.aliasAppliedSeq.set(alias, started);
+      this.cache.set(cacheKey, id, BUDGET_ALIAS_TTL_MS);
+    }
+    return id;
+  }
+
+  private async fetchPlanId(alias: string, knowledge: number | undefined): Promise<string | undefined> {
+    // Outside any fan-out reservation: the tool's reserved count covers its
+    // own reads, and this lookup (a cache miss only) takes its own token.
+    return this.fanOut.exit(async () => {
+      await this.takeToken();
+      const response = await this.api.plans.getPlanById(alias, knowledge);
+      const id: unknown = response.data.plan?.id;
+      return typeof id === 'string' && id.length > 0 ? id : undefined;
+    });
   }
 
   /**
@@ -901,9 +981,10 @@ export class YnabClient {
     const cached = this.cache.get<ynab.PlanSettingsResponse>(cacheKey);
     if (cached !== undefined) return cached;
 
+    const generation = this.cache.generation();
     await this.takeToken();
     const response = await this.api.plans.getPlanSettingsById(budgetId);
-    this.cache.set(cacheKey, response);
+    if (generation === this.cache.generation()) this.cache.set(cacheKey, response);
     return response;
   }
 

@@ -71,7 +71,7 @@ describe('handleCreateScheduledTransaction', () => {
       mockClient as never
     );
 
-    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
+    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget', { fresh: true });
     const body = mockClient.createScheduledTransaction.mock.calls[0]![1];
     expect(body.scheduled_transaction).toMatchObject({
       amount: 100500,

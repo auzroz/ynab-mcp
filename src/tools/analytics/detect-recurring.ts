@@ -103,7 +103,7 @@ export async function handleDetectRecurring(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const months = validated.months ?? 6;
   const minOccurrences = validated.min_occurrences ?? 3;
 
