@@ -38,6 +38,16 @@ export const MIN_ABANDONED_CLIENT_MS = 3_600_000;
 /** A client with no live grant is swept this long after its last authorization. */
 export const UNUSED_CLIENT_DAYS = 90;
 
+/**
+ * How long a consumed authorization code or refresh token of the
+ * oidc-provider adapter is kept after its consumption, so a replay can still
+ * be recognized and revoke its grant (ADR-0002 D6; 0.4.x's
+ * `REFRESH_TOKEN_REUSE_WINDOW_MS`). The sweep keeps the row longer while its
+ * grant still has a live token. Not a setting.
+ */
+export const CONSUMED_CREDENTIAL_RETENTION_DAYS = 30;
+export const CONSUMED_CREDENTIAL_RETENTION_MS = CONSUMED_CREDENTIAL_RETENTION_DAYS * DAY_MS;
+
 /** Rows deleted per statement by `sweepExpired`, so one sweep never holds a large lock set. */
 export const SWEEP_BATCH_SIZE = 500;
 

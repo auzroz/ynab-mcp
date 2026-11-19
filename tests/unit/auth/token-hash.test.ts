@@ -218,3 +218,35 @@ describe('constantTimeEqual', () => {
     expect(timingSafe).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('libraryStorageKey (ADR-0002 D4: the oidc-provider adapter)', () => {
+  const LIBRARY_KINDS: readonly TokenKind[] = ['access', 'refresh', 'code', 'session', 'interaction', 'registration'];
+  const id = (): string => randomBytes(32).toString('base64url');
+
+  it('keys a 43-character library id by kind, as the 0.4.x lookup does for the same value', () => {
+    const value = id();
+    const keys = LIBRARY_KINDS.map((kind) => hasher.libraryStorageKey(kind, value));
+    for (const [i, key] of keys.entries()) {
+      expect(key).toMatch(/^h1\.[0-9a-f]{64}$/);
+      expect(key).toBe(hasher.legacyStorageKey(LIBRARY_KINDS[i] as TokenKind, value));
+      expect(key).not.toContain(value);
+    }
+    expect(new Set(keys).size).toBe(LIBRARY_KINDS.length);
+    expect(TokenHasher.fromSecrets({ tokenPepper: pepper() }).libraryStorageKey('access', value)).not.toBe(
+      hasher.libraryStorageKey('access', value)
+    );
+  });
+
+  it('refuses anything but a string of 43 base64url characters', () => {
+    const value = id();
+    for (const bad of ['', value.slice(1), `${value}A`, `${value.slice(1)}=`, `${value.slice(1)}.`, ` ${value.slice(1)}`]) {
+      expect(hasher.libraryStorageKey('access', bad)).toBeUndefined();
+    }
+    for (const bad of [undefined, null, 43, { value }, [value]]) {
+      expect(hasher.libraryStorageKey('refresh', bad)).toBeUndefined();
+    }
+    const stored = hasher.libraryStorageKey('code', value) as string;
+    expect(hasher.libraryStorageKey('code', stored)).toBeUndefined();
+    expect(LEGACY_TOKEN_SHAPE.test(value)).toBe(true);
+  });
+});
