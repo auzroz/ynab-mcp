@@ -6,7 +6,8 @@
  * SQL. Memory storage holds nothing from an earlier process, so it has no M4.
  *
  * The adapter's contract on these drivers is in
- * oauth-adapter-conformance.test.ts (pending until #47-1's driver step).
+ * oauth-adapter-conformance.test.ts (every driver implements it; which ones
+ * run depends on the environment, see that file's header).
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';

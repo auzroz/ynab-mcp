@@ -11,11 +11,12 @@
  *   - deletion and the account tools, both generations;
  *   - the library's own models round-tripping through the adapter.
  *
- * PENDING (#47-1 driver step): SqliteStorage and PostgresStorage don't
- * implement OAuthRowStore yet, so their entries are `it.todo`. The driver step
- * flips ADAPTER_READY for its driver and every case must then pass, Postgres
- * with REQUIRE_DB_TESTS=1 and nothing skipped. M4 (the schema and the client
- * conversion) already runs on both: tests/unit/storage/oauth-rows-migration.test.ts.
+ * Every driver implements OAuthRowStore (ADAPTER_READY is true for all three),
+ * so each case runs on each. Which drivers run depends on the environment:
+ * SQLite when better-sqlite3 loads, Postgres when DATABASE_URL is set (with
+ * REQUIRE_DB_TESTS=1 a missing driver fails instead of skipping, and nothing
+ * may be skipped). The schema and client conversion (M4) run on both in
+ * tests/unit/storage/oauth-rows-migration.test.ts.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -36,8 +37,8 @@ import { CONSUMED_CREDENTIAL_RETENTION_MS } from '../../../src/auth/retention-de
 import type { OAuthRowRecord, OAuthRowStore, Storage } from '../../../src/storage/types.js';
 
 /**
- * Which drivers implement OAuthRowStore. #47-1's driver step sets sqlite and
- * postgres to true when SqliteStorage and PostgresStorage implement it.
+ * Which drivers implement OAuthRowStore: all of them. Whether a driver's cases
+ * run is the environment's call (see the header), not this flag's.
  */
 const ADAPTER_READY: Record<DriverKind, boolean> = { memory: true, sqlite: true, postgres: true };
 
@@ -478,15 +479,29 @@ const CASES: Case[] = [
     async run(ctx) {
       const s = await signedIn(ctx);
       const second = adapterOver((await ctx.handle.reopen()) as Store);
+      const consumed: Array<'won' | 'replayed'> = [];
       const redeem = async (a: (m: string) => OidcAdapter): Promise<void> => {
-        await a('AuthorizationCode').consume(s.code);
+        try {
+          await a('AuthorizationCode').consume(s.code);
+        } catch (err) {
+          expect(err).toBeInstanceOf(errors.InvalidGrant);
+          consumed.push('replayed');
+          throw err;
+        }
+        consumed.push('won');
         const id = libId();
         await a('AccessToken').upsert(id, tokenPayload('AccessToken', id, s, 3600), 3600);
       };
       const results = await Promise.allSettled([redeem(ctx.adapter), redeem(second)]);
-      expect(results.some((r) => r.status === 'rejected')).toBe(true);
-      const live = (await oauthRows(ctx.handle)).filter((r) => r.grant_id === s.grantId && r.model === 'AccessToken');
-      for (const row of live) expect(await ctx.store.findOAuthRow(row.key)).toBeUndefined();
+      // Exactly one consume wins and the other is a replay.
+      expect([...consumed].sort()).toEqual(['replayed', 'won']);
+      // The winner's token save either lands before the replay revokes the grant
+      // (and is deleted with it) or finds the grant gone (InvalidGrant): in both
+      // cases nothing is left under the grant.
+      for (const r of results) {
+        if (r.status === 'rejected') expect(r.reason).toBeInstanceOf(errors.InvalidGrant);
+      }
+      expect((await oauthRows(ctx.handle)).filter((r) => r.grant_id === s.grantId)).toEqual([]);
     },
   },
 
