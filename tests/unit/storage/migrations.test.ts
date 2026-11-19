@@ -173,6 +173,17 @@ describe('applyMigrations', () => {
     await applyMigrations(pg.tx, 1, plan);
     expect(pg.calls).toContain('PG new');
     expect(pg.calls).not.toContain('PG old');
+    // An index added to an existing table's statements later still runs on an upgraded install.
+    const grown: MigrationPlan = {
+      ...emptyPlan,
+      tables: [{ name: 'old', sql: { sqlite: 'LITE', postgres: 'CREATE TABLE IF NOT EXISTS old (a INT); CREATE INDEX IF NOT EXISTS old_a ON old (a); CREATE INDEX IF NOT EXISTS old_b ON old (b)' } }],
+    };
+    const upgraded = fakeTx('postgres', {}, ['old', 'old_a']);
+    await applyMigrations(upgraded.tx, 1, grown);
+    expect(upgraded.calls.some((c) => c.includes('old_b'))).toBe(true);
+    const current = fakeTx('postgres', {}, ['old', 'old_a', 'old_b']);
+    await applyMigrations(current.tx, 1, grown);
+    expect(current.calls.some((c) => c.includes('old_b'))).toBe(false);
     // SQLite takes no such lock and keeps running every statement.
     const lite = fakeTx('sqlite', {}, ['old']);
     await applyMigrations(lite.tx, 1, plan);

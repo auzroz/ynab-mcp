@@ -359,11 +359,17 @@ export async function applyMigrations(
     // Postgres takes a SHARE lock on the table for `CREATE INDEX IF NOT EXISTS`
     // even when the index exists, which waits for any transaction writing the
     // table and can deadlock with one that holds a lock this startup wants next
-    // (oauth_rows' token writers hold users). A table that exists was created
-    // with its indexes in one transaction, so it is left alone.
+    // (oauth_rows' token writers hold users). So a table is left alone only when
+    // it and every index its statements create already exist; an index added to
+    // the table's statements later is missing on an upgraded install, so they run.
     if (tx.dialect === 'postgres') {
-      const [found] = await tx.query<{ present: boolean }>('SELECT to_regclass($1) IS NOT NULL AS present', [table.name]);
-      if (found?.present) continue;
+      const names = [table.name, ...[...table.sql.postgres.matchAll(/CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+(\w+)/gi)].map((m) => m[1])];
+      let present = true;
+      for (const name of names) {
+        const [found] = await tx.query<{ present: boolean }>('SELECT to_regclass($1) IS NOT NULL AS present', [name]);
+        if (!found?.present) present = false;
+      }
+      if (present) continue;
     }
     await tx.exec(table.sql[tx.dialect]);
   }
