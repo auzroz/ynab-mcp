@@ -70,10 +70,24 @@ function noStorage(): never {
 }
 
 /**
+ * Metadata fields oidc-provider 9.15.0's `Client.validate()` resolves over HTTP
+ * (lib/models/client.js: `validate` calls `sectorValidate`, which fetches
+ * `sector_identifier_uri`). The validator refuses them before the library sees
+ * them, so it never makes a request. Not listed, because validation never
+ * fetches them: `jwks_uri` (fetched lazily when a keystore is refreshed to
+ * verify a client assertion, which the `client_secret_post`/`none` methods never
+ * do) and `request_uris` (read only when an authorization request uses
+ * `request_uri`). M4 stores none of these; re-check this list on a library bump.
+ */
+export const NETWORK_METADATA_FIELDS = ['sector_identifier_uri'] as const;
+
+/**
  * A validator over the library's own client schema with
  * {@link CLIENT_SCHEMA_CONFIGURATION}. It builds one provider (a few
- * milliseconds; no network, no storage) and reuses it. A failure's reason is
- * the library's fixed description (it names the field, never a value).
+ * milliseconds; no storage) and reuses it. It makes no network request: metadata
+ * carrying a {@link NETWORK_METADATA_FIELDS} field is refused up front. A
+ * failure's reason is the library's fixed description (it names the field,
+ * never a value).
  */
 export function createClientSchemaValidator(): ClientSchemaValidator {
   const provider = new Provider('https://client-schema.invalid', {
@@ -82,6 +96,9 @@ export function createClientSchemaValidator(): ClientSchemaValidator {
     jwks: ephemeralSigningKeys(),
   });
   return async (metadata) => {
+    for (const field of NETWORK_METADATA_FIELDS) {
+      if (field in metadata) return `${field} is not supported`;
+    }
     try {
       await provider.Client.validate(metadata as ClientMetadata);
       return undefined;
