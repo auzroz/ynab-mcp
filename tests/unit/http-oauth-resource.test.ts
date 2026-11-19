@@ -54,6 +54,8 @@ function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
     oauthClientId: 'cid',
     oauthClientSecret: 'sec',
     encryptionKey: ENCRYPTION_KEY,
+    // A verified client (#55b), so /authorize errors are redirected back to it.
+    verifiedRedirectUris: [CALLBACK],
     ...overrides,
   });
 }

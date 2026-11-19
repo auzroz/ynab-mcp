@@ -6,6 +6,8 @@ import {
   sanitizeName,
   sanitizeErrorMessage,
   stripBidi,
+  stripInvisible,
+  hasInvisible,
 } from '../../../src/utils/sanitize.js';
 
 describe('sanitize utilities', () => {
@@ -39,6 +41,30 @@ describe('sanitize utilities', () => {
 
     it('returns empty string for empty input', () => {
       expect(stripBidi('')).toBe('');
+    });
+  });
+
+  describe('stripInvisible (#55: client names on the consent page)', () => {
+    it.each([
+      ['U+200B ZERO WIDTH SPACE', '\u200B'],
+      ['U+200C ZWNJ', '\u200C'],
+      ['U+200D ZWJ', '\u200D'],
+      ['U+2060 WORD JOINER', '\u2060'],
+      ['U+FEFF BOM', '\uFEFF'],
+      ['U+00AD SOFT HYPHEN', '\u00AD'],
+      ['U+202E RLO (bidi)', '\u202E'],
+      ['U+E0041 TAG LATIN CAPITAL A', '\u{E0041}'],
+      ['U+034F COMBINING GRAPHEME JOINER', '\u034F'],
+      ['U+3164 HANGUL FILLER', '\u3164'],
+    ])('removes %s', (_name, ch) => {
+      expect(stripInvisible(`a${ch}b`)).toBe('ab');
+      expect(hasInvisible(`a${ch}b`)).toBe(true);
+    });
+
+    it('keeps visible text, spaces and emoji', () => {
+      const input = 'Claude Desktop 🙂 é';
+      expect(stripInvisible(input)).toBe(input);
+      expect(hasInvisible(input)).toBe(false);
     });
   });
 

@@ -538,8 +538,10 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
         state: 'client-state',
         resource: 'https://other.example.com/mcp',
       });
-    expect(refused.status).toBe(302);
-    expect(new URL(refused.headers['location'] as string).searchParams.get('error')).toBe('invalid_target');
+    // This client is not verified (#55b): the error is shown here, not redirected.
+    expect(refused.status).toBe(400);
+    expect(refused.headers['location']).toBeUndefined();
+    expect(refused.text).toContain('invalid_target');
 
     // ...so plant a token a misconfigured or older server could have issued,
     // next to a twin that differs only in its resource.

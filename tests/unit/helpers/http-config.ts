@@ -1,4 +1,5 @@
 import type { HttpConfig } from '../../../src/config/environment.js';
+import { DEFAULT_VERIFIED_REDIRECT_URIS } from '../../../src/config/http/dcr.js';
 
 /** Build an HttpConfig with safe test defaults (header auth, memory storage, no network binding). */
 export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
@@ -45,6 +46,10 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     maxInflight: 64,
     requestTimeoutMs: 60_000,
     deprecatedSessionSettings: [],
+    // The loader's defaults (#55): test clients at client.example are unverified.
+    verifiedRedirectUris: DEFAULT_VERIFIED_REDIRECT_URIS,
+    privateUseSchemes: [],
+    trustLoopbackRedirects: true,
     ...overrides,
   };
 }

@@ -268,10 +268,10 @@ describe('loadHttpConfig composition', () => {
       'authMode', 'bindHost', 'cacheTtlMs', 'databaseUrl', 'defaultBudgetId', 'deprecatedSessionSettings',
       'enableDnsRebindingProtection', 'encryptionKey', 'fallbackAccessToken', 'logLevel', 'maxInflight',
       'maxInflightPerClient', 'maxInflightPerUser', 'maxSessions', 'maxSessionsPerUser', 'oauthClientId',
-      'oauthClientSecret', 'port', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour', 'readOnly',
-      'registerRateLimitPerHost', 'registerRateLimitPerIp', 'requestTimeoutMs', 'resourceUrl', 'securityContacts',
-      'securityPolicyUrl', 'sessionIdleTimeoutMs', 'sqlitePath', 'storageDriver', 'tokenPepper',
-      'trustCfConnectingIp', 'trustProxy',
+      'oauthClientSecret', 'port', 'privateUseSchemes', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour',
+      'readOnly', 'registerRateLimitPerHost', 'registerRateLimitPerIp', 'requestTimeoutMs', 'resourceUrl',
+      'securityContacts', 'securityPolicyUrl', 'sessionIdleTimeoutMs', 'sqlitePath', 'storageDriver', 'tokenPepper',
+      'trustCfConnectingIp', 'trustLoopbackRedirects', 'trustProxy', 'verifiedRedirectUris',
     ]);
   });
 });

@@ -87,8 +87,11 @@ export function authorizeClientId(req: Request): string | undefined {
  *  - A public http(s) host keys by the host alone (hosted MCP clients register
  *    from one small IP range but share a redirect host). This is the decided
  *    trade-off: an unverified host can be named by anyone, so the per-IP limit
- *    is what bounds a caller; keying verified hosts by host and IP lands with
- *    #55.
+ *    is what bounds a caller.
+ *  - A verified host (one of `verifiedHosts`, the hosts of
+ *    MCP_VERIFIED_REDIRECT_URIS) is shared by every user of that client and
+ *    can be named by anyone, so keyed by host alone one caller could spend it
+ *    for everyone: it keys by (host, IP), `verified:<host>|ip:<ip>` (#55).
  *  - A loopback host (localhost, 127.x, ::1) is shared by every native client
  *    on every machine, so it keys by (host, IP): `loopback|ip:<ip>`.
  *  - A private-use scheme (`com.example.app:/cb`) keys by (scheme, IP).
@@ -96,11 +99,17 @@ export function authorizeClientId(req: Request): string | undefined {
  *
  * Returns undefined for a list longer than MAX_REDIRECT_URIS: the caller
  * refuses it, rather than counting part of it, so padding the list ahead of a
- * host cannot leave that host out of the count.
+ * host cannot leave that host out of the count. (On /register the DCR
+ * validator runs first and refuses more than 5; this bound is the limiter's
+ * own, for a body nothing has checked.)
  */
 export const MAX_REDIRECT_URIS = 10;
 
-export function redirectHostKeys(body: unknown, ip: string): string[] | undefined {
+export function redirectHostKeys(
+  body: unknown,
+  ip: string,
+  verifiedHosts: ReadonlySet<string> = new Set()
+): string[] | undefined {
   const uris = (body as { redirect_uris?: unknown } | undefined)?.redirect_uris;
   const keys = new Set<string>();
   if (Array.isArray(uris)) {
@@ -115,13 +124,35 @@ export function redirectHostKeys(body: unknown, ip: string): string[] | undefine
       }
       if (url.protocol === 'http:' || url.protocol === 'https:') {
         const host = url.hostname.toLowerCase();
-        keys.add(isLoopbackHost(host) ? `loopback|ip:${ip}` : `host:${host}`);
+        if (isLoopbackHost(host)) keys.add(`loopback|ip:${ip}`);
+        else if (verifiedHosts.has(host)) keys.add(`verified:${host}|ip:${ip}`);
+        else keys.add(`host:${host}`);
       } else {
         keys.add(`scheme:${url.protocol}|ip:${ip}`);
       }
     }
   }
   return keys.size > 0 ? [...keys] : [`no-redirect|ip:${ip}`];
+}
+
+/**
+ * The hosts redirectHostKeys treats as verified: the lowercase host name of
+ * each http(s) entry of MCP_VERIFIED_REDIRECT_URIS. Any path on such a host
+ * counts, since the budget is per host.
+ */
+export function verifiedRedirectHosts(verifiedRedirectUris: readonly string[]): ReadonlySet<string> {
+  const hosts = new Set<string>();
+  for (const uri of verifiedRedirectUris) {
+    try {
+      const url = new URL(uri);
+      if ((url.protocol === 'http:' || url.protocol === 'https:') && url.hostname !== '') {
+        hosts.add(url.hostname.toLowerCase());
+      }
+    } catch {
+      // The config loader only lets absolute URLs through; skip anything else.
+    }
+  }
+  return hosts;
 }
 
 function isLoopbackHost(host: string): boolean {

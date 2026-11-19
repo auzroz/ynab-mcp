@@ -58,9 +58,12 @@ Set these environment variables (see `.env.example`):
 | `TRUST_PROXY` | if behind a reverse proxy | Number of proxies between the client and this server whose `X-Forwarded-For` to trust (integer 0-10, default `0`; e.g. `1` behind a single Traefik/Caddy/nginx). Too low and every client shares one rate-limit bucket, so one client can lock out the others; too high and clients can spoof their address. Set it only when the app is reachable solely through the proxy. See "Client addresses and rate limits" |
 | `TRUST_CF_CONNECTING_IP` | no | `true` to take the client address from `CF-Connecting-IP` (default `false`). Separate from `TRUST_PROXY`; turn it on only when the server is reachable solely through Cloudflare. See "Client addresses and rate limits" |
 | `REGISTER_RATE_LIMIT_PER_IP` | no | `/register` requests per client address per hour (integer 1-100000, default `100`) |
-| `REGISTER_RATE_LIMIT_PER_HOST` | no | `/register` requests per redirect URI host per hour (integer 1-100000, default `20`) |
+| `REGISTER_RATE_LIMIT_PER_HOST` | no | `/register` requests per redirect URI host per hour (integer 1-100000, default `20`). A verified host (`MCP_VERIFIED_REDIRECT_URIS`) or loopback counts per host and client address. See "Client addresses and rate limits" |
 | `SECURITY_CONTACT` | no | Where to report a security issue in **your** deployment: one or more comma-separated email addresses or `mailto:`, `tel:` or `https:` URIs (at most 5). When set, the server serves `/.well-known/security.txt` (RFC 9116) with a `Contact` line for each, an `Expires` of 180 days from each request, and `Canonical` from `PUBLIC_URL`. Unset (default): the path is a 404. A value with a control character or line break is refused at startup |
 | `SECURITY_POLICY_URL` | no | An https URL for your disclosure policy, served as `Policy` in `security.txt`. Only used when `SECURITY_CONTACT` is set |
+| `MCP_VERIFIED_REDIRECT_URIS` | no | Comma-separated redirect URIs of trusted clients. Default: Claude's connector callbacks, `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`. An authorization error at `/authorize` is redirected back only to these (and to loopback, see below); for any other client it is shown on this server's own page with a "Return to" link, so the server can't be used as an open redirector. The consent page names a verified client plainly and any other as "calls itself". `none` empties the list. Each entry must be https (http only for loopback), at most 512 characters, with no userinfo or fragment |
+| `MCP_DCR_PRIVATE_USE_SCHEMES` | no | Comma-separated private-use URI schemes (RFC 8252, e.g. `com.example.app`) a registering native app may use for its redirect URI. Default: none, so registrations need `https://` or `http://` to `localhost`, `127.0.0.1` or `[::1]` |
+| `MCP_TRUST_LOOPBACK_REDIRECTS` | no | Redirect authorization errors back to loopback redirect URIs (default `true`). The consent page labels a loopback address either way |
 
 OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
 `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL`; startup is refused if any is missing.
@@ -140,6 +143,47 @@ through, which proxies do by default. The consent page can't be framed
 (`X-Frame-Options: DENY`, `frame-ancestors 'none'`). An authorization that was
 in progress during an upgrade to 0.4.0 has no binding, so the user has to
 start it again.
+
+Since 0.5.0 the consent page shows the host the browser returns to in bold.
+A client whose redirect URI isn't on `MCP_VERIFIED_REDIRECT_URIS` appears as
+"an application at *host* that calls itself *name*", and a loopback address
+is labelled as one on the user's own device. The page loads nothing (a strict
+`Content-Security-Policy`), isn't cached, and strips bidi and invisible
+characters from the client's name.
+
+### Client registration and authorization errors
+
+`/register` accepts only what this server uses: 1 to 5 redirect URIs of at
+most 512 characters, each `https://`, `http://` to `localhost`, `127.0.0.1` or
+`[::1]`, or a private-use scheme on `MCP_DCR_PRIVATE_USE_SCHEMES`, with no
+userinfo or fragment; a `client_name` of 1 to 100 printable characters; and a
+few short fields (`token_endpoint_auth_method`, `grant_types`,
+`response_types`, `scope`, `application_type`, `software_id`,
+`software_version`). Other fields (`jwks`, `contacts`, `logo_uri`,
+`software_statement` and so on) are dropped. A refusal is `400` with
+`invalid_redirect_uri` or `invalid_client_metadata`. Every authorization
+server route refuses a body over 8 KB (`413`). The rate limits are in "Client
+addresses and rate limits".
+
+`/authorize` refuses a `state` over 512 characters, a `code_challenge` that
+isn't 43 base64url characters, and more than 5 scopes; unknown scopes are
+ignored. A `client_id` that is missing, empty, repeated or over 255
+characters is refused before any lookup. The `redirect_uri` must equal a
+registered one character for character; only an `http://localhost`,
+`http://127.0.0.1` or `http://[::1]` URI may differ in its port. A redirect URI
+with a fragment never matches. These refusals are a `400`, never a redirect.
+An error found once the client and redirect URI are known is redirected back
+to the client only when that redirect URI is verified
+(`MCP_VERIFIED_REDIRECT_URIS`, or loopback while `MCP_TRUST_LOOPBACK_REDIRECTS`
+is on). For any other client the error is shown on this server's own page,
+with a link back the user can choose to follow, so a crafted link can't use
+your server to bounce a browser to an arbitrary site.
+
+Clients registered before 0.5.0 keep working, with two exceptions: a client
+with an `http://` redirect URI to a host other than loopback is refused at
+`/authorize`, and a redirect URI with a fragment can't be used. Such a client
+has to register again. The server logs, once per client, any
+other rule an older registration breaks.
 
 ### Access level per connection
 
@@ -363,6 +407,8 @@ An unauthenticated endpoint is keyed by **(client_id, address)**, never by
 `client_id` alone: a `client_id` is public, so anyone who knew one could spend
 its budget. Each such endpoint also has an address-only ceiling of ten times
 its limit, so rotating `client_id` does not give one address unlimited buckets.
+The ceilings and the per-address `/register` limit are checked before the body
+is read, so a request past them costs no parsing.
 
 | Endpoint | Limit | Key |
 |---|---|---|
@@ -379,18 +425,25 @@ lock their users out of each other, while the redirect host is what they
 share. A registration naming several hosts is counted against each of them.
 Loopback redirects (`localhost`, `127.0.0.1`, `[::1]`) and private-use schemes
 are shared by native clients everywhere, so they are keyed by host **and**
-address instead of by host alone.
+address instead of by host alone. So is a verified host: the host of an entry
+on `MCP_VERIFIED_REDIRECT_URIS` (by default `claude.ai` and `claude.com`).
+Every user of that client shares it and anyone can name it, so keyed by host
+alone, one caller could lock that client out for everyone.
 
 The `client_id` for `/token` and `/revoke` is the `client_id` form field (the
 one client authentication checks; an HTTP Basic user is not read). For
 `/authorize` it is the query parameter on GET and the form field on POST.
-`/authorize` also has an address-only guard of 1000 per 15 minutes ahead of
-body parsing. A `/register` body with more than 10 `redirect_uris` is refused
-with 400 `invalid_client_metadata`.
+The address-only ceilings are 1000 per 15 minutes on `/authorize` and 500 on
+`/token` and on `/revoke`.
 
-An unverified redirect host is shared across addresses by design, so someone
-can spend a host's `/register` budget by naming it; the per-address limit
-bounds how fast. Keying verified hosts by host and address lands with #55.
+A registration is checked (see "Client registration and authorization
+errors") before any redirect host is counted, so a refused one uses none of a
+host's budget; it still counts against the per-address limit. A body with more
+than 5 `redirect_uris` is refused with 400 `invalid_client_metadata`.
+
+Any other redirect host is shared across addresses by design, so someone can
+spend that host's `/register` budget by naming it; the per-address limit bounds
+how fast.
 
 ## Host and Origin validation
 
