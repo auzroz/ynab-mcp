@@ -356,6 +356,15 @@ export async function applyMigrations(
   deps: MigrationDeps = {}
 ): Promise<void> {
   for (const table of plan.tables) {
+    // Postgres takes a SHARE lock on the table for `CREATE INDEX IF NOT EXISTS`
+    // even when the index exists, which waits for any transaction writing the
+    // table and can deadlock with one that holds a lock this startup wants next
+    // (oauth_rows' token writers hold users). A table that exists was created
+    // with its indexes in one transaction, so it is left alone.
+    if (tx.dialect === 'postgres') {
+      const [found] = await tx.query<{ present: boolean }>('SELECT to_regclass($1) IS NOT NULL AS present', [table.name]);
+      if (found?.present) continue;
+    }
     await tx.exec(table.sql[tx.dialect]);
   }
 

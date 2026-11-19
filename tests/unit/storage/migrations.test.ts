@@ -25,7 +25,7 @@ import {
 import { TEST_TOKEN_HASHER } from '../helpers/token-hasher.js';
 
 /** Records every call and keeps `schema_meta` in a Map. */
-function fakeTx(dialect: Dialect = 'postgres', meta: Record<string, string> = {}) {
+function fakeTx(dialect: Dialect = 'postgres', meta: Record<string, string> = {}, existingTables: string[] = []) {
   const calls: string[] = [];
   const store = new Map(Object.entries(meta));
   const tx: MigrationTx = {
@@ -39,6 +39,7 @@ function fakeTx(dialect: Dialect = 'postgres', meta: Record<string, string> = {}
       }
     },
     async query<T extends object>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
+      if (sql.includes('to_regclass')) return [{ present: existingTables.includes(params[0] as string) }] as unknown as T[];
       calls.push(`meta:get:${String(params[0])}`);
       const value = store.get(params[0] as string);
       return (value === undefined ? [] : [{ value }]) as unknown as T[];
@@ -158,6 +159,24 @@ describe('applyMigrations', () => {
     const lite = fakeTx('sqlite');
     await applyMigrations(lite.tx, 1, plan);
     expect(lite.calls[0]).toBe('LITE');
+  });
+
+  it('leaves a table that exists alone on Postgres, so a restart takes no DDL lock on it', async () => {
+    const plan: MigrationPlan = {
+      ...emptyPlan,
+      tables: [
+        { name: 'old', sql: { sqlite: 'LITE old', postgres: 'PG old' } },
+        { name: 'new', sql: { sqlite: 'LITE new', postgres: 'PG new' } },
+      ],
+    };
+    const pg = fakeTx('postgres', {}, ['old']);
+    await applyMigrations(pg.tx, 1, plan);
+    expect(pg.calls).toContain('PG new');
+    expect(pg.calls).not.toContain('PG old');
+    // SQLite takes no such lock and keeps running every statement.
+    const lite = fakeTx('sqlite', {}, ['old']);
+    await applyMigrations(lite.tx, 1, plan);
+    expect(lite.calls).toContain('LITE old');
   });
 
   it('runs every backfill with the one timestamp captured by the caller', async () => {

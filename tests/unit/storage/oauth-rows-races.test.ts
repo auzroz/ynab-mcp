@@ -2,7 +2,9 @@
  * Races in the oauth_rows writers that need a controlled interleaving:
  *
  *   - a staged sign-in's expiry is judged on the clock read after the write
- *     lock is held, not before waiting for it (SQLite and Postgres).
+ *     lock is held, not before waiting for it (SQLite and Postgres);
+ *   - a restart against an installed Postgres schema takes no lock on
+ *     oauth_rows, which would wait for (and deadlock with) a token write.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -132,4 +134,23 @@ describe.skipIf(!pgDriver?.enabled)('PostgresStorage: lock waits', () => {
       await other.storage.close();
     }
   });
+
+  it('a restart against an installed schema takes no lock on oauth_rows', async () => {
+    const h = await (pgDriver as NonNullable<typeof pgDriver>).open();
+    const tx = await rawTx(h);
+    let reopened: Promise<Storage> | undefined;
+    try {
+      // A token write in flight holds ROW EXCLUSIVE on oauth_rows until it commits.
+      await tx.query('LOCK TABLE oauth_rows IN ROW EXCLUSIVE MODE');
+      reopened = h.reopen();
+      const outcome = await Promise.race([
+        reopened.then(() => 'started'),
+        new Promise<string>((r) => setTimeout(() => r('blocked'), 4000)),
+      ]);
+      expect(outcome).toBe('started');
+    } finally {
+      await tx.end(false);
+      await reopened?.catch(() => undefined);
+    }
+  }, 20_000);
 });
