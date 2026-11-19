@@ -618,9 +618,10 @@ export class SqliteStorage implements Storage, OAuthRowStore {
     if (row.model !== 'AccessToken' && row.model !== 'RefreshToken') {
       throw new Error(`saveGrantToken cannot write a ${row.model} row`);
     }
-    const now = Date.now();
     return this.database
       .transaction((): boolean => {
+        // Read inside the transaction: BEGIN IMMEDIATE may have waited for another process's write lock.
+        const now = Date.now();
         if (row.accountId === undefined) return false;
         const user = this.database.prepare('SELECT 1 AS one FROM users WHERE user_id = ?').get(row.accountId);
         if (!user || !this.liveGrantFor(row)) return false;
@@ -632,10 +633,12 @@ export class SqliteStorage implements Storage, OAuthRowStore {
 
   async saveAuthorizationCode(row: OAuthRowWrite): Promise<CodeSaveOutcome> {
     if (row.model !== 'AuthorizationCode') throw new Error(`saveAuthorizationCode cannot write a ${row.model} row`);
-    const now = Date.now();
     return this.database
       .transaction((): CodeSaveOutcome => {
         const db = this.database;
+        // Read inside the transaction: BEGIN IMMEDIATE may have waited for another
+        // process's write lock, and the staged sign-in's expiry is checked against this.
+        const now = Date.now();
         // Every check runs before the first write, so a refusal leaves the
         // client's authorized_at unchanged (the transaction holds the write lock throughout).
         const clientKey = row.clientId === undefined ? undefined : plainRowKey('Client', row.clientId);
@@ -661,10 +664,10 @@ export class SqliteStorage implements Storage, OAuthRowStore {
   }
 
   async stageSignIn(signIn: StagedSignIn): Promise<boolean> {
-    const now = Date.now();
     return this.database
       .transaction((): boolean => {
         const db = this.database;
+        const now = Date.now();
         const grant = db
           .prepare("SELECT client_id FROM oauth_rows WHERE key = ? AND model = 'Grant' AND account_id = ?")
           .get(plainRowKey('Grant', signIn.grantId), signIn.user.userId) as { client_id: string | null } | undefined;

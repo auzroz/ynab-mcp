@@ -800,9 +800,11 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     const accountId = row.accountId;
     const grantId = row.grantId;
     return this.refusable<CodeSaveOutcome>(async (client) => {
-      const now = Date.now();
       await client.query(LOCK_ACCOUNT, [accountId]);
       await client.query(LOCK_FAMILY, [grantId]);
+      // After the locks: a wait for them must not leave the staged sign-in's
+      // expiry check on a clock from before it.
+      const now = Date.now();
       // An UPDATE, not a bare lock: a sweep DELETE already waiting on this row
       // re-checks its predicate against the new version. A refusal below rolls
       // the stamp back.
