@@ -692,71 +692,77 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     sweep: <T>(map: Map<string, T>, dead: (value: T) => boolean) => number
   ): void {
     const rows = this.oauthRows;
-    const has = (pred: (r: OAuthRowRecord) => boolean): boolean => [...rows.values()].some(pred);
+    // Each rule that asks "does any row like this exist?" gets its lookup set
+    // built once, from the table as the rule starts: one pass, then O(1)
+    // membership per candidate. A rule deletes only rows its own lookup does not
+    // read (a lookup reads live tokens, Grants, non-Grant rows, non-Client rows
+    // or Clients, never the rows that rule deletes), so the snapshot is exact.
+    const keys = (pred: (r: OAuthRowRecord) => boolean, key: (r: OAuthRowRecord) => string | undefined): Set<string> => {
+      const out = new Set<string>();
+      for (const r of rows.values()) {
+        if (!pred(r)) continue;
+        const k = key(r);
+        if (k !== undefined) out.add(k);
+      }
+      return out;
+    };
+    const idleSet = (): Set<string> =>
+      keys((r) => r.model !== 'Client' && r.model !== 'RegistrationAccessToken', (r) => r.clientId);
     deleted.oauthExpired = sweep(
       rows,
       (r) => r.expiresAt !== undefined && r.expiresAt < now && r.consumedAt === undefined && r.model !== 'Grant'
+    );
+    const liveGrants = keys(
+      (l) => GRANT_TOKEN_MODELS.has(l.model) && l.consumedAt === undefined && l.expiresAt !== undefined && l.expiresAt >= now,
+      (l) => l.grantId
     );
     deleted.oauthConsumed = sweep(
       rows,
       (r) =>
         r.consumedAt !== undefined &&
         r.consumedAt < now - CONSUMED_CREDENTIAL_RETENTION_MS &&
-        !has(
-          (l) =>
-            l.grantId !== undefined &&
-            l.grantId === r.grantId &&
-            GRANT_TOKEN_MODELS.has(l.model) &&
-            l.consumedAt === undefined &&
-            l.expiresAt !== undefined &&
-            l.expiresAt >= now
-        )
+        !(r.grantId !== undefined && liveGrants.has(r.grantId))
     );
+    const grantIds = keys((g) => g.model === 'Grant', (g) => g.grantId);
     deleted.oauthOrphans = sweep(
       rows,
       (t) =>
         GRANT_TOKEN_MODELS.has(t.model) &&
         (t.accountId === undefined ||
           !this.userHolds(t.accountId, t.createdAt) ||
-          !has((g) => g.model === 'Grant' && g.grantId !== undefined && g.grantId === t.grantId))
+          !(t.grantId !== undefined && grantIds.has(t.grantId)))
     );
+    const grantsInUse = keys((r) => r.model !== 'Grant', (r) => r.grantId);
     deleted.oauthGrants = sweep(
       rows,
       (g) =>
         g.model === 'Grant' &&
         g.expiresAt !== undefined &&
         g.expiresAt < now &&
-        !has((r) => r.model !== 'Grant' && r.grantId !== undefined && r.grantId === g.grantId)
+        !(g.grantId !== undefined && grantsInUse.has(g.grantId))
     );
-    const idle = (c: OAuthRowRecord): boolean =>
-      !has(
-        (r) =>
-          r.model !== 'Client' &&
-          r.model !== 'RegistrationAccessToken' &&
-          r.clientId !== undefined &&
-          r.clientId === c.clientId
-      );
+    const abandonedIdle = idleSet();
     deleted.oauthAbandonedClients = sweep(
       rows,
       (c) =>
         c.model === 'Client' &&
         c.authorizedAt === undefined &&
         c.createdAt < now - this.retention.abandonedClientMs &&
-        idle(c)
+        !(c.clientId !== undefined && abandonedIdle.has(c.clientId))
     );
+    const unusedIdle = idleSet();
     deleted.oauthUnusedClients = sweep(
       rows,
       (c) =>
         c.model === 'Client' &&
         c.authorizedAt !== undefined &&
         c.authorizedAt < now - this.retention.unusedClientMs &&
-        idle(c)
+        !(c.clientId !== undefined && unusedIdle.has(c.clientId))
     );
+    const clientIds = keys((c) => c.model === 'Client', (c) => c.clientId);
     deleted.oauthOrphans += sweep(
       rows,
-      (t) =>
-        t.model === 'RegistrationAccessToken' &&
-        !has((c) => c.model === 'Client' && c.clientId !== undefined && c.clientId === t.clientId)
+      (t) => t.model === 'RegistrationAccessToken' && !(t.clientId !== undefined && clientIds.has(t.clientId))
     );
   }
 
