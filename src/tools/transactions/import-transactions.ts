@@ -64,12 +64,11 @@ ${UNTRUSTED_TEXT_NOTE}`,
  */
 export async function handleImportTransactions(
   args: Record<string, unknown>,
-  client: YnabClient
+  _client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  // Validate budget_id the same way as other tools; the API is not called because
-  // the endpoint is a no-op since YNAB API 1.88.
-  client.resolveBudgetId(validated.budget_id);
+  // budget_id is validated by the schema only: nothing is resolved, because
+  // the endpoint is a no-op since YNAB API 1.88 and must not cost a request.
   const importedIds: string[] = [];
 
   return JSON.stringify(

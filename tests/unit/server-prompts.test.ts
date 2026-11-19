@@ -15,7 +15,10 @@ vi.mock('../../src/prompts/index.js', async (importOriginal) => {
 });
 
 import * as promptsModule from '../../src/prompts/index.js';
-import { createServerForUser } from '../../src/server.js';
+import { buildYnabClient, createServerFromClient, type UserContext } from '../../src/server.js';
+
+/** A server on a client of its own for `ctx` (what HTTP builds per request, minus the request bounds). */
+const serverFor = (ctx: UserContext) => createServerFromClient(buildYnabClient(ctx));
 
 const baseCtx = {
   accessToken: 'test-token',
@@ -26,7 +29,7 @@ const baseCtx = {
 };
 
 async function connectClient() {
-  const server = createServerForUser(baseCtx);
+  const server = serverFor(baseCtx);
   const client = new Client({ name: 'prompt-test', version: '1' }, { capabilities: {} });
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(st), client.connect(ct)]);

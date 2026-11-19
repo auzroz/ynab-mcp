@@ -125,7 +125,7 @@ describe('handleCreateTransaction', () => {
       mockClient as never
     );
 
-    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');
+    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget', { fresh: true });
   });
 
   describe('import_id', () => {

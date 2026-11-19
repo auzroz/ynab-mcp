@@ -62,7 +62,7 @@ export async function handleGetTransaction(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   const response = await client.getTransactionById(budgetId, validated.transaction_id);
   const txn = response.data.transaction;

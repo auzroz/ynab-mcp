@@ -35,7 +35,7 @@ describe('handleCreatePayee', () => {
 
     await handleCreatePayee({ budget_id: 'b-6', name: 'New Store' }, mockClient as never);
 
-    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('b-6');
+    expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('b-6', { fresh: true });
     expect(mockClient.createPayee).toHaveBeenCalledWith('b-6', {
       payee: { name: 'New Store' },
     });

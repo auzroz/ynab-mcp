@@ -1,14 +1,19 @@
-/** MCP session caps and idle timeout. */
+/**
+ * The retired MCP session caps and idle timeout. /mcp is stateless since 0.5.0
+ * (ADR-0001 D8): these are still parsed strictly, so a malformed value still
+ * refuses to start, but nothing reads them. limits.ts reports the ones that
+ * are set for the one-time startup warning; 0.6 removes them.
+ */
 
 import { parseBoundedInteger } from '../parse.js';
 import type { HttpLoader } from './types.js';
 
 export interface SessionSettings {
-  /** Maximum concurrent MCP sessions (`MCP_MAX_SESSIONS`). */
+  /** `MCP_MAX_SESSIONS` (deprecated, no effect). */
   maxSessions: number;
-  /** Maximum concurrent sessions per user (`MCP_MAX_SESSIONS_PER_USER`); past it the user's least recently used one is closed. */
+  /** `MCP_MAX_SESSIONS_PER_USER` (deprecated, no effect). */
   maxSessionsPerUser: number;
-  /** Idle time in ms after which a session is closed (`MCP_SESSION_IDLE_TIMEOUT_MS`). */
+  /** `MCP_SESSION_IDLE_TIMEOUT_MS` (deprecated, no effect). */
   sessionIdleTimeoutMs: number;
 }
 

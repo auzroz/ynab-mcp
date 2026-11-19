@@ -1,6 +1,6 @@
 /**
- * HTTP transport wiring: health, auth gate, and session validation.
- * (Full MCP protocol round-trips are exercised by integration tests later.)
+ * HTTP transport wiring: health, the auth gate, and stateless /mcp (no
+ * sessions: ADR-0001; the full G2 set is in http-stateless.test.ts).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -40,12 +40,14 @@ describe('HTTP transport', () => {
     expect(app.get('trust proxy')).toBe(1);
   });
 
-  it('POST /mcp with a non-initialize request and no session → 400', async () => {
+  it('POST /mcp with a non-initialize request and no session is served (stateless)', async () => {
     const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
     const res = await request(app)
       .post('/mcp')
+      .set('Accept', 'application/json, text/event-stream')
       .send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('ynab_list_budgets');
   });
 
   it('POST /mcp initialize with no YNAB token → 401', async () => {
@@ -54,41 +56,41 @@ describe('HTTP transport', () => {
     expect(res.status).toBe(401);
   });
 
-  it('GET /mcp without a session id → 400', async () => {
-    const app = await createHttpApp(makeConfig());
+  it('POST /mcp tools/list with no YNAB token → 401 (every request is authenticated)', async () => {
+    const app = await createHttpApp(makeConfig({ fallbackAccessToken: undefined }));
+    const res = await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    expect(res.status).toBe(401);
+    expect(res.text).not.toContain('ynab_');
+  });
+
+  it('GET /mcp → 405 (no server-to-client stream without sessions)', async () => {
+    const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
     const res = await request(app).get('/mcp');
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(405);
   });
 
-  it('DELETE /mcp without a session id → 400', async () => {
-    const app = await createHttpApp(makeConfig());
+  it('DELETE /mcp → 405 (no session to end)', async () => {
+    const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
     const res = await request(app).delete('/mcp');
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(405);
   });
 
-  it('POST /mcp initialize with a token opens a session (returns Mcp-Session-Id)', async () => {
+  it('POST /mcp initialize with a token succeeds and issues no Mcp-Session-Id', async () => {
     const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
     const res = await request(app)
       .post('/mcp')
       .set('Accept', 'application/json, text/event-stream')
       .send(initializeBody);
 
-    // A successful initialize issues a session id header regardless of body framing.
-    expect(res.status).toBeLessThan(400);
-    expect(res.headers['mcp-session-id']).toBeDefined();
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('"serverInfo"');
+    expect(res.headers['mcp-session-id']).toBeUndefined();
   });
 
-  it('DELETE /mcp with a valid session id tears the session down', async () => {
+  it('DELETE /mcp with a session id left over from 0.4 → 405', async () => {
     const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
-    const init = await request(app)
-      .post('/mcp')
-      .set('Accept', 'application/json, text/event-stream')
-      .send(initializeBody);
-    const sessionId = init.headers['mcp-session-id'] as string;
-    expect(sessionId).toBeDefined();
-
-    const del = await request(app).delete('/mcp').set('mcp-session-id', sessionId);
-    expect(del.status).toBeLessThan(400);
+    const del = await request(app).delete('/mcp').set('mcp-session-id', 'a-0.4-session');
+    expect(del.status).toBe(405);
   });
 
   describe('hardening', () => {
@@ -164,11 +166,21 @@ describe('HTTP transport', () => {
       };
       const size = Buffer.byteLength(JSON.stringify(body));
       expect(size).toBeLessThan(512 * 1024);
-      // Not an initialize request and no session: passes the body parser and is
-      // rejected by session validation (400 -32000), not by the size limit.
-      const res = await request(app).post('/mcp').send(body);
-      expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe(-32000);
+      // Passes the body parser and reaches the tool, which refuses the write
+      // (the server is read-only by default): answered by the tool, not by
+      // the size limit.
+      const res = await request(app).post('/mcp').set('Accept', 'application/json, text/event-stream').send(body);
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('read_only_mode');
+    });
+
+    it('caps a body the JSON parser skips at 512kb too, before the SDK reads it (D12)', async () => {
+      const app = await createHttpApp(makeConfig({ fallbackAccessToken: 'env-token' }));
+      // Not application/json: express.json leaves it unread, so the SDK's bound applies (not its 4 MiB default).
+      const over = await request(app).post('/mcp').set('Content-Type', 'text/plain').send('x'.repeat(600 * 1024));
+      expect(over.status).toBe(413);
+      const under = await request(app).post('/mcp').set('Content-Type', 'text/plain').send('x'.repeat(400 * 1024));
+      expect(under.status).toBe(415);
     });
   });
 });

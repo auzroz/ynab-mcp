@@ -85,7 +85,7 @@ export async function handleUnusedCategories(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const months = validated.months ?? 6;
   const includeFunded = validated.include_funded ?? false;
 

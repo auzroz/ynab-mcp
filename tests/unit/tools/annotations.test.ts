@@ -6,7 +6,10 @@ import { describe, it, expect } from 'vitest';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { tools, handleToolCall } from '../../../src/tools/index.js';
 import { TOOL_METADATA } from '../../../src/tools/annotations.js';
-import { createServerForUser } from '../../../src/server.js';
+import { buildYnabClient, createServerFromClient, type UserContext } from '../../../src/server.js';
+
+/** A server on a client of its own for `ctx` (what HTTP builds per request, minus the request bounds). */
+const serverFor = (ctx: UserContext) => createServerFromClient(buildYnabClient(ctx));
 import type { YnabClient } from '../../../src/services/ynab-client.js';
 
 const HINTS = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'] as const;
@@ -102,7 +105,7 @@ describe('tool titles and annotations', () => {
   });
 
   it('serves titles and annotations over tools/list', async () => {
-    const server = createServerForUser({
+    const server = serverFor({
       accessToken: 'test-token',
       defaultBudgetId: undefined,
       readOnly: false,

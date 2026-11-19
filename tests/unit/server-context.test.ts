@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildYnabClient, createServerForUser, type UserContext } from '../../src/server.js';
+import { buildYnabClient, createServerForRequest, type RequestContext, type UserContext } from '../../src/server.js';
+import { createUserComponents } from '../../src/services/user-registry.js';
 
 const baseCtx: Omit<UserContext, 'accessToken' | 'readOnly'> = {
   defaultBudgetId: undefined,
@@ -45,11 +46,30 @@ describe('buildYnabClient (per-user isolation)', () => {
   });
 });
 
-describe('createServerForUser', () => {
+describe('createServerForRequest', () => {
   it('builds an MCP Server bound to a per-user client', () => {
-    const server = createServerForUser({ ...baseCtx, accessToken: 't', readOnly: true });
+    const user = { ...baseCtx, accessToken: 't', readOnly: true };
+    const ctx: RequestContext = {
+      requestId: 'r1',
+      userKey: 'u1',
+      clientId: undefined,
+      user,
+      components: createUserComponents(user),
+      toolCalls: { deadline: Date.now() + 60_000, run: (work) => work() },
+    };
+    const server = createServerForRequest(ctx);
     // A Server exposes connect/close; enough to confirm we got a wired instance.
     expect(typeof server.connect).toBe('function');
     expect(typeof server.close).toBe('function');
+  });
+
+  it("builds the request's YnabClient on the user's shared components", () => {
+    const user = { ...baseCtx, accessToken: 't', readOnly: false };
+    const components = createUserComponents(user);
+    const a = buildYnabClient(user, components);
+    const b = buildYnabClient(user, components);
+    expect(a.getAuditLog()).toBe(components.auditLog);
+    expect(b.getAuditLog()).toBe(a.getAuditLog());
+    expect(b.getRateLimitStatus()).toEqual(a.getRateLimitStatus());
   });
 });

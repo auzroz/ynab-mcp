@@ -53,7 +53,7 @@ export async function handleListPayeeLocations(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   const response = await client.getPayeeLocations(budgetId);
   const locations = response.data.payee_locations;

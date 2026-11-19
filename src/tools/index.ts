@@ -11,6 +11,7 @@
 
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../services/ynab-client.js';
+import { fanOutFor } from './fan-out.js';
 import { TOOL_METADATA } from './annotations.js';
 
 // User tools
@@ -424,5 +425,6 @@ export async function handleToolCall(
 
   // Safe to access after hasOwnProperty check
   const handler: ToolHandler = handlers[toolName];
-  return handler(args, client);
+  // A tool that fans out into several YNAB requests reserves them all up front (#58).
+  return client.withFanOut(fanOutFor(toolName, args), () => handler(args, client));
 }

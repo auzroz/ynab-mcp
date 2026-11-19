@@ -81,7 +81,7 @@ export async function handleCashFlowForecast(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const forecastDays = validated.days ?? 30;
 
   // Get accounts and scheduled transactions

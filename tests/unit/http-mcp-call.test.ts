@@ -44,7 +44,7 @@ import { makeHttpConfig } from './helpers/http-config.js';
 import { anonymous, bearer, mcpConnect, mcpInitialize, rpcMessage, ynabToken } from './helpers/mcp-call.js';
 
 describe('mcp-call helper', () => {
-  it('connects, sends requests and closes without the caller handling a session id', async () => {
+  it('connects and sends requests with no session id anywhere', async () => {
     const app = await createHttpApp(makeHttpConfig());
     const mcp = await mcpConnect(app, ynabToken('token-a'));
     expect(mcp.initializeResult['serverInfo']).toBeDefined();
@@ -52,12 +52,9 @@ describe('mcp-call helper', () => {
     const ping = await mcp.request('ping');
     expect(ping.status).toBe(200);
     expect(ping.message?.['result']).toEqual({});
+    expect(ping.res.headers['mcp-session-id']).toBeUndefined();
 
     expect(await mcp.listTools()).toContain('ynab_list_budgets');
-
-    const closed = await mcp.close();
-    expect(closed?.status).toBe(200);
-    expect(await mcp.close()).toBeUndefined();
   });
 
   it('assigns a new id to each request', async () => {
@@ -71,8 +68,16 @@ describe('mcp-call helper', () => {
   it('sends a single request with other credentials when asked', async () => {
     const app = await createHttpApp(makeHttpConfig());
     const mcp = await mcpConnect(app, ynabToken('token-a'));
-    // The connection belongs to token-a; another token is refused.
-    expect((await mcp.request('ping', {}, { auth: ynabToken('token-b') })).status).toBe(404);
+    // Each request carries its own credentials: without any it is refused,
+    // and the connection's own still work afterwards.
+    expect((await mcp.request('ping', {}, { auth: anonymous })).status).toBe(401);
+    expect((await mcp.request('ping')).status).toBe(200);
+  });
+
+  it('sends a request with the id it is given', async () => {
+    const app = await createHttpApp(makeHttpConfig());
+    const mcp = await mcpConnect(app, ynabToken('token-a'));
+    expect((await mcp.request('ping', {}, { id: 'chosen' })).message?.['id']).toBe('chosen');
   });
 
   it('exposes a refused initialize and throws from connect', async () => {
@@ -91,7 +96,7 @@ describe('mcp-call helper in oauth mode', () => {
   let handle: HttpApp | undefined;
 
   afterEach(async () => {
-    await handle?.sessions.close();
+    await handle?.mcp.close();
     await created.storage?.close();
     created.storage = undefined;
     handle = undefined;
@@ -140,7 +145,7 @@ describe('mcp-call helper in oauth mode', () => {
     return { app: handle.app, tokens };
   }
 
-  it('connects with a bearer token, sends requests and closes', async () => {
+  it('connects with a bearer token and sends requests', async () => {
     const { app, tokens } = await oauthApp(['client-a']);
     const mcp = await mcpConnect(app, bearer(tokens[0]!));
     expect(mcp.initializeResult['serverInfo']).toBeDefined();
@@ -149,17 +154,18 @@ describe('mcp-call helper in oauth mode', () => {
     const names = await mcp.listTools();
     expect(names).toContain('ynab_list_budgets');
     expect(names).not.toContain('ynab_create_transaction');
-    expect((await mcp.close())?.status).toBe(200);
   });
 
-  it("refuses another client's token on the connection", async () => {
+  it('authorizes every request by its own bearer token', async () => {
     const { app, tokens } = await oauthApp(['client-a', 'client-b']);
     const mcp = await mcpConnect(app, bearer(tokens[0]!));
-    expect((await mcp.request('ping', {}, { auth: bearer(tokens[1]!) })).status).toBe(404);
+    // Another client's valid token is its own caller; a bad one is refused
+    // with the challenge; the connection's own token keeps working.
+    expect((await mcp.request('ping', {}, { auth: bearer(tokens[1]!) })).status).toBe(200);
+    const refused = await mcp.request('ping', {}, { auth: bearer('not-a-token') });
+    expect(refused.status).toBe(401);
+    expect(refused.res.headers['www-authenticate']).toContain('resource_metadata=');
     expect((await mcp.request('ping')).status).toBe(200);
-    // A refused close keeps the session, so the owner can still close it.
-    expect((await mcp.close({ auth: bearer(tokens[1]!) }))?.status).toBe(404);
-    expect((await mcp.close())?.status).toBe(200);
   });
 
   it("reports the bearer check's refusal with its challenge", async () => {

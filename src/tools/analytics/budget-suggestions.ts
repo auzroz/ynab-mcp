@@ -79,7 +79,7 @@ export async function handleBudgetSuggestions(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const monthCount = validated.months ?? 3;
 
   // Generate list of months to analyze (excluding current month)

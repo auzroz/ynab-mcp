@@ -134,7 +134,7 @@ export async function handleListTransactions(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const limit = validated.limit ?? 100;
 
   const cursor = validated.since_server_knowledge;

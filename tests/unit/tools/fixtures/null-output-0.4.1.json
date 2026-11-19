@@ -1733,6 +1733,11 @@
         "rejected_last_hour": 0,
         "max_wait_ms": 2000
       },
+      "upstream": {
+        "circuit": "closed",
+        "consecutive_failures": 0
+      },
+      "cache": null,
       "timing": {
         "can_make_request_now": true,
         "wait_time_seconds": 0,

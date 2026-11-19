@@ -7,7 +7,10 @@ import {
   MAX_DEPTH,
   MAX_SERIALIZED_BYTES,
 } from '../../../src/utils/input-guard.js';
-import { createServerForUser } from '../../../src/server.js';
+import { buildYnabClient, createServerFromClient, type UserContext } from '../../../src/server.js';
+
+/** A server on a client of its own for `ctx` (what HTTP builds per request, minus the request bounds). */
+const serverFor = (ctx: UserContext) => createServerFromClient(buildYnabClient(ctx));
 
 function nested(depth: number): unknown {
   let v: unknown = 'leaf';
@@ -57,7 +60,7 @@ describe('assertSafeToolInput', () => {
 describe('tools/call dispatch integration', () => {
   it('returns a normal tool error (no stack) before zod parsing', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const server = createServerForUser({
+    const server = serverFor({
       accessToken: 'test-token',
       defaultBudgetId: undefined,
       readOnly: false,

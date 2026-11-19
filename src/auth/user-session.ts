@@ -114,15 +114,16 @@ export class YnabTokenResolver {
   }
 
   /**
-   * A token function for a session's YnabClient: resolves the user's current
-   * YNAB access token for each request. Failures become a YnabAuthError (a
+   * A token function for a YnabClient: resolves the user's current YNAB
+   * access token for each YNAB request. Failures become a YnabAuthError (a
    * fixed, mapped client message); the cause is logged sanitized. The account
-   * generation seen by the first call is pinned: if the account is erased and
-   * re-created while the session lives, later calls fail instead of using the
-   * new account's grant.
+   * generation is pinned, to `generation` when given (the one the /mcp
+   * request resolved before its server was built), else to the one the first
+   * call sees: if the account is erased and re-created meanwhile, later calls
+   * fail instead of using the new account's grant.
    */
-  accessTokenFor(userId: string): () => Promise<string> {
-    let pinned: number | undefined;
+  accessTokenFor(userId: string, generation?: number): () => Promise<string> {
+    let pinned: number | undefined = generation;
     return async () => {
       try {
         const resolved = await this.resolve(userId, pinned);

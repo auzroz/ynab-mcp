@@ -231,8 +231,8 @@ describe('/token client authentication', () => {
     expect(res.status).toBe(429);
     expect(res.body.error).toBe('too_many_requests');
     expect(res.headers['access-control-allow-origin']).toBe('*');
-    // Host validation is off in this config, so the parser is the first stage.
-    expect(trace).toEqual(['bounded-parser', 'cors-origin', 'route-limiter']);
+    // Host validation is off in this config, so the ip-limiter is the first stage.
+    expect(trace).toEqual(['ip-limiter', 'bounded-parser', 'cors-origin', 'route-limiter']);
     // /revoke has its own budget.
     const revoke = await request(handle.app)
       .post('/revoke')

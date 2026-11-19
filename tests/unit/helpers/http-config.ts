@@ -1,4 +1,5 @@
 import type { HttpConfig } from '../../../src/config/environment.js';
+import { DEFAULT_VERIFIED_REDIRECT_URIS } from '../../../src/config/http/dcr.js';
 
 /** Build an HttpConfig with safe test defaults (header auth, memory storage, no network binding). */
 export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
@@ -15,6 +16,11 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     maxSessionsPerUser: 10,
     sessionIdleTimeoutMs: 30 * 60 * 1000,
     trustProxy: 0,
+    trustCfConnectingIp: false,
+    registerRateLimitPerIp: 100,
+    registerRateLimitPerHost: 20,
+    securityContacts: [],
+    securityPolicyUrl: undefined,
     fallbackAccessToken: undefined,
     defaultBudgetId: undefined,
     readOnly: true,
@@ -34,6 +40,16 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     storageDriver: 'memory',
     sqlitePath: undefined,
     databaseUrl: undefined,
+    // The loader's defaults (ADR-0001 D6).
+    maxInflightPerUser: 8,
+    maxInflightPerClient: 4,
+    maxInflight: 64,
+    requestTimeoutMs: 60_000,
+    deprecatedSessionSettings: [],
+    // The loader's defaults (#55): test clients at client.example are unverified.
+    verifiedRedirectUris: DEFAULT_VERIFIED_REDIRECT_URIS,
+    privateUseSchemes: [],
+    trustLoopbackRedirects: true,
     ...overrides,
   };
 }

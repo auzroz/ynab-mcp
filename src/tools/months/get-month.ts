@@ -72,7 +72,7 @@ export async function handleGetMonth(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   // Convert "current" to actual month date
   const monthParam = validated.month === 'current' ? getCurrentMonth() : validated.month;

@@ -65,7 +65,7 @@ export async function handleGetCategory(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   const response = await client.getCategoryById(budgetId, validated.category_id);
   const category = response.data.category;

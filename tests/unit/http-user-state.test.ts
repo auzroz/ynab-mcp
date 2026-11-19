@@ -1,9 +1,10 @@
 /**
- * Header-mode sessions over HTTP:
- *  - all sessions of one YNAB token share one rate limiter / cache / audit log
- *    (also across a reconnect), and two tokens never share them;
- *  - a session can only be driven with the YNAB token that initialized it.
- * createServerForUser is spied on to see the components each session got.
+ * Header-mode requests over stateless HTTP (ADR-0001):
+ *  - all requests of one YNAB token share one rate limiter / cache / audit log
+ *    (also between requests), and two tokens never share them;
+ *  - each request holds a registry lease while it runs, released when done;
+ *  - a request is served as the YNAB token it carries, whatever else it sends.
+ * createServerForRequest is spied on to see the context each request got.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -12,43 +13,33 @@ import type { Express } from 'express';
 
 vi.mock('../../src/server.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/server.js')>('../../src/server.js');
-  return { ...actual, createServerForUser: vi.fn(actual.createServerForUser) };
+  return { ...actual, createServerForRequest: vi.fn(actual.createServerForRequest) };
 });
 
 import { createHttpApp } from '../../src/http.js';
 import * as serverModule from '../../src/server.js';
-import { UserRegistry, type UserComponents, type UserLease } from '../../src/services/user-registry.js';
+import { UserRegistry, type UserLease } from '../../src/services/user-registry.js';
+import type { RequestContext } from '../../src/server.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 
-const createServerMock = vi.mocked(serverModule.createServerForUser);
+const createServerMock = vi.mocked(serverModule.createServerForRequest);
 
-const initializeBody = {
-  jsonrpc: '2.0',
-  id: 1,
-  method: 'initialize',
-  params: {
-    protocolVersion: '2025-06-18',
-    capabilities: {},
-    clientInfo: { name: 'test', version: '0.0.0' },
-  },
-};
 const toolsList = { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} };
 
-function mcp(app: Express, method: 'post' | 'get' | 'delete', token?: string, sessionId?: string): request.Test {
-  let req = request(app)[method]('/mcp').set('Accept', 'application/json, text/event-stream');
+function mcp(app: Express, token?: string, sessionId?: string): request.Test {
+  let req = request(app).post('/mcp').set('Accept', 'application/json, text/event-stream');
   if (token !== undefined) req = req.set('X-YNAB-Token', token);
   if (sessionId !== undefined) req = req.set('mcp-session-id', sessionId);
   return req;
 }
 
-/** Initialize a session; returns its id and the components it was built on. */
-async function initSession(app: Express, token?: string): Promise<{ sid: string; components: UserComponents }> {
-  const res = await mcp(app, 'post', token).send(initializeBody);
+/** Send one request; returns the context its server was built from. */
+async function served(app: Express, token?: string, sessionId?: string): Promise<RequestContext> {
+  const res = await mcp(app, token, sessionId).send(toolsList);
   expect(res.status).toBe(200);
-  const sid = res.headers['mcp-session-id'] as string | undefined;
-  const components = createServerMock.mock.calls.at(-1)?.[1];
-  if (!sid || !components) throw new Error('no session');
-  return { sid, components };
+  const ctx = createServerMock.mock.calls.at(-1)?.[0];
+  if (!ctx) throw new Error('no server built');
+  return ctx;
 }
 
 beforeEach(() => {
@@ -56,39 +47,37 @@ beforeEach(() => {
 });
 
 describe('per-user state in header mode', () => {
-  it("shares one limiter, cache and audit log across a token's sessions", async () => {
+  it("shares one limiter, cache and audit log across a token's requests", async () => {
     const app = await createHttpApp(makeHttpConfig());
-    const a = await initSession(app, 'token-a');
-    const b = await initSession(app, 'token-a');
-    expect(b.sid).not.toBe(a.sid);
-    expect(b.components.rateLimiter).toBe(a.components.rateLimiter);
-    expect(b.components.cache).toBe(a.components.cache);
-    expect(b.components.auditLog).toBe(a.components.auditLog);
+    const a = (await served(app, 'token-a')).components;
+    const b = (await served(app, 'token-a')).components;
+    expect(b.rateLimiter).toBe(a.rateLimiter);
+    expect(b.cache).toBe(a.cache);
+    expect(b.auditLog).toBe(a.auditLog);
+    expect(b.feedState).toBe(a.feedState);
   });
 
   it('gives two tokens separate limiters, caches and audit logs', async () => {
     const app = await createHttpApp(makeHttpConfig());
-    const a = await initSession(app, 'token-a');
-    const b = await initSession(app, 'token-b');
-    expect(b.components.rateLimiter).not.toBe(a.components.rateLimiter);
-    expect(b.components.cache).not.toBe(a.components.cache);
-    expect(b.components.auditLog).not.toBe(a.components.auditLog);
+    const a = (await served(app, 'token-a')).components;
+    const b = (await served(app, 'token-b')).components;
+    expect(b.rateLimiter).not.toBe(a.rateLimiter);
+    expect(b.cache).not.toBe(a.cache);
+    expect(b.auditLog).not.toBe(a.auditLog);
   });
 
-  it('keeps the rate limiter across a reconnect (closing the session does not reset it)', async () => {
+  it('keeps the rate limiter between requests (a finished request does not reset it)', async () => {
     const app = await createHttpApp(makeHttpConfig());
-    const first = await initSession(app, 'token-a');
-    await first.components.rateLimiter.acquire();
-    const del = await mcp(app, 'delete', 'token-a', first.sid);
-    expect(del.status).toBe(200);
+    const first = (await served(app, 'token-a')).components;
+    await first.rateLimiter.acquire();
 
-    const again = await initSession(app, 'token-a');
-    expect(again.components.rateLimiter).toBe(first.components.rateLimiter);
-    expect(again.components.rateLimiter.getStatus().used).toBe(1);
+    const again = (await served(app, 'token-a')).components;
+    expect(again.rateLimiter).toBe(first.rateLimiter);
+    expect(again.rateLimiter.getStatus().used).toBe(1);
   });
 });
 
-describe('session holds on the user registry', () => {
+describe('request holds on the user registry', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -111,75 +100,56 @@ describe('session holds on the user registry', () => {
     return { releases: () => [...counts] };
   }
 
-  it('releases the hold when the session is deleted', async () => {
+  it('releases the hold when the request is done', async () => {
     const leases = trackLeases();
     const app = await createHttpApp(makeHttpConfig());
-    const { sid } = await initSession(app, 'token-a');
-    expect(leases.releases()).toEqual([0]);
-    await mcp(app, 'delete', 'token-a', sid);
-    expect(leases.releases()).toEqual([1]);
+    await served(app, 'token-a');
+    await served(app, 'token-a');
+    // One lease per request, each released once.
+    expect(leases.releases()).toEqual([1, 1]);
   });
 
-  it('releases the hold of an initialize the transport refuses', async () => {
+  it('releases the hold of a request the transport refuses', async () => {
     const leases = trackLeases();
     const app = await createHttpApp(makeHttpConfig());
-    // No Accept header: the transport answers 406 and never creates a session.
-    const res = await request(app).post('/mcp').set('X-YNAB-Token', 'token-a').send(initializeBody);
+    // No Accept header: the SDK's transport answers 406.
+    const res = await request(app).post('/mcp').set('X-YNAB-Token', 'token-a').send(toolsList);
     expect(res.status).toBe(406);
     expect(leases.releases()).toEqual([1]);
   });
 });
 
-describe('header-mode sessions are bound to their YNAB token', () => {
-  it('a different token cannot use, stream from, or delete a session', async () => {
+describe('header-mode requests are served as the YNAB token they carry', () => {
+  it("a different token gets its own state, even with another token's 0.4 session id", async () => {
     const app = await createHttpApp(makeHttpConfig());
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { sid } = await initSession(app, 'token-a');
+    const a = await served(app, 'token-a');
+    const b = await served(app, 'token-b', 'a-session-id-from-token-a');
+    expect(b.userKey).not.toBe(a.userKey);
+    expect(b.components.auditLog).not.toBe(a.components.auditLog);
+    expect(b.user.accessToken).toBe('token-b');
 
-    const post = await mcp(app, 'post', 'token-b', sid).send(toolsList);
-    expect(post.status).toBe(404);
-    expect(post.body.error.message).toBe('Session not found');
-    expect(JSON.stringify(post.body)).not.toContain('ynab_');
-    const unknown = await mcp(app, 'post', 'token-b', 'no-such-session').send(toolsList);
-    expect(unknown.status).toBe(post.status);
-    expect(unknown.body).toEqual(post.body);
-
-    const get = await mcp(app, 'get', 'token-b', sid);
-    expect(get.status).toBe(404);
-    expect(get.body.error.message).toBe('Session not found');
-    const del = await mcp(app, 'delete', 'token-b', sid);
-    expect(del.status).toBe(404);
-
-    // No token at all is refused the same way.
-    const anonymous = await mcp(app, 'post', undefined, sid).send(toolsList);
-    expect(anonymous.status).toBe(404);
-    expect(anonymous.body).toEqual(post.body);
-
-    // The owner's session survived the attempts.
-    const own = await mcp(app, 'post', 'token-a', sid).send(toolsList);
-    expect(own.status).toBe(200);
-    expect(own.text).toContain('ynab_');
-
-    const logged = errorSpy.mock.calls.flat().join(' ');
-    expect(logged).toContain('[Session] rejected');
-    expect(logged).not.toContain(sid);
-    expect(logged).not.toContain('token-a');
-    expect(logged).not.toContain('token-b');
-    errorSpy.mockRestore();
+    // No token at all is refused, session id or not.
+    const anonymous = await mcp(app, undefined, 'a-session-id-from-token-a').send(toolsList);
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.text).not.toContain('ynab_');
   });
 
-  it('a session opened with the fallback token is bound to it, not to whoever omits the header', async () => {
+  it('a request without the header acts as the fallback token, one with a header as that token', async () => {
     const app = await createHttpApp(makeHttpConfig({ fallbackAccessToken: 'env-token' }));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { sid } = await initSession(app);
-
-    const other = await mcp(app, 'post', 'token-b', sid).send(toolsList);
-    expect(other.status).toBe(404);
+    const implicit = await served(app);
+    const explicit = await served(app, 'env-token');
+    const other = await served(app, 'token-b');
     // Presenting the fallback token explicitly is the same effective token.
-    const explicit = await mcp(app, 'post', 'env-token', sid).send(toolsList);
-    expect(explicit.status).toBe(200);
-    const implicit = await mcp(app, 'post', undefined, sid).send(toolsList);
-    expect(implicit.status).toBe(200);
-    vi.mocked(console.error).mockRestore();
+    expect(explicit.userKey).toBe(implicit.userKey);
+    expect(implicit.user.accessToken).toBe('env-token');
+    expect(other.userKey).not.toBe(implicit.userKey);
+  });
+
+  it('keys state by a digest: the YNAB token is not the registry key or in the request identity', async () => {
+    const app = await createHttpApp(makeHttpConfig());
+    const ctx = await served(app, 'token-a');
+    expect(ctx.userKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(ctx.userKey).not.toContain('token-a');
+    expect(ctx.clientId).toBeUndefined();
   });
 });

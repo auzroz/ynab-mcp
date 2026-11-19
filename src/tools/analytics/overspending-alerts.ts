@@ -75,7 +75,7 @@ export async function handleOverspendingAlerts(
   client: YnabClient
 ): Promise<string> {
   const validated = inputSchema.parse(args);
-  const budgetId = client.resolveBudgetId(validated.budget_id);
+  const budgetId = await client.resolveBudgetId(validated.budget_id);
   const thresholdMilliunits = toMilliunits(validated.threshold ?? 0);
 
   const currentMonth = getCurrentMonth();

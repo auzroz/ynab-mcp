@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 
 vi.mock('../../src/server.js', () => ({
-  createServerForUser: () => {
+  createServerForRequest: () => {
     throw new Error('boom internal detail');
   },
 }));

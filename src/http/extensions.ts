@@ -24,6 +24,7 @@ import type { Router } from 'express';
 import type { HttpConfig } from '../config/environment.js';
 import type { Storage } from '../storage/types.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
+import { securityTxt } from './routes/security-txt.js';
 
 /**
  * Whether `path` is /mcp or under it, as Express would match app.use('/mcp')
@@ -110,7 +111,7 @@ export function createJobRunner(list: readonly JobExtension[], ctx: ExtensionCon
 // ---- Registries (append-only, one line per module) -------------------------
 
 /** Route modules, mounted in this order. */
-export const routes: readonly RouteExtension[] = [];
+export const routes: readonly RouteExtension[] = [securityTxt];
 
 /** Background jobs, started in this order. */
 export const jobs: readonly JobExtension[] = [];
