@@ -3,7 +3,7 @@
 # ============================================
 
 # Stage 1: Builder
-FROM node:24-alpine3.24@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS builder
+FROM node:24-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS builder
 
 WORKDIR /app
 
@@ -32,7 +32,7 @@ RUN npm prune --omit=dev --ignore-scripts
 RUN node -e "new (require('better-sqlite3'))(':memory:').close()"
 
 # Stage 2: Production
-FROM node:24-alpine3.24@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS production
+FROM node:24-alpine3.24@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS production
 
 # Install dumb-init for proper signal handling
 RUN apk add --no-cache dumb-init=1.2.5-r4
