@@ -163,6 +163,32 @@ for (const driver of testDrivers) {
       expect(refreshMock).toHaveBeenCalledTimes(2);
     });
 
+    it('a holder whose YNAB call fails after its lease ran out uses the token another replica stored meanwhile', async () => {
+      const h = await driver.open();
+      const other = await h.reopen();
+      await seed(h.storage);
+      let now = Date.now();
+      const gate = deferred<void>();
+      refreshMock
+        .mockImplementationOnce(async () => {
+          await gate.promise;
+          throw new Error('YNAB token request failed with status 400');
+        })
+        .mockResolvedValueOnce({ accessToken: 'access-b', refreshToken: 'rt-b', expiresAt: now + 2 * HOUR });
+      const a = new YnabTokenResolver(h.storage, encryptor, YNAB, () => now, { ...fast, leaseTtlMs: 1_000 });
+      const b = new YnabTokenResolver(other, encryptor, YNAB, () => now, fast);
+
+      const slow = a.resolve('u1');
+      await calls(1);
+      now += 1_001;
+      await expect(b.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-b' });
+      gate.resolve();
+      await expect(slow).resolves.toMatchObject({ accessToken: 'access-b' });
+      expect(refreshMock).toHaveBeenCalledTimes(2);
+      // Not remembered as a failure, and the lease is free.
+      expect((await h.storage.getUser('u1'))?.refreshLeaseUntil).toBeUndefined();
+    });
+
     it('a re-consent during a refresh clears the lease and the shared token, and wins', async () => {
       const h = await driver.open();
       const other = await h.reopen();
