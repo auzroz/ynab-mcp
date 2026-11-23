@@ -197,6 +197,13 @@ for (const driver of testDrivers) {
       expect(isClientSecretHash(client?.clientSecret)).toBe(true);
       expect(JSON.stringify(await oauthRowsOf(handle))).not.toContain(secret);
 
+      // No client configuration endpoint (the SDK had none; the library's would return the stored hash).
+      expect(res.body).not.toHaveProperty('registration_access_token');
+      expect(res.body).not.toHaveProperty('registration_client_uri');
+      const read = await request(t.app).get(`/register/${res.body.client_id as string}`);
+      expect(read.status).toBe(404);
+      expect(JSON.stringify(read.body)).not.toContain('s256.');
+
       const local = await request(t.app)
         .post('/register')
         .send({ redirect_uris: ['http://localhost:3000/cb'], token_endpoint_auth_method: 'none', application_type: 'native' });
@@ -359,6 +366,33 @@ for (const driver of testDrivers) {
         expect(cookie).toMatch(/; httponly/i);
         expect(cookie).toMatch(/; samesite=lax/i);
       }
+    });
+
+    it('POST /authorize is not served (enableHttpPostMethods needs SameSite=None cookies): the library\'s 404', async () => {
+      const res = await request(t.app)
+        .post('/authorize')
+        .type('form')
+        .send({ response_type: 'code', client_id: clientId, redirect_uri: REDIRECT_URI, code_challenge: pkcePair().challenge, code_challenge_method: 'S256' });
+      expect(res.status).toBe(404);
+      expect(res.headers['location']).toBeUndefined();
+    });
+
+    it('as-library mounted per route, as D8 will: discovery, a full flow with its resume, a refresh and a revoke', async () => {
+      await setup({ mountPerRoute: true });
+      const discovery = await request(t.app).get('/.well-known/oauth-authorization-server');
+      expect(discovery.status).toBe(200);
+      expect(discovery.body).toMatchObject({ authorization_endpoint: `${PUBLIC_URL}/authorize`, scopes_supported: ['read-only', 'read-write'] });
+      expect((await request(t.app).get('/.well-known/openid-configuration')).status).toBe(200);
+      expect((await request(t.app).get('/jwks')).body.keys).toHaveLength(1);
+      // D7 runs (ctx.path is the full path again): no scope requested, both levels offered and granted.
+      const { tokens } = await signIn(t, clientId, { scope: '', resource: `${RESOURCE}/` });
+      expect(tokens['scope']).toBe(FULL_SCOPE);
+      const res = await refresh(t.app, { clientId, refreshToken: tokens['refresh_token'] as string, scope: 'read-only' });
+      expect(res.status).toBe(200);
+      expect(res.body.scope).toBe('read-only');
+      const revoke = await request(t.app).post('/revoke').type('form').send({ token: res.body.refresh_token, client_id: clientId });
+      expect(revoke.status).toBe(200);
+      await expect(t.verifier.verifyAccessToken(res.body.access_token as string)).rejects.toMatchObject({ code: 'invalid_token' });
     });
 
     it('#113 note 2: two concurrent refreshes of one token never both succeed (spike 29)', async () => {

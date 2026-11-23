@@ -34,6 +34,10 @@
  *   - `sectorIdentifierUriValidate` is off and registration refuses
  *     `sector_identifier_uri`, so neither DCR nor `Client.find` ever fetches a
  *     URL a client named (#113's third note).
+ *   - The client configuration endpoint (`GET /register/:id`), which the
+ *     library serves whenever registration is on, is not served, and the DCR
+ *     response doesn't name it: the SDK had none, and it would return the
+ *     stored `s256.` hash as `client_secret`.
  *
  * The pre-middleware ({@link requestNormalizer}, `provider.use`, a documented
  * extension point) does what the library has no setting for:
@@ -64,9 +68,15 @@
  * token: it signs in again, nothing is reusable. Wrapping the three calls in
  * one storage transaction would need a hook the library doesn't have.
  *
- * Both normalizations read the parsed body Express's `bounded-parser` stage
- * leaves on `req.body` (D8). A body the library parses itself is not
- * normalized: a scope then stays as sent, and a resource must be exact.
+ * `/authorize` is GET only (the library serves POST there only with
+ * `enableHttpPostMethods`, which needs `SameSite=None` cookies; it is off).
+ * On `/token` the resource is read from the parsed body Express's
+ * `bounded-parser` stage leaves on `req.body` (D8); a body the library parses
+ * itself is not normalized, and its resource must then be exact.
+ *
+ * The normalizer matches on the full path, so the library must be mounted
+ * through {@link asLibraryHandler}: without it Express strips the mount path,
+ * and D7 would be skipped silently.
  */
 
 import { hkdfSync } from 'node:crypto';
@@ -189,20 +199,29 @@ function requestNormalizer({ resource, publicUrl }: NormalizerDeps) {
     const { authorization, token, registration } = OIDC_ROUTES;
     const body = isRecord(req.body) ? req.body : undefined;
 
+    // The library's client configuration endpoint (GET /register/:id, on with registration): the SDK had
+    // none, and it would hand the client its stored `s256.` hash as `client_secret`. Not served.
+    if (path.startsWith(`${registration}/`)) {
+      ctx.status = 404;
+      ctx.set('Cache-Control', 'no-store');
+      ctx.body = { error: 'invalid_request', error_description: 'Client configuration endpoint is not supported' };
+      return;
+    }
+
     if (path === authorization || path.startsWith(`${authorization}/`)) {
       const cookie = req.headers.cookie;
       if (typeof cookie === 'string') req.headers.cookie = withoutSessionCookie(cookie);
     }
 
-    if (path === authorization && (ctx.method === 'GET' || ctx.method === 'POST')) {
-      const params: Record<string, unknown> | undefined = ctx.method === 'GET' ? { ...ctx.query } : body;
-      if (params) {
-        const scope = normalizeAuthorizeScope(params['scope']);
-        if (scope !== undefined) params['scope'] = scope;
-        if (params['resource'] !== undefined) params['resource'] = canonicalizeResource(params['resource'], resource);
-        for (const name of OIDC_ONLY_PARAMS) delete params[name];
-        if (ctx.method === 'GET') ctx.query = params as typeof ctx.query;
-      }
+    // GET only: the library serves POST /authorize only with `enableHttpPostMethods`, which needs
+    // SameSite=None cookies, so it is off and a POST is the library's 404.
+    if (path === authorization && ctx.method === 'GET') {
+      const params: Record<string, unknown> = { ...ctx.query };
+      const scope = normalizeAuthorizeScope(params['scope']);
+      if (scope !== undefined) params['scope'] = scope;
+      if (params['resource'] !== undefined) params['resource'] = canonicalizeResource(params['resource'], resource);
+      for (const name of OIDC_ONLY_PARAMS) delete params[name];
+      ctx.query = params as typeof ctx.query;
     } else if (path === token && ctx.method === 'POST' && body && body['resource'] !== undefined) {
       body['resource'] = canonicalizeResource(body['resource'], resource);
     } else if (path === registration && ctx.method === 'POST' && body && 'sector_identifier_uri' in body) {
@@ -218,6 +237,11 @@ function requestNormalizer({ resource, publicUrl }: NormalizerDeps) {
     // Discovery lists the MCP scopes, as the SDK's metadata did, not the library's OIDC scopes.
     if ((DISCOVERY_PATHS as readonly string[]).includes(path) && isRecord(ctx.body)) {
       ctx.body = { ...ctx.body, scopes_supported: [...KNOWN_SCOPES] };
+    }
+    // The DCR response doesn't point at the configuration endpoint, which isn't served.
+    if (path === registration && ctx.status === 201 && isRecord(ctx.body)) {
+      const { registration_access_token: _token, registration_client_uri: _uri, ...client } = ctx.body;
+      ctx.body = client;
     }
   };
 }

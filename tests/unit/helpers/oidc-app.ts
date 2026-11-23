@@ -49,7 +49,20 @@ export interface OidcTestAppOptions {
   interactionStore?: Pick<Storage, 'stageSignIn'>;
   /** Replace the store the provider's adapter uses (a wrapper around `storage`, for races). */
   providerStore?: Storage;
+  /** Mount the library once per route, as D8 will (Express strips each mount path), instead of at the root. */
+  mountPerRoute?: boolean;
 }
+
+/** The paths D8 mounts the library on (`as-library`). */
+export const LIBRARY_MOUNTS = [
+  '/.well-known/oauth-authorization-server',
+  '/.well-known/openid-configuration',
+  '/jwks',
+  '/authorize',
+  '/token',
+  '/register',
+  '/revoke',
+] as const;
 
 export function buildOidcTestApp(storage: Storage, options: OidcTestAppOptions = {}): OidcTestApp {
   const encryptionKey = randomBytes(32).toString('base64');
@@ -79,7 +92,9 @@ export function buildOidcTestApp(storage: Storage, options: OidcTestAppOptions =
       globalReadOnly: options.globalReadOnly ?? false,
     })
   );
-  app.use(asLibraryHandler(oidc.provider));
+  const library = asLibraryHandler(oidc.provider);
+  if (options.mountPerRoute) for (const path of LIBRARY_MOUNTS) app.use(path, library);
+  else app.use(library);
   return { app, oidc, storage, verifier: createAccessTokenVerifier({ provider: oidc.provider, resource: oidc.resource }), encryptor };
 }
 
