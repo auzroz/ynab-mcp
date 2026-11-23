@@ -30,10 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rekey job rewrites them, and the rows under an older key, using
   compare-and-set writes, logging counts only. When none are left it announces
   the retirement. From then on a replica still on an older `ENCRYPTION_KEY_ID`
-  refuses to refresh or sign in, before calling YNAB. Every token write also
-  re-checks the key floors in the same database transaction, so a request
-  that stalled past the retirement is refused instead of storing a token no
-  replica can read. An hour later it retires `v1` and the older key ids for every
+  refuses new refreshes and sign-ins before calling YNAB. One already in
+  flight is still stored: its key is still configured everywhere, and it holds
+  the retirement back until it is rekeyed. Every token write also re-checks the
+  retired key id in the same database transaction, so a request that stalled
+  past the retirement is refused instead of storing a token no replica can
+  read. An hour later it retires `v1` and the older key ids for every
   replica, unless a token was written under an older key in the meantime.
 - `ENCRYPTION_KEY` can be rotated without logging anyone out.
   `ENCRYPTION_KEY_ID` (default 1) names the current key, and

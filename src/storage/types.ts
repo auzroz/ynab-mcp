@@ -700,9 +700,11 @@ export interface CiphertextStore {
    * The persistence-time guard (#57b): every write that stores a YNAB
    * refresh-token ciphertext in `users` ({@link Storage.upsertUser},
    * {@link Storage.updateUserRefreshToken}, {@link Storage.completeAuthorization},
-   * {@link OAuthRowStore.saveAuthorizationCode}) reads both floors in the same
-   * transaction and throws `KeyRetiredError` (src/storage/encryption-meta.ts),
-   * writing nothing, when the ciphertext's key id is below either.
+   * {@link OAuthRowStore.saveAuthorizationCode}) reads the retired floor in the
+   * same transaction and throws `KeyRetiredError` (src/storage/encryption-meta.ts),
+   * writing nothing, when the ciphertext's key id is below it. A write below
+   * only the announced floor is stored: it is still readable, and holds the
+   * retirement back until the next rekey pass rewrites it.
    */
   ensureKeyFloorRows(): Promise<void>;
   /**

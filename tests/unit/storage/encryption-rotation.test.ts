@@ -239,7 +239,7 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       expect(await fresh.raiseRetiredKeyFloor(1)).toBe(2); // never lowered
     });
 
-    it('refuses, at the write, a ciphertext under a key id below either floor, and writes nothing', async () => {
+    it('accepts a write under an announced floor, and refuses, writing nothing, one under the retired floor', async () => {
       const { handle, store } = await open();
       await store.ensureKeyFloorRows();
       await store.ensureKeyFloorRows(); // idempotent
@@ -248,45 +248,63 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       const k1 = new Encryptor(newKey());
       const k2 = new Encryptor(newKey(), { keyId: '2' });
       const under = (enc: Encryptor, userId: string): string => enc.encrypt('rt', refreshTokenContext(userId));
-      await addUser(store, 'existing', under(k1, 'existing'));
-      // Another replica announces the retirement of key 1.
-      await replica.announceKeyRetirement(2);
-
-      await expect(addUser(store, 'u-upsert', under(k1, 'u-upsert'))).rejects.toBeInstanceOf(KeyRetiredError);
-      const old = (await store.getUser('existing'))!.encryptedRefreshToken;
-      await expect(store.updateUserRefreshToken('existing', old, under(k1, 'existing'))).rejects.toBeInstanceOf(KeyRetiredError);
-      expect((await store.getUser('existing'))?.encryptedRefreshToken).toBe(old);
-
       const clientId = `c-${randomUUID()}`;
       await store.saveClient({ client_id: clientId, redirect_uris: ['https://client.example/cb'] } as never);
-      const code = {
+      const codeFor = (userId: string) => ({
         code: `h1.${randomUUID()}`,
         clientId,
-        userId: 'u-complete',
+        userId,
         redirectUri: 'https://client.example/cb',
         codeChallenge: 'x',
         scopes: ['read-only'],
         expiresAt: Date.now() + 600_000,
-      };
-      const user = { userId: 'u-complete', grantedScope: 'read-only' as const, updatedAt: Date.now() };
-      await expect(
-        store.completeAuthorization({ user: { ...user, encryptedRefreshToken: under(k1, 'u-complete') }, code })
-      ).rejects.toBeInstanceOf(KeyRetiredError);
-      expect(await store.getUser('u-complete')).toBeUndefined();
+      });
+      const userFor = (userId: string, encryptedRefreshToken: string) => ({
+        userId,
+        grantedScope: 'read-only' as const,
+        updatedAt: Date.now(),
+        encryptedRefreshToken,
+      });
 
-      const codeRow = await stageSignInFor(store, 'u-staged', under(k1, 'u-staged'));
-      await expect(store.saveAuthorizationCode(codeRow)).rejects.toBeInstanceOf(KeyRetiredError);
-      expect(await store.getUser('u-staged')).toBeUndefined();
-      expect(await store.listStagedSignInCiphertexts(Date.now())).toHaveLength(1); // the staged row is kept
+      // Announced only: every write under key 1 is stored (still readable; it holds the raise back).
+      await replica.announceKeyRetirement(2);
+      await addUser(store, 'existing', under(k1, 'existing'));
+      const old = (await store.getUser('existing'))!.encryptedRefreshToken;
+      const rotated = under(k1, 'existing');
+      expect(await store.updateUserRefreshToken('existing', old, rotated)).toBeDefined();
+      expect(await store.completeAuthorization({ user: userFor('u-complete', under(k1, 'u-complete')), code: codeFor('u-complete') })).toBe(true);
+      expect(await store.saveAuthorizationCode(await stageSignInFor(store, 'u-staged', under(k1, 'u-staged')))).toBe('saved');
+      expect(await replica.raiseRetiredKeyFloor(2)).toBe(0); // those rows hold the retirement back
+
+      // Retired: every write under key 1 is refused, and nothing is written.
+      const fresh = (await open()).store;
+      await fresh.ensureKeyFloorRows();
+      await fresh.saveClient({ client_id: clientId, redirect_uris: ['https://client.example/cb'] } as never);
+      await fresh.announceKeyRetirement(2);
+      expect(await fresh.raiseRetiredKeyFloor(2)).toBe(2);
+      await expect(addUser(fresh, 'u-upsert', under(k1, 'u-upsert'))).rejects.toBeInstanceOf(KeyRetiredError);
+      expect(await fresh.getUser('u-upsert')).toBeUndefined();
+      await addUser(fresh, 'existing', under(k2, 'existing'));
+      const current = (await fresh.getUser('existing'))!.encryptedRefreshToken;
+      await expect(fresh.updateUserRefreshToken('existing', current, under(k1, 'existing'))).rejects.toBeInstanceOf(KeyRetiredError);
+      expect((await fresh.getUser('existing'))?.encryptedRefreshToken).toBe(current);
+      await expect(
+        fresh.completeAuthorization({ user: userFor('u-complete', under(k1, 'u-complete')), code: codeFor('u-complete') })
+      ).rejects.toBeInstanceOf(KeyRetiredError);
+      expect(await fresh.getUser('u-complete')).toBeUndefined();
+      await expect(fresh.saveAuthorizationCode(await stageSignInFor(fresh, 'u-staged', under(k1, 'u-staged')))).rejects.toBeInstanceOf(
+        KeyRetiredError
+      );
+      expect(await fresh.getUser('u-staged')).toBeUndefined();
+      expect(await fresh.listStagedSignInCiphertexts(Date.now())).toHaveLength(1); // the staged row is kept
 
       // Under the new key, every write goes through.
-      await addUser(store, 'u-upsert', under(k2, 'u-upsert'));
-      expect(await store.updateUserRefreshToken('existing', old, under(k2, 'existing'))).toBeDefined();
+      await addUser(fresh, 'u-upsert', under(k2, 'u-upsert'));
+      expect(await fresh.updateUserRefreshToken('existing', current, under(k2, 'existing'))).toBeDefined();
       expect(
-        await store.completeAuthorization({ user: { ...user, encryptedRefreshToken: under(k2, 'u-complete') }, code })
+        await fresh.completeAuthorization({ user: userFor('u-complete', under(k2, 'u-complete')), code: codeFor('u-complete') })
       ).toBe(true);
-      const codeRow2 = await stageSignInFor(store, 'u-staged2', under(k2, 'u-staged2'));
-      expect(await store.saveAuthorizationCode(codeRow2)).toBe('saved');
+      expect(await fresh.saveAuthorizationCode(await stageSignInFor(fresh, 'u-staged2', under(k2, 'u-staged2')))).toBe('saved');
     });
 
     it('records a key check once and compares it after', async () => {
@@ -494,7 +512,7 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       }) as Store;
     };
 
-    it('a replica on key 1 that passed its check before the announcement is refused at the write, and retirement goes ahead', async () => {
+    it('a refresh on key 1 already in flight at the announcement is stored, holds retirement back, and is rekeyed', async () => {
       const { handle, store } = await open();
       const lagging = await handle.reopen();
       const k1 = newKey();
@@ -504,32 +522,59 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       await prepareEncryptionKeys(store, a);
       // Replica B (key 1) passes its write check before A announces anything...
       await assertKeyWritable(lagging, onKey1, () => undefined);
-      // ...pauses past the grace, and its refresh write-back arrives right before A's raise.
-      let refused: unknown;
+      // ...and its write-back of the rotated token lands after the announcement, right before A's raise.
       const racing = raceAtRaise(store, async () => {
         const old = (await lagging.getUser('u'))!.encryptedRefreshToken;
-        refused = await lagging.updateUserRefreshToken('u', old, onKey1.encrypt('rt-1', refreshTokenContext('u'))).then(
-          () => undefined,
-          (e: unknown) => e
-        );
+        expect(await lagging.updateUserRefreshToken('u', old, onKey1.encrypt('rt-1', refreshTokenContext('u')))).toBeDefined();
       });
+      const lines: string[] = [];
       const c = clock();
       const state: RekeyState = {};
-      const opts = { now: c.now, log: () => undefined, graceMs: MINUTE };
+      const opts = { now: c.now, log: (m: string) => lines.push(m), graceMs: MINUTE };
       expect(await rekeyPass(racing, a, state, opts)).toMatchObject({ rekeyed: 1, announcedNow: true });
       c.advance(2 * MINUTE);
+      expect(await rekeyPass(racing, a, state, opts)).toMatchObject({ heldBack: true, retiredNow: false });
+      expect(await store.getRetiredKeyFloor()).toBe(0);
+      expect(lines.at(-1)).toMatch(/retirement waits for the next pass/);
+      // B's rotated token is under key 1, still readable.
+      expect(a.decrypt((await store.getUser('u'))!.encryptedRefreshToken, refreshTokenContext('u'))).toBe('rt-1');
+      // The next pass moves it to key 2; then retirement goes ahead and nothing is lost.
+      expect(await rekeyPass(racing, a, state, opts)).toMatchObject({ rekeyed: 1, retiredNow: false });
+      c.advance(2 * MINUTE);
       expect(await rekeyPass(racing, a, state, opts)).toMatchObject({ retiredNow: true, retiredBelow: 2 });
-      expect(refused).toBeInstanceOf(KeyRetiredError);
-      // Nothing unreadable was stored: the row is A's, under key 2.
-      const stored = (await store.getUser('u'))!.encryptedRefreshToken;
-      expect(stored.startsWith('v2.2.')).toBe(true);
-      expect(a.decrypt(stored, refreshTokenContext('u'))).toBe('rt-0');
+      expect(a.decrypt((await store.getUser('u'))!.encryptedRefreshToken, refreshTokenContext('u'))).toBe('rt-1');
 
-      // From the announcement on, B refuses to write (and to run a pass), loudly.
+      // From the announcement on, B refuses new operations (and its pass), loudly.
       const logged: string[] = [];
       await expect(assertKeyWritable(lagging, onKey1, (m) => logged.push(m))).rejects.toBeInstanceOf(KeyRetiredError);
       expect(logged[0]).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1: key ids below 2 are being retired/);
       await expect(rekeyPass(lagging, new Encryptor(k1), {}, { log: () => undefined })).rejects.toThrow(/Refusing to write/);
+    });
+
+    it('a write on key 1 that stalled past the raise is refused at the write, and nothing unreadable is stored', async () => {
+      const { handle, store } = await open();
+      const lagging = await handle.reopen();
+      const k1 = newKey();
+      const onKey1 = new Encryptor(k1);
+      await addUser(store, 'u', onKey1.encrypt('rt-0', refreshTokenContext('u')));
+      const a = new Encryptor(newKey(), { keyId: '2', previousKeys: `1:${k1}` });
+      await prepareEncryptionKeys(store, a);
+      await assertKeyWritable(lagging, onKey1, () => undefined); // passed before the announcement
+      const c = clock();
+      const state: RekeyState = {};
+      const opts = { now: c.now, log: () => undefined, graceMs: MINUTE };
+      await rekeyPass(store, a, state, opts);
+      c.advance(2 * MINUTE);
+      expect(await rekeyPass(store, a, state, opts)).toMatchObject({ retiredNow: true, retiredBelow: 2 });
+      // B's write-back arrives only now.
+      const before = (await store.getUser('u'))!.encryptedRefreshToken;
+      await expect(
+        lagging.updateUserRefreshToken('u', before, onKey1.encrypt('rt-1', refreshTokenContext('u')))
+      ).rejects.toBeInstanceOf(KeyRetiredError);
+      const stored = (await store.getUser('u'))!.encryptedRefreshToken;
+      expect(stored).toBe(before);
+      expect(a.decrypt(stored, refreshTokenContext('u'))).toBe('rt-0');
+      expect(await store.getRetiredKeyFloor()).toBe(2);
     });
 
     it('an unguarded old-key write (a 0.4.x process) between the scan and the raise holds retirement back, and is not lost', async () => {
