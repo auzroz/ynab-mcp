@@ -246,7 +246,8 @@ export class YnabTokenResolver {
   private async refresh(start: UserRecord, retried = false): Promise<ResolvedUser> {
     const userId = start.userId;
     const generation = generationOf(start);
-    let waited = 0;
+    // The wait bound counts from the first claim, not from the first sleep.
+    const deadline = performance.now() + this.leaseWaitMs;
     let pause = this.pollFirstMs;
     for (;;) {
       const holder = randomUUID();
@@ -277,10 +278,10 @@ export class YnabTokenResolver {
       const shared = this.sharedAccessToken(current);
       if (shared) return this.remember(current, shared);
       // Never a refresh of our own while the lease holds: fail closed instead.
-      if (waited >= this.leaseWaitMs) throw new RefreshLeaseTimeoutError();
-      const step = Math.min(pause, this.leaseWaitMs - waited);
-      await this.sleep(step);
-      waited += step;
+      // Elapsed time (storage calls included), on a monotonic clock.
+      const left = deadline - performance.now();
+      if (left <= 0) throw new RefreshLeaseTimeoutError();
+      await this.sleep(Math.min(pause, left));
       pause = Math.min(pause * 2, this.pollMaxMs);
     }
   }
