@@ -36,9 +36,10 @@ import type {
   CodeSaveOutcome,
   ConsumeOutcome,
   KeyCheckOutcome,
+  KeyFloors,
   StoredUserCiphertext,
 } from './types.js';
-import { compareKeyCheck, keyCheckMetaKey, signInCiphertext } from './encryption-meta.js';
+import { compareKeyCheck, isBelowFloor, keyCheckMetaKey, signInCiphertext } from './encryption-meta.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 import {
   CONSUMED_CREDENTIAL_RETENTION_MS,
@@ -110,6 +111,7 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   private oauthRows = new Map<string, OAuthRowRecord>();
   /** The key rotation's `schema_meta` entries (#57b): the floor and the key checks. */
   private retiredKeyFloor = 0;
+  private retiringKeyFloor = 0;
   private keyChecks = new Map<string, string>();
   private readonly retention: RetentionPolicy;
 
@@ -205,8 +207,19 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   async getRetiredKeyFloor(): Promise<number> {
     return this.retiredKeyFloor;
   }
-  async raiseRetiredKeyFloor(floor: number): Promise<number> {
-    if (floor > this.retiredKeyFloor) this.retiredKeyFloor = floor;
+  async getKeyFloors(): Promise<KeyFloors> {
+    return { retired: this.retiredKeyFloor, retiring: this.retiringKeyFloor };
+  }
+  async announceKeyRetirement(floor: number): Promise<number> {
+    if (floor > this.retiringKeyFloor) this.retiringKeyFloor = floor;
+    return this.retiringKeyFloor;
+  }
+  async raiseRetiredKeyFloor(floor: number, deadCiphertexts: readonly string[] = []): Promise<number> {
+    const dead = new Set(deadCiphertexts);
+    const blocked = [...this.users.values()].some(
+      (u) => isBelowFloor(u.encryptedRefreshToken, floor) && !dead.has(u.encryptedRefreshToken)
+    );
+    if (!blocked && floor > this.retiredKeyFloor) this.retiredKeyFloor = floor;
     return this.retiredKeyFloor;
   }
   async recordEncryptionKeyCheck(keyId: number, check: string): Promise<KeyCheckOutcome> {

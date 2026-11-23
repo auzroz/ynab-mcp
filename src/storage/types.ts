@@ -642,6 +642,14 @@ export interface StoredUserCiphertext {
   encryptedRefreshToken: string;
 }
 
+/** The key floors in `schema_meta` (0 when not recorded). */
+export interface KeyFloors {
+  /** `v1` and key ids below it are refused. */
+  retired: number;
+  /** Key ids below it are being retired: replicas whose current id is below it must not write. */
+  retiring: number;
+}
+
 /** What {@link CiphertextStore.recordEncryptionKeyCheck} found. */
 export type KeyCheckOutcome = 'recorded' | 'matches' | 'differs';
 
@@ -678,11 +686,29 @@ export interface CiphertextStore {
    */
   getRetiredKeyFloor(): Promise<number>;
   /**
-   * Raise the retirement floor to `floor` when that is higher than the stored
-   * one, atomically (two replicas raising it at once keep the higher), and
-   * return the floor now stored.
+   * Both floors: `retired` ({@link getRetiredKeyFloor}) and `retiring`
+   * (`schema_meta.encryption_retiring_below`, announced before a retirement):
+   * no replica whose current key id is below either may write a ciphertext.
+   * 0 when not recorded; an unreadable stored value throws.
    */
-  raiseRetiredKeyFloor(floor: number): Promise<number>;
+  getKeyFloors(): Promise<KeyFloors>;
+  /**
+   * Announce that key ids below `floor` (and `v1`) are about to be retired:
+   * raise `encryption_retiring_below` to `floor` when that is higher, in one
+   * statement (concurrent announcements keep the higher), and return the
+   * value now stored.
+   */
+  announceKeyRetirement(floor: number): Promise<number>;
+  /**
+   * Raise the retirement floor to `floor`, in one statement, only when it is
+   * higher than the stored one AND no `users` row holds a `v1` ciphertext or
+   * one under a key id below `floor`, other than the exact ciphertexts in
+   * `deadCiphertexts` (rows no key opens, which a pass has already counted as
+   * unreadable). So a token written under an old key after the rekey pass
+   * read the table holds the retirement back instead of being stranded.
+   * Returns the floor now stored (lower than `floor` when it was held back).
+   */
+  raiseRetiredKeyFloor(floor: number, deadCiphertexts?: readonly string[]): Promise<number>;
   /**
    * Record key `keyId`'s check value (`schema_meta`,
    * `encryption_key_check.<id>`) when none is recorded; otherwise compare it

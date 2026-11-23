@@ -23,7 +23,14 @@ import {
   parseEncryptionKey,
   refreshTokenContext,
 } from '../../../src/crypto.js';
-import { prepareEncryptionKeys, rekeyPass, startRekeyJob, type RekeyState } from '../../../src/auth/rekey-job.js';
+import {
+  KeyRetiredError,
+  assertKeyWritable,
+  prepareEncryptionKeys,
+  rekeyPass,
+  startRekeyJob,
+  type RekeyState,
+} from '../../../src/auth/rekey-job.js';
 import { plainRowKey } from '../../../src/storage/oauth-rows.js';
 import type { OAuthRowStore, Storage } from '../../../src/storage/types.js';
 import { cleanupDrivers, testDrivers, type DriverHandle } from '../helpers/storage-drivers.js';
@@ -132,6 +139,34 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       expect(await store.getRetiredKeyFloor()).toBe(10);
     });
 
+    it('announces a retirement monotonically, and reads both floors', async () => {
+      const { handle, store } = await open();
+      const replica = await handle.reopen();
+      expect(await store.getKeyFloors()).toEqual({ retired: 0, retiring: 0 });
+      expect(await store.announceKeyRetirement(2)).toBe(2);
+      expect(await replica.announceKeyRetirement(1)).toBe(2);
+      expect(await replica.getKeyFloors()).toEqual({ retired: 0, retiring: 2 });
+    });
+
+    it('raises the retired floor only while no users row is under an older key, except listed dead ones', async () => {
+      const { store } = await open();
+      const k1 = new Encryptor(newKey());
+      const k3 = new Encryptor(newKey(), { keyId: '3' });
+      await addUser(store, 'current', k3.encrypt('rt', refreshTokenContext('current')));
+      await addUser(store, 'newer', 'v2.4.AAAA.AAAA.AAAA');
+      await addUser(store, 'malformed', 'v2.x.AAAA.AAAA.AAAA');
+      expect(await store.raiseRetiredKeyFloor(3)).toBe(3); // nothing below 3
+
+      const fresh = (await open()).store;
+      const under1 = k1.encrypt('rt', refreshTokenContext('old'));
+      await addUser(fresh, 'old', under1);
+      expect(await fresh.raiseRetiredKeyFloor(2)).toBe(0); // a v2.1 row holds it back
+      expect(await fresh.raiseRetiredKeyFloor(2, [under1])).toBe(2); // unless the pass found it dead
+      await addUser(fresh, 'legacy', encryptV1('rt', parseEncryptionKey(newKey())));
+      expect(await fresh.raiseRetiredKeyFloor(3, [under1])).toBe(2); // a v1 row holds it back
+      expect(await fresh.raiseRetiredKeyFloor(1)).toBe(2); // never lowered
+    });
+
     it('records a key check once and compares it after', async () => {
       const { handle, store } = await open();
       const replica = await handle.reopen();
@@ -199,12 +234,14 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       const state: RekeyState = {};
       const opts = { now: c.now, log: (m: string) => lines.push(m), graceMs: 60 * MINUTE };
       const first = await rekeyPass(store, keyring, state, opts);
-      expect(first).toMatchObject({ rekeyed: 2, remaining: 0, unreadable: 0, retiredBelow: 0, retiredNow: false });
+      expect(first).toMatchObject({ rekeyed: 2, remaining: 0, unreadable: 0, retiredBelow: 0, retiredNow: false, announcedNow: true });
       expect(await read('legacy')).toBe('rt-legacy');
       expect(await read('old')).toBe('rt-old');
       expect((await store.getUser('legacy'))?.encryptedRefreshToken.startsWith('v2.2.')).toBe(true);
       expect((await store.getUser('legacy'))?.updatedAt).toBe(5_000);
-      expect(lines).toEqual(['[Rekey] re-encrypted 2, 0 remaining']);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/^\[Rekey\] re-encrypted 2, 0 remaining; nothing is left under older keys: .* a replica still on an older ENCRYPTION_KEY_ID now refuses to write$/);
+      expect(await store.getKeyFloors()).toEqual({ retired: 0, retiring: 2 });
 
       // Nothing left: retired only after the grace period, and logged once.
       c.advance(30 * MINUTE);
@@ -309,6 +346,85 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       const r = await rekeyPass(store, phaseA, {}, { log: () => undefined });
       expect(r).toMatchObject({ rekeyed: 0, newer: 1, remaining: 1 });
       expect((await store.getUser('b'))?.encryptedRefreshToken).toBe(underTwo);
+    });
+
+    it('a token a replica on key 1 writes during the pass holds retirement back, and is not lost', async () => {
+      const { handle, store } = await open();
+      const lagging = await handle.reopen();
+      const k1 = newKey();
+      const k2 = newKey();
+      const onKey1 = new Encryptor(k1);
+      await addUser(store, 'u', onKey1.encrypt('rt-0', refreshTokenContext('u')));
+      const a = new Encryptor(k2, { keyId: '2', previousKeys: `1:${k1}` });
+      // Replica B (key 1) passes its write check before A announces anything...
+      await assertKeyWritable(lagging, onKey1, () => undefined);
+
+      // ...and its refresh write-back lands right before A's raise.
+      let raced = false;
+      const racing = new Proxy(store, {
+        get(target, prop, receiver) {
+          if (prop === 'raiseRetiredKeyFloor') {
+            return async (floor: number, dead?: readonly string[]) => {
+              if (!raced) {
+                raced = true;
+                const old = (await lagging.getUser('u'))!.encryptedRefreshToken;
+                expect(await lagging.updateUserRefreshToken('u', old, onKey1.encrypt('rt-1', refreshTokenContext('u')))).toBeDefined();
+              }
+              return target.raiseRetiredKeyFloor(floor, dead);
+            };
+          }
+          const value = Reflect.get(target, prop, receiver) as unknown;
+          return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+        },
+      }) as Store;
+
+      const lines: string[] = [];
+      const c = clock();
+      const state: RekeyState = {};
+      const opts = { now: c.now, log: (m: string) => lines.push(m), graceMs: MINUTE };
+      expect(await rekeyPass(racing, a, state, opts)).toMatchObject({ rekeyed: 1, announcedNow: true });
+      c.advance(2 * MINUTE);
+      const held = await rekeyPass(racing, a, state, opts);
+      expect(held).toMatchObject({ heldBack: true, retiredNow: false });
+      expect(await store.getRetiredKeyFloor()).toBe(0);
+      expect(lines.at(-1)).toMatch(/retirement waits for the next pass/);
+      // B's token is under key 1, still readable.
+      expect(a.decrypt((await store.getUser('u'))!.encryptedRefreshToken, refreshTokenContext('u'))).toBe('rt-1');
+
+      // The next pass moves it to key 2; then retirement goes ahead and nothing is lost.
+      expect(await rekeyPass(racing, a, state, opts)).toMatchObject({ rekeyed: 1, retiredNow: false });
+      c.advance(2 * MINUTE);
+      expect(await rekeyPass(racing, a, state, opts)).toMatchObject({ retiredNow: true, retiredBelow: 2 });
+      expect(a.decrypt((await store.getUser('u'))!.encryptedRefreshToken, refreshTokenContext('u'))).toBe('rt-1');
+
+      // From the announcement on, B refuses to write (and to run a pass), loudly.
+      const logged: string[] = [];
+      await expect(assertKeyWritable(lagging, onKey1, (m) => logged.push(m))).rejects.toBeInstanceOf(KeyRetiredError);
+      expect(logged[0]).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1: key ids below 2 are being retired/);
+      await expect(rekeyPass(lagging, new Encryptor(k1), {}, { log: () => undefined })).rejects.toThrow(/Refusing to write/);
+    });
+
+    it('a replica on an older key refuses to write once a retirement is announced, and refuses to start', async () => {
+      const { store } = await open();
+      const k1 = newKey();
+      await store.announceKeyRetirement(2);
+      const onKey1 = new Encryptor(k1);
+      await expect(assertKeyWritable(store, onKey1, () => undefined)).rejects.toBeInstanceOf(KeyRetiredError);
+      await expect(prepareEncryptionKeys(store, onKey1)).rejects.toThrow(/being retired by a replica with a newer key/);
+      // A replica on the new key writes as before.
+      await assertKeyWritable(store, new Encryptor(newKey(), { keyId: '2', previousKeys: `1:${k1}` }), () => undefined);
+    });
+
+    it('logs a rotation blocked only by rows under an unconfigured key id', async () => {
+      const { store } = await open();
+      const keyring = new Encryptor(newKey(), { keyId: '2' });
+      await addUser(store, 'lost', new Encryptor(newKey()).encrypt('rt', refreshTokenContext('lost')));
+      const lines: string[] = [];
+      const r = await rekeyPass(store, keyring, {}, { log: (m) => lines.push(m) });
+      expect(r).toMatchObject({ noKey: 1, remaining: 0, unreadable: 0, rekeyed: 0, announcedNow: false });
+      expect(lines).toEqual([
+        '[Rekey] re-encrypted 0, 0 remaining; 1 under a key id that is not configured (retirement waits for them: add the key to ENCRYPTION_KEY_PREVIOUS)',
+      ]);
     });
 
     it('converges when two replicas run passes at once', async () => {

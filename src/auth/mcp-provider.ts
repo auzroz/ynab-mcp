@@ -99,6 +99,7 @@ import type {
   RefreshTokenRecord,
 } from '../storage/types.js';
 import { refreshTokenContext, type Encryptor } from '../crypto.js';
+import { assertKeyWritable } from './rekey-job.js';
 import { hashClientSecret, isClientSecretHash, type TokenHasher, type TokenKind } from './token-hash.js';
 import {
   buildAuthorizeUrl,
@@ -515,6 +516,9 @@ export class McpOAuthProvider implements OAuthServerProvider {
       }
     };
     try {
+      // Before the YNAB code is exchanged: a replica whose key is being retired
+      // must not store a token the others can't read (#57b).
+      await assertKeyWritable(this.opts.storage, this.opts.encryptor);
       const tokens = await exchangeCode(this.opts.ynab, {
         code,
         redirectUri: this.callbackUrl,

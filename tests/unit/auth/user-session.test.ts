@@ -266,6 +266,19 @@ describe('YnabTokenResolver and the rekey job (#57b)', () => {
     expect(keyring.decrypt(user?.encryptedRefreshToken ?? '', refreshTokenContext('u1'))).toBe('rt-rotated');
   });
 
+  it('a replica whose key is being retired refuses to refresh, before spending the YNAB token', async () => {
+    const { storage, encryptor, resolver } = setup();
+    await seedUser(storage, encryptor);
+    const stored = (await storage.getUser('u1'))?.encryptedRefreshToken;
+    await storage.announceKeyRetirement(2); // a replica on key 2 announced it; this one is on key 1
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(resolver.accessTokenFor('u1')()).rejects.toBeInstanceOf(YnabAuthError);
+    expect(refreshAccessTokenMock).not.toHaveBeenCalled();
+    expect((await storage.getUser('u1'))?.encryptedRefreshToken).toBe(stored);
+    expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+    errorSpy.mockRestore();
+  });
+
   it("refuses another user's ciphertext copied into the row, before calling YNAB", async () => {
     const { storage, encryptor, resolver } = setup();
     await storage.upsertUser({

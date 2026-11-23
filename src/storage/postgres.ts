@@ -36,11 +36,14 @@ import type {
   CodeSaveOutcome,
   ConsumeOutcome,
   KeyCheckOutcome,
+  KeyFloors,
   StoredUserCiphertext,
 } from './types.js';
 import {
+  CONDITIONAL_RAISE_FLOOR_SQL,
   RAISE_FLOOR_SQL,
   RETIRED_FLOOR_KEY,
+  RETIRING_FLOOR_KEY,
   compareKeyCheck,
   keyCheckMetaKey,
   parseRetiredFloor,
@@ -666,8 +669,30 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     return parseRetiredFloor(res.rows[0]?.value);
   }
 
-  async raiseRetiredKeyFloor(floor: number): Promise<number> {
-    await this.db.query(RAISE_FLOOR_SQL, [RETIRED_FLOOR_KEY, String(floor)]);
+  async getKeyFloors(): Promise<KeyFloors> {
+    const res = await this.db.query<{ key: string; value: string }>(
+      'SELECT key, value FROM schema_meta WHERE key = $1 OR key = $2',
+      [RETIRED_FLOOR_KEY, RETIRING_FLOOR_KEY]
+    );
+    const value = (key: string): string | undefined => res.rows.find((r) => r.key === key)?.value;
+    return {
+      retired: parseRetiredFloor(value(RETIRED_FLOOR_KEY)),
+      retiring: parseRetiredFloor(value(RETIRING_FLOOR_KEY), RETIRING_FLOOR_KEY),
+    };
+  }
+
+  async announceKeyRetirement(floor: number): Promise<number> {
+    await this.db.query(RAISE_FLOOR_SQL, [RETIRING_FLOOR_KEY, String(floor)]);
+    return (await this.getKeyFloors()).retiring;
+  }
+
+  async raiseRetiredKeyFloor(floor: number, deadCiphertexts: readonly string[] = []): Promise<number> {
+    await this.db.query(CONDITIONAL_RAISE_FLOOR_SQL.postgres, [
+      RETIRED_FLOOR_KEY,
+      String(floor),
+      floor,
+      [...deadCiphertexts],
+    ]);
     return this.getRetiredKeyFloor();
   }
 
