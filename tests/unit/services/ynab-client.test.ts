@@ -424,6 +424,26 @@ describe('read methods', () => {
       expect(acquire).toHaveBeenCalledTimes(1);
     });
 
+    it('an overlapping direct getBudgetSettingsById and getCurrencyFormat make one request and take one token', async () => {
+      let release: (v: unknown) => void = () => undefined;
+      asMock(mockApi.plans.getPlanSettingsById).mockImplementation(
+        () => new Promise((resolve) => (release = resolve))
+      );
+      const limiter = new RateLimiter(180);
+      const acquire = vi.spyOn(limiter, 'acquire');
+      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+
+      const direct = client.getBudgetSettingsById(UUID);
+      const format = client.getCurrencyFormat(UUID);
+      await Promise.resolve();
+      release({ data: { settings: { currency_format: eur } } });
+
+      expect((await direct).data.settings.currency_format).toEqual(eur);
+      await expect(format).resolves.toEqual(eur);
+      expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+      expect(acquire).toHaveBeenCalledTimes(1);
+    });
+
     it('callers that join a failing lookup all get undefined, and the pending entry is cleared', async () => {
       let fail: (e: unknown) => void = () => undefined;
       asMock(mockApi.plans.getPlanSettingsById).mockImplementationOnce(

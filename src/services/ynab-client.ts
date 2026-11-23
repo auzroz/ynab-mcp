@@ -449,8 +449,8 @@ export class YnabClient {
     this.writeLimiter = options.writeLimiter ?? new WriteLimiter(WRITE_LIMIT_DEFAULT_PER_HOUR, options.now);
   }
 
-  // In-flight currency format lookups (#49), one per budget UUID.
-  private readonly currencyFormatLookups = new Map<string, Promise<ynab.CurrencyFormat | undefined>>();
+  // In-flight budget settings requests, one per budget UUID (#49).
+  private readonly settingsLookups = new Map<string, Promise<ynab.PlanSettingsResponse>>();
 
   // In-flight budget alias lookups, so concurrent callers share one request.
   private readonly aliasLookups = new Map<string, Promise<string>>();
@@ -1028,6 +1028,19 @@ export class YnabClient {
     const cached = this.cache.get<ynab.PlanSettingsResponse>(cacheKey);
     if (cached !== undefined) return cached;
 
+    // Overlapping callers for one budget (the settings tool, currency format
+    // lookups) share a single request and a single rate-limit token.
+    let pending = this.settingsLookups.get(cacheKey);
+    if (pending === undefined) {
+      pending = this.fetchBudgetSettings(budgetId, cacheKey).finally(() => {
+        this.settingsLookups.delete(cacheKey);
+      });
+      this.settingsLookups.set(cacheKey, pending);
+    }
+    return pending;
+  }
+
+  private async fetchBudgetSettings(budgetId: string, cacheKey: string): Promise<ynab.PlanSettingsResponse> {
     const generation = this.cache.generation();
     await this.takeToken();
     const response = await this.api.plans.getPlanSettingsById(budgetId);
@@ -1054,15 +1067,7 @@ export class YnabClient {
     if (memo !== undefined) return memo;
     const failedKey = `currency-format-failed:${budgetId}`;
     if (this.cache.get<boolean>(failedKey) === true) return undefined;
-    // Concurrent callers for one budget share a single lookup (one request, one token).
-    let pending = this.currencyFormatLookups.get(budgetId);
-    if (pending === undefined) {
-      pending = this.lookUpCurrencyFormat(budgetId, failedKey).finally(() => {
-        this.currencyFormatLookups.delete(budgetId);
-      });
-      this.currencyFormatLookups.set(budgetId, pending);
-    }
-    return pending;
+    return this.lookUpCurrencyFormat(budgetId, failedKey);
   }
 
   private async lookUpCurrencyFormat(budgetId: string, failedKey: string): Promise<ynab.CurrencyFormat | undefined> {
