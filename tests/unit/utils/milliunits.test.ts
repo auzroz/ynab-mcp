@@ -250,6 +250,22 @@ describe('milliunits utilities', () => {
       expect(money(1234000)).toContain('1,234.00');
     });
 
+    it('keeps a space group separator (French, Swedish, Czech: no trimming)', () => {
+      const money = makeMoneyFormatter({ ...eur, group_separator: ' ' });
+      expect(money(1234560)).toBe('1 234,56€');
+    });
+
+    it('keeps a no-break space (U+00A0) and a narrow no-break space (U+202F) group separator', () => {
+      expect(makeMoneyFormatter({ ...eur, group_separator: '\u00A0' })(1234560)).toBe('1\u00A0234,56€');
+      expect(makeMoneyFormatter({ ...eur, group_separator: '\u202F' })(1234560)).toBe('1\u202F234,56€');
+    });
+
+    it('keeps a non-ASCII symbol, and a space inside it', () => {
+      const pln = { ...eur, currency_symbol: ' zł', group_separator: '\u00A0' };
+      expect(makeMoneyFormatter(pln)(1234560)).toBe('1\u00A0234,56 zł');
+      expect(makeMoneyFormatter({ ...base, currency_symbol: '₹' })(1234560)).toBe('₹1,234.56');
+    });
+
     it('keeps the sign outside the symbol when the symbol comes first', () => {
       expect(makeMoneyFormatter(base)(-1000)).toBe('-$1.00');
     });

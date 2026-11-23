@@ -42,7 +42,7 @@ const inputSchema = z
     path: ['to_category_id'],
   })
   .refine((v) => toMilliunits(v.amount) > 0, {
-    message: 'amount must be at least $0.001',
+    message: 'amount must be at least 0.001 (1 milliunit)',
     path: ['amount'],
   });
 

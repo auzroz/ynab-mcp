@@ -76,6 +76,13 @@ export const BUDGET_ALIAS_TTL_MS = 300_000;
 export const CURRENCY_FORMAT_RETRY_MS = 60_000;
 
 /**
+ * How long a budget's currency format is reused (#49). It almost never changes,
+ * and re-reading it every 5 minutes would cost an active budget 12 of YNAB's
+ * 200 requests an hour.
+ */
+export const CURRENCY_FORMAT_TTL_MS = 3_600_000;
+
+/**
  * server_knowledge no budget has reached: asking for changes since it returns
  * the plan's id and an empty delta, not the whole budget.
  */
@@ -1021,7 +1028,12 @@ export class YnabClient {
     const generation = this.cache.generation();
     await this.takeToken();
     const response = await this.api.plans.getPlanSettingsById(budgetId);
-    if (generation === this.cache.generation()) this.cache.set(cacheKey, response);
+    if (generation === this.cache.generation()) {
+      this.cache.set(cacheKey, response);
+      // A refreshed settings response also refreshes the long-lived format memo.
+      const format = response.data?.settings?.currency_format;
+      if (format != null) this.cache.set(`currency-format:${budgetId}`, format, CURRENCY_FORMAT_TTL_MS);
+    }
     return response;
   }
 
@@ -1034,12 +1046,16 @@ export class YnabClient {
    * settings endpoint does not cost a request on every tool call.
    */
   async getCurrencyFormat(budgetId: string): Promise<ynab.CurrencyFormat | undefined> {
+    const memoKey = `currency-format:${budgetId}`;
+    const memo = this.cache.get<ynab.CurrencyFormat>(memoKey);
+    if (memo !== undefined) return memo;
     const failedKey = `currency-format-failed:${budgetId}`;
     if (this.cache.get<boolean>(failedKey) === true) return undefined;
     try {
       // Outside any fan-out reservation: the tool's reserved count covers its
       // own reads, and this lookup (a cache miss only) takes its own token.
       const response = await this.fanOut.exit(() => this.getBudgetSettingsById(budgetId));
+      // getBudgetSettingsById memoizes it for CURRENCY_FORMAT_TTL_MS.
       return response.data.settings.currency_format ?? undefined;
     } catch {
       this.cache.set(failedKey, true, CURRENCY_FORMAT_RETRY_MS);

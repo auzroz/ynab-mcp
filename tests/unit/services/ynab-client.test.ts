@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { YnabClient, BUDGET_ALIAS_TTL_MS, CURRENCY_FORMAT_RETRY_MS } from '../../../src/services/ynab-client.js';
+import { YnabClient, BUDGET_ALIAS_TTL_MS, CURRENCY_FORMAT_RETRY_MS, CURRENCY_FORMAT_TTL_MS } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
 import { handleGetBudget } from '../../../src/tools/budgets/get-budget.js';
 import { Cache } from '../../../src/services/cache.js';
@@ -371,6 +371,39 @@ describe('read methods', () => {
 
       expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
       expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledWith(UUID);
+    });
+
+    it('keeps the format for an hour, past the 5 minute settings cache', async () => {
+      vi.useFakeTimers();
+      try {
+        setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: eur } } });
+        const client = makeClient(true);
+
+        await client.getCurrencyFormat(UUID);
+        vi.advanceTimersByTime(CURRENCY_FORMAT_TTL_MS - 1000);
+        await expect(client.getCurrencyFormat(UUID)).resolves.toEqual(eur);
+        expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+
+        vi.advanceTimersByTime(2000);
+        await client.getCurrencyFormat(UUID);
+        expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a refreshed settings response updates the memo', async () => {
+      const client = makeClient(true);
+      setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: eur } } });
+      await client.getCurrencyFormat(UUID);
+
+      const gbp = { ...eur, iso_code: 'GBP', currency_symbol: '£' };
+      setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: gbp } } });
+      // Force a real refresh of the 5 minute settings cache.
+      (client as unknown as { cache: Cache }).cache.delete(`budget-settings:${UUID}`);
+      await client.getBudgetSettingsById(UUID);
+
+      await expect(client.getCurrencyFormat(UUID)).resolves.toEqual(gbp);
     });
 
     it('keeps one format per budget', async () => {
