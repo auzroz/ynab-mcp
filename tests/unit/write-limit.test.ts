@@ -150,6 +150,7 @@ describe('the write cap in the tools/call handler', () => {
   });
 
   it('does not count or refuse read tools', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network disabled in unit test')));
     const components = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 1 });
     const ynabClient = buildYnabClient(userCtx({ writeLimitPerHour: 1 }), components);
     ynabClient.admitWrite('ynab_create_payee');
