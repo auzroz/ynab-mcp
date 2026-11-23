@@ -143,7 +143,6 @@ export async function handleCreateScheduledTransaction(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
-  const money = await moneyFormatterFor(client, budgetId);
 
   // Validate date constraints
   const dateValidation = validateScheduledDate(validated.date);
@@ -177,6 +176,7 @@ export async function handleCreateScheduledTransaction(
     scheduled_transaction: scheduledTransactionData,
   });
 
+  const money = await moneyFormatterFor(client, budgetId);
   const txn = response.data.scheduled_transaction;
 
   return JSON.stringify(

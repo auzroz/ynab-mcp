@@ -449,6 +449,9 @@ export class YnabClient {
     this.writeLimiter = options.writeLimiter ?? new WriteLimiter(WRITE_LIMIT_DEFAULT_PER_HOUR, options.now);
   }
 
+  // In-flight currency format lookups (#49), one per budget UUID.
+  private readonly currencyFormatLookups = new Map<string, Promise<ynab.CurrencyFormat | undefined>>();
+
   // In-flight budget alias lookups, so concurrent callers share one request.
   private readonly aliasLookups = new Map<string, Promise<string>>();
   private aliasLookupSeq = 0;
@@ -1051,6 +1054,18 @@ export class YnabClient {
     if (memo !== undefined) return memo;
     const failedKey = `currency-format-failed:${budgetId}`;
     if (this.cache.get<boolean>(failedKey) === true) return undefined;
+    // Concurrent callers for one budget share a single lookup (one request, one token).
+    let pending = this.currencyFormatLookups.get(budgetId);
+    if (pending === undefined) {
+      pending = this.lookUpCurrencyFormat(budgetId, failedKey).finally(() => {
+        this.currencyFormatLookups.delete(budgetId);
+      });
+      this.currencyFormatLookups.set(budgetId, pending);
+    }
+    return pending;
+  }
+
+  private async lookUpCurrencyFormat(budgetId: string, failedKey: string): Promise<ynab.CurrencyFormat | undefined> {
     try {
       // Outside any fan-out reservation: the tool's reserved count covers its
       // own reads, and this lookup (a cache miss only) takes its own token.

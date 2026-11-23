@@ -406,6 +406,39 @@ describe('read methods', () => {
       await expect(client.getCurrencyFormat(UUID)).resolves.toEqual(gbp);
     });
 
+    it('concurrent lookups for one budget make one request and take one token', async () => {
+      let release: (v: unknown) => void = () => undefined;
+      asMock(mockApi.plans.getPlanSettingsById).mockImplementation(
+        () => new Promise((resolve) => (release = resolve))
+      );
+      const limiter = new RateLimiter(180);
+      const acquire = vi.spyOn(limiter, 'acquire');
+      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+
+      const calls = [client.getCurrencyFormat(UUID), client.getCurrencyFormat(UUID), client.getCurrencyFormat(UUID)];
+      await Promise.resolve();
+      release({ data: { settings: { currency_format: eur } } });
+
+      await expect(Promise.all(calls)).resolves.toEqual([eur, eur, eur]);
+      expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+      expect(acquire).toHaveBeenCalledTimes(1);
+    });
+
+    it('callers that join a failing lookup all get undefined, and the pending entry is cleared', async () => {
+      let fail: (e: unknown) => void = () => undefined;
+      asMock(mockApi.plans.getPlanSettingsById).mockImplementationOnce(
+        () => new Promise((_, reject) => (fail = reject))
+      );
+      const client = makeClient(true);
+
+      const calls = [client.getCurrencyFormat(UUID), client.getCurrencyFormat(UUID)];
+      await Promise.resolve();
+      fail(new Error('down'));
+
+      await expect(Promise.all(calls)).resolves.toEqual([undefined, undefined]);
+      expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+    });
+
     it('keeps one format per budget', async () => {
       const other = '22222222-2222-2222-2222-222222222222';
       asMock(mockApi.plans.getPlanSettingsById).mockImplementation(async (id: string) => ({

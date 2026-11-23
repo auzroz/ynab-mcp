@@ -94,7 +94,6 @@ export async function handleCreateAccount(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
-  const money = await moneyFormatterFor(client, budgetId);
 
   const response = await client.createAccount(budgetId, {
     account: {
@@ -104,6 +103,7 @@ export async function handleCreateAccount(
     },
   });
 
+  const money = await moneyFormatterFor(client, budgetId);
   const account = response.data.account;
 
   const accountName = sanitizeName(account.name);

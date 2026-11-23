@@ -62,9 +62,9 @@ export async function handleDeleteTransaction(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
-  const money = await moneyFormatterFor(client, budgetId);
 
   const response = await client.deleteTransaction(budgetId, validated.transaction_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const txn = response.data.transaction;
 
   if (txn == null) {

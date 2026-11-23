@@ -185,7 +185,10 @@ export async function handleMoveMoney(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budget = await client.resolveBudgetId(validated.budget_id, { fresh: true });
-  const money = await moneyFormatterFor(client, budget);
+  // Fail fast in read-only sessions: no category reads and no settings request for a refused write.
+  if (client.isReadOnly()) {
+    throw new ReadOnlyModeError('updateMonthCategory');
+  }
   const month = validated.month === 'current' ? getCurrentMonth() : validated.month;
   const amount = toMilliunits(validated.amount);
 
@@ -225,6 +228,7 @@ export async function handleMoveMoney(
       outcome,
     });
 
+  const money = await moneyFormatterFor(client, budget);
   const sides = {
     from: { id: from.id, name: from.name, original_budgeted: money(from.budgeted), original_budgeted_milliunits: from.budgeted },
     to: { id: to.id, name: to.name, original_budgeted: money(to.budgeted), original_budgeted_milliunits: to.budgeted },

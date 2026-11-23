@@ -175,7 +175,6 @@ export async function handleCreateTransaction(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
-  const money = await moneyFormatterFor(client, budgetId);
 
   // Build transaction data, only including defined fields
   const transactionData: ynab.NewTransaction = {
@@ -205,6 +204,7 @@ export async function handleCreateTransaction(
     validated.import_id !== undefined ? { transactions: [transactionData] } : { transaction: transactionData }
   );
 
+  const money = await moneyFormatterFor(client, budgetId);
   const txn = response.data.transaction ?? response.data.transactions?.[0];
 
   if (txn == null) {

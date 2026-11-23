@@ -87,7 +87,6 @@ export async function handleCreateCategory(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
-  const money = await moneyFormatterFor(client, budgetId);
 
   const response = await client.createCategory(budgetId, {
     category: {
@@ -98,6 +97,7 @@ export async function handleCreateCategory(
     },
   });
 
+  const money = await moneyFormatterFor(client, budgetId);
   const category = response.data.category;
 
   return JSON.stringify(

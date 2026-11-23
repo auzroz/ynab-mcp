@@ -85,7 +85,6 @@ export async function handleUpdateCategory(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
-  const money = await moneyFormatterFor(client, budgetId);
 
   const response = await client.updateMonthCategory(
     budgetId,
@@ -98,6 +97,7 @@ export async function handleUpdateCategory(
     }
   );
 
+  const money = await moneyFormatterFor(client, budgetId);
   const category = response.data.category;
 
   const categoryName = sanitizeName(category.name);

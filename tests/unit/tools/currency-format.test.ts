@@ -236,7 +236,9 @@ describe('amounts follow the budget currency format', () => {
 
       expect(txn.amount).toBe('-150,00€');
       expect(txn.subtransactions[0].amount).toBe('-100,00€');
-      expect(parsed.summary.total_amount ?? '').not.toContain('$');
+      expect(parsed.summary.total_inflow).toBe('0,00€');
+      expect(parsed.summary.total_outflow).toBe('150,00€');
+      expect(parsed.summary.net).toBe('-150,00€');
     });
   });
 

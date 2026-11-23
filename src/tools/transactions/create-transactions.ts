@@ -129,7 +129,6 @@ export async function handleCreateTransactions(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
-  const money = await moneyFormatterFor(client, budgetId);
 
   // Convert transactions to YNAB format
   const ynabTransactions: ynab.NewTransaction[] = validated.transactions.map((t) => {
@@ -157,6 +156,7 @@ export async function handleCreateTransactions(
     transactions: ynabTransactions,
   });
 
+  const money = await moneyFormatterFor(client, budgetId);
   const created = response.data.transactions ?? [];
   const duplicates = response.data.duplicate_import_ids ?? [];
 

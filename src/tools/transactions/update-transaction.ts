@@ -167,7 +167,6 @@ export async function handleUpdateTransaction(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
-  const money = await moneyFormatterFor(client, budgetId);
 
   // Build update object with only provided fields using YNAB SDK type
   const updateData: ynab.ExistingTransaction = {};
@@ -191,6 +190,7 @@ export async function handleUpdateTransaction(
     transaction: updateData,
   });
 
+  const money = await moneyFormatterFor(client, budgetId);
   const txn = response.data.transaction;
 
   return JSON.stringify(

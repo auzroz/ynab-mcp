@@ -69,12 +69,12 @@ export async function handleDeleteScheduledTransaction(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
-  const money = await moneyFormatterFor(client, budgetId);
 
   const response = await client.deleteScheduledTransaction(
     budgetId,
     validated.scheduled_transaction_id
   );
+  const money = await moneyFormatterFor(client, budgetId);
   const txn = response.data.scheduled_transaction;
 
   return JSON.stringify(
