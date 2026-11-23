@@ -12,6 +12,7 @@
 
 import DecimalJS from 'decimal.js';
 import type { CurrencyFormat } from 'ynab';
+import { sanitizeString } from './sanitize.js';
 
 // Get the Decimal constructor
 const Decimal = DecimalJS.default ?? DecimalJS;
@@ -111,7 +112,14 @@ function isUsableCurrencyFormat(format: unknown): format is CurrencyFormat {
  */
 export function makeMoneyFormatter(format: CurrencyFormat | null | undefined): MoneyFormatter {
   if (!isUsableCurrencyFormat(format)) return usdFallbackFormatter;
-  return (milliunits) => formatCurrencyWithFormat(milliunits, format);
+  // The symbol and separators come from YNAB: sanitized like other upstream strings.
+  const safe: CurrencyFormat = {
+    ...format,
+    currency_symbol: sanitizeString(format.currency_symbol, 10) ?? '',
+    decimal_separator: sanitizeString(format.decimal_separator, 3) ?? '.',
+    group_separator: sanitizeString(format.group_separator, 3) ?? '',
+  };
+  return (milliunits) => formatCurrencyWithFormat(milliunits, safe);
 }
 
 /**

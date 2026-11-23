@@ -164,6 +164,8 @@ export async function handleDetectRecurring(
 
   // Analyze each payee for recurring patterns
   const recurring: RecurringTransaction[] = [];
+  // Numeric monthly cost (milliunits) per entry: sorting and totals never parse the formatted text.
+  const monthlyCostOf = new Map<RecurringTransaction, number>();
 
   for (const [, data] of byPayee) {
     if (data.transactions.length < minOccurrences) continue;
@@ -228,7 +230,7 @@ export async function handleDetectRecurring(
       suggestedFrequency
     );
 
-    recurring.push({
+    const entry: RecurringTransaction = {
       payee_name: sanitizeName(data.payee_name),
       category_name: data.category_name ? sanitizeName(data.category_name) : null,
       frequency,
@@ -247,20 +249,18 @@ export async function handleDetectRecurring(
       suggested_frequency: suggestedFrequency,
       can_convert,
       conversion_notes,
-    });
+    };
+    monthlyCostOf.set(entry, monthlyCost);
+    recurring.push(entry);
   }
 
   // Sort by monthly cost (highest first)
   recurring.sort((a, b) => {
-    const costA = parseFloat(a.monthly_cost.replace(/[^0-9.-]/g, ''));
-    const costB = parseFloat(b.monthly_cost.replace(/[^0-9.-]/g, ''));
-    return costB - costA;
+    return (monthlyCostOf.get(b) ?? 0) - (monthlyCostOf.get(a) ?? 0);
   });
 
   // Calculate totals
-  const totalMonthly = recurring.reduce((sum, r) => {
-    return sum + parseFloat(r.monthly_cost.replace(/[^0-9.-]/g, ''));
-  }, 0);
+  const totalMonthly = sumMilliunits(recurring.map((r) => Math.round(monthlyCostOf.get(r) ?? 0)));
 
   const highConfidence = recurring.filter((r) => r.confidence === 'high');
   const mediumConfidence = recurring.filter((r) => r.confidence === 'medium');
@@ -272,7 +272,7 @@ export async function handleDetectRecurring(
         total_recurring_found: recurring.length,
         high_confidence_count: highConfidence.length,
         medium_confidence_count: mediumConfidence.length,
-        estimated_monthly_total: money(Math.round(totalMonthly * 1000)),
+        estimated_monthly_total: money(totalMonthly),
         analysis_period: `${months} months`,
         since_date: sinceDateStr,
       },

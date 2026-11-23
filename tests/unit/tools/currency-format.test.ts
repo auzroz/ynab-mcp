@@ -220,7 +220,7 @@ describe('amounts follow the budget currency format', () => {
       client.getCategories.mockResolvedValue({
         data: { category_groups: mockCategoryGroups, server_knowledge: 9 },
       } as never);
-      const parsed = JSON.parse(await handleListCategories({ last_knowledge_of_server: 1 }, client as never));
+      const parsed = JSON.parse(await handleListCategories({ since_server_knowledge: 1 }, client as never));
       const cats = parsed.category_groups.flatMap((g: { categories: { budgeted: string }[] }) => g.categories);
       expect(cats.length).toBeGreaterThan(0);
       for (const c of cats) expect(c.budgeted).toMatch(/€$/);

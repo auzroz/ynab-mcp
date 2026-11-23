@@ -225,7 +225,7 @@ export async function handleMonthlyComparison(
       message = 'No spending in either month';
     } else {
       status = 'worse';
-      message = `Spending increased from $0 last month to ${money(currentSpending)}`;
+      message = `Spending increased from ${money(0)} last month to ${money(currentSpending)}`;
     }
   } else if (spendingChangePercent < -10) {
     status = 'better';

@@ -244,6 +244,12 @@ describe('milliunits utilities', () => {
       expect(money(-1234500)).toBe('-1.234,50');
     });
 
+    it('sanitizes the symbol and separators it takes from YNAB', () => {
+      const money = makeMoneyFormatter({ ...base, currency_symbol: '<b>\u0000$', group_separator: ',\u0007' });
+      expect(money(1234000)).not.toMatch(/[\u0000-\u001f]/);
+      expect(money(1234000)).toContain('1,234.00');
+    });
+
     it('keeps the sign outside the symbol when the symbol comes first', () => {
       expect(makeMoneyFormatter(base)(-1000)).toBe('-$1.00');
     });
