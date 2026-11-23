@@ -267,6 +267,40 @@ describe('the YNAB legs, as McpOAuthProvider tested them (moved from mcp-provide
     expect([a.status, b.status].sort()).toEqual([303, 400]);
   });
 
+  it('cancel before complete, through the mounted app: access_denied to the client, no grant, no YNAB exchange', async () => {
+    const client = await registerClient(app);
+    const { challenge } = pkcePair();
+    const jar = new CookieJar();
+    const auth = await browse(app, jar, authorizeUrl({ clientId: client.clientId, challenge }));
+    const uid = interactionUid(auth.headers['location'] as string);
+    await browse(app, jar, auth.headers['location'] as string);
+    const start = await browse(app, jar, `/oauth/interaction/${uid}/start?scope=read-only`);
+    const state = new URL(start.headers['location'] as string).searchParams.get('state') as string;
+    vi.mocked(ynabExchangeCode).mockClear();
+
+    // Cancel first: it claims the state row with the cancelled marker and finishes the interaction.
+    const cancel = await browse(app, jar, `/oauth/interaction/${uid}/cancel`);
+    expect(cancel.status).toBe(303);
+    const resume = await browse(app, jar, cancel.headers['location'] as string);
+    const back = new URL(resume.headers['location'] as string);
+    expect(`${back.origin}${back.pathname}`).toBe(REDIRECT_URI);
+    expect(back.searchParams.get('error')).toBe('access_denied');
+
+    // YNAB's redirect arrives afterwards: complete finds the claim taken and refuses, before any exchange.
+    const callback = await browse(app, jar, `/oauth/ynab/callback?${new URLSearchParams({ state, code: 'c' }).toString()}`);
+    const complete = await browse(app, jar, callback.headers['location'] as string);
+    expect(complete.status).toBe(400);
+    expect(complete.headers['location']).toBeUndefined();
+    expect(vi.mocked(ynabExchangeCode)).not.toHaveBeenCalled();
+    const grants = [...(created.storage as unknown as { oauthRows: Map<string, OAuthRowRecord> }).oauthRows.values()].filter(
+      (r) => r.model === 'Grant' || r.model === 'AuthorizationCode'
+    );
+    expect(grants).toEqual([]);
+    expect(await created.storage!.getUser('ynab-user-1')).toBeUndefined();
+    // And /start can't reopen it.
+    expect((await browse(app, jar, `/oauth/interaction/${uid}/start?scope=read-only`)).status).toBe(400);
+  });
+
   it('the deadline is shorter than the shortest sweep protection of a client', () => {
     expect(YNAB_CALLBACK_DEADLINE_MS).toBeLessThan(MIN_ABANDONED_CLIENT_MS);
   });
