@@ -3,10 +3,10 @@
  * serving `/authorize`, `/token`, `/register`, `/revoke`, `/jwks` and the RFC
  * 8414 and OIDC discovery documents, over the #47-1 adapter.
  *
- * **Not mounted yet.** #47-4 mounts {@link asLibraryHandler} as the last stage
+ * src/auth/as-router.ts mounts {@link asLibraryHandler} as the last stage
  * (`as-library`) of each AS route, behind D8's stages, and the interaction
- * router (./interaction.ts) under `/oauth`. Until then the tests run it on an
- * Express app of their own, as the spike did.
+ * router (./interaction.ts) under `/oauth` (#47-4). The provider tests also
+ * run it on an Express app of their own, as the spike did.
  *
  * What D2 fixes, and where:
  *   - Features: registration (no initial access token), revocation and
@@ -119,6 +119,13 @@ export const FULL_SCOPE = 'read-only read-write';
  */
 const OIDC_ONLY_PARAMS = ['nonce', 'max_age', 'acr_values', 'claims', 'claims_locales', 'id_token_hint'] as const;
 
+/**
+ * `response_mode`, which the SDK ignored (it always answered with a query
+ * redirect): dropped, so the library's answer is always a query redirect the
+ * authorize guard can judge, never a page that posts to the client (#47-4).
+ */
+const IGNORED_AUTHORIZE_PARAMS = ['response_mode'] as const;
+
 /** The library's session cookie and its signature (`cookies.names.session`, default). */
 const SESSION_COOKIES = new Set(['_session', '_session.sig']);
 
@@ -224,7 +231,7 @@ function requestNormalizer({ resource, publicUrl }: NormalizerDeps) {
       const scope = normalizeAuthorizeScope(params['scope']);
       if (scope !== undefined) params['scope'] = scope;
       if (params['resource'] !== undefined) params['resource'] = canonicalizeResource(params['resource'], resource);
-      for (const name of OIDC_ONLY_PARAMS) delete params[name];
+      for (const name of [...OIDC_ONLY_PARAMS, ...IGNORED_AUTHORIZE_PARAMS]) delete params[name];
       ctx.query = params as typeof ctx.query;
     } else if (path === token && ctx.method === 'POST' && body && body['resource'] !== undefined) {
       body['resource'] = canonicalizeResource(body['resource'], resource);

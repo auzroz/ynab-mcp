@@ -741,7 +741,19 @@ export class SqliteStorage implements Storage, OAuthRowStore {
 
   async destroyOAuthRow(key: string): Promise<boolean> {
     return this.database
-      .transaction((): boolean => this.database.prepare('DELETE FROM oauth_rows WHERE key = ?').run(key).changes > 0)
+      .transaction((): boolean => {
+        const row = this.database.prepare('SELECT model, client_id FROM oauth_rows WHERE key = ?').get(key) as
+          | { model: string; client_id: string | null }
+          | undefined;
+        if (this.database.prepare('DELETE FROM oauth_rows WHERE key = ?').run(key).changes === 0) return false;
+        // A client goes with its registration access tokens (nothing else reads them).
+        if (row?.model === 'Client' && row.client_id !== null) {
+          this.database
+            .prepare("DELETE FROM oauth_rows WHERE model = 'RegistrationAccessToken' AND client_id = ?")
+            .run(row.client_id);
+        }
+        return true;
+      })
       .immediate();
   }
 

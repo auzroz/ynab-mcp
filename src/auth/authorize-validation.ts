@@ -1,13 +1,17 @@
 /**
  * The authorize-validation stage (#55a): bounds on an /authorize request,
- * checked ahead of the handler (gate G21), plus the refusal of grandfathered
- * clients with a plain-http redirect URI.
+ * checked ahead of oidc-provider (`as-library`, gate G21), plus the refusal of
+ * grandfathered clients with a plain-http redirect URI.
+ *
+ * Only the initial request (`GET /authorize`, the mount's root) is checked:
+ * `method-check` refuses every other method first (405), and the library's
+ * resume route (`/authorize/:uid`, the browser's return from the consent page)
+ * carries no parameters of its own, so it goes on unchecked.
  *
  * A `client_id` that is missing, empty, longer than MAX_CLIENT_ID_LENGTH or
- * repeated is answered here, never looked up: the handler would pass any
- * string to the client store, so it never gets the request. The answer is the
- * handler's own 400 JSON (HANDLER_CLIENT_PARAMS). An unknown client goes on to
- * the handler's 400. For a known client:
+ * repeated is answered here, never looked up. The answer is the 400 JSON the
+ * SDK's handler gave (HANDLER_CLIENT_PARAMS). An unknown client goes on to
+ * the library's 400 (`invalid_client`). For a known client:
  *
  *   1. **Grandfathered clients.** A stored client is checked against today's
  *      registration rules (client-metadata.ts checkStoredClient). One with a
@@ -24,13 +28,13 @@
  *   3. `state`: one string of at most MAX_STATE_LENGTH characters.
  *   4. `code_challenge`: exactly 43 base64url characters (an S256 challenge).
  *   5. `scope`: at most MAX_SCOPES space-separated values. Unknown values are
- *      dropped (UNKNOWN_SCOPE_POLICY), so the handler sees only
- *      KNOWN_SCOPES.
+ *      dropped (UNKNOWN_SCOPE_POLICY) by the provider's D7 normalizer
+ *      (provider.ts), so the library sees only KNOWN_SCOPES.
  *
  * A failed bound is an authorization error, sent the way authorize-guard.ts
  * sends every error: redirected to a verified client, shown here otherwise.
- * This stage needs only the client store and so stays as it is when the
- * authorization server moves to oidc-provider (ADR-0002, #47-4).
+ * The stage changes nothing in the request: the library reads the URL itself,
+ * so an edit to Express's `req.query` would never reach it.
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
@@ -53,13 +57,12 @@ export const MAX_CLIENT_ID_LENGTH = 255;
 const ClientIdSchema = z.string().min(1).max(MAX_CLIENT_ID_LENGTH);
 
 /**
- * The first check server-legacy 2.4.0's authorization handler makes
- * (ClientAuthorizationParamsSchema), copied so this stage answers a client_id
- * it refuses exactly as the handler would: 400 `invalid_request` with the same
+ * The first check the SDK's authorization handler made (server-legacy 2.4.0's
+ * ClientAuthorizationParamsSchema), kept so a client_id refused here is
+ * answered as before the move: 400 `invalid_request` with the same
  * description when the parameters fail it, and otherwise (an empty or overlong
- * string the handler would look up and not find) 400 `invalid_client`,
- * "Invalid client_id". tests/unit/auth/authorize-validation.test.ts compares
- * both with the handler's own answers.
+ * string the handler would have looked up and not found) 400
+ * `invalid_client`, "Invalid client_id".
  */
 const HANDLER_CLIENT_PARAMS = z.object({
   client_id: z.string(),
@@ -109,26 +112,10 @@ export interface AuthorizeValidationOptions {
   issuer: string;
 }
 
-/** The request's parameters: the query for GET, the body for POST. */
+/** The request's parameters (the query: only GET reaches the checks). */
 function paramsOf(req: Request): Record<string, unknown> | undefined {
-  const source: unknown = req.method === 'POST' ? req.body : req.query;
+  const source: unknown = req.query;
   return source !== null && typeof source === 'object' ? (source as Record<string, unknown>) : undefined;
-}
-
-/** Replace (or remove) one parameter so the handler reads the new value. */
-function setParam(req: Request, name: string, value: string | undefined): void {
-  if (req.method === 'POST') {
-    const body = req.body as Record<string, unknown>;
-    if (value === undefined) delete body[name];
-    else body[name] = value;
-    return;
-  }
-  // Express 5 parses req.query from the URL on every read (a getter), so the
-  // new value is set as an own property, which the handler then reads.
-  const query: Record<string, unknown> = { ...(req.query as Record<string, unknown>) };
-  if (value === undefined) delete query[name];
-  else query[name] = value;
-  Object.defineProperty(req, 'query', { value: query, configurable: true, enumerable: true, writable: true });
 }
 
 /**
@@ -175,8 +162,8 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
   };
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    // Other methods get the handler's 405.
-    if (req.method !== 'GET' && req.method !== 'POST') {
+    // method-check answers other methods; the resume route has no parameters of its own.
+    if (req.method !== 'GET' || req.path !== '/') {
       next();
       return;
     }
@@ -185,7 +172,7 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
     // Missing, empty, overlong or repeated: the handler's 400, from here, with
     // no lookup and without the handler (which would look up any string).
     if (params === undefined || !parsedClientId.success) {
-      const asHandler = HANDLER_CLIENT_PARAMS.safeParse(req.method === 'POST' ? req.body : req.query);
+      const asHandler = HANDLER_CLIENT_PARAMS.safeParse(req.query);
       res.setHeader('Cache-Control', 'no-store');
       res
         .status(400)
@@ -280,7 +267,6 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
         fail({ error: 'invalid_scope', error_description: `Supported scopes: ${KNOWN_SCOPES.join(', ')}` });
         return;
       }
-      setParam(req, 'scope', known.length > 0 ? known.join(' ') : undefined);
     }
     next();
   };
