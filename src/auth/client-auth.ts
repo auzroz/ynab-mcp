@@ -17,11 +17,13 @@
  *     the library's comparison passes.
  *
  * It fails closed: if this stage were not mounted, every confidential client
- * would get `invalid_client`. Public clients (no secret) pass through unchanged,
- * and so does a request without a `client_id` string or with a non-string
- * `client_secret` in the body: the library refuses those itself (a secret in
- * an `Authorization: Basic` header is never the client's registered method,
- * `client_secret_post`). Every refusal from this stage is 400 `invalid_client`
+ * would get `invalid_client`. An `Authorization` header is removed before the
+ * library sees it: the library treats HTTP Basic and `client_secret_post` as
+ * interchangeable and would compare a Basic secret with the stored hash
+ * unchecked (#47-4). Public clients (no secret) pass through unchanged, and so
+ * does a request without a `client_id` string or with a non-string
+ * `client_secret` in the body: the library refuses those itself. Every
+ * refusal from this stage is 400 `invalid_client`
  * with `no-store` (the library's own is 401, ADR-0002 D5); nothing about the
  * presented or stored values is logged or returned.
  */
@@ -50,6 +52,11 @@ export function clientAuthentication(clients: ClientLookup): RequestHandler {
       next();
       return;
     }
+    // Only the body's credentials are checked here, so they are the only ones the library may
+    // see: it would accept HTTP Basic for a client_secret_post client and compare the presented
+    // value with the stored hash, so a hash copied out of the database would pass. The SDK never
+    // read the header either.
+    delete req.headers.authorization;
     const body: unknown = req.body;
     const fields = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {};
     const clientId = fields['client_id'];

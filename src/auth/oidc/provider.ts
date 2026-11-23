@@ -345,7 +345,9 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
     },
     // The account is the YNAB user id. STOR-1's user join is the adapter's: a token whose user is gone is unknown.
     findAccount: (_ctx, sub) => ({ accountId: sub, claims: () => ({ sub }) }),
-    interactions: { url: (_ctx, interaction) => `${INTERACTION_BASE_PATH}/${interaction.uid}` },
+    // Absolute, under PUBLIC_URL, as the interaction's own links and the YNAB callback are
+    // (a PUBLIC_URL with a path then reaches /oauth the same way for every leg).
+    interactions: { url: (_ctx, interaction) => `${options.publicUrl}${INTERACTION_BASE_PATH}/${interaction.uid}` },
     cookies: { keys: [cookieSigningKey(options.encryptionKey)], long: cookieOptions, short: cookieOptions },
     // Our cors-origin stage answers CORS on /token, /revoke and /register (D2, D8); this is the backstop.
     clientBasedCORS: () => true,

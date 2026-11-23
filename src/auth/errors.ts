@@ -95,5 +95,9 @@ export function oauthErrorStatus(error: OAuthError): number {
  */
 export function sendOAuthError(res: Response, error: OAuthError, status: number = oauthErrorStatus(error)): void {
   res.setHeader('Cache-Control', 'no-store');
-  res.status(status).json({ error: error.code, error_description: error.message });
+  // Written as the library writes its errors (no ETag, the same Content-Type), so a refusal
+  // from one of our stages can't be told apart from the library's own (#42: a replayed code
+  // answers exactly as an unknown one).
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.status(status).end(JSON.stringify({ error: error.code, error_description: error.message }));
 }

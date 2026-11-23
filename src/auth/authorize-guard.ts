@@ -270,15 +270,18 @@ export interface AuthorizeRedirectGuardOptions {
   interactionPath: string;
 }
 
-/** Whether `location` (absolute or relative) is this server's interaction (the consent page). */
-function isInteraction(location: string, publicUrl: URL, interactionPath: string): boolean {
-  let target: URL;
-  try {
-    target = new URL(location, publicUrl);
-  } catch {
-    return false;
-  }
-  return target.origin === publicUrl.origin && target.pathname.startsWith(`${interactionPath}/`);
+/** Whether `location` is this server's interaction (the consent page), under `PUBLIC_URL` as provider.ts builds it. */
+function isInteraction(location: string, publicUrl: string, interactionPath: string): boolean {
+  const target = parseUrl(location);
+  const base = parseUrl(`${publicUrl}${interactionPath}/`);
+  return (
+    target !== undefined &&
+    base !== undefined &&
+    target.origin === base.origin &&
+    target.pathname.startsWith(base.pathname) &&
+    target.search === '' &&
+    target.hash === ''
+  );
 }
 
 /**
@@ -288,7 +291,7 @@ function isInteraction(location: string, publicUrl: URL, interactionPath: string
  * with this server's error page.
  */
 export function authorizeRedirectGuard(options: AuthorizeRedirectGuardOptions) {
-  const publicUrl = new URL(options.publicUrl);
+  const { publicUrl } = options;
   return async (ctx: KoaContextWithOIDC, next: () => Promise<void>): Promise<void> => {
     await next();
     if (ctx.path !== options.authorizationPath) return;

@@ -4,8 +4,8 @@
  * as the SDK's authorization-server handlers answered. oidc-provider answers
  * 404 for a method it has no route for, so this runs ahead of `as-library`.
  *
- * Ported from `allowedMethods` in `@modelcontextprotocol/sdk` 1.32.2
- * (src/server/auth/middleware/allowedMethods.ts), maintainer decision 2 on
+ * Ported from `allowedMethods` in the MCP TypeScript SDK 1.32.2 (the v1
+ * package, src/server/auth/middleware/allowedMethods.ts), maintainer decision 2 on
  * ADR-0002's first draft. That code is under the MIT License:
  *
  *   MIT License
