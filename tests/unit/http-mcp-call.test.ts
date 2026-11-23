@@ -7,7 +7,8 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { plantAccessToken, plantUser } from './helpers/oauth-state.js';
 import type { Storage } from '../../src/storage/types.js';
 
 vi.mock('../../src/auth/ynab-oauth.js', async () => {
@@ -122,17 +123,14 @@ describe('mcp-call helper in oauth mode', () => {
       })
     );
     const storage = created.storage!;
-    await storage.upsertUser({
+    await plantUser(storage, {
       userId: USER,
       grantedScope: 'read-only',
       encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-1'),
-      updatedAt: Date.now(),
     });
     const tokens: string[] = [];
     for (const clientId of clients) {
-      const { value: token, key } = TEST_TOKEN_HASHER.issue('access');
-      await storage.saveAccessToken({
-        token: key,
+      const token = await plantAccessToken(storage, {
         clientId,
         userId: USER,
         scopes: ['read-only'],

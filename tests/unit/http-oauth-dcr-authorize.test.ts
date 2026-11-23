@@ -35,6 +35,7 @@ import { MAX_CLIENT_ID_LENGTH, MAX_SCOPES, MAX_STATE_LENGTH } from '../../src/au
 import { PAGE_CSP } from '../../src/auth/auth-pages.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_HASHER } from './helpers/token-hasher.js';
+import { plantClient, registerTestClient } from './helpers/oauth-state.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
 const PUBLIC_URL = 'https://mcp.example.com';
@@ -77,17 +78,20 @@ afterEach(async () => {
 });
 
 async function register(redirectUris: string[], extra: Record<string, unknown> = {}, on: Express = app): Promise<string> {
-  const res = await request(on)
-    .post('/register')
-    .send({ redirect_uris: redirectUris, client_name: 'Test App', token_endpoint_auth_method: 'none', ...extra });
+  const res = await registerTestClient(on, {
+    redirect_uris: redirectUris,
+    client_name: 'Test App',
+    token_endpoint_auth_method: 'none',
+    ...extra,
+  });
   expect(res.status, JSON.stringify(res.body)).toBe(201);
-  return res.body.client_id as string;
+  return res.body['client_id'] as string;
 }
 
 /** A client saved straight to storage, as an older release could have registered it. */
 async function plant(client: Record<string, unknown>): Promise<string> {
   const clientId = randomUUID();
-  await storage().saveClient({ client_id: clientId, client_id_issued_at: 1, ...client } as unknown as OAuthClientInformationFull);
+  await plantClient(storage(), { client_id: clientId, client_id_issued_at: 1, ...client });
   return clientId;
 }
 

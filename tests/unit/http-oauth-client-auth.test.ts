@@ -37,6 +37,7 @@ import { TokenHasher } from '../../src/auth/token-hash.js';
 import { Encryptor } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { authCodeKey, plantAuthCode, plantClient, plantUser, registerTestClient, updateClient } from './helpers/oauth-state.js';
 
 const HOST = 'mcp.example.com';
 const PUBLIC_URL = `https://${HOST}`;
@@ -68,24 +69,20 @@ const storage = (): Storage => created.storage as Storage;
 
 /** DCR through /register; the secret comes back once, here. */
 async function register(method?: 'none' | 'client_secret_post'): Promise<OAuthClientInformationFull> {
-  const res = await request(handle.app)
-    .post('/register')
-    .send({
-      redirect_uris: ['https://client/cb'],
-      client_name: 'test',
-      ...(method ? { token_endpoint_auth_method: method } : {}),
-    });
+  const res = await registerTestClient(handle.app, {
+    redirect_uris: ['https://client/cb'],
+    client_name: 'test',
+    ...(method ? { token_endpoint_auth_method: method } : {}),
+  });
   expect(res.status).toBe(201);
-  return res.body as OAuthClientInformationFull;
+  return res.body as unknown as OAuthClientInformationFull;
 }
 
 /** An MCP authorization code for `clientId`, stored as the AS stores one. */
 async function plantCode(clientId: string): Promise<string> {
-  const { value, key } = TEST_TOKEN_HASHER.issue('code');
   // A code is only redeemable while its user is connected (STOR-1).
-  await storage().upsertUser({ userId: 'ynab-user-1', grantedScope: 'read-only', encryptedRefreshToken: 'x', updatedAt: Date.now() });
-  await storage().saveAuthCode({
-    code: key,
+  await plantUser(storage(), { userId: 'ynab-user-1', grantedScope: 'read-only', encryptedRefreshToken: 'x' });
+  return plantAuthCode(storage(), {
     clientId,
     userId: 'ynab-user-1',
     redirectUri: 'https://client/cb',
@@ -94,7 +91,6 @@ async function plantCode(clientId: string): Promise<string> {
     expiresAt: Date.now() + 60_000,
     grantedScope: 'read-only',
   });
-  return value;
 }
 
 function token(fields: Record<string, string>): request.Test {
@@ -187,7 +183,7 @@ describe('/token client authentication', () => {
       error_description: 'Invalid client_id',
     });
     const stored = (await storage().getClient(client.client_id)) as OAuthClientInformationFull;
-    await storage().saveClient({ ...stored, client_secret_expires_at: Math.floor(Date.now() / 1000) - 1 });
+    await updateClient(storage(), stored.client_id, { client_secret_expires_at: Math.floor(Date.now() / 1000) - 1 });
     expect((await token(codeGrant(client.client_id, code, client.client_secret))).body).toEqual({
       error: 'invalid_client',
       error_description: 'Client secret has expired',
@@ -203,12 +199,12 @@ describe('/token client authentication', () => {
 
   it('a secret a 0.4.x process stored in plaintext after the migration still authenticates (hashed on read)', async () => {
     const secret = randomBytes(32).toString('hex');
-    await storage().saveClient({
+    await plantClient(storage(), {
       client_id: 'late-0.4.x-client',
       redirect_uris: ['https://client/cb'],
       client_secret: secret,
       client_secret_expires_at: 0,
-    } as OAuthClientInformationFull);
+    });
     expect((await token(codeGrant('late-0.4.x-client', await plantCode('late-0.4.x-client'), secret))).status).toBe(200);
     expect((await token(codeGrant('late-0.4.x-client', await plantCode('late-0.4.x-client'), 'nope'))).status).toBe(400);
   });
@@ -291,9 +287,7 @@ describe('fail closed', () => {
       client_secret: secret,
       client_secret_expires_at: 0,
     } as OAuthClientInformationFull);
-    const { value, key } = TEST_TOKEN_HASHER.issue('code');
-    await storage.saveAuthCode({
-      code: key,
+    const value = await plantAuthCode(storage, {
       clientId: client.client_id,
       userId: 'u',
       redirectUri: 'https://client/cb',
@@ -308,6 +302,6 @@ describe('fail closed', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_client');
     // The code was never spent.
-    expect(await storage.takeAuthCode(key)).toBeDefined();
+    expect(await storage.takeAuthCode(authCodeKey(value))).toBeDefined();
   });
 });

@@ -52,7 +52,8 @@ import { exchangeCode, getYnabUserId, refreshAccessToken } from '../../src/auth/
 import { tools } from '../../src/tools/index.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { cookieHeaderFrom } from './helpers/consent-cookie.js';
-import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { plantAccessToken } from './helpers/oauth-state.js';
 
 const PUBLIC_URL = 'https://mcp.example.com';
 const RESOURCE = `${PUBLIC_URL}/mcp`;
@@ -548,9 +549,7 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
     const good = await connect('read-write');
     expect(created.storage).toBeDefined();
     const planted = async (resource: string): Promise<string> => {
-      const { value, key } = TEST_TOKEN_HASHER.issue('access');
-      await created.storage!.saveAccessToken({
-        token: key,
+      return plantAccessToken(created.storage!, {
         clientId: good.clientId,
         userId: ynabUserId,
         scopes: ['read-only', 'read-write'],
@@ -558,7 +557,6 @@ describe('OAuth + MCP flow (oauth mode, memory storage)', () => {
         resource,
         grantedScope: 'read-write',
       });
-      return value;
     };
     const foreignToken = await planted('https://other.example.com/mcp');
     const twinToken = await planted(RESOURCE);

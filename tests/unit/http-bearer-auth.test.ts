@@ -46,8 +46,9 @@ import { createHttpApp } from '../../src/http.js';
 import { Encryptor } from '../../src/crypto.js';
 import { MemoryStorage } from '../../src/storage/memory.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER, legacyToken } from './helpers/token-hasher.js';
+import { TEST_TOKEN_PEPPER, legacyToken } from './helpers/token-hasher.js';
 import { INVALID_ACCESS_TOKEN_MESSAGE } from './helpers/invalid-token.js';
+import { bearerHeader, plantAccessToken, plantUser, revokePlantedAccessToken, unknownAccessToken } from './helpers/oauth-state.js';
 import { cleanupDrivers, testDrivers } from './helpers/storage-drivers.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
@@ -78,7 +79,7 @@ async function startApp(overrides: Partial<HttpConfig> = {}): Promise<{ app: Exp
   if (!storage) throw new Error('the app opened no storage');
   // A grant the request-context stage can resolve (its refresh is mocked above).
   const encryptedRefreshToken = new Encryptor(config.encryptionKey).encrypt('ynab-refresh-1');
-  await storage.upsertUser({ userId: USER, grantedScope: 'read-write', encryptedRefreshToken, updatedAt: Date.now() });
+  await plantUser(storage, { userId: USER, grantedScope: 'read-write', encryptedRefreshToken });
   return { app, storage };
 }
 
@@ -87,9 +88,7 @@ async function seedToken(
   storage: Storage,
   overrides: { expiresAt?: number; resource?: string; scopes?: string[] } = {}
 ): Promise<string> {
-  const issued = TEST_TOKEN_HASHER.issue('access');
-  await storage.saveAccessToken({
-    token: issued.key,
+  return plantAccessToken(storage, {
     clientId: 'c1',
     userId: USER,
     scopes: overrides.scopes ?? ['read-only'],
@@ -97,7 +96,6 @@ async function seedToken(
     resource: overrides.resource ?? RESOURCE,
     grantedScope: 'read-only',
   });
-  return issued.value;
 }
 
 type Method = 'post' | 'get' | 'delete';
@@ -149,7 +147,7 @@ describe('/mcp answers every token-verification failure with 401 and resource_me
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     for (const method of ['post', 'get', 'delete'] as const) {
-      const res = await mcp(app, `Bearer ${token}`, method);
+      const res = await mcp(app, bearerHeader(token), method);
       expectChallenge(res);
       const wire = `${res.text} ${String(res.headers['www-authenticate'])}`;
       expect(wire).not.toMatch(/server_error|ECONNREFUSED|hunter2|10\.1\.2\.3|timeout|locked|boom/);
@@ -168,7 +166,7 @@ describe('/mcp answers every token-verification failure with 401 and resource_me
 
   it('an expired token: dropped by storage', async () => {
     const { app, storage } = await startApp();
-    expectChallenge(await mcp(app, `Bearer ${await seedToken(storage, { expiresAt: Date.now() - 1_000 })}`));
+    expectChallenge(await mcp(app, bearerHeader(await seedToken(storage, { expiresAt: Date.now() - 1_000 }))));
   });
 
   it("an expired token: refused by the middleware's own expiry check", async () => {
@@ -183,12 +181,12 @@ describe('/mcp answers every token-verification failure with 401 and resource_me
       expiresAt: Date.now() - 5_000,
       resource: RESOURCE,
     });
-    expectChallenge(await mcp(app, `Bearer ${TEST_TOKEN_HASHER.issue('access').value}`), 'Token has expired');
+    expectChallenge(await mcp(app, bearerHeader(unknownAccessToken())), 'Token has expired');
   });
 
   it('a token bound to another resource (RFC 8707)', async () => {
     const { app, storage } = await startApp();
-    const res = await mcp(app, `Bearer ${await seedToken(storage, { resource: 'https://mcp.example.com/other' })}`);
+    const res = await mcp(app, bearerHeader(await seedToken(storage, { resource: 'https://mcp.example.com/other' })));
     expectChallenge(res);
   });
 
@@ -216,9 +214,9 @@ describe('/mcp answers every token-verification failure with 401 and resource_me
     const { app, storage } = await startApp();
     const token = await seedToken(storage);
     const reads = vi.spyOn(storage, 'getAccessToken');
-    expect((await mcp(app, `Bearer ${token}`)).status).not.toBe(401);
-    await storage.deleteAccessToken(TEST_TOKEN_HASHER.keyFor('access', token) as string);
-    expectChallenge(await mcp(app, `Bearer ${token}`));
+    expect((await mcp(app, bearerHeader(token))).status).not.toBe(401);
+    await revokePlantedAccessToken(storage, token);
+    expectChallenge(await mcp(app, bearerHeader(token)));
     expect(reads).toHaveBeenCalledTimes(2);
   });
 });
@@ -228,7 +226,7 @@ describe('insufficient scope is unchanged', () => {
     // Read-only access is enforced past the bearer stage (write tools hidden
     // and refused; http-oauth-write-policy.test.ts), as before the move.
     const { app, storage } = await startApp();
-    const res = await mcp(app, `Bearer ${await seedToken(storage, { scopes: ['read-only'] })}`);
+    const res = await mcp(app, bearerHeader(await seedToken(storage, { scopes: ['read-only'] })));
     expect(res.status).not.toBe(401);
     expect(res.status).not.toBe(403);
     expect(res.headers['www-authenticate']).toBeUndefined();
@@ -277,13 +275,13 @@ describe.skipIf(!postgres?.enabled)('/mcp on Postgres: a real storage timeout is
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       const token = await seedToken(storage);
-      expect((await mcp(app, `Bearer ${token}`)).status).not.toBe(401);
+      expect((await mcp(app, bearerHeader(token))).status).not.toBe(401);
 
       // Hold a lock that blocks the token lookup itself.
       await locker.query('BEGIN');
       await locker.query('LOCK TABLE access_tokens IN ACCESS EXCLUSIVE MODE');
       const startedAt = Date.now();
-      const res = await mcp(app, `Bearer ${token}`);
+      const res = await mcp(app, bearerHeader(token));
       expect(Date.now() - startedAt).toBeLessThan(5_000);
       expectChallenge(res);
       expect(res.text).not.toMatch(/timeout|server_error/);
@@ -291,7 +289,7 @@ describe.skipIf(!postgres?.enabled)('/mcp on Postgres: a real storage timeout is
 
       // Once the lock is gone, the same token verifies again.
       await locker.query('ROLLBACK');
-      expect((await mcp(app, `Bearer ${token}`)).status).not.toBe(401);
+      expect((await mcp(app, bearerHeader(token))).status).not.toBe(401);
     } finally {
       await locker.end();
     }
