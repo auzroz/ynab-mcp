@@ -48,9 +48,9 @@ describe('WriteLimiter', () => {
   it('admits up to the limit, then refuses until the oldest write is an hour old', () => {
     let t = 1_000_000;
     const limiter = new WriteLimiter(2, () => t);
-    expect(limiter.tryAcquire()).toEqual({ allowed: true });
+    expect(limiter.tryAcquire()).toMatchObject({ allowed: true });
     t += 10_000;
-    expect(limiter.tryAcquire()).toEqual({ allowed: true });
+    expect(limiter.tryAcquire()).toMatchObject({ allowed: true });
     t += 10_000;
     const refused = limiter.tryAcquire();
     expect(refused).toMatchObject({ allowed: false, limit: 2, resetsAt: 1_000_000 + WRITE_WINDOW_MS });
@@ -74,6 +74,17 @@ describe('WriteLimiter', () => {
     const limiter = new WriteLimiter(0);
     for (let i = 0; i < 5000; i++) expect(limiter.tryAcquire().allowed).toBe(true);
     expect(limiter.used()).toBe(0);
+  });
+
+  it('release gives one slot back, once', () => {
+    const limiter = new WriteLimiter(1, () => 0);
+    const first = limiter.tryAcquire();
+    if (!first.allowed) throw new Error('expected admission');
+    first.release();
+    first.release();
+    expect(limiter.used()).toBe(0);
+    expect(limiter.tryAcquire().allowed).toBe(true);
+    expect(limiter.tryAcquire().allowed).toBe(false);
   });
 
   it('rejects a negative or fractional limit', () => {
@@ -199,6 +210,42 @@ describe('the write cap in the tools/call handler', () => {
     await client.close();
   });
 
+  it('gives the slot back for a call that fails input validation, with no fetch', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const components = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 5 });
+    const ynabClient = buildYnabClient(userCtx({ writeLimitPerHour: 5 }), components);
+    const client = await connect(createServerFromClient(ynabClient));
+    for (let i = 0; i < 8; i++) {
+      const result = await client.callTool({ name: 'ynab_create_transactions', arguments: { transactions: 'nope' } });
+      expect(JSON.parse(textOf(result))).toMatchObject({ type: 'validation_error' });
+    }
+    expect(components.writeLimiter.used()).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await client.close();
+  });
+
+  it('keeps the slot for a call that YNAB rejects', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: { id: '400', name: 'bad_request', detail: 'no' } }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    );
+    const components = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 5 });
+    const ynabClient = buildYnabClient(userCtx({ writeLimitPerHour: 5 }), components);
+    const client = await connect(createServerFromClient(ynabClient));
+    const result = await client.callTool({ name: 'ynab_create_payee', arguments: { budget_id: BUDGET, name: 'X' } });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).not.toContain('validation_error');
+    expect(components.writeLimiter.used()).toBe(1);
+    await client.close();
+  });
+
   it('is off with a limit of 0', async () => {
     const components = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 0 });
     const ynabClient = buildYnabClient(userCtx({ writeLimitPerHour: 0 }), components);
@@ -254,7 +301,7 @@ describe('the write cap in the tools/call handler', () => {
     const second = await connect(await factory());
     const fetchSpy = vi.fn(async () => new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchSpy);
-    await first.callTool({ name: 'ynab_delete_transaction', arguments: {} }); // admitted, fails validation
+    await first.callTool({ name: 'ynab_create_payee', arguments: { budget_id: BUDGET, name: 'X' } }); // admitted, YNAB answers 500
     const refused = await second.callTool({ name: 'ynab_delete_transaction', arguments: {} });
     expect(JSON.parse(textOf(refused))).toMatchObject({ type: 'write_limit_exceeded' });
     await first.close();

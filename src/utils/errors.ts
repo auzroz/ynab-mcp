@@ -392,6 +392,14 @@ function mapZodIssueMessage(issue: { code?: unknown; message?: unknown }): strin
 }
 
 /**
+ * Whether a tool call failed its Zod input validation, which every handler
+ * runs before its first YNAB request (the write cap gives such a call's slot back).
+ */
+export function isInputValidationError(error: unknown): boolean {
+  return isZodError(error);
+}
+
+/**
  * Type guard for Zod validation errors.
  */
 function isZodError(error: unknown): error is { issues: { path: (string | number)[]; code?: string; message: string }[] } {

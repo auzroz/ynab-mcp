@@ -15,7 +15,11 @@
 export const WRITE_WINDOW_MS = 60 * 60 * 1000;
 
 export type WriteAdmission =
-  | { allowed: true }
+  | {
+      allowed: true;
+      /** Give the slot back (idempotent). For a call that failed input validation before any YNAB request. */
+      release: () => void;
+    }
   | {
       allowed: false;
       limit: number;
@@ -46,7 +50,7 @@ export class WriteLimiter {
 
   /** Count one write request if the cap allows it. */
   tryAcquire(): WriteAdmission {
-    if (this.limit === 0) return { allowed: true };
+    if (this.limit === 0) return { allowed: true, release: () => undefined };
     const now = this.now();
     while (this.admitted.length > 0 && now - (this.admitted[0] as number) >= WRITE_WINDOW_MS) {
       this.admitted.shift();
@@ -54,7 +58,16 @@ export class WriteLimiter {
     if (this.admitted.length < this.limit) {
       this.admitted.push(now);
       this.refusedSinceAdmit = false;
-      return { allowed: true };
+      let released = false;
+      return {
+        allowed: true,
+        release: () => {
+          if (released) return;
+          released = true;
+          const i = this.admitted.indexOf(now);
+          if (i !== -1) this.admitted.splice(i, 1);
+        },
+      };
     }
     const resetsAt = (this.admitted[0] as number) + WRITE_WINDOW_MS;
     const firstRefusal = !this.refusedSinceAdmit;

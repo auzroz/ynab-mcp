@@ -507,11 +507,13 @@ export class YnabClient {
    * reaches YNAB and takes no YNAB rate-limit token. A bulk call is one write
    * request. The first refusal of each episode is audited (the log keeps 1000
    * entries, so a looping agent cannot push real entries out).
+   * Returns a handle that gives the slot back; the caller uses it only when
+   * the call failed input validation, before any YNAB request.
    * @throws WriteLimitError when the cap is used up
    */
-  admitWrite(tool: string): void {
+  admitWrite(tool: string): () => void {
     const admission = this.writeLimiter.tryAcquire();
-    if (admission.allowed) return;
+    if (admission.allowed) return admission.release;
     if (admission.firstRefusal) {
       this.auditLog.log({
         operation: 'write_limit_refused',

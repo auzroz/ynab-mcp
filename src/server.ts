@@ -23,7 +23,7 @@ import {
   InvalidPromptArgumentsError,
 } from './prompts/index.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
-import { formatErrorResponse, ReadOnlyModeError } from './utils/errors.js';
+import { formatErrorResponse, isInputValidationError, ReadOnlyModeError } from './utils/errors.js';
 import { assertSafeToolInput } from './utils/input-guard.js';
 
 /**
@@ -212,8 +212,17 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
       // The per-user write cap (#61c, D-8): checked here, once per write tool
       // call, for every transport and every non-read-only tool, before the
       // handler and so before any YNAB request. A bulk call counts as one.
-      if (writeToolNames.has(name)) ynabClient.admitWrite(name);
-      const call = (): Promise<string> => handleToolCall(name, args ?? {}, ynabClient);
+      // A call that fails Zod input validation never reaches YNAB, so it gives
+      // its slot back; a call YNAB rejects still used quota and keeps it.
+      const releaseSlot = writeToolNames.has(name) ? ynabClient.admitWrite(name) : undefined;
+      const call = async (): Promise<string> => {
+        try {
+          return await handleToolCall(name, args ?? {}, ynabClient);
+        } catch (error) {
+          if (releaseSlot !== undefined && isInputValidationError(error)) releaseSlot();
+          throw error;
+        }
+      };
       let result: string;
       if (toolCalls === undefined) {
         result = await call();

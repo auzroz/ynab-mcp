@@ -264,7 +264,16 @@ Snapshots are bounded per user (32 snapshots, 20,000 entities, dropped after 30
 minutes unused), so budget roughly that much memory per active user. This state
 is kept for an hour after the user's last request, so a quiet hour doesn't reset
 the rate limit. With several replicas, these caps, the rate limit and the caches
-are per process. In OAuth mode every request looks up the user's YNAB grant and
+are per process.
+
+The write cap (`YNAB_WRITE_LIMIT_PER_HOUR`) is the same kind of per-process,
+in-memory state, held per user next to the rate limiter, the circuit breaker and
+the caches, and shared by all of the user's requests and clients. A restart
+resets it. In header mode, where any token counts as a user, evicting the
+least recently used user entry under load (past 10,000 retained users) can reset it
+too. With several replicas each process counts on its own, so a user can make up
+to the limit per replica. A write call that fails input validation gives its slot
+back; one that YNAB rejects keeps it. In OAuth mode every request looks up the user's YNAB grant and
 access token, refreshing the token when it expires; once the user's YNAB grant
 is gone (or the token can't be refreshed), requests are refused with `401` and
 the client re-authorizes, and a tool call whose token can't be refreshed
@@ -571,7 +580,7 @@ any MCP client that supports the `prompts` capability:
 - Always run behind TLS; enable DNS-rebinding protection with an allowlist.
 - `memory` storage is for evaluation only — it is not durable and not shared across
   replicas. For multiple replicas, use `postgres` (the in-flight caps, rate
-  limits and caches are currently in-process; a shared store would be a future
+  limits, write cap and caches are currently in-process; a shared store would be a future
   enhancement).
 
 ## Interim header mode (single-user)

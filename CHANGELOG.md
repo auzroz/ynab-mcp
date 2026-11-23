@@ -21,8 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   One write tool call is one write request, so a bulk call such as
   `ynab_create_transactions` counts as 1. It is checked once, before the tool
   runs, so a refused write takes no YNAB request and changes nothing. The error
-  names the limit and when the next write is allowed. The first refusal of each
-  episode is recorded in the audit log as `write_limit_refused`. It is separate
+  names the limit and when the next write is allowed. A call that fails input
+  validation gives its slot back; one YNAB rejects keeps it. The first refusal of
+  each episode is recorded in the audit log as `write_limit_refused`. It is separate
   from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests.
 
 ### Fixed
