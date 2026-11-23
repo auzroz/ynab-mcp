@@ -43,7 +43,8 @@ import { refreshAccessToken } from '../../src/auth/ynab-oauth.js';
 import { stageOfHandler } from '../../src/http/pipeline.js';
 import { Encryptor } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { plantAccessToken, plantUser } from './helpers/oauth-state.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
 const HOST = 'mcp.example.com';
@@ -111,15 +112,12 @@ async function oauthApp(overrides: Partial<HttpConfig> = {}): Promise<{ handle: 
   );
   handles.push(handle);
   const storage = created.storage!;
-  await storage.upsertUser({
+  await plantUser(storage, {
     userId: 'u1',
     grantedScope: 'read-only',
     encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-1'),
-    updatedAt: Date.now(),
   });
-  const { value, key } = TEST_TOKEN_HASHER.issue('access');
-  await storage.saveAccessToken({
-    token: key,
+  const token = await plantAccessToken(storage, {
     clientId: 'client-a',
     userId: 'u1',
     scopes: ['read-only'],
@@ -127,7 +125,7 @@ async function oauthApp(overrides: Partial<HttpConfig> = {}): Promise<{ handle: 
     resource: RESOURCE,
     grantedScope: 'read-only',
   });
-  return { handle, token: value, storage };
+  return { handle, token, storage };
 }
 
 const ping = { jsonrpc: '2.0', id: 1, method: 'ping' };

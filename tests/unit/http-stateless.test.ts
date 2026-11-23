@@ -55,7 +55,8 @@ import * as promptsModule from '../../src/prompts/index.js';
 import { Encryptor } from '../../src/crypto.js';
 import { WRITE_TIMEOUT_MESSAGE, TOOL_TIMEOUT_MESSAGE } from '../../src/server.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { plantAccessToken, plantUser } from './helpers/oauth-state.js';
 import {
   MCP_ACCEPT,
   bearer,
@@ -172,17 +173,10 @@ async function oauthApp(overrides: Partial<HttpConfig> = {}): Promise<{
     handle,
     storage,
     addUser: async (userId, grantedScope) => {
-      await storage.upsertUser({
-        userId,
-        grantedScope,
-        encryptedRefreshToken: encryptor.encrypt(`refresh-${userId}`),
-        updatedAt: Date.now(),
-      });
+      await plantUser(storage, { userId, grantedScope, encryptedRefreshToken: encryptor.encrypt(`refresh-${userId}`) });
     },
     token: async (userId, clientId, level = 'read-write') => {
-      const { value, key } = TEST_TOKEN_HASHER.issue('access');
-      await storage.saveAccessToken({
-        token: key,
+      return plantAccessToken(storage, {
         clientId,
         userId,
         scopes: [level],
@@ -190,7 +184,6 @@ async function oauthApp(overrides: Partial<HttpConfig> = {}): Promise<{
         resource: RESOURCE,
         grantedScope: level,
       });
-      return value;
     },
   };
 }
