@@ -18,6 +18,8 @@ import { Cache } from './cache.js';
 import { DeltaCache } from './delta-cache.js';
 import { AuditLog } from './audit-log.js';
 import { CircuitBreaker } from './circuit-breaker.js';
+import { WriteLimiter } from './write-limiter.js';
+import { WRITE_LIMIT_DEFAULT_PER_HOUR } from '../config/write-limit.js';
 import { ByteBudget, DEFAULT_USER_CACHE_BYTES } from './byte-budget.js';
 import type { TransactionFeedState } from './ynab-client.js';
 
@@ -38,6 +40,8 @@ export interface UserComponents {
   readonly auditLog: AuditLog;
   /** Fails this user's YNAB calls fast while YNAB is failing (#58); per user, never shared. */
   readonly breaker: CircuitBreaker;
+  /** The user's write cap (#61c), shared by all their requests like the rate limiter. */
+  readonly writeLimiter: WriteLimiter;
   /**
    * What YNAB has told us about the transaction change feed (a rejected
    * since_date), kept per user so a new request's YnabClient does not repeat a
@@ -52,6 +56,8 @@ export function createUserComponents(
     rateLimitPerHour: number;
     rateLimitMaxWaitMs?: number | undefined;
     cacheTtlMs: number;
+    /** Write requests per hour (default 20; 0 = no cap). */
+    writeLimitPerHour?: number | undefined;
     /** Cap on the serialized size of the user's cache and snapshots together (default 8 MiB). */
     cacheMaxBytes?: number | undefined;
   },
@@ -66,6 +72,7 @@ export function createUserComponents(
     deltaCache: new DeltaCache({ now, budget }),
     auditLog: new AuditLog(),
     breaker: new CircuitBreaker({ now }),
+    writeLimiter: new WriteLimiter(limits.writeLimitPerHour ?? WRITE_LIMIT_DEFAULT_PER_HOUR, now),
     feedState: { sinceDateRejected: false },
   };
 }
@@ -90,6 +97,8 @@ export interface UserRegistryOptions {
   rateLimitPerHour: number;
   rateLimitMaxWaitMs?: number | undefined;
   cacheTtlMs: number;
+  /** Write requests per user per hour (default 20; 0 = no cap). */
+  writeLimitPerHour?: number | undefined;
   /** Per-user cap on cached bytes (see createUserComponents); defaults to 8 MiB. */
   cacheMaxBytes?: number | undefined;
   /** Minimum time an entry without leases is kept. Defaults to the rate-limit window. */
@@ -120,6 +129,7 @@ export class UserRegistry {
     rateLimitPerHour: number;
     rateLimitMaxWaitMs?: number | undefined;
     cacheTtlMs: number;
+    writeLimitPerHour?: number | undefined;
     cacheMaxBytes?: number | undefined;
   };
   private readonly idleEvictionMs: number;
@@ -132,6 +142,7 @@ export class UserRegistry {
       rateLimitPerHour: opts.rateLimitPerHour,
       rateLimitMaxWaitMs: opts.rateLimitMaxWaitMs,
       cacheTtlMs: opts.cacheTtlMs,
+      writeLimitPerHour: opts.writeLimitPerHour,
       cacheMaxBytes: opts.cacheMaxBytes,
     };
     this.idleEvictionMs = opts.idleEvictionMs ?? RATE_LIMIT_WINDOW_MS;

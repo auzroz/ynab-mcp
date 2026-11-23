@@ -41,6 +41,8 @@ export interface UserContext {
   /** Longest wait for a rate-limit token in ms (default 2000; 0 = never wait). */
   rateLimitMaxWaitMs?: number | undefined;
   cacheTtlMs: number;
+  /** Write requests per user per hour (#61c); 0 = no cap. Default 20. */
+  writeLimitPerHour?: number | undefined;
 }
 
 /**
@@ -102,7 +104,7 @@ export function buildYnabClient(
     components.auditLog,
     components.deltaCache,
     components.feedState,
-    { breaker: components.breaker, deadline }
+    { breaker: components.breaker, deadline, writeLimiter: components.writeLimiter }
   );
 }
 
@@ -207,6 +209,10 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
       if (ynabClient.isReadOnly() && writeToolNames.has(name)) {
         throw new ReadOnlyModeError(name);
       }
+      // The per-user write cap (#61c, D-8): checked here, once per write tool
+      // call, for every transport and every non-read-only tool, before the
+      // handler and so before any YNAB request. A bulk call counts as one.
+      if (writeToolNames.has(name)) ynabClient.admitWrite(name);
       const call = (): Promise<string> => handleToolCall(name, args ?? {}, ynabClient);
       let result: string;
       if (toolCalls === undefined) {
@@ -296,6 +302,7 @@ export function createStdioServerFactory(config: Config): McpServerFactory {
     rateLimitPerHour: config.rateLimitPerHour,
     rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
     cacheTtlMs: config.cacheTtlMs,
+    writeLimitPerHour: config.writeLimitPerHour,
   });
   return () => createServerFromClient(client);
 }

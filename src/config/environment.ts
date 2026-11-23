@@ -14,6 +14,8 @@ import {
   RATE_LIMIT_MAX_WAIT_MAX_MS,
 } from './rate-limit.js';
 
+import { parseWriteLimitPerHour, WRITE_LIMIT_DEFAULT_PER_HOUR, WRITE_LIMIT_MAX_PER_HOUR } from './write-limit.js';
+
 export { loadHttpConfig } from './http/index.js';
 export type { HttpConfig, HttpAuthMode, StorageDriver } from './http/index.js';
 
@@ -30,6 +32,7 @@ const configSchema = z.object({
     .max(RATE_LIMIT_MAX_WAIT_MAX_MS)
     .default(RATE_LIMIT_MAX_WAIT_DEFAULT_MS),
   readOnly: z.boolean().default(true), // Safety: read-only by default
+  writeLimitPerHour: z.number().int().min(0).max(WRITE_LIMIT_MAX_PER_HOUR).default(WRITE_LIMIT_DEFAULT_PER_HOUR),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -44,6 +47,7 @@ export function loadConfig(): Config {
     rateLimitMaxWaitMs: parseRateLimitMaxWaitMs(process.env['RATE_LIMIT_MAX_WAIT_MS']),
     // READ_ONLY defaults to true for safety - must explicitly set to false to enable writes
     readOnly: parseBoolean(process.env['YNAB_READ_ONLY'], true, 'YNAB_READ_ONLY'),
+    writeLimitPerHour: parseWriteLimitPerHour(process.env['YNAB_WRITE_LIMIT_PER_HOUR']),
   };
 
   const result = configSchema.safeParse(rawConfig);
