@@ -11,8 +11,11 @@ covers check 2 for real, and check 3 when section 4's commands are run against
 the candidate (`SCRATCH=auzroz/ynab-mcp`, without the negative check). It
 publishes npm under `next` instead of check 4's dry run. The `v*`
 tag ruleset now restricts tag creation to the maintainer, which covers most of
-check 1's ancestry part. A candidate proves only that a good signature passes;
-the refusals of check 1 are rehearsed only here. The admin checklist below
+check 1's ancestry part. A candidate proves only that a good signature passes.
+The signature refusals of check 1 are also proven, without a tag push, by
+`scripts/test-verify-tag-signature.sh`, which `Release: Verify` runs on every
+pull request and dry run; only the scratch repo runs them as real tag pushes.
+The admin checklist below
 still applies. The scratch-repo steps remain for a tag-path change that should
 be tried without publishing anything, such as 62b (#62).
 
@@ -229,9 +232,10 @@ git tag -d v0.0.0-signing-check
 ### 8. Optional: the scratch repository
 
 Only if you also want a scratch rehearsal (see the note at the top). Do "Before
-you start" below. It is the only place where the signature refusals of check
-1 and the `GITHUB_TOKEN` push refusal (section 3b) are exercised; a release
-candidate proves only the path that passes.
+you start" below. It is the only place where the `GITHUB_TOKEN` push refusal
+(section 3b) is exercised, and where the signature refusals of check 1 run as
+real tag pushes (the self-test in `Release: Verify` covers them on every pull
+request and dry run). A release candidate proves only the path that passes.
 
 ### 9. Thu Dec 10: the release candidate
 

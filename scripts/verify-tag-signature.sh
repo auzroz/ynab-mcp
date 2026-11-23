@@ -9,16 +9,21 @@
 # repository: release.yml fetches it before running this.
 #
 # ALLOWED_SIGNERS_FILE overrides the path (default .github/allowed_signers),
-# for testing. Run it from the repository root.
+# for scripts/test-verify-tag-signature.sh only: it is refused in a tag push
+# run, so a release always reads .github/allowed_signers. Run it from the
+# repository root.
 set -euo pipefail
-
-signers="${ALLOWED_SIGNERS_FILE:-.github/allowed_signers}"
-tag="${1:-}"
 
 fail() {
   echo "::error::$*"
   exit 1
 }
+
+if [ -n "${ALLOWED_SIGNERS_FILE:-}" ] && [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
+  fail "ALLOWED_SIGNERS_FILE is for the self-test only and is refused in a tag push run."
+fi
+signers="${ALLOWED_SIGNERS_FILE:-.github/allowed_signers}"
+tag="${1:-}"
 
 [ -f "$signers" ] || fail "$signers is missing. It lists the SSH keys allowed to sign release tags."
 

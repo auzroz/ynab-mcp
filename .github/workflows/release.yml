@@ -36,6 +36,7 @@ on:
       - '.github/workflows/release.yml'
       - '.github/allowed_signers'
       - 'scripts/verify-tag-signature.sh'
+      - 'scripts/test-verify-tag-signature.sh'
       - 'Dockerfile'
       - '.dockerignore'
       - 'package*.json'
@@ -128,6 +129,14 @@ jobs:
       - name: Check .github/allowed_signers parses
         if: github.event_name != 'push'
         run: bash scripts/verify-tag-signature.sh
+
+      # A release candidate only proves that a good tag passes. This proves
+      # the refusals on this runner's git and OpenSSH: throwaway keys and
+      # tags (good, lightweight, unsigned, unlisted key, renamed ref) in a
+      # temporary repository. No secrets, no network, a few seconds.
+      - name: Self-test the tag signature check
+        if: github.event_name != 'push'
+        run: bash scripts/test-verify-tag-signature.sh
 
       # The tag object itself, fetched by name, so the checks below read the
       # annotated, signed object and never a lightweight ref made from the
