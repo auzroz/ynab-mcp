@@ -59,7 +59,7 @@ import { authorizeValidation } from './authorize-validation.js';
 import { authorizeGuard, authorizeRedirectGuard } from './authorize-guard.js';
 import { grantGuard } from './grant-guard.js';
 import { methodCheck } from './method-check.js';
-import { metadataDocument } from './metadata-document.js';
+import { answerPreflight, metadataDocument } from './metadata-document.js';
 import { protectedResourceMetadataUrl } from './resource.js';
 import { asLibraryHandler, createOidcProvider, DISCOVERY_PATHS, INTERACTION_BASE_PATH, OIDC_ROUTES } from './oidc/provider.js';
 import { interactionRouter } from './oidc/interaction.js';
@@ -159,14 +159,7 @@ function corsOrigin(req: Request, res: Response, next: express.NextFunction): vo
     next();
     return;
   }
-  res.setHeader('Access-Control-Allow-Methods', 'POST');
-  const requested = req.header('access-control-request-headers');
-  if (requested !== undefined) {
-    res.setHeader('Access-Control-Allow-Headers', requested);
-    res.setHeader('Vary', 'Access-Control-Request-Headers');
-  }
-  res.setHeader('Content-Length', '0');
-  res.status(204).end();
+  answerPreflight(req, res, 'POST');
 }
 
 export interface AuthorizationServerOptions {

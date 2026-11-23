@@ -21,9 +21,10 @@
  * library sees it: the library treats HTTP Basic and `client_secret_post` as
  * interchangeable and would compare a Basic secret with the stored hash
  * unchecked (#47-4). Public clients (no secret) pass through unchanged, and so
- * does a request without a `client_id` string or with a non-string
- * `client_secret` in the body: the library refuses those itself. Every
- * refusal from this stage is 400 `invalid_client`
+ * does a request without a `client_id` string in the body, which the library
+ * refuses itself. A non-string `client_secret` is refused here, before
+ * grant-guard can act on the request. Every refusal from this stage is 400
+ * `invalid_client`
  * with `no-store` (the library's own is 401, ADR-0002 D5); nothing about the
  * presented or stored values is logged or returned.
  */
@@ -61,9 +62,15 @@ export function clientAuthentication(clients: ClientLookup): RequestHandler {
     const fields = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {};
     const clientId = fields['client_id'];
     const presented = fields['client_secret'];
-    // The library refuses these itself (invalid_request or invalid_client).
-    if (typeof clientId !== 'string' || (presented !== undefined && typeof presented !== 'string')) {
+    // No client_id: the library refuses it (no credentials), and grant-guard, which needs one, does nothing.
+    if (typeof clientId !== 'string') {
       next();
+      return;
+    }
+    // Refused here, not left to the library: grant-guard runs before it and may revoke a grant,
+    // which only an authenticated (or public) client may cause.
+    if (presented !== undefined && typeof presented !== 'string') {
+      refuse(res, 'Invalid client_secret');
       return;
     }
 

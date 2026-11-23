@@ -31,6 +31,7 @@
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type Provider from 'oidc-provider';
+import { z } from 'zod';
 import type { OAuthRowStore } from '../storage/types.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { InvalidGrantError, ServerError, sendOAuthError } from './errors.js';
@@ -51,6 +52,15 @@ interface GrantCredential {
   consumed?: unknown;
 }
 
+/** A credential value as presented: bounded (the library's are 43 characters). */
+const CREDENTIAL = z.string().min(1).max(512);
+
+/** The fields this stage reads of a `/token` request (client-auth has checked `client_id`). */
+const GRANT_REQUEST = z.discriminatedUnion('grant_type', [
+  z.object({ grant_type: z.literal('refresh_token'), client_id: z.string().min(1), refresh_token: CREDENTIAL }),
+  z.object({ grant_type: z.literal('authorization_code'), client_id: z.string().min(1), code: CREDENTIAL }),
+]);
+
 function fieldsOf(body: unknown): Record<string, unknown> {
   return body !== null && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
 }
@@ -61,28 +71,25 @@ export function grantGuard({ provider, store }: GrantGuardOptions): RequestHandl
       next();
       return;
     }
-    const fields = fieldsOf(req.body);
-    const clientId = fields['client_id'];
-    const grantType = fields['grant_type'];
-    const refreshToken = fields['refresh_token'];
-    const code = fields['code'];
-    if (typeof clientId !== 'string') {
+    // Anything that isn't a well-formed grant of the two kinds goes on: the library refuses it
+    // (invalid_request, unsupported_grant_type or invalid_grant), and this stage has nothing to look up.
+    const parsed = GRANT_REQUEST.safeParse(fieldsOf(req.body));
+    if (!parsed.success) {
       next();
       return;
     }
+    const grant = parsed.data;
 
     let found: GrantCredential | undefined;
     let label: string;
+    const clientId = grant.client_id;
     try {
-      if (grantType === 'refresh_token' && typeof refreshToken === 'string') {
+      if (grant.grant_type === 'refresh_token') {
         label = 'refresh token';
-        found = await provider.RefreshToken.find(refreshToken, { ignoreExpiration: true });
-      } else if (grantType === 'authorization_code' && typeof code === 'string') {
-        label = 'authorization code';
-        found = await provider.AuthorizationCode.find(code, { ignoreExpiration: true });
+        found = await provider.RefreshToken.find(grant.refresh_token, { ignoreExpiration: true });
       } else {
-        next();
-        return;
+        label = 'authorization code';
+        found = await provider.AuthorizationCode.find(grant.code, { ignoreExpiration: true });
       }
     } catch (err) {
       console.error('[OAuth] grant-guard lookup failed:', sanitizeErrorMessage(err));

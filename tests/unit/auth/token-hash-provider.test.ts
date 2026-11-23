@@ -27,11 +27,14 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 
 import { MemoryStorage } from '../../../src/storage/memory.js';
 import type { Storage } from '../../../src/storage/types.js';
-import { testKey } from '../helpers/token-hasher.js';
+import { TEST_TOKEN_HASHER, testKey } from '../helpers/token-hasher.js';
 import { expectInvalidToken } from '../helpers/invalid-token.js';
+import { exchangeCode as ynabExchangeCode } from '../../../src/auth/ynab-oauth.js';
 import {
   CookieJar,
+  authorizeUrl,
   browse,
+  interactionUid,
   browserFlow,
   buildOidcTestApp,
   exchangeCode,
@@ -64,10 +67,38 @@ let calls: Array<{ method: string; args: unknown[] }>;
 let t: OidcTestApp;
 let clientId: string;
 
-/** The calls that read or wrote a row keyed by a credential (an `h1.` key), or revoked a grant. */
+/**
+ * A live interaction in its own browser, waiting for YNAB: its uid, the
+ * browser's cookies, and its own storage key. `complete` reads that row by
+ * the browser's cookie, legitimately, before it compares the state.
+ */
+interface LiveInteraction {
+  uid: string;
+  jar: CookieJar;
+  key: string;
+}
+
+let live: LiveInteraction;
+
+const testLibraryKey = (kind: 'interaction', id: string): string => TEST_TOKEN_HASHER.libraryStorageKey(kind, id) as string;
+
+async function startInteraction(): Promise<LiveInteraction> {
+  const jar = new CookieJar();
+  const auth = await browse(t.app, jar, authorizeUrl({ clientId, challenge: pkcePair().challenge }));
+  const uid = interactionUid(auth.headers['location'] as string);
+  expect((await browse(t.app, jar, auth.headers['location'] as string)).status).toBe(200);
+  expect((await browse(t.app, jar, `/oauth/interaction/${uid}/start?scope=read-only`)).status).toBe(302);
+  return { uid, jar, key: testLibraryKey('interaction', uid) };
+}
+
+/** The calls that read or wrote a row keyed by a credential (an `h1.` key), or revoked a grant; the live interaction's own row aside. */
 const credentialCalls = (): string[] =>
   calls
-    .filter((c) => c.method === 'revokeOAuthGrant' || c.args.some((a) => typeof a === 'string' && a.startsWith('h1.')))
+    .filter(
+      (c) =>
+        c.method === 'revokeOAuthGrant' ||
+        c.args.some((a) => typeof a === 'string' && a.startsWith('h1.') && a !== live.key)
+    )
     .map((c) => c.method);
 
 /** Present `value` at every entry point a client or browser reaches. */
@@ -79,11 +110,15 @@ async function presentEverywhere(value: string): Promise<void> {
   expect(viaCode.body.error).toBe('invalid_grant');
   const revoked = await request(t.app).post('/revoke').type('form').send({ token: value, client_id: clientId });
   expect(revoked.status).toBe(200);
-  const uid = randomBytes(32).toString('base64url');
-  const callback = await browse(t.app, new CookieJar(), `/oauth/ynab/callback?state=${encodeURIComponent(`${uid}.${value}`)}&code=c`);
+  // The callback only routes (it checks no secret): it sends the browser to the interaction's complete.
+  const state = `${live.uid}.${value}`;
+  const callback = await browse(t.app, live.jar, `/oauth/ynab/callback?state=${encodeURIComponent(state)}&code=c`);
   expect([302, 400]).toContain(callback.status);
-  const complete = await browse(t.app, new CookieJar(), `/oauth/interaction/${uid}/complete?state=${encodeURIComponent(`${uid}.${value}`)}&code=c`);
+  // complete with the live interaction's own cookie: past the browser check, so the 400 is the state comparison.
+  vi.mocked(ynabExchangeCode).mockClear();
+  const complete = await browse(t.app, live.jar, `/oauth/interaction/${live.uid}/complete?state=${encodeURIComponent(state)}&code=c`);
   expect(complete.status).toBe(400);
+  expect(ynabExchangeCode).not.toHaveBeenCalled();
 }
 
 beforeEach(async () => {
@@ -95,6 +130,14 @@ beforeEach(async () => {
   calls = s.calls;
   t = buildOidcTestApp(base, { providerStore: s.storage, interactionStore: s.storage });
   ({ clientId } = await registerClient(t.app));
+  live = await startInteraction();
+});
+
+it('the live interaction completes with its own state, so the refusals below come from the comparison', async () => {
+  const start = await browse(t.app, live.jar, `/oauth/interaction/${live.uid}/start?scope=read-only`);
+  const state = new URL(start.headers['location'] as string).searchParams.get('state') as string;
+  const complete = await browse(t.app, live.jar, `/oauth/interaction/${live.uid}/complete?state=${encodeURIComponent(state)}&code=c`);
+  expect(complete.status).toBe(303);
 });
 
 describe('G8: refused before storage', () => {

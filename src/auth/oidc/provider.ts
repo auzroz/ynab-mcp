@@ -92,6 +92,7 @@ import { KNOWN_SCOPES } from '../authorize-validation.js';
 import { retentionPolicy, type RetentionPolicy } from '../retention-defaults.js';
 import { sanitizeErrorMessage } from '../../utils/sanitize.js';
 import { createOidcAdapter } from './adapter.js';
+import { routePath } from './route-path.js';
 import { CLIENT_SCHEMA_CONFIGURATION, ephemeralSigningKeys } from './client-schema.js';
 
 /** The library's routes (D2), as today's SDK served them. */
@@ -206,7 +207,7 @@ function requestNormalizer({ resource, publicUrl }: NormalizerDeps) {
     req.headers['x-forwarded-for'] = ip;
     ctx.request.ip = ip;
 
-    const path = ctx.path;
+    const path = routePath(ctx.path);
     const { authorization, token, registration } = OIDC_ROUTES;
     const body = isRecord(req.body) ? req.body : undefined;
 

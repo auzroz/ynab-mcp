@@ -324,6 +324,18 @@ describe('grant-guard (ADR-0002 D6): RFC 9700 revocations the library leaves out
     );
   });
 
+  it('a malformed client_secret is refused by client-auth before grant-guard can revoke anything', async () => {
+    const owner = await tokenPair();
+    const confidential = await registerClient(app, { token_endpoint_auth_method: 'client_secret_post' });
+    const res = await request(app)
+      .post('/token')
+      .send({ grant_type: 'refresh_token', refresh_token: owner.refreshToken, client_id: confidential.clientId, client_secret: ['x'] });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'invalid_client', error_description: 'Invalid client_secret' });
+    // Nothing was revoked: the owner still refreshes.
+    expect((await refresh(app, { clientId: owner.client.clientId, refreshToken: owner.refreshToken })).status).toBe(200);
+  });
+
   it('a live credential presented by its own client goes on to the library', async () => {
     const pair = await tokenPair();
     expect((await refresh(app, { clientId: pair.client.clientId, refreshToken: pair.refreshToken })).status).toBe(200);
@@ -351,6 +363,18 @@ describe('D8: methods and routes', () => {
     expect(res.status).toBe(405);
     expect(res.body.error).toBe('method_not_allowed');
   });
+
+  it.each(['/token', '/.well-known/oauth-protected-resource/mcp'])(
+    'a preflight on %s allows only well-formed requested header names',
+    async (path) => {
+      const ok = await request(app).options(path).set('Origin', 'https://x.example').set('Access-Control-Request-Headers', 'X-Trace, content-type');
+      expect(ok.status).toBe(204);
+      expect(ok.headers['access-control-allow-headers']).toBe('X-Trace, content-type');
+      const bad = await request(app).options(path).set('Origin', 'https://x.example').set('Access-Control-Request-Headers', 'x-a; evil=1');
+      expect(bad.status).toBe(204);
+      expect(bad.headers['access-control-allow-headers']).toBeUndefined();
+    }
+  );
 
   it('serves both discovery documents and /jwks from the library', async () => {
     for (const path of ['/.well-known/oauth-authorization-server', '/.well-known/openid-configuration']) {
@@ -406,6 +430,38 @@ describe('the authorize guard over the library (#55b)', () => {
     expect(res.headers['location']).toBeUndefined();
     expect(res.headers['content-type']).toMatch(/text\/html/);
     expect(res.text).toContain(error);
+  });
+
+  it.each(['/AUTHORIZE', '/authorize/', '/Authorize/'])(
+    'every spelling the library routes as %s gets the normalizer and the guard',
+    async (path) => {
+      const client = await registerClient(app);
+      const { challenge } = pkcePair();
+      const query = authorizeUrl({ clientId: client.clientId, challenge, extra: { max_age: 'not-a-number' } }).slice('/authorize'.length);
+      // D7 drops max_age (the library would refuse it with a redirect), so this reaches the consent page.
+      const ok = await request(app).get(`${path}${query}`);
+      expect(ok.status).toBe(303);
+      expect(ok.headers['location']).toMatch(/\/oauth\/interaction\/[A-Za-z0-9_-]{43}$/);
+      // An error is never redirected to an unverified client.
+      const refused = await request(app).get(`${path}${query}&prompt=none`);
+      expect(refused.headers['location']).toBeUndefined();
+      expect(refused.status).toBe(400);
+    }
+  );
+
+  it('the redirect net covers every spelling of the route too', async () => {
+    const as = mountedAs();
+    const client = await registerClient(as.app);
+    vi.spyOn(as.server.oidc.Interaction.prototype, 'save').mockRejectedValue(
+      Object.assign(new Error('temporarily_unavailable'), { allow_redirect: true, expose: true, statusCode: 400 })
+    );
+    const { challenge } = pkcePair();
+    const query = authorizeUrl({ clientId: client.clientId, challenge }).slice('/authorize'.length);
+    for (const path of ['/AUTHORIZE', '/authorize/']) {
+      const res = await request(as.app).get(`${path}${query}`);
+      expect(res.headers['location']).toBeUndefined();
+      expect(res.status).toBe(400);
+    }
   });
 
   it('response_mode=form_post is dropped: the authorization still goes to the consent page', async () => {

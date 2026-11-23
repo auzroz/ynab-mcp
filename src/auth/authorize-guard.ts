@@ -50,6 +50,7 @@ import { isReservedScheme } from '../config/http/dcr.js';
 import { HTML_CONTENT_TYPE, PAGE_HEADERS, renderAuthorizationErrorPage } from './auth-pages.js';
 import { isPlainHttpRedirectUri } from './client-metadata.js';
 import { isSameResource } from './resource.js';
+import { routePath } from './oidc/route-path.js';
 
 /** What authorize-validation learned about a request, for the guard and for its own errors. */
 export interface AuthorizeContext {
@@ -294,7 +295,7 @@ export function authorizeRedirectGuard(options: AuthorizeRedirectGuardOptions) {
   const { publicUrl } = options;
   return async (ctx: KoaContextWithOIDC, next: () => Promise<void>): Promise<void> => {
     await next();
-    if (ctx.path !== options.authorizationPath) return;
+    if (routePath(ctx.path) !== options.authorizationPath) return;
     const status = ctx.status;
     const redirect = status >= 300 && status < 400;
     // An error the library rendered itself (renderError: JSON, never a redirect).
