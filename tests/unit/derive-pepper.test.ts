@@ -41,9 +41,9 @@ describe('derive-pepper', () => {
     expect(err.join('\n')).not.toContain(out[0]);
   });
 
-  it('prints nothing when TOKEN_PEPPER is already set', () => {
+  it('prints nothing, and exits non-zero, when TOKEN_PEPPER is already set', () => {
     const { code, out, err } = run({ ENCRYPTION_KEY: randomBytes(32).toString('base64'), TOKEN_PEPPER: randomBytes(32).toString('hex') });
-    expect(code).toBe(0);
+    expect(code).toBe(2);
     expect(out).toEqual([]);
     expect(err.join('\n')).toMatch(/already set/);
   });

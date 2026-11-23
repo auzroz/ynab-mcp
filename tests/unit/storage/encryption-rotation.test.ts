@@ -274,6 +274,22 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       ]);
     });
 
+    it('a replica that has the next key only to read it leaves rows under it alone (two-phase rollout)', async () => {
+      const { store } = await open();
+      const k1 = newKey();
+      const k2 = newKey();
+      // Phase A on this replica: key 1 current, key 2 read-only.
+      const phaseA = new Encryptor(k1, { keyId: '1', previousKeys: `2:${k2}` });
+      await prepareEncryptionKeys(store, phaseA);
+      // Another replica is already on phase B and wrote under key 2.
+      const underTwo = new Encryptor(k2, { keyId: '2', previousKeys: `1:${k1}` }).encrypt('rt-b', refreshTokenContext('b'));
+      await addUser(store, 'b', underTwo);
+      expect(phaseA.decrypt(underTwo, refreshTokenContext('b'))).toBe('rt-b');
+      const r = await rekeyPass(store, phaseA, {}, { log: () => undefined });
+      expect(r).toMatchObject({ rekeyed: 0, newer: 1, remaining: 1 });
+      expect((await store.getUser('b'))?.encryptedRefreshToken).toBe(underTwo);
+    });
+
     it('converges when two replicas run passes at once', async () => {
       const { handle, store } = await open();
       const replica = await handle.reopen();

@@ -183,8 +183,9 @@ export interface DerivePepperIo {
 export function derivePepper(io: DerivePepperIo): number {
   const pepper = io.env['TOKEN_PEPPER'];
   if (pepper !== undefined && pepper.trim() !== '') {
+    // Non-zero, so `TOKEN_PEPPER=$(ynab-mcp derive-pepper)` can't silently blank it.
     io.err('TOKEN_PEPPER is already set: the pepper does not depend on ENCRYPTION_KEY, so there is nothing to derive.');
-    return 0;
+    return 2;
   }
   let derived: Buffer;
   try {

@@ -578,7 +578,9 @@ doing on upgrade.
 
 ### Rotating ENCRYPTION_KEY
 
-Rotate without logging anyone out:
+Rotate without logging anyone out. Start 0.5.0 at least once with the
+current key before rotating: that start records which key id 1 is, so a
+wrong key given as `1:<old key>` later is refused instead of recorded.
 
 1. **Pin the pepper (once).** Unless `TOKEN_PEPPER` is already set, the
    token-hash pepper is derived from `ENCRYPTION_KEY`, and a new key would
@@ -596,7 +598,7 @@ Rotate without logging anyone out:
    Set `TOKEN_PEPPER` to it, keep it as secret as the key, and restart. The
    pepper is unchanged, so nobody is logged out; from now on it no longer
    depends on `ENCRYPTION_KEY`. If `TOKEN_PEPPER` is already set it prints
-   nothing.
+   nothing and exits with status 2, so `TOKEN_PEPPER=$(…)` can't blank it.
 2. **Switch keys.** Generate a new key (`openssl rand -base64 32`) and set:
 
    ```bash
@@ -606,9 +608,17 @@ Rotate without logging anyone out:
    ```
 
    Restart. New tokens are written under id 2; tokens under id 1 are still
-   read. With several replicas, give every replica the same settings before
-   any of them serves traffic with the new key, or a replica without the new
-   key can't read the rows the others rewrite.
+   read.
+
+   With several replicas behind one database, do this in two rolling
+   restarts, so no replica meets a row it can't read:
+
+   1. First give every replica the new key to read only, keeping the old one
+      current: `ENCRYPTION_KEY=<old key>`, `ENCRYPTION_KEY_ID=1`,
+      `ENCRYPTION_KEY_PREVIOUS=2:<new key>`. Nothing is written under id 2
+      yet, and the rekey job leaves rows under a newer id alone.
+   2. Then switch every replica to the settings above (new key current as id
+      2, `1:<old key>` previous).
 3. **Watch the log.** The rekey job rewrites the old rows (`[Rekey]
    re-encrypted N, M remaining`), and about an hour after the last one logs
    that key ids below 2 are now refused.
@@ -620,7 +630,10 @@ the one the database recorded for that id (a new key needs a new id), when
 `ENCRYPTION_KEY_PREVIOUS` is set without `TOKEN_PEPPER`.
 
 If the old key is lost, set the new key under a new id without
-`ENCRYPTION_KEY_PREVIOUS`: every user reconnects once.
+`ENCRYPTION_KEY_PREVIOUS`: every user reconnects once. If `TOKEN_PEPPER` was
+not set, the pepper was derived from the lost key and can't be recovered
+(`derive-pepper` needs that key), so also follow "Changing TOKEN_PEPPER"
+above, which logs every MCP client out as well.
 
 ## Prompts
 
