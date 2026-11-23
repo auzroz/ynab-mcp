@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 
@@ -103,6 +103,7 @@ export async function handleSpendingByPayee(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const months = validated.months ?? 3;
   const limit = validated.limit ?? 20;
   const minTransactions = validated.min_transactions ?? 1;
@@ -189,10 +190,10 @@ export async function handleSpendingByPayee(
 
     payeeSpending.push({
       payee_name: payeeName,
-      total_spent: formatCurrency(totalSpent),
+      total_spent: money(totalSpent),
       total_spent_raw: totalSpent,
       transaction_count: data.amounts.length,
-      average_transaction: formatCurrency(avgTransaction),
+      average_transaction: money(avgTransaction),
       percent_of_total: Math.round(percentOfTotal * 10) / 10,
       most_common_category: mostCommonCategory,
       first_transaction: firstDate,
@@ -217,7 +218,7 @@ export async function handleSpendingByPayee(
         since_date: sinceDateStr,
       },
       summary: {
-        total_spending: formatCurrency(totalSpending),
+        total_spending: money(totalSpending),
         unique_payees: byPayee.size,
         payees_shown: topPayees.length,
         top_5_concentration: `${Math.round(top5Percent)}%`,

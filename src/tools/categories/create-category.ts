@@ -10,7 +10,7 @@ import { NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId, ynabId } from '../../utils/
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import {
   categoryTargetCreateShape,
   categoryTargetCreateJsonProperties,
@@ -87,6 +87,7 @@ export async function handleCreateCategory(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
+  const money = await moneyFormatterFor(client, budgetId);
 
   const response = await client.createCategory(budgetId, {
     category: {
@@ -109,7 +110,7 @@ export async function handleCreateCategory(
         category_group_id: category.category_group_id,
         goal_target: category.goal_target ?? null,
         goal_target_display:
-          category.goal_target != null ? formatCurrency(category.goal_target) : null,
+          category.goal_target != null ? money(category.goal_target) : null,
       },
     },
     null,

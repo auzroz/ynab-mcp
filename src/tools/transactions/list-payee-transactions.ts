@@ -16,7 +16,7 @@ import {
 } from '../../utils/delta.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import {
@@ -127,6 +127,7 @@ export async function handleListPayeeTransactions(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const limit = validated.limit ?? 100;
 
   // Parse natural language dates
@@ -167,7 +168,7 @@ export async function handleListPayeeTransactions(
   const topCategories = Object.entries(byCategory)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
-    .map(([name, amount]) => ({ name: sanitizeName(name), amount: formatCurrency(amount) }));
+    .map(([name, amount]) => ({ name: sanitizeName(name), amount: money(amount) }));
 
   // Calculate average and frequency (outflows only)
   const avgAmount = outflows.length > 0 ? totalSpent / outflows.length : 0;
@@ -175,7 +176,7 @@ export async function handleListPayeeTransactions(
   const formattedTransactions = transactions.map((txn) => ({
     id: txn.id,
     date: txn.date,
-    amount: formatCurrency(txn.amount),
+    amount: money(txn.amount),
     memo: sanitizeMemo(txn.memo),
     category_name: sanitizeName(txn.category_name),
     account_name: sanitizeName(txn.account_name),
@@ -214,8 +215,8 @@ export async function handleListPayeeTransactions(
               ...rangeNote,
               outflow_count: outflows.length,
               inflow_count: inflowCount,
-              total_spent: formatCurrency(totalSpent),
-              average_outflow: formatCurrency(avgAmount), // Average per outflow transaction
+              total_spent: money(totalSpent),
+              average_outflow: money(avgAmount), // Average per outflow transaction
               top_categories: topCategories,
             },
       ...delta.cursor,

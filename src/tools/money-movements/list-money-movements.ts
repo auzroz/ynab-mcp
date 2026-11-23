@@ -9,7 +9,7 @@ import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { maskId } from '../../utils/mask.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId, monthParam } from '../../utils/schemas.js';
@@ -73,6 +73,7 @@ export async function handleListMoneyMovements(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   const response =
     validated.month === undefined
@@ -82,7 +83,7 @@ export async function handleListMoneyMovements(
 
   const formatted = movements.map((m) => ({
     id: m.id,
-    amount: formatCurrency(m.amount),
+    amount: money(m.amount),
     amount_milliunits: m.amount,
     month: m.month ?? null,
     moved_at: m.moved_at ?? null,

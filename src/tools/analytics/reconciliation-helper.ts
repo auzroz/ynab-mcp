@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 
 // Input schema
@@ -87,6 +87,7 @@ export async function handleReconciliationHelper(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   // Get accounts and transactions (limit to last 90 days for reconciliation)
   const lookbackDays = 90;
@@ -130,9 +131,9 @@ export async function handleReconciliationHelper(
     accountData.set(account.id, {
       account_name: sanitizeName(account.name),
       account_type: String(account.type),
-      cleared_balance: formatCurrency(account.cleared_balance),
-      uncleared_balance: formatCurrency(account.uncleared_balance),
-      working_balance: formatCurrency(account.balance),
+      cleared_balance: money(account.cleared_balance),
+      uncleared_balance: money(account.uncleared_balance),
+      working_balance: money(account.balance),
       uncleared_count: 0,
       uncleared_transactions: [],
       oldest_uncleared: null,
@@ -163,7 +164,7 @@ export async function handleReconciliationHelper(
             ? sanitizeName(categoryLookup.get(txn.category_id)!)
             : null)
         : null,
-      amount: formatCurrency(txn.amount),
+      amount: money(txn.amount),
       amount_raw: txn.amount,
       memo: sanitizeMemo(txn.memo),
       days_pending: daysPending,
@@ -232,7 +233,7 @@ export async function handleReconciliationHelper(
         since_date: sinceDateStr,
         accounts_with_uncleared: accountResults.filter((a) => a.uncleared_count > 0).length,
         total_uncleared_transactions: totalUnclearedCount,
-        total_uncleared_amount: formatCurrency(totalUncleared),
+        total_uncleared_amount: money(totalUncleared),
         accounts_needing_attention: needsAttention.length,
       },
       accounts: accountResults.map((a) => ({

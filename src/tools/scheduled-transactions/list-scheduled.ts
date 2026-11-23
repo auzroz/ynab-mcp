@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeFlagName } from '../transactions/format.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
@@ -61,6 +61,7 @@ export async function handleListScheduledTransactions(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   const cursor = validated.since_server_knowledge;
   const response =
@@ -80,7 +81,7 @@ export async function handleListScheduledTransactions(
       date_first: txn.date_first,
       date_next: txn.date_next,
       frequency: txn.frequency,
-      amount: formatCurrency(txn.amount),
+      amount: money(txn.amount),
       memo: sanitizeMemo(txn.memo),
       payee_name: sanitizeName(txn.payee_name),
       category_name: sanitizeName(txn.category_name),
@@ -96,7 +97,7 @@ export async function handleListScheduledTransactions(
           ? subs.map((sub) => ({
               id: sub.id,
               scheduled_transaction_id: sub.scheduled_transaction_id,
-              amount: formatCurrency(sub.amount),
+              amount: money(sub.amount),
               memo: sanitizeMemo(sub.memo),
               ...omitNull({ payee_id: sub.payee_id, category_id: sub.category_id }),
               transfer_account_id: sub.transfer_account_id ?? null,
@@ -170,7 +171,7 @@ export async function handleListScheduledTransactions(
       scheduled_transactions: formattedTransactions,
       summary: {
         total_count: formattedTransactions.length,
-        estimated_monthly_total: formatCurrency(estimatedMonthlyTotal),
+        estimated_monthly_total: money(estimatedMonthlyTotal),
         by_frequency: byFrequency,
       },
       server_knowledge: response.data.server_knowledge,

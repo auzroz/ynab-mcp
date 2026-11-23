@@ -82,6 +82,38 @@ export function formatCurrencyWithFormat(
   return isNegative ? `-${withSymbol}` : withSymbol;
 }
 
+/** Formats a milliunit amount for display in one budget's currency. */
+export type MoneyFormatter = (milliunits: number) => string;
+
+/** The formatter used when a budget's currency format is not known: the plain "$10.50" style. */
+export const usdFallbackFormatter: MoneyFormatter = (milliunits) => formatCurrency(milliunits);
+
+function isUsableCurrencyFormat(format: unknown): format is CurrencyFormat {
+  if (typeof format !== 'object' || format === null) return false;
+  const f = format as Partial<CurrencyFormat>;
+  return (
+    typeof f.decimal_digits === 'number' &&
+    Number.isInteger(f.decimal_digits) &&
+    f.decimal_digits >= 0 &&
+    f.decimal_digits <= 6 &&
+    typeof f.decimal_separator === 'string' &&
+    typeof f.group_separator === 'string' &&
+    typeof f.currency_symbol === 'string' &&
+    typeof f.symbol_first === 'boolean' &&
+    typeof f.display_symbol === 'boolean'
+  );
+}
+
+/**
+ * Build the one formatter every tool routes its human-readable amounts through.
+ * Without a usable currency format (settings unreadable, null, or malformed)
+ * it falls back to the plain USD style so output never fails on formatting.
+ */
+export function makeMoneyFormatter(format: CurrencyFormat | null | undefined): MoneyFormatter {
+  if (!isUsableCurrencyFormat(format)) return usdFallbackFormatter;
+  return (milliunits) => formatCurrencyWithFormat(milliunits, format);
+}
+
 /**
  * Convert milliunits to a decimal dollar amount.
  *
@@ -143,4 +175,21 @@ export function sumMilliunits(amounts: number[]): number {
 export function percentageOfMilliunits(part: number, whole: number): number {
   if (whole === 0) return 0;
   return new Decimal(part).dividedBy(whole).times(100).toDecimalPlaces(1).toNumber();
+}
+
+/**
+ * The formatter for one resolved budget, using its cached currency format.
+ * Tools call this once after resolving the budget id and format every amount
+ * through the result. A client without the lookup (or one that fails) gets the
+ * USD fallback.
+ */
+export async function moneyFormatterFor(
+  client: { getCurrencyFormat?: (budgetId: string) => Promise<CurrencyFormat | undefined> },
+  budgetId: string
+): Promise<MoneyFormatter> {
+  try {
+    return makeMoneyFormatter(await client.getCurrencyFormat?.(budgetId));
+  } catch {
+    return usdFallbackFormatter;
+  }
 }

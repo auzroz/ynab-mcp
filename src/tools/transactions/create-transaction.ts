@@ -10,7 +10,7 @@ import { IMPORT_ID_MAX_LENGTH, MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME
 import type { Tool } from '@modelcontextprotocol/server';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo, sanitizeString } from '../../utils/sanitize.js';
 import {
   checkSplitRules,
@@ -175,6 +175,7 @@ export async function handleCreateTransaction(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
+  const money = await moneyFormatterFor(client, budgetId);
 
   // Build transaction data, only including defined fields
   const transactionData: ynab.NewTransaction = {
@@ -226,18 +227,18 @@ export async function handleCreateTransaction(
   return JSON.stringify(
     {
       success: true,
-      message: `Transaction created: ${formatCurrency(txn.amount)} at ${sanitizeName(txn.payee_name)}`,
+      message: `Transaction created: ${money(txn.amount)} at ${sanitizeName(txn.payee_name)}`,
       transaction: {
         id: txn.id,
         date: txn.date,
-        amount: formatCurrency(txn.amount),
+        amount: money(txn.amount),
         payee_name: sanitizeName(txn.payee_name),
         category_name: sanitizeName(txn.category_name),
         account_name: sanitizeName(txn.account_name),
         memo: sanitizeMemo(txn.memo),
         cleared: txn.cleared,
         approved: txn.approved,
-        subtransactions: formatSubtransactions(txn.subtransactions),
+        subtransactions: formatSubtransactions(txn.subtransactions, money),
       },
     },
     null,

@@ -26,6 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each episode is recorded in the audit log as `write_limit_refused`. It is separate
   from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests.
 
+### Changed
+
+- Amounts are formatted with the budget's `currency_format` instead of a
+  hard-coded `$` (#49): symbol, symbol position, decimal places (0 for JPY, 3
+  for BHD), decimal and group separators, and `display_symbol`. This changes
+  only the human-readable strings (`balance`, `budgeted`, `summary` and
+  `*_formatted` fields, messages). Raw milliunit fields, keys and the shape of
+  every response are unchanged, and no field is added. For a USD budget,
+  amounts of 1,000 or more now carry group separators (`$3,000.00`, was
+  `$3000.00`). The format comes from the budget's cached settings, so it costs
+  at most one extra request per budget every 5 minutes; if the settings cannot
+  be read, amounts keep the previous `$1234.56` style. `ynab_transaction_search`
+  now writes its `min`/`max` criteria as formatted amounts (`min: $80.00`, was
+  `min: $80`), and split-amount validation errors, raised before the budget is
+  known, still use `$`.
+
 ### Fixed
 
 - Per-budget caches are keyed by the budget's UUID, never by the `last-used`

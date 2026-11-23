@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { budgetId } from '../../utils/schemas.js';
 
 // Input schema
@@ -53,6 +53,7 @@ export async function handleAgeOfMoney(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   // Get budget details and accounts
   const [budgetResponse, accountsResponse] = await Promise.all([
@@ -117,7 +118,7 @@ export async function handleAgeOfMoney(
       age_of_money_raw: ageOfMoney,
       target,
       context: {
-        cash_on_hand: formatCurrency(cashOnHand),
+        cash_on_hand: money(cashOnHand),
         budget_accounts: budgetAccounts.length,
         estimated_buffer: estimatedBuffer,
       },

@@ -10,7 +10,7 @@ import { MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '..
 import type { Tool } from '@modelcontextprotocol/server';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { validateScheduledDate } from '../../utils/date-validation.js';
 import { frequencies, flagColors } from '../../utils/scheduled-constants.js';
@@ -333,6 +333,7 @@ export async function handlePreviewScheduledTransaction(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const validationErrors: string[] = [];
 
   // Determine start date
@@ -403,14 +404,14 @@ export async function handlePreviewScheduledTransaction(
         account_name: sanitizeName(accountName),
         payee_name: sanitizeName(payeeName),
         category_name: categoryName ? sanitizeName(categoryName) : null,
-        amount_display: formatCurrency(amountMilliunits),
+        amount_display: money(amountMilliunits),
         frequency_display: getFrequencyDisplay(validated.frequency),
         start_date: startDate,
         next_occurrences: nextOccurrences,
       },
       estimated_costs: {
-        monthly: formatCurrency(Math.round(costs.monthly)),
-        annual: formatCurrency(Math.round(costs.annual)),
+        monthly: money(Math.round(costs.monthly)),
+        annual: money(Math.round(costs.annual)),
       },
       ...(validationErrors.length > 0 && { validation_errors: validationErrors }),
       api_payload: apiPayload,

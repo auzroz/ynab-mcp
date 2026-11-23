@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import type * as ynab from 'ynab';
 import { MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, ynabId } from '../../utils/schemas.js';
-import { formatCurrency, sumMilliunits, toMilliunits } from '../../utils/milliunits.js';
+import { usdFallbackFormatter, type MoneyFormatter, sumMilliunits, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeMemo, sanitizeName } from '../../utils/sanitize.js';
 
 /** Minimum splits for a split transaction (YNAB: a split needs at least two parts). */
@@ -84,7 +84,7 @@ export function checkSplitRules(
     ctx.addIssue({
       code: 'custom',
       path: ['subtransactions'],
-      message: `Split amounts must sum exactly to the transaction amount (splits total ${formatCurrency(splitTotal)}, transaction is ${formatCurrency(parent)})`,
+      message: `Split amounts must sum exactly to the transaction amount (splits total ${usdFallbackFormatter(splitTotal)}, transaction is ${usdFallbackFormatter(parent)})`,
     });
   }
 }
@@ -105,13 +105,14 @@ export function toSaveSubTransactions(
 
 /** Sanitized view of the splits YNAB returned, or undefined when there are none. */
 export function formatSubtransactions(
-  subtransactions: ynab.SubTransaction[] | undefined
+  subtransactions: ynab.SubTransaction[] | undefined,
+  money: MoneyFormatter = usdFallbackFormatter
 ): Array<Record<string, unknown>> | undefined {
   const live = (subtransactions ?? []).filter((s) => !s.deleted);
   if (live.length === 0) return undefined;
   return live.map((s) => ({
     id: s.id,
-    amount: formatCurrency(s.amount),
+    amount: money(s.amount),
     amount_milliunits: s.amount,
     payee_id: s.payee_id ?? null,
     payee_name: sanitizeName(s.payee_name),

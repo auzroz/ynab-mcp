@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 
@@ -82,6 +82,7 @@ export async function handleCashFlowForecast(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const forecastDays = validated.days ?? 30;
 
   // Get accounts and scheduled transactions
@@ -168,7 +169,7 @@ export async function handleCashFlowForecast(
         date: st.date_next,
         payee: sanitizeName(st.payee_name),
         amount: st.amount,
-        formatted_amount: formatCurrency(st.amount),
+        formatted_amount: money(st.amount),
         type: st.amount >= 0 ? 'income' : 'expense',
         frequency: frequencyLabels[freqStr] ?? freqStr,
       });
@@ -194,7 +195,7 @@ export async function handleCashFlowForecast(
             date: formatLocalDate(currentDate),
             payee: sanitizeName(st.payee_name),
             amount: st.amount,
-            formatted_amount: formatCurrency(st.amount),
+            formatted_amount: money(st.amount),
             type: st.amount >= 0 ? 'income' : 'expense',
             frequency: frequencyLabels[freqStr] ?? freqStr,
           });
@@ -276,10 +277,10 @@ export async function handleCashFlowForecast(
 
   if (lowestBalance < 0) {
     status = 'warning';
-    message = `Projected to go negative (${formatCurrency(lowestBalance)}) on ${lowestBalanceDate}`;
+    message = `Projected to go negative (${money(lowestBalance)}) on ${lowestBalanceDate}`;
   } else if (lowestBalance < currentCash * 0.2) {
     status = 'caution';
-    message = `Balance may drop to ${formatCurrency(lowestBalance)} on ${lowestBalanceDate}`;
+    message = `Balance may drop to ${money(lowestBalance)} on ${lowestBalanceDate}`;
   } else {
     status = 'healthy';
     message = 'Cash flow looks healthy for the forecast period';
@@ -307,15 +308,15 @@ export async function handleCashFlowForecast(
         days: forecastDays,
       },
       current_position: {
-        cash_balance: formatCurrency(currentCash),
+        cash_balance: money(currentCash),
         budget_accounts: budgetAccounts.length,
       },
       projected: {
-        end_balance: formatCurrency(projectedEndBalance),
-        total_income: formatCurrency(totalScheduledIncome),
-        total_expenses: formatCurrency(totalScheduledExpenses),
-        net_change: formatCurrency(netProjectedChange),
-        lowest_balance: formatCurrency(lowestBalance),
+        end_balance: money(projectedEndBalance),
+        total_income: money(totalScheduledIncome),
+        total_expenses: money(totalScheduledExpenses),
+        net_change: money(netProjectedChange),
+        lowest_balance: money(lowestBalance),
         lowest_balance_date: lowestBalanceDate,
       },
       upcoming_expenses: upcomingExpenses.map((e) => ({
@@ -332,9 +333,9 @@ export async function handleCashFlowForecast(
       })),
       daily_forecast: dailyForecasts.slice(0, 15).map((d) => ({
         date: d.date,
-        income: formatCurrency(d.scheduled_income),
-        expenses: formatCurrency(d.scheduled_expenses),
-        balance: formatCurrency(d.running_balance),
+        income: money(d.scheduled_income),
+        expenses: money(d.scheduled_expenses),
+        balance: money(d.running_balance),
       })),
       scheduled_transaction_count: scheduledItems.length,
     },

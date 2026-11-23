@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import type { ScheduledFrequency } from '../../utils/scheduled-constants.js';
 import DecimalJS from 'decimal.js';
@@ -104,6 +104,7 @@ export async function handleDetectRecurring(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const months = validated.months ?? 6;
   const minOccurrences = validated.min_occurrences ?? 3;
 
@@ -231,12 +232,12 @@ export async function handleDetectRecurring(
       payee_name: sanitizeName(data.payee_name),
       category_name: data.category_name ? sanitizeName(data.category_name) : null,
       frequency,
-      average_amount: formatCurrency(avgAmount),
+      average_amount: money(avgAmount),
       last_date: lastDate,
       next_expected: nextExpected,
       occurrence_count: data.transactions.length,
-      total_spent: formatCurrency(totalSpent),
-      monthly_cost: formatCurrency(monthlyCost),
+      total_spent: money(totalSpent),
+      monthly_cost: money(monthlyCost),
       confidence,
       // Conversion fields
       payee_id: data.payee_id,
@@ -271,7 +272,7 @@ export async function handleDetectRecurring(
         total_recurring_found: recurring.length,
         high_confidence_count: highConfidence.length,
         medium_confidence_count: mediumConfidence.length,
-        estimated_monthly_total: formatCurrency(Math.round(totalMonthly * 1000)),
+        estimated_monthly_total: money(Math.round(totalMonthly * 1000)),
         analysis_period: `${months} months`,
         since_date: sinceDateStr,
       },

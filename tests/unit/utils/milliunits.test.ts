@@ -1,7 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   formatCurrency,
   formatCurrencyWithFormat,
+  makeMoneyFormatter,
+  moneyFormatterFor,
+  usdFallbackFormatter,
   toMilliunits,
   toCents,
   addMilliunits,
@@ -190,6 +193,109 @@ describe('milliunits utilities', () => {
 
     it('rounds to one decimal place', () => {
       expect(percentageOfMilliunits(3333, 10000)).toBe(33.3);
+    });
+  });
+
+  describe('makeMoneyFormatter (#49)', () => {
+    const base: CurrencyFormat = {
+      iso_code: 'USD',
+      example_format: '123,456.78',
+      decimal_digits: 2,
+      decimal_separator: '.',
+      symbol_first: true,
+      group_separator: ',',
+      currency_symbol: '$',
+      display_symbol: true,
+    };
+    const eur: CurrencyFormat = { ...base, iso_code: 'EUR', decimal_separator: ',', group_separator: '.', symbol_first: false, currency_symbol: '€' };
+    const jpy: CurrencyFormat = { ...base, iso_code: 'JPY', decimal_digits: 0, currency_symbol: '¥' };
+    const bhd: CurrencyFormat = { ...base, iso_code: 'BHD', decimal_digits: 3, currency_symbol: 'BD' };
+
+    it('formats USD with group separators', () => {
+      const money = makeMoneyFormatter(base);
+      expect(money(3000000)).toBe('$3,000.00');
+      expect(money(-25500)).toBe('-$25.50');
+      expect(money(0)).toBe('$0.00');
+    });
+
+    it('puts the symbol after the amount with comma decimals (EUR)', () => {
+      const money = makeMoneyFormatter(eur);
+      expect(money(1234567890)).toBe('1.234.567,89€');
+      expect(money(-25500)).toBe('-25,50€');
+    });
+
+    it('uses zero decimal places (JPY)', () => {
+      const money = makeMoneyFormatter(jpy);
+      expect(money(1234567000)).toBe('¥1,234,567');
+      expect(money(-25000)).toBe('-¥25');
+      expect(money(0)).toBe('¥0');
+    });
+
+    it('uses three decimal places (BHD)', () => {
+      const money = makeMoneyFormatter(bhd);
+      expect(money(1234567)).toBe('BD1,234.567');
+      expect(money(-500)).toBe('-BD0.500');
+      expect(money(1)).toBe('BD0.001');
+    });
+
+    it('omits the symbol when display_symbol is false, keeping the sign', () => {
+      const money = makeMoneyFormatter({ ...eur, display_symbol: false });
+      expect(money(10000)).toBe('10,00');
+      expect(money(-1234500)).toBe('-1.234,50');
+    });
+
+    it('keeps the sign outside the symbol when the symbol comes first', () => {
+      expect(makeMoneyFormatter(base)(-1000)).toBe('-$1.00');
+    });
+
+    it('rounds half up to the places of the format', () => {
+      expect(makeMoneyFormatter(jpy)(1500)).toBe('¥2');
+      expect(makeMoneyFormatter(base)(1005)).toBe('$1.01');
+    });
+
+    it.each([undefined, null, {}, { ...base, decimal_digits: -1 }, { ...base, decimal_digits: 1.5 }, { ...base, currency_symbol: 5 }])(
+      'falls back to the USD style for an unusable format %#',
+      (bad) => {
+        const money = makeMoneyFormatter(bad as never);
+        expect(money).toBe(usdFallbackFormatter);
+        expect(money(1234500)).toBe('$1234.50');
+        expect(money(-25500)).toBe('-$25.50');
+      }
+    );
+  });
+
+  describe('moneyFormatterFor (#49)', () => {
+    const eur: CurrencyFormat = {
+      iso_code: 'EUR',
+      example_format: '123.456,78',
+      decimal_digits: 2,
+      decimal_separator: ',',
+      symbol_first: false,
+      group_separator: '.',
+      currency_symbol: '€',
+      display_symbol: true,
+    };
+
+    it('uses the format the client returns for the budget', async () => {
+      const getCurrencyFormat = vi.fn(async () => eur);
+      const money = await moneyFormatterFor({ getCurrencyFormat }, 'budget-uuid');
+      expect(getCurrencyFormat).toHaveBeenCalledWith('budget-uuid');
+      expect(money(1500000)).toBe('1.500,00€');
+    });
+
+    it('falls back to USD when the format is unreadable', async () => {
+      const money = await moneyFormatterFor({ getCurrencyFormat: async () => undefined }, 'b');
+      expect(money(1500000)).toBe('$1500.00');
+    });
+
+    it('falls back to USD when the lookup throws or the client has none', async () => {
+      const throwing = await moneyFormatterFor(
+        { getCurrencyFormat: async () => { throw new Error('boom'); } },
+        'b'
+      );
+      expect(throwing(10000)).toBe('$10.00');
+      const missing = await moneyFormatterFor({}, 'b');
+      expect(missing(10000)).toBe('$10.00');
     });
   });
 });

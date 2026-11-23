@@ -72,6 +72,9 @@ interface FanOutReservation {
 /** How long a read reuses a resolved "last-used" / "default" budget id (#66); writes resolve fresh. */
 export const BUDGET_ALIAS_TTL_MS = 300_000;
 
+/** How long a failed currency-format lookup is not retried (#49). */
+export const CURRENCY_FORMAT_RETRY_MS = 60_000;
+
 /**
  * server_knowledge no budget has reached: asking for changes since it returns
  * the plan's id and an empty delta, not the whole budget.
@@ -1020,6 +1023,28 @@ export class YnabClient {
     const response = await this.api.plans.getPlanSettingsById(budgetId);
     if (generation === this.cache.generation()) this.cache.set(cacheKey, response);
     return response;
+  }
+
+  /**
+   * The budget's currency format (#49), read from its cached settings so a tool
+   * call costs no extra request once they are cached. `budgetId` must be a
+   * resolved UUID (see resolveBudgetId), never an alias. Never throws: when the
+   * settings cannot be read it returns undefined and callers format amounts in
+   * the USD style. A failure is remembered for a minute so an unreadable
+   * settings endpoint does not cost a request on every tool call.
+   */
+  async getCurrencyFormat(budgetId: string): Promise<ynab.CurrencyFormat | undefined> {
+    const failedKey = `currency-format-failed:${budgetId}`;
+    if (this.cache.get<boolean>(failedKey) === true) return undefined;
+    try {
+      // Outside any fan-out reservation: the tool's reserved count covers its
+      // own reads, and this lookup (a cache miss only) takes its own token.
+      const response = await this.fanOut.exit(() => this.getBudgetSettingsById(budgetId));
+      return response.data.settings.currency_format ?? undefined;
+    } catch {
+      this.cache.set(failedKey, true, CURRENCY_FORMAT_RETRY_MS);
+      return undefined;
+    }
   }
 
   /**

@@ -33,9 +33,12 @@ function makeClient(): YnabClient {
   return new YnabClient('token', 'budget-1', new RateLimiter(180), new Cache(300000), false, auditLog);
 }
 
-/** URL, method and parsed JSON body of the n-th fetch call. */
+/**
+ * URL, method and parsed JSON body of the n-th fetch call. The budget settings
+ * read that formats amounts (#49) is not a write and is skipped.
+ */
 function request(n = 0): { url: string; method: string | undefined; body: any } {
-  const [url, init] = fetchMock.mock.calls[n]!;
+  const [url, init] = fetchMock.mock.calls.filter(([u]) => !String(u).endsWith('/settings'))[n]!;
   return { url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) };
 }
 

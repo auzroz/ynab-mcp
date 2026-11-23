@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { getCurrentMonth, getPreviousMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
@@ -67,6 +67,7 @@ export async function handleMonthlyComparison(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   const currentMonth = getCurrentMonth();
   const previousMonth = getPreviousMonth();
@@ -185,9 +186,9 @@ export async function handleMonthlyComparison(
     categoryChanges.push({
       category: data.name,
       group: data.group,
-      this_month: formatCurrency(data.current),
-      last_month: formatCurrency(data.previous),
-      change: direction === 'new' ? 'new' : formatCurrency(change),
+      this_month: money(data.current),
+      last_month: money(data.previous),
+      change: direction === 'new' ? 'new' : money(change),
       change_percent: changePercent,
       direction,
       rawChange: change,
@@ -224,7 +225,7 @@ export async function handleMonthlyComparison(
       message = 'No spending in either month';
     } else {
       status = 'worse';
-      message = `Spending increased from $0 last month to ${formatCurrency(currentSpending)}`;
+      message = `Spending increased from $0 last month to ${money(currentSpending)}`;
     }
   } else if (spendingChangePercent < -10) {
     status = 'better';
@@ -255,23 +256,23 @@ export async function handleMonthlyComparison(
       },
       comparison: {
         spending: {
-          this_month: formatCurrency(currentSpending),
-          last_month: formatCurrency(previousSpending),
-          change: formatCurrency(spendingChange),
+          this_month: money(currentSpending),
+          last_month: money(previousSpending),
+          change: money(spendingChange),
           change_percent: Math.round(spendingChangePercent),
           direction: spendingChange > 0 ? 'up' : spendingChange < 0 ? 'down' : 'same',
         },
         income: {
-          this_month: formatCurrency(currentIncome),
-          last_month: formatCurrency(previousIncome),
-          change: formatCurrency(incomeChange),
+          this_month: money(currentIncome),
+          last_month: money(previousIncome),
+          change: money(incomeChange),
           change_percent: Math.round(incomeChangePercent),
           direction: incomeChange > 0 ? 'up' : incomeChange < 0 ? 'down' : 'same',
         },
         budgeted: {
-          this_month: formatCurrency(currentBudgeted),
-          last_month: formatCurrency(previousBudgeted),
-          change: formatCurrency(budgetedChange),
+          this_month: money(currentBudgeted),
+          last_month: money(previousBudgeted),
+          change: money(budgetedChange),
         },
       },
       notable_changes: {

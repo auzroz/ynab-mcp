@@ -15,7 +15,7 @@ import { NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId, ynabId } from '../../utils/
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { isInternalGroup } from '../../utils/categories.js';
 import { ValidationError, ReadOnlyModeError } from '../../utils/errors.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import {
   categoryTargetUpdateShape,
   categoryTargetUpdateJsonProperties,
@@ -117,6 +117,7 @@ export async function handleUpdateCategoryDetails(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
+  const money = await moneyFormatterFor(client, budgetId);
 
   // Fail fast in read-only sessions before any API read is spent.
   if (client.isReadOnly()) {
@@ -160,7 +161,7 @@ export async function handleUpdateCategoryDetails(
         note: sanitizeMemo(category.note),
         goal_target: category.goal_target ?? null,
         goal_target_display:
-          category.goal_target != null ? formatCurrency(category.goal_target) : null,
+          category.goal_target != null ? money(category.goal_target) : null,
         goal_target_date: category.goal_target_date ?? null,
         goal_needs_whole_amount: category.goal_needs_whole_amount ?? null,
       },
