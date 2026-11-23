@@ -58,6 +58,7 @@ import {
   authorizeUrl,
   browse,
   browserFlow,
+  interactionUid,
   exchangeCode,
   pkcePair,
   refresh,
@@ -226,6 +227,44 @@ describe('the YNAB legs, as McpOAuthProvider tested them (moved from mcp-provide
     expect(res.status).toBe(500);
     expect(res.body.error).toBe('server_error');
     expect(res.text).not.toMatch(/ECONNREFUSED|hunter2|10\.1\.2\.3/);
+  });
+
+  it('the state row (and the completing marker that replaces it) expires with the interaction: deadline + 30 s', async () => {
+    const as = mountedAs();
+    const client = await registerClient(as.app);
+    const { challenge } = pkcePair();
+    const jar = new CookieJar();
+    const auth = await browse(as.app, jar, authorizeUrl({ clientId: client.clientId, challenge }));
+    const uid = interactionUid(auth.headers['location'] as string);
+    const before = Date.now();
+    const start = await browse(as.app, jar, `/oauth/interaction/${uid}/start?scope=read-only`);
+    expect(start.status).toBe(302);
+    const rows = [...(as.storage as unknown as { oauthRows: Map<string, OAuthRowRecord> }).oauthRows.values()].filter(
+      (r) => r.model === 'Interaction'
+    );
+    const lifetimeMs = interactionLifetimeSec(600) * 1000;
+    expect(rows.length).toBeGreaterThanOrEqual(2); // the interaction and its one state row
+    for (const r of rows) {
+      expect(r.expiresAt).toBeGreaterThan(before + lifetimeMs - 5_000);
+      expect(r.expiresAt).toBeLessThanOrEqual(Date.now() + lifetimeMs + 1_000);
+    }
+  });
+
+  it('two concurrent completes of one state through the mounted app exchange the YNAB code once', async () => {
+    const client = await registerClient(app);
+    const { challenge } = pkcePair();
+    const jar = new CookieJar();
+    const auth = await browse(app, jar, authorizeUrl({ clientId: client.clientId, challenge }));
+    const uid = interactionUid(auth.headers['location'] as string);
+    await browse(app, jar, auth.headers['location'] as string);
+    const start = await browse(app, jar, `/oauth/interaction/${uid}/start?scope=read-only`);
+    const state = new URL(start.headers['location'] as string).searchParams.get('state') as string;
+    const path = `/oauth/interaction/${uid}/complete?${new URLSearchParams({ state, code: 'c' }).toString()}`;
+    const cookie = jar.header(`/oauth/interaction/${uid}/complete`);
+    vi.mocked(ynabExchangeCode).mockClear();
+    const [a, b] = await Promise.all([request(app).get(path).set('Cookie', cookie), request(app).get(path).set('Cookie', cookie)]);
+    expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+    expect([a.status, b.status].sort()).toEqual([303, 400]);
   });
 
   it('the deadline is shorter than the shortest sweep protection of a client', () => {
