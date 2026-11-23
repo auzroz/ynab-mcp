@@ -67,7 +67,9 @@ import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import type Provider from 'oidc-provider';
 import type { Interaction, InteractionResults } from 'oidc-provider';
-import type { GrantedScope, OAuthRowStore, OAuthRowWrite } from '../../storage/types.js';
+import type { CiphertextStore, GrantedScope, OAuthRowStore, OAuthRowWrite } from '../../storage/types.js';
+import { refreshTokenContext, type Encryptor } from '../../crypto.js';
+import { assertKeyWritable } from '../rekey-job.js';
 import { constantTimeEqual, type TokenHasher } from '../token-hash.js';
 import { buildAuthorizeUrl, exchangeCode, getYnabUserId, type YnabOAuthConfig } from '../ynab-oauth.js';
 import { HTML_CONTENT_TYPE, PAGE_HEADERS, renderConsentPage } from '../auth-pages.js';
@@ -75,29 +77,6 @@ import { redirectTrust, type RedirectPolicy } from '../client-metadata.js';
 import { YNAB_CALLBACK_DEADLINE_MS } from '../retention-defaults.js';
 import { sanitizeErrorMessage } from '../../utils/sanitize.js';
 import { INTERACTION_BASE_PATH } from './provider.js';
-
-/** The at-rest encryption context of a YNAB refresh token (#57b's AAD). */
-export interface EncryptionContext {
-  column: string;
-  subject: string;
-}
-
-/**
- * TODO(#57b): replace with `refreshTokenContext` from src/crypto.ts once #57b
- * lands; same signature. The staged sign-in's ciphertext is copied into
- * `users` byte for byte, so it is encrypted under the users column's context.
- */
-export function refreshTokenContext(ynabUserId: string): EncryptionContext {
-  return { column: 'users.encrypted_refresh_token', subject: ynabUserId };
-}
-
-/**
- * What the broker needs of the `Encryptor`: #57b makes the context required;
- * today's `Encryptor` (one argument) also satisfies this.
- */
-export interface BrokerEncryptor {
-  encrypt(plaintext: string, context: EncryptionContext): string;
-}
 
 /** The denials an interaction finishes with (RFC 6749 section 4.1.2.1). */
 export type InteractionDenial = 'access_denied' | 'server_error';
@@ -118,11 +97,15 @@ const UID = /^[A-Za-z0-9_-]{43}$/;
 /** Under `/oauth`, where #47-4 mounts the router; the paths below are relative to it. */
 const ROUTER_INTERACTION_PATH = INTERACTION_BASE_PATH.replace(/^\/oauth/, '');
 
+/** What the interaction needs of storage: its state row, the staged sign-in, and the key floors (#57b). */
+export type InteractionStore = Pick<OAuthRowStore, 'stageSignIn' | 'findOAuthRow' | 'compareAndSetOAuthRow'> & CiphertextStore;
+
 export interface InteractionRouterOptions {
   provider: Provider;
-  /** The store the provider's adapter uses (a `Storage`): the state row and the staged sign-in. */
-  store: Pick<OAuthRowStore, 'stageSignIn' | 'findOAuthRow' | 'compareAndSetOAuthRow'>;
-  encryptor: BrokerEncryptor;
+  /** The store the provider's adapter uses (a `Storage`): the state row, the staged sign-in and the key floors. */
+  store: InteractionStore;
+  /** The keyring: the YNAB refresh token is encrypted under the users column's context (#57b). */
+  encryptor: Encryptor;
   /** Issues the YNAB `state` and derives its key (#52). */
   tokenHasher: Pick<TokenHasher, 'issue' | 'keyFor'>;
   ynab: YnabOAuthConfig;
@@ -436,6 +419,10 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
       const clientId = interaction.params['client_id'];
       if (typeof clientId !== 'string') throw new Error('The interaction names no client');
 
+      // Before the YNAB code is spent: a replica whose key is being, or has been, retired must not store
+      // a token the others can't read (#57b). KeyRetiredError ends here as server_error. The write itself
+      // (the code's save applies the staged sign-in, saveAuthorizationCode) checks the retired floor again.
+      await assertKeyWritable(store, encryptor);
       const tokens = await exchangeCode(ynab, { code, redirectUri: callbackUrl });
       const userId = await getYnabUserId(tokens.accessToken, ynab.endpoints, ynab.timeoutMs);
       if (now() - startedAt > YNAB_CALLBACK_DEADLINE_MS) throw new Error('YNAB callback passed its deadline');

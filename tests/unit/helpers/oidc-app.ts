@@ -20,7 +20,7 @@ import { expect } from 'vitest';
 import type { OAuthRowRecord, Storage } from '../../../src/storage/types.js';
 import type { DriverHandle } from './storage-drivers.js';
 import { createOidcProvider, asLibraryHandler, type OidcProvider } from '../../../src/auth/oidc/provider.js';
-import { interactionRouter, type BrokerEncryptor } from '../../../src/auth/oidc/interaction.js';
+import { interactionRouter, type InteractionStore } from '../../../src/auth/oidc/interaction.js';
 import { createAccessTokenVerifier } from '../../../src/auth/oidc/verifier.js';
 import { Encryptor } from '../../../src/crypto.js';
 import type { OAuthTokenVerifier } from '@modelcontextprotocol/server';
@@ -36,7 +36,7 @@ export interface OidcTestApp {
   oidc: OidcProvider;
   storage: Storage;
   verifier: OAuthTokenVerifier;
-  encryptor: BrokerEncryptor;
+  encryptor: Encryptor;
 }
 
 export interface OidcTestAppOptions {
@@ -44,9 +44,9 @@ export interface OidcTestAppOptions {
   globalReadOnly?: boolean;
   accessTokenTtlSec?: number;
   authCodeTtlSec?: number;
-  encryptor?: BrokerEncryptor;
+  encryptor?: Encryptor;
   /** Replace the store the interaction stages sign-ins in (the provider keeps `storage`). */
-  interactionStore?: Pick<Storage, 'stageSignIn' | 'findOAuthRow' | 'compareAndSetOAuthRow'>;
+  interactionStore?: InteractionStore;
   /** Replace the store the provider's adapter uses (a wrapper around `storage`, for races). */
   providerStore?: Storage;
   /** Mount the library once per route, as D8 will (Express strips each mount path), instead of at the root. */
