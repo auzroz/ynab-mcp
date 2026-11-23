@@ -46,7 +46,7 @@ import { OUTBOUND_TIMEOUT_MS } from './services/outbound.js';
 import type { HttpConfig } from './config/environment.js';
 import { deprecatedSessionSettingsWarning } from './config/http/limits.js';
 import { Encryptor } from './crypto.js';
-import { prepareEncryptionKeys } from './auth/rekey-job.js';
+import { RETIRE_GRACE_MS, assertGraceOutlastsWrites, prepareEncryptionKeys } from './auth/rekey-job.js';
 import { createStorage } from './storage/index.js';
 import { TokenHasher } from './auth/token-hash.js';
 import type { GrantedScope, Storage } from './storage/types.js';
@@ -260,6 +260,9 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
       previousKeys: config.encryptionKeyPrevious,
     });
     await prepareEncryptionKeys(storage, keyring);
+    // A retirement waits out the grace after its announcement, so no write
+    // that passed its key check before the announcement may take that long.
+    assertGraceOutlastsWrites(RETIRE_GRACE_MS, config.requestTimeoutMs);
     encryptor = keyring;
     const ynab = {
       clientId: config.oauthClientId as string,
@@ -286,6 +289,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     rateLimitPerHour: config.rateLimitPerHour,
     rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
     cacheTtlMs: config.cacheTtlMs,
+    writeLimitPerHour: config.writeLimitPerHour,
   });
   const inflight = new InflightLimiter({
     perUser: config.maxInflightPerUser,
@@ -452,6 +456,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
       rateLimitPerHour: config.rateLimitPerHour,
       rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
       cacheTtlMs: config.cacheTtlMs,
+      writeLimitPerHour: config.writeLimitPerHour,
     };
     if (!oauth) {
       const token = effectiveToken(req);

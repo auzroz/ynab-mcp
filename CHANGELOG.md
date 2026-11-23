@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer works. To rotate without logging anyone out, follow "Rotating
   ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md. If the old key is lost, give the
   new key a new id: every user then reconnects once.
+- Writes are capped at 20 write requests per user per hour (#61c). Before,
+  writes were unlimited, so an automation that makes more than 20 write calls
+  an hour (stdio included) is now refused with `write_limit_exceeded` until the
+  window frees up. Set `YNAB_WRITE_LIMIT_PER_HOUR` (0 to 1000) to change it;
+  `0` turns the cap off.
 
 ### Security
 
@@ -25,8 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rekey job rewrites them, and the rows under an older key, using
   compare-and-set writes, logging counts only. When none are left it announces
   the retirement. From then on a replica still on an older `ENCRYPTION_KEY_ID`
-  refuses to refresh or sign in, before calling YNAB, so no token is spent or
-  stranded. An hour later it retires `v1` and the older key ids for every
+  refuses to refresh or sign in, before calling YNAB. Every token write also
+  re-checks the key floors in the same database transaction, so a request
+  that stalled past the retirement is refused instead of storing a token no
+  replica can read. An hour later it retires `v1` and the older key ids for every
   replica, unless a token was written under an older key in the meantime.
 - `ENCRYPTION_KEY` can be rotated without logging anyone out.
   `ENCRYPTION_KEY_ID` (default 1) names the current key, and
@@ -46,6 +53,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The binding protects tokens from the upgrade on. A `v1` token carries none,
   so one copied into another user's row before the upgrade is re-encrypted as
   that row's.
+- Release tags are verified (#62). `Release: Verify` refuses a `v*` tag,
+  release candidates included, unless it is an annotated tag signed with an
+  SSH key listed in `.github/allowed_signers`.
+- The Docker image is pushed to `ghcr.io/auzroz/ynab-mcp` with a token that
+  only the approved `production` environment holds, instead of the workflow's
+  `GITHUB_TOKEN`. No release job has `packages: write` any more, and the
+  package gives the repository's workflows read access only, so a workflow
+  run outside an approved release can't push an image (#62). The
+  image's attestation remains its proof of origin.
+
+### Added
+
+- `YNAB_WRITE_LIMIT_PER_HOUR`: a per-user write cap on every transport (#61c).
+  One write tool call is one write request, so a bulk call such as
+  `ynab_create_transactions` counts as 1. It is checked once, before the tool
+  runs, so a refused write takes no YNAB request and changes nothing. The error
+  names the limit and when the next write is allowed. A call that fails input
+  validation gives its slot back; one YNAB rejects keeps it. The first refusal of
+  each episode is recorded in the audit log as `write_limit_refused`. It is separate
+  from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests.
 
 ### Added
 
@@ -88,6 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   YNAB is picked up within 5 minutes for reads. Writes always resolve fresh, and
   a write invalidates exactly the entries a read created. The budget-settings cache now has the same generation guard as the
   other caches.
+- The release workflow's MCP Registry job waits up to 10 minutes for npm to
+  serve the new version before it publishes `server.json`, and retries the
+  publish twice on the registry's "version not found" error, so a release no
+  longer needs a manual re-run when npm is slow (#121).
 
 ## [0.4.3] - 2026-11-23
 

@@ -57,6 +57,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_REQUEST_TIMEOUT_MS` | no | Longest a `/mcp` request runs (integer 5000-300000, default `60000`). See "Requests, limits and timeouts" |
 | `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` / `MCP_SESSION_IDLE_TIMEOUT_MS` | no | **Deprecated, no effect** since 0.5.0 (`/mcp` is stateless). Still parsed, so a malformed value refuses to start; a set value logs a warning once at startup. Removed in 0.6 |
 | `RATE_LIMIT_MAX_WAIT_MS` | no | Longest a request waits for a per-user YNAB rate-limit token (integer 0-60000, default `2000`). `0` never waits. Past that, or when another request is already waiting, the tool returns `rate_limited` with `retry_after_seconds` at once, so a burst can't pile up behind the limiter |
+| `YNAB_WRITE_LIMIT_PER_HOUR` | no | Write requests one user may make per hour (integer 0-1000, default `20`; **breaking** in 0.5.0, since writes were previously unlimited). One write tool call counts as 1, so a bulk call is 1. `0` turns the cap off. Counted per user (the YNAB user in oauth mode, the token in header mode), shared by all of that user's clients and requests, in memory: a restart resets it. A refused write returns `write_limit_exceeded` naming the limit and when it resets, and takes no YNAB request. Separate from `RATE_LIMIT_PER_HOUR` |
 | `TRUST_PROXY` | if behind a reverse proxy | Number of proxies between the client and this server whose `X-Forwarded-For` to trust (integer 0-10, default `0`; e.g. `1` behind a single Traefik/Caddy/nginx). Too low and every client shares one rate-limit bucket, so one client can lock out the others; too high and clients can spoof their address. Set it only when the app is reachable solely through the proxy. See "Client addresses and rate limits" |
 | `TRUST_CF_CONNECTING_IP` | no | `true` to take the client address from `CF-Connecting-IP` (default `false`). Separate from `TRUST_PROXY`; turn it on only when the server is reachable solely through Cloudflare. See "Client addresses and rate limits" |
 | `REGISTER_RATE_LIMIT_PER_IP` | no | `/register` requests per client address per hour (integer 1-100000, default `100`) |
@@ -266,7 +267,16 @@ Snapshots are bounded per user (32 snapshots, 20,000 entities, dropped after 30
 minutes unused), so budget roughly that much memory per active user. This state
 is kept for an hour after the user's last request, so a quiet hour doesn't reset
 the rate limit. With several replicas, these caps, the rate limit and the caches
-are per process. In OAuth mode every request looks up the user's YNAB grant and
+are per process.
+
+The write cap (`YNAB_WRITE_LIMIT_PER_HOUR`) is the same kind of per-process,
+in-memory state, held per user next to the rate limiter, the circuit breaker and
+the caches, and shared by all of the user's requests and clients. A restart
+resets it. In header mode, where any token counts as a user, evicting the
+least recently used user entry under load (past 10,000 retained users) can reset it
+too. With several replicas each process counts on its own, so a user can make up
+to the limit per replica. A write call that fails input validation gives its slot
+back; one that YNAB rejects keeps it. In OAuth mode every request looks up the user's YNAB grant and
 access token, refreshing the token when it expires. Once the user's YNAB grant
 is gone, or YNAB rejects its refresh token (`invalid_grant`), requests are
 refused with `401` and the client re-authorizes, and a tool call whose token
@@ -659,11 +669,28 @@ Retirement takes two steps:
    ```
 
    The raise checks the table again in the same statement: a token written
-   under an older key after the pass read the table (by a replica that
-   passed its check just before the announcement) holds it back, and the
-   next pass moves that token to the current key (`[Rekey] a token was
-   written under an older key since the pass began: retirement waits for the
-   next pass`).
+   under an older key after the pass read the table (by a 0.4.x process, for
+   example, which has no key checks) holds it back, and the next pass moves
+   that token to the current key (`[Rekey] a token was written under an older
+   key since the pass began: retirement waits for the next pass`).
+
+Two guards keep a token from being stored where no replica can read it:
+
+- **At the write.** Every write of a YNAB token (a sign-in, a refresh) reads
+  the announced and retired key ids in the same database transaction as the
+  write (on Postgres, holding them `FOR SHARE`; the retirement takes the
+  retired row `FOR UPDATE` first, so one waits for the other). A write under
+  an older key is refused and nothing is stored. The user gets the same
+  authorization error as for any failed refresh or sign-in, and connects
+  again. This covers a request that passed its key check and then stalled.
+- **The grace outlasts every request.** The hour between the announcement
+  and the retirement is longer than the longest request that writes a token:
+  the YNAB callback's 10-minute deadline, plus the request ceiling
+  (`MCP_REQUEST_TIMEOUT_MS`, at most 5 minutes), plus the database time
+  limits. The server refuses to start if a configuration would make that
+  total reach the hour, so in practice a write that passed its check before
+  the announcement has always landed, and held the retirement back, before
+  the retirement.
 
 From then on every replica refuses `v1` and those key ids, so an old
 ciphertext restored from a backup can't get round the binding. The binding
@@ -816,7 +843,7 @@ any MCP client that supports the `prompts` capability:
 - Always run behind TLS; enable DNS-rebinding protection with an allowlist.
 - `memory` storage is for evaluation only — it is not durable and not shared across
   replicas. For multiple replicas, use `postgres` (the in-flight caps, rate
-  limits and caches are currently in-process; a shared store would be a future
+  limits, write cap and caches are currently in-process; a shared store would be a future
   enhancement). YNAB token refreshes are coordinated through the database; see
   "Several replicas: YNAB token refresh".
 

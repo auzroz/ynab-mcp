@@ -46,7 +46,9 @@ import {
   RAISE_FLOOR_SQL,
   RETIRED_FLOOR_KEY,
   RETIRING_FLOOR_KEY,
+  assertFloorAllows,
   compareKeyCheck,
+  floorsFromRows,
   keyCheckMetaKey,
   parseRetiredFloor,
   signInCiphertext,
@@ -316,7 +318,25 @@ const upsertUserParams = (rec: UserRecord, now: number = Date.now()): unknown[] 
  * access token (#48) and stamps `last_seen_at` (#54e).
  */
 async function applyStagedUser(client: PoolClient, user: UserRecord, now: number): Promise<void> {
+  await guardCiphertext(client, user.encryptedRefreshToken);
   await client.query(UPSERT_USER_SQL, upsertUserParams(user, now));
+}
+
+/**
+ * The persistence-time key floor guard (#57b), inside the write's
+ * transaction: read both floors FOR SHARE and throw KeyRetiredError when
+ * `ciphertext` is under a key id below either. The retirement takes the
+ * retired floor's row FOR UPDATE before its compare-and-set, so either it
+ * waits for this transaction (and then sees its users row, and holds back),
+ * or this lock waits for the retirement (and then reads the new floor, and
+ * refuses). The rows exist from startup (ensureKeyFloorRows).
+ */
+async function guardCiphertext(client: PoolClient, ciphertext: string): Promise<void> {
+  const res = await client.query<{ key: string; value: string }>(
+    'SELECT key, value FROM schema_meta WHERE key = $1 OR key = $2 FOR SHARE',
+    [RETIRED_FLOOR_KEY, RETIRING_FLOOR_KEY]
+  );
+  assertFloorAllows(floorsFromRows(res.rows), ciphertext);
 }
 
 const INSERT_AUTH_CODE_SQL = `INSERT INTO auth_codes
@@ -624,7 +644,10 @@ export class PostgresStorage implements Storage, OAuthRowStore {
   // Users + YNAB tokens
 
   async upsertUser(rec: UserRecord): Promise<void> {
-    await this.db.query(UPSERT_USER_SQL, upsertUserParams(rec));
+    await this.inTransaction(async (client) => {
+      await guardCiphertext(client, rec.encryptedRefreshToken);
+      await client.query(UPSERT_USER_SQL, upsertUserParams(rec));
+    });
   }
 
   async getUser(userId: string): Promise<UserRecord | undefined> {
@@ -643,19 +666,25 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     // row. It sets only the tokens (and, after a refresh, clears the lease and
     // stamps last_seen_at), so a re-consent's access level is kept, and
     // RETURNING hands back the level as stored.
-    const res = refreshed
-      ? await this.db.query<UserRow>(
-          `UPDATE users SET encrypted_refresh_token = $1, updated_at = $2, encrypted_access_token = $3,
-             access_token_expires_at = $4, refresh_lease_holder = NULL, refresh_lease_until = NULL, last_seen_at = $2
-           WHERE user_id = $5 AND encrypted_refresh_token = $6 RETURNING *`,
-          [newCiphertext, refreshed.now, refreshed.encryptedAccessToken, refreshed.expiresAt, userId, oldCiphertext]
-        )
-      : await this.db.query<UserRow>(
-          `UPDATE users SET encrypted_refresh_token = $1, updated_at = $2
-           WHERE user_id = $3 AND encrypted_refresh_token = $4 RETURNING *`,
-          [newCiphertext, Date.now(), userId, oldCiphertext]
-        );
-    const row = res.rows[0];
+    // The floor read (FOR SHARE) and the write in one short transaction
+    // (#57b), on both ciphertexts a refresh writes; the YNAB call is over by now.
+    const row = await this.inTransaction(async (client) => {
+      await guardCiphertext(client, newCiphertext);
+      if (refreshed) await guardCiphertext(client, refreshed.encryptedAccessToken);
+      const res = refreshed
+        ? await client.query<UserRow>(
+            `UPDATE users SET encrypted_refresh_token = $1, updated_at = $2, encrypted_access_token = $3,
+               access_token_expires_at = $4, refresh_lease_holder = NULL, refresh_lease_until = NULL, last_seen_at = $2
+             WHERE user_id = $5 AND encrypted_refresh_token = $6 RETURNING *`,
+            [newCiphertext, refreshed.now, refreshed.encryptedAccessToken, refreshed.expiresAt, userId, oldCiphertext]
+          )
+        : await client.query<UserRow>(
+            `UPDATE users SET encrypted_refresh_token = $1, updated_at = $2
+             WHERE user_id = $3 AND encrypted_refresh_token = $4 RETURNING *`,
+            [newCiphertext, Date.now(), userId, oldCiphertext]
+          );
+      return res.rows[0];
+    });
     return row ? userFromRow(row) : undefined;
   }
 
@@ -756,11 +785,14 @@ export class PostgresStorage implements Storage, OAuthRowStore {
       'SELECT key, value FROM schema_meta WHERE key = $1 OR key = $2',
       [RETIRED_FLOOR_KEY, RETIRING_FLOOR_KEY]
     );
-    const value = (key: string): string | undefined => res.rows.find((r) => r.key === key)?.value;
-    return {
-      retired: parseRetiredFloor(value(RETIRED_FLOOR_KEY)),
-      retiring: parseRetiredFloor(value(RETIRING_FLOOR_KEY), RETIRING_FLOOR_KEY),
-    };
+    return floorsFromRows(res.rows);
+  }
+
+  async ensureKeyFloorRows(): Promise<void> {
+    await this.db.query(
+      "INSERT INTO schema_meta (key, value) VALUES ($1, '0'), ($2, '0') ON CONFLICT (key) DO NOTHING",
+      [RETIRED_FLOOR_KEY, RETIRING_FLOOR_KEY]
+    );
   }
 
   async announceKeyRetirement(floor: number): Promise<number> {
@@ -769,12 +801,22 @@ export class PostgresStorage implements Storage, OAuthRowStore {
   }
 
   async raiseRetiredKeyFloor(floor: number, deadCiphertexts: readonly string[] = []): Promise<number> {
-    await this.db.query(CONDITIONAL_RAISE_FLOOR_SQL.postgres, [
-      RETIRED_FLOOR_KEY,
-      String(floor),
-      floor,
-      [...deadCiphertexts],
-    ]);
+    await this.inTransaction(async (client) => {
+      // Take the floor row FOR UPDATE first: a users write holding it FOR
+      // SHARE (guardCiphertext) commits before the compare-and-set below runs,
+      // so the compare-and-set sees its row; one that comes later waits, then
+      // reads the new floor and refuses.
+      await client.query("INSERT INTO schema_meta (key, value) VALUES ($1, '0') ON CONFLICT (key) DO NOTHING", [
+        RETIRED_FLOOR_KEY,
+      ]);
+      await client.query('SELECT 1 FROM schema_meta WHERE key = $1 FOR UPDATE', [RETIRED_FLOOR_KEY]);
+      await client.query(CONDITIONAL_RAISE_FLOOR_SQL.postgres, [
+        RETIRED_FLOOR_KEY,
+        String(floor),
+        floor,
+        [...deadCiphertexts],
+      ]);
+    });
     return this.getRetiredKeyFloor();
   }
 

@@ -439,6 +439,40 @@ for (const driver of testDrivers) {
         expect(refreshMock).toHaveBeenCalledExactlyOnceWith(YNAB, 'rt0');
       });
 
+      it('a write-back the storage guard refuses (a retirement announced during the YNAB call) takes the same 503 path', async () => {
+        const h = await driver.open();
+        const other = await h.reopen();
+        await seedUnder(h.storage, onKey1);
+        const stored = (await h.storage.getUser('u1'))?.encryptedRefreshToken;
+        const gate = deferred<void>();
+        refreshMock.mockImplementationOnce(async () => {
+          await gate.promise;
+          return { accessToken: 'access-new', refreshToken: 'rt-rotated', expiresAt: Date.now() + 2 * HOUR };
+        });
+        const old = new YnabTokenResolver(h.storage, onKey1, YNAB, Date.now, fast);
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        // assertKeyWritable passes (nothing announced yet); the call is in flight.
+        const inFlight = old.resolve('u1').catch((e: unknown) => e);
+        await calls(1);
+        expect((await other.getUser('u1'))?.refreshLeaseUntil).toBeDefined();
+        await other.announceKeyRetirement(2);
+        gate.resolve();
+
+        const refused = await inFlight;
+        expect(refused).toBeInstanceOf(YnabTokenUnavailableError);
+        expect((refused as YnabTokenUnavailableError).retryAfterSeconds).toBe(30);
+        const row = await other.getUser('u1');
+        expect(row?.encryptedRefreshToken).toBe(stored);
+        expect(row?.encryptedAccessToken).toBeUndefined();
+        expect(row?.refreshLeaseUntil).toBeUndefined();
+        expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+        // Not remembered as failed: the next attempt is refused by the write-path check, before YNAB.
+        const again = await old.accessTokenFor('u1')().catch((e: unknown) => e);
+        expect(again).toBeInstanceOf(YnabAuthUnavailableError);
+        expect(refreshMock).toHaveBeenCalledTimes(1);
+      });
+
       it('a shared access token left under the retired key neither holds the retirement back nor is read after it', async () => {
         const h = await driver.open();
         const keyring = new Encryptor(randomBytes(32).toString('base64'), { keyId: '2', previousKeys: `1:${k1}` });

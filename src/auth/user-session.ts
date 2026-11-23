@@ -111,6 +111,19 @@ export class YnabTokenUnavailableError extends Error {
   }
 }
 
+/**
+ * A KeyRetiredError (#57b: this replica's key is below the key floor), from
+ * the write-path check or from storage refusing the write, as the transient
+ * error the client retries (Q1): an operator problem, a replica left on an
+ * old key, not the user's token, so a reconnect wouldn't help and a retry may
+ * reach a healthy replica. Anything else is returned unchanged.
+ */
+function keyRetiredAsUnavailable(error: unknown): unknown {
+  return error instanceof KeyRetiredError
+    ? new YnabTokenUnavailableError(KEY_RETIRED_RETRY_AFTER_SEC, sanitizeErrorMessage(error))
+    : error;
+}
+
 /** Another replica held the refresh lease for longer than the wait bound (#48). Transient, not remembered as a failure. */
 export class RefreshLeaseTimeoutError extends YnabTokenUnavailableError {
   constructor(retryAfterSeconds: number = TOKEN_RETRY_AFTER_SEC) {
@@ -391,13 +404,7 @@ export class YnabTokenResolver {
       await assertKeyWritable(this.storage, this.encryptor);
     } catch (error) {
       await this.release(userId, holder);
-      // An operator problem (a replica left on an old key), not the user's
-      // token: transient (Q1), so the client retries, possibly on a healthy
-      // replica, and nothing is remembered. assertKeyWritable logged it loudly.
-      if (error instanceof KeyRetiredError) {
-        throw new YnabTokenUnavailableError(KEY_RETIRED_RETRY_AFTER_SEC, sanitizeErrorMessage(error));
-      }
-      throw error;
+      throw keyRetiredAsUnavailable(error);
     }
     try {
       refreshToken = this.encryptor.decrypt(user.encryptedRefreshToken, context);
@@ -433,24 +440,29 @@ export class YnabTokenResolver {
       expiresAt: set.expiresAt,
       now: this.now(),
     };
-    let stored = await this.storage.updateUserRefreshToken(
-      userId,
-      user.encryptedRefreshToken,
-      newCiphertext,
-      refreshed
-    );
+    // Storage refuses the write itself (KeyRetiredError, #57b) when a
+    // retirement landed during the YNAB call: the lease is freed, nothing is
+    // stored or remembered, and the request gets the same 503 as a refusal
+    // before the call.
+    const writeBack = async (oldCiphertext: string): Promise<UserRecord | undefined> => {
+      try {
+        return await this.storage.updateUserRefreshToken(userId, oldCiphertext, newCiphertext, refreshed);
+      } catch (error) {
+        if (error instanceof KeyRetiredError) {
+          console.error(`[Rekey] ${error.message}`);
+          await this.release(userId, holder);
+        }
+        throw keyRetiredAsUnavailable(error);
+      }
+    };
+    let stored = await writeBack(user.encryptedRefreshToken);
     if (!stored) {
       let current = await this.storage.getUser(userId);
       // The rekey job (#57b) moved the same YNAB token to the current key
       // meanwhile: that token is spent now, so write over its new ciphertext
       // instead of refreshing again from it.
       if (current && generationOf(current) === generationOf(user) && this.holdsToken(current, refreshToken)) {
-        stored = await this.storage.updateUserRefreshToken(
-          userId,
-          current.encryptedRefreshToken,
-          newCiphertext,
-          refreshed
-        );
+        stored = await writeBack(current.encryptedRefreshToken);
         if (!stored) current = await this.storage.getUser(userId);
       }
       if (!stored) {

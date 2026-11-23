@@ -23,7 +23,7 @@ import {
   InvalidPromptArgumentsError,
 } from './prompts/index.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
-import { formatErrorResponse, ReadOnlyModeError } from './utils/errors.js';
+import { formatErrorResponse, isInputValidationError, ReadOnlyModeError } from './utils/errors.js';
 import { assertSafeToolInput } from './utils/input-guard.js';
 
 /**
@@ -46,6 +46,8 @@ export interface UserContext {
   /** Longest wait for a rate-limit token in ms (default 2000; 0 = never wait). */
   rateLimitMaxWaitMs?: number | undefined;
   cacheTtlMs: number;
+  /** Write requests per user per hour (#61c); 0 = no cap. Default 20. */
+  writeLimitPerHour?: number | undefined;
 }
 
 /**
@@ -107,7 +109,7 @@ export function buildYnabClient(
     components.auditLog,
     components.deltaCache,
     components.feedState,
-    { breaker: components.breaker, deadline, onUnauthorized: ctx.onUnauthorized }
+    { breaker: components.breaker, deadline, writeLimiter: components.writeLimiter, onUnauthorized: ctx.onUnauthorized }
   );
 }
 
@@ -212,7 +214,20 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
       if (ynabClient.isReadOnly() && writeToolNames.has(name)) {
         throw new ReadOnlyModeError(name);
       }
-      const call = (): Promise<string> => handleToolCall(name, args ?? {}, ynabClient);
+      // The per-user write cap (#61c, D-8): checked here, once per write tool
+      // call, for every transport and every non-read-only tool, before the
+      // handler and so before any YNAB request. A bulk call counts as one.
+      // A call that fails Zod input validation never reaches YNAB, so it gives
+      // its slot back; a call YNAB rejects still used quota and keeps it.
+      const releaseSlot = writeToolNames.has(name) ? ynabClient.admitWrite(name) : undefined;
+      const call = async (): Promise<string> => {
+        try {
+          return await handleToolCall(name, args ?? {}, ynabClient);
+        } catch (error) {
+          if (releaseSlot !== undefined && isInputValidationError(error)) releaseSlot();
+          throw error;
+        }
+      };
       let result: string;
       if (toolCalls === undefined) {
         result = await call();
@@ -222,6 +237,10 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
         const outcome = await runWithin(toolCalls, call);
         if (!outcome.done) {
           const outcomeUnknown = outcome.started && writeToolNames.has(name);
+          // The handler never ran (deadline already passed, or the request had
+          // ended): nothing reached YNAB, so the slot goes back. A write that
+          // started and timed out keeps it, since it may have reached YNAB.
+          if (!outcome.started) releaseSlot?.();
           if (outcome.started) {
             console.error(`[Request] tools/call reached its deadline${outcomeUnknown ? ' (write; outcome unknown)' : ''}`);
           }
@@ -301,6 +320,7 @@ export function createStdioServerFactory(config: Config): McpServerFactory {
     rateLimitPerHour: config.rateLimitPerHour,
     rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
     cacheTtlMs: config.cacheTtlMs,
+    writeLimitPerHour: config.writeLimitPerHour,
   });
   return () => createServerFromClient(client);
 }

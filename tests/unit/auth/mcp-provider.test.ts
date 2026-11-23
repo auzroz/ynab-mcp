@@ -378,6 +378,27 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
     errorSpy.mockRestore();
   });
 
+  it('a sign-in that passed the key check and paused past a retirement is refused at the write (#57b)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { provider, storage } = makeProvider(); // keyring on key 1
+    const { state, nonce } = await pendingState(provider);
+    // The check passes; while the YNAB exchange is in flight, another replica
+    // (on key 2) announces and then raises the retirement.
+    exchangeCodeMock.mockImplementationOnce(async () => {
+      await storage.announceKeyRetirement(2);
+      expect(await storage.raiseRetiredKeyFloor(2)).toBe(2);
+      return { accessToken: 'ya', refreshToken: 'yr', expiresAt: Date.now() + 3_600_000 };
+    });
+    const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+    expect(url.searchParams.get('error')).toBe('server_error');
+    expect(exchangeCodeMock).toHaveBeenCalledTimes(1);
+    // Nothing unreadable was stored, and the retirement stands.
+    expect(await storage.getUser('ynab-user-1')).toBeUndefined();
+    expect(await storage.getKeyFloors()).toEqual({ retired: 2, retiring: 2 });
+    expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+    errorSpy.mockRestore();
+  });
+
   it('denyAuthorization throws for an unknown state', async () => {
     const { provider } = makeProvider();
     await expect(provider.denyAuthorization('bogus', 'access_denied', 'nonce')).rejects.toBeInstanceOf(InvalidGrantError);

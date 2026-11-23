@@ -774,6 +774,19 @@ export interface CiphertextStore {
    */
   getKeyFloors(): Promise<KeyFloors>;
   /**
+   * Make sure both floor rows exist (`0` when absent), so writers can lock
+   * them (Postgres: FOR SHARE) against a concurrent retirement. Called at
+   * startup; idempotent.
+   *
+   * The persistence-time guard (#57b): every write that stores a YNAB
+   * refresh-token ciphertext in `users` ({@link Storage.upsertUser},
+   * {@link Storage.updateUserRefreshToken}, {@link Storage.completeAuthorization},
+   * {@link OAuthRowStore.saveAuthorizationCode}) reads both floors in the same
+   * transaction and throws `KeyRetiredError` (src/storage/encryption-meta.ts),
+   * writing nothing, when the ciphertext's key id is below either.
+   */
+  ensureKeyFloorRows(): Promise<void>;
+  /**
    * Announce that key ids below `floor` (and `v1`) are about to be retired:
    * raise `encryption_retiring_below` to `floor` when that is higher, in one
    * statement (concurrent announcements keep the higher), and return the

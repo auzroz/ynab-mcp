@@ -345,6 +345,38 @@ describe('YnabTokenResolver and the rekey job (#57b)', () => {
     errorSpy.mockRestore();
   });
 
+  it('a refresh that passed the key check and paused past a retirement is refused at the write-back', async () => {
+    const storage = new MemoryStorage();
+    const k1 = randomBytes(32).toString('base64');
+    const k2 = randomBytes(32).toString('base64');
+    const lagging = new Encryptor(k1, { keyId: '1', previousKeys: `2:${k2}` }); // phase A: key 2 read-only
+    const current = new Encryptor(k2, { keyId: '2', previousKeys: `1:${k1}` });
+    await storage.upsertUser({
+      userId: 'u1',
+      grantedScope: 'read-only',
+      encryptedRefreshToken: lagging.encrypt('rt0', refreshTokenContext('u1')),
+      updatedAt: Date.now(),
+    });
+    const resolver = new YnabTokenResolver(storage, lagging, { clientId: 'cid', clientSecret: 'sec' });
+    // During the YNAB call, a replica on key 2 rekeys the row, announces and retires key 1.
+    refreshAccessTokenMock.mockImplementationOnce(async () => {
+      const opts = { log: () => undefined, graceMs: 0 };
+      const state = {};
+      await rekeyPass(storage, current, state, opts); // rekeys and announces
+      await rekeyPass(storage, current, state, opts); // retires
+      return { accessToken: 'access-fresh', refreshToken: 'rt-rotated', expiresAt: Date.now() + 3600_000 };
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(resolver.accessTokenFor('u1')()).rejects.toBeInstanceOf(YnabAuthError);
+    expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+    errorSpy.mockRestore();
+    // No key-1 ciphertext was stored: the row is the replica on key 2's, readable by it; the retirement stands.
+    const stored = (await storage.getUser('u1'))?.encryptedRefreshToken ?? '';
+    expect(stored.startsWith('v2.2.')).toBe(true);
+    expect(current.decrypt(stored, refreshTokenContext('u1'))).toBe('rt0');
+    expect(await storage.getKeyFloors()).toEqual({ retired: 2, retiring: 2 });
+  });
+
   it("refuses another user's ciphertext copied into the row, before calling YNAB", async () => {
     const { storage, encryptor, resolver } = setup();
     await storage.upsertUser({

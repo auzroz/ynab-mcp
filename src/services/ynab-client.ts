@@ -10,7 +10,16 @@ import type { RequestLimiter } from './rate-limiter.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
 import { outboundFetch } from './outbound.js';
 import type { Cache } from './cache.js';
-import { CircuitOpenError, OutboundTimeoutError, ReadOnlyModeError, YnabApiError, YnabAuthError } from '../utils/errors.js';
+import {
+  CircuitOpenError,
+  OutboundTimeoutError,
+  ReadOnlyModeError,
+  WriteLimitError,
+  YnabApiError,
+  YnabAuthError,
+} from '../utils/errors.js';
+import { WriteLimiter } from './write-limiter.js';
+import { WRITE_LIMIT_DEFAULT_PER_HOUR } from '../config/write-limit.js';
 import { getAuditLog, type AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { isBudgetIdSentinel, type BudgetIdSentinel } from '../utils/schemas.js';
@@ -46,6 +55,8 @@ export interface TransactionFeedState {
 export interface YnabClientOptions {
   /** The user's circuit breaker (#58); none: no breaking. */
   breaker?: CircuitBreaker | undefined;
+  /** The user's write cap (#61c); a client built without one gets the default cap of its own. */
+  writeLimiter?: WriteLimiter | undefined;
   /**
    * The request's absolute deadline (epoch ms). No YNAB call outlives it and
    * none starts after it, so work a timed-out request left running ends with
@@ -359,6 +370,7 @@ export class YnabClient {
   // Per user in HTTP mode (UserComponents), so it outlives this client.
   private readonly feedState: TransactionFeedState;
   private readonly breaker: CircuitBreaker | undefined;
+  private readonly writeLimiter: WriteLimiter;
 
   // Track server knowledge for delta sync. Keyed by budget, resource and any
   // request parameters that change the result set (see knowledgeKey), because a
@@ -459,6 +471,7 @@ export class YnabClient {
     this.deltaCache = deltaCache;
     this.feedState = feedState;
     this.breaker = options.breaker;
+    this.writeLimiter = options.writeLimiter ?? new WriteLimiter(WRITE_LIMIT_DEFAULT_PER_HOUR, options.now);
   }
 
   // In-flight budget alias lookups, so concurrent callers share one request.
@@ -520,6 +533,34 @@ export class YnabClient {
    */
   isReadOnly(): boolean {
     return this.readOnly;
+  }
+
+  /**
+   * Count one write request against the user's per-hour cap (#61c). The one
+   * place the cap is enforced: the tools/call handler calls it for every
+   * non-read-only tool before the handler runs, so a refused write never
+   * reaches YNAB and takes no YNAB rate-limit token. A bulk call is one write
+   * request. The first refusal of each episode is audited (the log keeps 1000
+   * entries, so a looping agent cannot push real entries out).
+   * Returns a handle that gives the slot back; the caller uses it only when
+   * the call failed input validation, before any YNAB request.
+   * @throws WriteLimitError when the cap is used up
+   */
+  admitWrite(tool: string): () => void {
+    const admission = this.writeLimiter.tryAcquire();
+    if (admission.allowed) return admission.release;
+    if (admission.firstRefusal) {
+      this.auditLog.log({
+        operation: 'write_limit_refused',
+        tool,
+        budgetId: 'n/a',
+        resourceType: 'write_limit',
+        details: { limit_per_hour: admission.limit, resets_at: new Date(admission.resetsAt).toISOString() },
+        success: false,
+        error: 'Write limit reached',
+      });
+    }
+    throw new WriteLimitError(admission.limit, admission.resetsAt, admission.retryAfterMs);
   }
 
   /**

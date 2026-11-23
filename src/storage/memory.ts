@@ -41,7 +41,7 @@ import type {
   RefreshedAccessToken,
   InactiveUserCondition,
 } from './types.js';
-import { compareKeyCheck, isBelowFloor, keyCheckMetaKey, signInCiphertext } from './encryption-meta.js';
+import { assertFloorAllows, compareKeyCheck, isBelowFloor, keyCheckMetaKey, signInCiphertext } from './encryption-meta.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 import {
   CONSUMED_CREDENTIAL_RETENTION_MS,
@@ -150,7 +150,12 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   // Users + YNAB tokens
 
   async upsertUser(rec: UserRecord): Promise<void> {
+    this.guardCiphertext(rec.encryptedRefreshToken);
     this.putUser(rec);
+  }
+  /** The persistence-time key floor guard (#57b): throws KeyRetiredError before anything is written. */
+  private guardCiphertext(ciphertext: string): void {
+    assertFloorAllows({ retired: this.retiredKeyFloor, retiring: this.retiringKeyFloor }, ciphertext);
   }
   /**
    * The users-row write of a completed sign-in (#94): the one place a sign-in
@@ -193,6 +198,9 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   ): Promise<UserRecord | undefined> {
     const rec = this.users.get(userId);
     if (!rec || rec.encryptedRefreshToken !== oldCiphertext) return undefined;
+    // The persistence-time floor guard (#57b), on both ciphertexts a refresh writes.
+    this.guardCiphertext(newCiphertext);
+    if (refreshed) this.guardCiphertext(refreshed.encryptedAccessToken);
     const updated: StoredUser = refreshed
       ? {
           ...rec,
@@ -275,6 +283,9 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   }
   async getRetiredKeyFloor(): Promise<number> {
     return this.retiredKeyFloor;
+  }
+  async ensureKeyFloorRows(): Promise<void> {
+    // Nothing to lock in memory: every method runs to completion.
   }
   async getKeyFloors(): Promise<KeyFloors> {
     return { retired: this.retiredKeyFloor, retiring: this.retiringKeyFloor };
@@ -517,6 +528,7 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     // Synchronous from the check to the last write, so nothing interleaves.
     const client = this.clients.get(input.code.clientId);
     if (!client) return false;
+    this.guardCiphertext(input.user.encryptedRefreshToken);
     client.lastSeenAt = Date.now();
     this.applyStagedUser(input.user, Date.now());
     this.authCodes.set(input.code.code, input.code);
@@ -701,6 +713,7 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     if (signIn.expiresAt === undefined || signIn.expiresAt < now) return 'no-sign-in';
     const user = userFromSignIn(row.accountId, signIn.payload);
     if (!user) return 'no-sign-in';
+    this.guardCiphertext(user.encryptedRefreshToken);
     // Synchronous from the client check to the last write, so nothing interleaves.
     client.authorizedAt = now;
     this.applyStagedUser(user, now);
