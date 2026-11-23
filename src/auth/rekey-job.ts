@@ -113,14 +113,20 @@ export { KeyRetiredError };
 
 /**
  * The longest a write that passed {@link assertKeyWritable} can take to reach
- * storage, from the check to its last statement:
+ * storage, from the check to its last statement, while the process runs:
  *   - a sign-in: the YNAB callback's deadline (`YNAB_CALLBACK_DEADLINE_MS`,
  *     checked right before the write);
- *   - a refresh: its YNAB call, bounded by the request ceiling
- *     (`MCP_REQUEST_TIMEOUT_MS`);
+ *   - a refresh: its YNAB call, bounded by the outbound timeout
+ *     (`OUTBOUND_TIMEOUT_MS`, lowered to `MCP_REQUEST_TIMEOUT_MS` when that is
+ *     shorter). The request ceiling does NOT bound it: the ceiling ends the
+ *     client's response, but the refresh it started keeps running (it is
+ *     shared by the user's requests) until its own timeouts end it. The
+ *     ceiling is added here only as a conservative allowance;
  *   - either way, then the storage write: a pooled connection and a few
  *     statements, each bounded (src/storage/timeouts.ts).
- * Summed, not maxed, to stay an upper bound whichever path is longest.
+ * Summed, not maxed, to stay an upper bound whichever path is longest. Only a
+ * process that stops running (frozen, suspended) escapes these bounds; see
+ * {@link assertGraceOutlastsWrites}.
  */
 export function longestKeyedWriteMs(requestTimeoutMs: number): number {
   const storageWriteMs = DEFAULT_PG_CONNECTION_TIMEOUT_MS + 8 * DEFAULT_PG_QUERY_TIMEOUT_MS;
@@ -132,9 +138,17 @@ export function longestKeyedWriteMs(requestTimeoutMs: number): number {
  * retirement grace. Why: the retirement is raised only after the announcement
  * has stood for the grace, so every write that passed its check before the
  * announcement must have landed by then (and so holds the raise back). The
- * storage guard (`assertFloorAllows`, src/storage/encryption-meta.ts)
- * refuses a write that lands after the raise anyway; this keeps that refusal
- * for the pathological case, not for an ordinary slow request.
+ * bound is the YNAB and storage timeouts ({@link longestKeyedWriteMs}), not
+ * the request ceiling, which doesn't cancel a refresh. The storage guard
+ * (`assertFloorAllows`, src/storage/encryption-meta.ts) refuses a write that
+ * lands after the raise anyway; this keeps that refusal for the pathological
+ * case, not for an ordinary slow request.
+ *
+ * Accepted residual: a process frozen for longer than the grace, after YNAB
+ * rotated a user's token and before the write, can't keep that token (it
+ * can't encrypt under the new key, and a retired-key ciphertext is refused).
+ * The write is refused, nothing unreadable is stored, and that user
+ * reconnects once.
  */
 export function assertGraceOutlastsWrites(graceMs: number, requestTimeoutMs: number): void {
   const longest = longestKeyedWriteMs(requestTimeoutMs);

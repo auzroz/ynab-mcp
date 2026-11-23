@@ -604,14 +604,23 @@ Two guards keep a token from being stored where no replica can read it:
   The old key is still configured everywhere, so the token is readable, and
   it holds the retirement back until the next pass moves it to the current
   key. Refusing it would only throw away the token YNAB has just rotated.
-- **The grace outlasts every request.** The hour between the announcement
-  and the retirement is longer than the longest request that writes a token:
-  the YNAB callback's 10-minute deadline, plus the request ceiling
-  (`MCP_REQUEST_TIMEOUT_MS`, at most 5 minutes), plus the database time
-  limits. The server refuses to start if a configuration would make that
-  total reach the hour, so in practice a write that passed its check before
-  the announcement has always landed, and held the retirement back, before
-  the retirement.
+- **The grace outlasts every write.** The hour between the announcement and
+  the retirement is longer than the longest time a token write can take
+  after its check. A sign-in is bounded by the YNAB callback's 10-minute
+  deadline. A refresh is bounded by its YNAB call's own timeout (10 seconds),
+  not by `MCP_REQUEST_TIMEOUT_MS`: the request ceiling ends the client's
+  response but doesn't cancel a refresh already under way. Then the write
+  itself is bounded by the database time limits. The server adds these up,
+  with the request ceiling (at most 5 minutes) as a conservative allowance,
+  and refuses to start if a configuration would make the total reach the
+  hour. So a write that passed its check before the announcement has always
+  landed, and held the retirement back, before the retirement.
+- **Accepted residual.** Only a process that stops running escapes those
+  bounds. If a replica's process freezes (suspended, or stalled) for longer
+  than the retirement grace during a rotation, after YNAB has rotated a
+  user's token and before it is stored, that token can't be kept: the write
+  is refused, nothing unreadable is stored, and that user connects again
+  once.
 
 From then on every replica refuses `v1` and those key ids, so an old
 ciphertext restored from a backup can't get round the binding. The binding
