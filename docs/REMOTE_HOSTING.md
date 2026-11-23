@@ -55,6 +55,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_REQUEST_TIMEOUT_MS` | no | Longest a `/mcp` request runs (integer 5000-300000, default `60000`). See "Requests, limits and timeouts" |
 | `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` / `MCP_SESSION_IDLE_TIMEOUT_MS` | no | **Deprecated, no effect** since 0.5.0 (`/mcp` is stateless). Still parsed, so a malformed value refuses to start; a set value logs a warning once at startup. Removed in 0.6 |
 | `RATE_LIMIT_MAX_WAIT_MS` | no | Longest a request waits for a per-user YNAB rate-limit token (integer 0-60000, default `2000`). `0` never waits. Past that, or when another request is already waiting, the tool returns `rate_limited` with `retry_after_seconds` at once, so a burst can't pile up behind the limiter |
+| `YNAB_WRITE_LIMIT_PER_HOUR` | no | Write requests one user may make per hour (integer 0-1000, default `20`; **breaking** in 0.5.0, since writes were previously unlimited). One write tool call counts as 1, so a bulk call is 1. `0` turns the cap off. Counted per user (the YNAB user in oauth mode, the token in header mode), shared by all of that user's clients and requests, in memory: a restart resets it. A refused write returns `write_limit_exceeded` naming the limit and when it resets, and takes no YNAB request. Separate from `RATE_LIMIT_PER_HOUR` |
 | `TRUST_PROXY` | if behind a reverse proxy | Number of proxies between the client and this server whose `X-Forwarded-For` to trust (integer 0-10, default `0`; e.g. `1` behind a single Traefik/Caddy/nginx). Too low and every client shares one rate-limit bucket, so one client can lock out the others; too high and clients can spoof their address. Set it only when the app is reachable solely through the proxy. See "Client addresses and rate limits" |
 | `TRUST_CF_CONNECTING_IP` | no | `true` to take the client address from `CF-Connecting-IP` (default `false`). Separate from `TRUST_PROXY`; turn it on only when the server is reachable solely through Cloudflare. See "Client addresses and rate limits" |
 | `REGISTER_RATE_LIMIT_PER_IP` | no | `/register` requests per client address per hour (integer 1-100000, default `100`) |
@@ -263,7 +264,16 @@ Snapshots are bounded per user (32 snapshots, 20,000 entities, dropped after 30
 minutes unused), so budget roughly that much memory per active user. This state
 is kept for an hour after the user's last request, so a quiet hour doesn't reset
 the rate limit. With several replicas, these caps, the rate limit and the caches
-are per process. In OAuth mode every request looks up the user's YNAB grant and
+are per process.
+
+The write cap (`YNAB_WRITE_LIMIT_PER_HOUR`) is the same kind of per-process,
+in-memory state, held per user next to the rate limiter, the circuit breaker and
+the caches, and shared by all of the user's requests and clients. A restart
+resets it. In header mode, where any token counts as a user, evicting the
+least recently used user entry under load (past 10,000 retained users) can reset it
+too. With several replicas each process counts on its own, so a user can make up
+to the limit per replica. A write call that fails input validation gives its slot
+back; one that YNAB rejects keeps it. In OAuth mode every request looks up the user's YNAB grant and
 access token, refreshing the token when it expires; once the user's YNAB grant
 is gone (or the token can't be refreshed), requests are refused with `401` and
 the client re-authorizes, and a tool call whose token can't be refreshed
@@ -570,7 +580,7 @@ any MCP client that supports the `prompts` capability:
 - Always run behind TLS; enable DNS-rebinding protection with an allowlist.
 - `memory` storage is for evaluation only — it is not durable and not shared across
   replicas. For multiple replicas, use `postgres` (the in-flight caps, rate
-  limits and caches are currently in-process; a shared store would be a future
+  limits, write cap and caches are currently in-process; a shared store would be a future
   enhancement).
 
 ## Interim header mode (single-user)
