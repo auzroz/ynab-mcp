@@ -597,15 +597,20 @@ jobs:
       # registry itself (no local cache: --prefer-online revalidates, and the
       # second check is the URL the MCP Registry's validator fetches) every 15
       # seconds for up to 10 minutes. No credentials: it runs before the OIDC
-      # login.
+      # login. Each probe is bounded: npm gets a 20 s fetch timeout and no
+      # retries (its defaults are 5 minutes and 2 retries), and `timeout 30`
+      # on top, because the fetch timeout doesn't cover a stalled connect;
+      # curl gets 10 s in all. The deadline is checked after every attempt,
+      # so an attempt takes at most about 55 s and the loop's own error
+      # prints well before the step timeout.
       - name: Wait for npm to serve the version
-        timeout-minutes: 11
+        timeout-minutes: 12
         run: |
           set -euo pipefail
           deadline=$(( $(date +%s) + 600 ))
           url="https://registry.npmjs.org/ynab-mcp/${VERSION}"
           while :; do
-            seen="$(npm view "ynab-mcp@${VERSION}" version --prefer-online --registry https://registry.npmjs.org/ 2>/dev/null || true)"
+            seen="$(timeout 30 npm view "ynab-mcp@${VERSION}" version --prefer-online --fetch-timeout=20000 --fetch-retries=0 --registry https://registry.npmjs.org/ 2>/dev/null || true)"
             status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 -H 'Cache-Control: no-cache' "$url" || true)"
             if [ "$seen" = "$VERSION" ] && [ "$status" = "200" ]; then
               echo "npm serves ynab-mcp@${VERSION}."
