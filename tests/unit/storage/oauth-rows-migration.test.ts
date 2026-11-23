@@ -184,12 +184,12 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
       await cleanupDrivers();
     });
 
-    it('creates oauth_rows with its indexes and oauth_clients.converted_at, and stamps schema version 5', async () => {
+    it('creates oauth_rows with its indexes and oauth_clients.converted_at, and stamps the current schema version', async () => {
       const h = await driver.open();
       await makePreM4(h);
       await h.reopen();
-      expect(M4_SCHEMA_VERSION).toBe(SCHEMA_VERSION);
-      expect(await meta(h, 'schema_version')).toBe('5');
+      expect(M4_SCHEMA_VERSION).toBe(5);
+      expect(await meta(h, 'schema_version')).toBe(String(SCHEMA_VERSION));
       const columns =
         driver.kind === 'sqlite'
           ? (await h.sql!('PRAGMA table_info(oauth_rows)')).map((c) => `${String(c['name'])}:${String(c['type'])}:${String(c['notnull'])}`)
@@ -344,7 +344,7 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
       expect(now.find((r) => r.client_id === late)).toMatchObject({ created_at: T + 2 * DAY, authorized_at: T + 2 * DAY });
       expect(now.find((r) => r.client_id === held)).toMatchObject({ payload: { client_id: held, marker: true }, created_at: T, authorized_at: null });
       expect((await oldClients(h)).every((c) => c.converted_at !== null)).toBe(true);
-      expect(await meta(h, 'schema_version')).toBe('5');
+      expect(await meta(h, 'schema_version')).toBe(String(SCHEMA_VERSION));
     });
 
     it('validates with the client schema the driver is given (the library\'s by default)', async () => {

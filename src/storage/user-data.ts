@@ -14,6 +14,7 @@
  */
 
 import type { Dialect } from './migrations.js';
+import type { RetentionPolicy } from '../auth/retention-defaults.js';
 
 /** The id sets `deleteUserData` collects before erasing: the user's 0.4.x token families and oidc-provider grants. */
 export type UserIdSet = 'families' | 'grants';
@@ -67,4 +68,44 @@ export function userDataDeleteParams(
   if (!entry.orIn) return [userId];
   const set = ids[entry.orIn.ids];
   return [userId, dialect === 'postgres' ? [...set] : JSON.stringify(set)];
+}
+
+/**
+ * #54e's live-grant rule: a user with any of these is never erased as
+ * inactive. An oidc-provider token, code or staged sign-in under the user's
+ * account that is unconsumed and unexpired (what `listConnections` reports,
+ * plus a sign-in in flight), or a 0.4.x access token, code or refresh token
+ * not past its limits. The generation rule (`issuedUnderUser`) is not
+ * applied: a dead row of an older generation counts as live, which only
+ * delays the erase until the expiry sweep removes it.
+ *
+ * Parameters (in order, once each, valid on both SQL dialects): see
+ * {@link userLiveGrantParams}.
+ */
+export const USER_LIVE_GRANT_SQL = `SELECT 1 AS live FROM oauth_rows
+    WHERE account_id = $1 AND model IN ('AccessToken', 'RefreshToken', 'AuthorizationCode', 'SignIn')
+      AND consumed_at IS NULL AND (expires_at IS NULL OR expires_at >= $2)
+  UNION ALL SELECT 1 FROM access_tokens WHERE user_id = $3 AND expires_at >= $4
+  UNION ALL SELECT 1 FROM auth_codes WHERE user_id = $5 AND expires_at >= $6
+  UNION ALL SELECT 1 FROM refresh_tokens WHERE user_id = $7
+      AND (issued_at IS NULL OR issued_at >= $8) AND (family_created_at IS NULL OR family_created_at >= $9)
+  LIMIT 1`;
+
+/** The parameters of {@link USER_LIVE_GRANT_SQL}: the user, the clock, and the refresh-token limits as cutoffs. */
+export function userLiveGrantParams(
+  userId: string,
+  now: number,
+  policy: Pick<RetentionPolicy, 'refreshTokenIdleMs' | 'refreshTokenTtlMs'>
+): unknown[] {
+  return [
+    userId,
+    now,
+    userId,
+    now,
+    userId,
+    now,
+    userId,
+    now - policy.refreshTokenIdleMs,
+    now - policy.refreshTokenTtlMs,
+  ];
 }

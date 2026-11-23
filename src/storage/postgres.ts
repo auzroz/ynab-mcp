@@ -37,6 +37,8 @@ import type {
   ConsumeOutcome,
   KeyCheckOutcome,
   StoredUserCiphertext,
+  RefreshedAccessToken,
+  InactiveUserCondition,
 } from './types.js';
 import {
   RAISE_FLOOR_SQL,
@@ -71,7 +73,14 @@ import {
   runSqlSweep,
   type ConnectionRow,
 } from './retention.js';
-import { USER_DATA_TABLES, USER_GRANTS_SQL, userDataDeleteParams, userDataDeleteSql } from './user-data.js';
+import {
+  USER_DATA_TABLES,
+  USER_GRANTS_SQL,
+  USER_LIVE_GRANT_SQL,
+  userDataDeleteParams,
+  userDataDeleteSql,
+  userLiveGrantParams,
+} from './user-data.js';
 
 export interface PostgresStorageOptions extends StorageDriverOptions {
   connectionString: string;
@@ -85,6 +94,10 @@ interface UserRow extends QueryResultRow {
   encrypted_refresh_token: string;
   updated_at: string | number;
   created_at: string | number | null;
+  encrypted_access_token: string | null;
+  access_token_expires_at: string | number | null;
+  refresh_lease_until: string | number | null;
+  last_seen_at: string | number | null;
 }
 
 interface ClientRow extends QueryResultRow {
@@ -162,6 +175,10 @@ function userFromRow(row: UserRow): UserRecord {
     encryptedRefreshToken: row.encrypted_refresh_token,
     updatedAt: toMillis(row.updated_at),
     ...(row.created_at !== null ? { createdAt: toMillis(row.created_at) } : {}),
+    ...(row.encrypted_access_token !== null ? { encryptedAccessToken: row.encrypted_access_token } : {}),
+    ...(row.access_token_expires_at !== null ? { accessTokenExpiresAt: toMillis(row.access_token_expires_at) } : {}),
+    ...(row.refresh_lease_until !== null ? { refreshLeaseUntil: toMillis(row.refresh_lease_until) } : {}),
+    ...(row.last_seen_at !== null ? { lastSeenAt: toMillis(row.last_seen_at) } : {}),
   };
 }
 
@@ -263,14 +280,22 @@ const HOLD_USER = 'SELECT created_at FROM users WHERE user_id = $1 FOR KEY SHARE
 
 /**
  * created_at is written by the insert only (the account's generation), from the
- * storage clock that also stamps issued_at.
+ * storage clock that also stamps issued_at. Every write is a sign-in or
+ * re-consent: the shared access token and the refresh lease are cleared (#48;
+ * the new grant may have another YNAB scope), and `last_seen_at` is stamped
+ * (#54e) from the same clock.
  */
-const UPSERT_USER_SQL = `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at, created_at)
-       VALUES ($1, $2, $3, $4, $5)
+const UPSERT_USER_SQL = `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at, created_at, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, $5)
        ON CONFLICT (user_id) DO UPDATE SET
          granted_scope = EXCLUDED.granted_scope,
          encrypted_refresh_token = EXCLUDED.encrypted_refresh_token,
-         updated_at = EXCLUDED.updated_at`;
+         updated_at = EXCLUDED.updated_at,
+         encrypted_access_token = NULL,
+         access_token_expires_at = NULL,
+         refresh_lease_holder = NULL,
+         refresh_lease_until = NULL,
+         last_seen_at = EXCLUDED.last_seen_at`;
 const upsertUserParams = (rec: UserRecord, now: number = Date.now()): unknown[] => [
   rec.userId,
   rec.grantedScope,
@@ -284,8 +309,8 @@ const upsertUserParams = (rec: UserRecord, now: number = Date.now()): unknown[] 
  * writes the user, inside its transaction. `created_at` is `now` on insert,
  * the same instant the sign-in's code is stamped with. The YNAB refresh
  * token's ciphertext is stored exactly as given (#57b binds its AAD to this
- * column). #48 resets the user's refresh lease and shared access token here,
- * and #54's inactive-user erase stamps `last_seen_at` here.
+ * column). As every upsert, it resets the user's refresh lease and shared
+ * access token (#48) and stamps `last_seen_at` (#54e).
  */
 async function applyStagedUser(client: PoolClient, user: UserRecord, now: number): Promise<void> {
   await client.query(UPSERT_USER_SQL, upsertUserParams(user, now));
@@ -608,18 +633,48 @@ export class PostgresStorage implements Storage, OAuthRowStore {
   async updateUserRefreshToken(
     userId: string,
     oldCiphertext: string,
-    newCiphertext: string
+    newCiphertext: string,
+    refreshed?: RefreshedAccessToken
   ): Promise<UserRecord | undefined> {
     // An UPDATE, never an upsert: a refresh that lost to deleteUserData finds no
-    // row. It sets only the token, so a re-consent's access level is kept, and
+    // row. It sets only the tokens (and, after a refresh, clears the lease and
+    // stamps last_seen_at), so a re-consent's access level is kept, and
     // RETURNING hands back the level as stored.
+    const res = refreshed
+      ? await this.db.query<UserRow>(
+          `UPDATE users SET encrypted_refresh_token = $1, updated_at = $2, encrypted_access_token = $3,
+             access_token_expires_at = $4, refresh_lease_holder = NULL, refresh_lease_until = NULL, last_seen_at = $2
+           WHERE user_id = $5 AND encrypted_refresh_token = $6 RETURNING *`,
+          [newCiphertext, refreshed.now, refreshed.encryptedAccessToken, refreshed.expiresAt, userId, oldCiphertext]
+        )
+      : await this.db.query<UserRow>(
+          `UPDATE users SET encrypted_refresh_token = $1, updated_at = $2
+           WHERE user_id = $3 AND encrypted_refresh_token = $4 RETURNING *`,
+          [newCiphertext, Date.now(), userId, oldCiphertext]
+        );
+    const row = res.rows[0];
+    return row ? userFromRow(row) : undefined;
+  }
+
+  async claimRefreshLease(userId: string, holder: string, now: number, until: number): Promise<UserRecord | undefined> {
+    // One auto-commit statement: Postgres re-checks the WHERE against the row
+    // a concurrent claim committed, so of two claims one wins. No transaction
+    // or connection is held afterwards.
     const res = await this.db.query<UserRow>(
-      `UPDATE users SET encrypted_refresh_token = $1, updated_at = $2
-       WHERE user_id = $3 AND encrypted_refresh_token = $4 RETURNING *`,
-      [newCiphertext, Date.now(), userId, oldCiphertext]
+      `UPDATE users SET refresh_lease_holder = $1, refresh_lease_until = $2
+       WHERE user_id = $3 AND (refresh_lease_until IS NULL OR refresh_lease_until <= $4) RETURNING *`,
+      [holder, until, userId, now]
     );
     const row = res.rows[0];
     return row ? userFromRow(row) : undefined;
+  }
+
+  async releaseRefreshLease(userId: string, holder: string): Promise<void> {
+    await this.db.query(
+      `UPDATE users SET refresh_lease_holder = NULL, refresh_lease_until = NULL
+       WHERE user_id = $1 AND refresh_lease_holder = $2`,
+      [userId, holder]
+    );
   }
 
   async deleteUser(userId: string): Promise<void> {
@@ -633,13 +688,25 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     afterUserId: string | undefined,
     limit: number
   ): Promise<StoredUserCiphertext[]> {
-    const res = await this.db.query<{ user_id: string; encrypted_refresh_token: string }>(
-      `SELECT user_id, encrypted_refresh_token FROM users
-       WHERE substr(encrypted_refresh_token, 1, $1) <> $2 AND ($3::text IS NULL OR user_id > $3)
+    const res = await this.db.query<{
+      user_id: string;
+      encrypted_refresh_token: string;
+      encrypted_access_token: string | null;
+      access_token_expires_at: string | number | null;
+    }>(
+      `SELECT user_id, encrypted_refresh_token, encrypted_access_token, access_token_expires_at FROM users
+       WHERE (substr(encrypted_refresh_token, 1, $1) <> $2
+              OR (encrypted_access_token IS NOT NULL AND substr(encrypted_access_token, 1, $1) <> $2))
+         AND ($3::text IS NULL OR user_id > $3)
        ORDER BY user_id LIMIT $4`,
       [currentPrefix.length, currentPrefix, afterUserId ?? null, limit]
     );
-    return res.rows.map((r) => ({ userId: r.user_id, encryptedRefreshToken: r.encrypted_refresh_token }));
+    return res.rows.map((r) => ({
+      userId: r.user_id,
+      encryptedRefreshToken: r.encrypted_refresh_token,
+      encryptedAccessToken: r.encrypted_access_token ?? undefined,
+      accessTokenExpiresAt: optionalMillis(r.access_token_expires_at),
+    }));
   }
 
   async rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
@@ -647,6 +714,21 @@ export class PostgresStorage implements Storage, OAuthRowStore {
       'UPDATE users SET encrypted_refresh_token = $1 WHERE user_id = $2 AND encrypted_refresh_token = $3',
       [newCiphertext, userId, oldCiphertext]
     );
+    return res.rowCount === 1;
+  }
+
+  async rekeyUserAccessToken(userId: string, oldCiphertext: string, newCiphertext: string | undefined): Promise<boolean> {
+    const res =
+      newCiphertext === undefined
+        ? await this.db.query(
+            `UPDATE users SET encrypted_access_token = NULL, access_token_expires_at = NULL
+             WHERE user_id = $1 AND encrypted_access_token = $2`,
+            [userId, oldCiphertext]
+          )
+        : await this.db.query(
+            'UPDATE users SET encrypted_access_token = $1 WHERE user_id = $2 AND encrypted_access_token = $3',
+            [newCiphertext, userId, oldCiphertext]
+          );
     return res.rowCount === 1;
   }
 
@@ -682,8 +764,8 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     return compareKeyCheck(res.rows[0]?.value ?? '', check);
   }
 
-  async deleteUserData(userId: string): Promise<void> {
-    await this.inTransaction(async (client) => {
+  async deleteUserData(userId: string, onlyIf?: InactiveUserCondition): Promise<boolean> {
+    return this.refusable(async (client) => {
       await client.query(LOCK_ACCOUNT, [userId]);
       // The user's family locks, in sorted order (deleteUserData is the only
       // transaction that takes more than one), so a rotation, code exchange or
@@ -701,6 +783,21 @@ export class PostgresStorage implements Storage, OAuthRowStore {
         .map((r) => r.grant_id)
         .sort();
       for (const id of [...new Set([...families, ...grants])].sort()) await client.query(LOCK_FAMILY, [id]);
+      if (onlyIf) {
+        // #54e: re-check the inactive-user condition under the locks. The user
+        // row FOR UPDATE (after the family locks, the order token minting
+        // takes HOLD_USER in) waits for a sign-in, refresh write-back or token
+        // mint in flight; every later statement then sees what it committed,
+        // and a later one waits for this transaction and finds the row gone.
+        const user = await client.query<{ last_seen_at: string | number | null }>(
+          'SELECT last_seen_at FROM users WHERE user_id = $1 FOR UPDATE',
+          [userId]
+        );
+        const lastSeen = optionalMillis(user.rows[0]?.last_seen_at);
+        if (lastSeen === undefined || lastSeen >= onlyIf.seenBefore) throw new Refusal(false);
+        const live = await client.query(USER_LIVE_GRANT_SQL, userLiveGrantParams(userId, onlyIf.now, this.retention));
+        if ((live.rowCount ?? 0) > 0) throw new Refusal(false);
+      }
       // Every table of the catalog, in its order (src/storage/user-data.ts). The
       // user row first: a transaction minting tokens holds it FOR KEY SHARE
       // (HOLD_USER), so it either commits before this DELETE (and its tokens,
@@ -716,7 +813,18 @@ export class PostgresStorage implements Storage, OAuthRowStore {
           userDataDeleteParams(entry, 'postgres', userId, { families, grants })
         );
       }
+      return true;
     });
+  }
+
+  async listInactiveUsers(seenBefore: number, afterUserId: string | undefined, limit: number): Promise<string[]> {
+    const res = await this.db.query<{ user_id: string }>(
+      `SELECT user_id FROM users
+       WHERE last_seen_at IS NOT NULL AND last_seen_at < $1 AND ($2::text IS NULL OR user_id > $2)
+       ORDER BY user_id LIMIT $3`,
+      [seenBefore, afterUserId ?? null, limit]
+    );
+    return res.rows.map((r) => r.user_id);
   }
 
   // Account self-service

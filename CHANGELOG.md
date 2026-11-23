@@ -44,8 +44,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so one copied into another user's row before the upgrade is re-encrypted as
   that row's.
 
+### Added
+
+- Optional erase of inactive users (#54): `MCP_INACTIVE_USER_DAYS` (30 to
+  3650, off by default). A background job erases each user who has had no
+  sign-in and no YNAB token refresh for that many days and has no live
+  connection. It re-checks both inside the erase's transaction and logs a
+  count only. For existing users the clock starts at the upgrade.
+
 ### Fixed
 
+- Replicas sharing one database no longer race to refresh a user's YNAB token
+  (#48). Before, both could spend the same refresh token, and the user had to
+  reconnect. One replica now claims a lease on the user row and refreshes
+  without holding a database connection during the YNAB call. It stores the
+  new YNAB access token, encrypted and bound to its own column, so the others
+  use it instead of calling YNAB. A replica that loses the claim waits up to 15
+  seconds, then fails the request instead of refreshing. A lease whose holder
+  crashed expires after 45 seconds. The rekey job also re-encrypts the stored
+  access token, and its log line counts it. This needs schema 6: five
+  nullable columns on `users`, added on startup.
 - Per-budget caches are keyed by the budget's UUID, never by the `last-used`
   or `default` alias (#66). A `budget_id` of `last-used` (or the default when
   `YNAB_BUDGET_ID` is unset) is resolved to the budget's UUID with one request

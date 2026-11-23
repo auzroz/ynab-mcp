@@ -127,7 +127,7 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
         await storage.upsertUser(user);
 
         const fetched = await storage.getUser(user.userId);
-        expect(fetched).toEqual({ ...user, createdAt: expect.any(Number) });
+        expect(fetched).toEqual({ ...user, createdAt: expect.any(Number), lastSeenAt: expect.any(Number) });
         const createdAt = fetched?.createdAt;
 
         const updated = makeUser({
@@ -138,7 +138,7 @@ export function runStorageConformance(name: string, factory: () => Promise<Stora
         });
         await storage.upsertUser({ ...updated, createdAt: 1 });
         // An update keeps the insert's created_at, whatever the record says.
-        expect(await storage.getUser(user.userId)).toEqual({ ...updated, createdAt });
+        expect(await storage.getUser(user.userId)).toEqual({ ...updated, createdAt, lastSeenAt: expect.any(Number) });
 
         await storage.deleteUser(user.userId);
         expect(await storage.getUser(user.userId)).toBeUndefined();

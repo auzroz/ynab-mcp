@@ -371,7 +371,7 @@ for (const driver of testDrivers) {
       );
 
       it('is a no-op for an unknown user', async () => {
-        await expect(s.deleteUserData('nobody')).resolves.toBeUndefined();
+        await expect(s.deleteUserData('nobody')).resolves.toBe(true);
       });
     });
 

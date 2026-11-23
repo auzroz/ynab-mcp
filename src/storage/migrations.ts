@@ -129,10 +129,10 @@ export interface MigrationTx {
 
 /**
  * The version of this release's schema: the highest step applied. Bump it with
- * each step (M1 is 2, STOR-1's M2 is 3, #52's M3 is 4, ADR-0002's M4 is 5, and
- * so on).
+ * each step (M1 is 2, STOR-1's M2 is 3, #52's M3 is 4, ADR-0002's M4 is 5,
+ * #48 and #54e's M5 is 6, and so on).
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** The release these migrations ship in. A database stamped with a newer floor is refused. */
 export const STORAGE_RELEASE = '0.5.0';
@@ -216,6 +216,18 @@ export const ADDED_COLUMNS: readonly AddedColumn[] = [
   { table: 'oauth_clients', column: 'last_seen_at', type: 'BIGINT' },
   // M4 (ADR-0002 D12): when the client conversion processed an oauth_clients row.
   ...M4_COLUMNS,
+  // M5 (schema 6, #48): refresh-token rotation across replicas. The YNAB
+  // access token the last refresh got, encrypted under its own AAD column
+  // label (src/crypto.ts), and its expiry, so every replica uses it; and the
+  // refresh lease (a random holder id and its expiry, epoch ms), claimed with
+  // a compare-and-set so one replica refreshes at a time. 0.4.x ignores them.
+  { table: 'users', column: 'encrypted_access_token', type: 'TEXT' },
+  { table: 'users', column: 'access_token_expires_at', type: 'BIGINT' },
+  { table: 'users', column: 'refresh_lease_holder', type: 'TEXT' },
+  { table: 'users', column: 'refresh_lease_until', type: 'BIGINT' },
+  // M5 (#54e): a user's last activity (sign-in, re-consent or YNAB refresh),
+  // the inactive-user erase's clock. Backfilled by `m5-last-seen`.
+  { table: 'users', column: 'last_seen_at', type: 'BIGINT' },
 ];
 
 /** Indexes added since 0.3.x, created after {@link ADDED_COLUMNS}. */
@@ -241,6 +253,8 @@ export const ADDED_INDEXES: readonly AddedIndex[] = [
   { name: 'pending_auth_expires_at', table: 'pending_auth', column: 'expires_at' },
   { name: 'refresh_tokens_issued_at', table: 'refresh_tokens', column: 'issued_at' },
   { name: 'refresh_tokens_family_created_at', table: 'refresh_tokens', column: 'family_created_at' },
+  // M5: the inactive-user erase's candidate listing (users had its lock taken above).
+  { name: 'users_last_seen_at', table: 'users', column: 'last_seen_at' },
 ];
 
 /**
@@ -271,6 +285,21 @@ const M2_RETENTION_CLOCKS: Backfill = {
 };
 
 /**
+ * M5 (#54e): start the inactive-user clock at the upgrade, never at older
+ * activity. A user from before it (or written since by a 0.4.x replica) gets
+ * the migration's `now`, so nobody is erased for inactivity sooner than the
+ * configured days after the upgrade. Only NULLs are touched, so a re-run
+ * writes nothing; a row this release writes always has a value.
+ */
+const M5_LAST_SEEN: Backfill = {
+  version: 6,
+  name: 'm5-last-seen',
+  async run({ now, tx }) {
+    await tx.exec('UPDATE users SET last_seen_at = $1 WHERE last_seen_at IS NULL', [now]);
+  },
+};
+
+/**
  * App-side data steps, run in `version` order under the migrate lock on every
  * startup; each must be idempotent (see {@link Backfill}).
  */
@@ -280,6 +309,8 @@ export const BACKFILLS: readonly Backfill[] = [
   TOKEN_HASHING_BACKFILL,
   // M4 (ADR-0002 D12): registered clients become library client records.
   CLIENT_CONVERSION_BACKFILL,
+  // M5 (#54e): the inactive-user clock starts at the upgrade.
+  M5_LAST_SEEN,
 ];
 
 /** Everything {@link applyMigrations} applies; tests pass their own. */

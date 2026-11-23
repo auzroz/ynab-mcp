@@ -160,16 +160,18 @@ describe('YnabTokenResolver concurrent refresh', () => {
 
 describe('YnabTokenResolver.accessTokenFor', () => {
   it("resolves the user's current token on every call", async () => {
-    const { storage, encryptor, resolver } = setup();
+    let now = Date.now();
+    const { storage, encryptor, resolver } = setup(() => now);
     await seedUser(storage, encryptor);
     const getToken = resolver.accessTokenFor('u1');
 
     await expect(getToken()).resolves.toBe('access-fresh');
-    resolver.invalidate('u1');
+    // Past the access token's expiry (cached and shared alike): the next call refreshes.
+    now += 3600_000;
     refreshAccessTokenMock.mockResolvedValueOnce({
       accessToken: 'access-next',
       refreshToken: 'rt-next',
-      expiresAt: Date.now() + 3600_000,
+      expiresAt: now + 3600_000,
     });
     await expect(getToken()).resolves.toBe('access-next');
   });
@@ -220,14 +222,26 @@ describe('YnabTokenResolver.accessTokenFor', () => {
 });
 
 describe('YnabTokenResolver.invalidate', () => {
-  it('forces a refresh on the next resolve after invalidation', async () => {
+  it('drops only this process\'s cache: the shared token in the row is used without a refresh (#48)', async () => {
     const { storage, encryptor, resolver } = setup();
+    await seedUser(storage, encryptor);
+
+    await resolver.resolve('u1');
+    resolver.invalidate('u1');
+    await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-fresh' });
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes from the rotated token once the shared access token nears expiry', async () => {
+    let now = Date.now();
+    const { storage, encryptor, resolver } = setup(() => now);
     await seedUser(storage, encryptor);
 
     await resolver.resolve('u1');
     expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
 
     resolver.invalidate('u1');
+    now += 3600_000 - 30_000; // inside the minute before expiry
 
     await resolver.resolve('u1');
     expect(refreshAccessTokenMock).toHaveBeenCalledTimes(2);
