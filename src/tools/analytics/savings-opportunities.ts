@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import DecimalJS from 'decimal.js';
 import { budgetId } from '../../utils/schemas.js';
@@ -107,6 +107,7 @@ export async function handleSavingsOpportunities(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const months = validated.months ?? 3;
 
   // Calculate since_date - pin to day 1 to avoid month overflow on 29th-31st
@@ -206,9 +207,9 @@ export async function handleSavingsOpportunities(
         type: 'discretionary',
         category: safeCategory,
         description: `Discretionary spending on ${safeCategory}`,
-        potential_monthly_savings: formatCurrency(potentialSavings),
+        potential_monthly_savings: money(potentialSavings),
         potential_monthly_savings_milliunits: potentialSavings,
-        current_monthly_spend: formatCurrency(monthlyAvg),
+        current_monthly_spend: money(monthlyAvg),
         current_monthly_spend_milliunits: Math.round(monthlyAvg),
         suggestion: `Consider reducing ${safeCategory} spending by 20%`,
         confidence: 'medium',
@@ -232,9 +233,9 @@ export async function handleSavingsOpportunities(
           type: 'high_variance',
           category: safeCategory,
           description: `Inconsistent spending on ${safeCategory} - some months much higher`,
-          potential_monthly_savings: formatCurrency(potentialSavings),
+          potential_monthly_savings: money(potentialSavings),
           potential_monthly_savings_milliunits: potentialSavings,
-          current_monthly_spend: formatCurrency(avgMonthly),
+          current_monthly_spend: money(avgMonthly),
           current_monthly_spend_milliunits: Math.round(avgMonthly),
           suggestion: `Your ${safeCategory} spending varies significantly. Setting a fixed budget could help.`,
           confidence: 'low',
@@ -270,9 +271,9 @@ export async function handleSavingsOpportunities(
             type: 'recurring_expense',
             category: safeCategory,
             description: `Recurring charge: ${payeeName}`,
-            potential_monthly_savings: formatCurrency(avgRounded),
+            potential_monthly_savings: money(avgRounded),
             potential_monthly_savings_milliunits: avgRounded,
-            current_monthly_spend: formatCurrency(avgRounded),
+            current_monthly_spend: money(avgRounded),
             current_monthly_spend_milliunits: avgRounded,
             suggestion: `Review if you still need ${payeeName}. Cancel if unused.`,
             confidence: 'high',
@@ -292,9 +293,9 @@ export async function handleSavingsOpportunities(
           type: 'large_single',
           category: safeCategory,
           description: `Large purchases in ${safeCategory}`,
-          potential_monthly_savings: formatCurrency(potentialSavings),
+          potential_monthly_savings: money(potentialSavings),
           potential_monthly_savings_milliunits: potentialSavings,
-          current_monthly_spend: formatCurrency(monthlyImpact),
+          current_monthly_spend: money(monthlyImpact),
           current_monthly_spend_milliunits: Math.round(monthlyImpact),
           suggestion: `Review large ${safeCategory} purchases. Consider waiting periods before big buys.`,
           confidence: 'low',
@@ -334,11 +335,11 @@ export async function handleSavingsOpportunities(
       opportunities: deduped.slice(0, 15), // Top 15 opportunities
       summary: {
         total_opportunities_found: deduped.length,
-        total_potential_monthly_savings: formatCurrency(totalPotentialSavingsMilliunits),
+        total_potential_monthly_savings: money(totalPotentialSavingsMilliunits),
         total_potential_monthly_savings_milliunits: totalPotentialSavingsMilliunits,
-        high_confidence_savings: formatCurrency(highConfidenceSavingsMilliunits),
+        high_confidence_savings: money(highConfidenceSavingsMilliunits),
         high_confidence_savings_milliunits: highConfidenceSavingsMilliunits,
-        current_monthly_spend: formatCurrency(totalCurrentSpend),
+        current_monthly_spend: money(totalCurrentSpend),
         current_monthly_spend_milliunits: Math.round(totalCurrentSpend),
         potential_savings_percent:
           totalCurrentSpend > 0

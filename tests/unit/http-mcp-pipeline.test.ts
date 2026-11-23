@@ -41,7 +41,7 @@ vi.mock('../../src/storage/index.js', async () => {
 import { buildHttpApp, type HttpApp } from '../../src/http.js';
 import { refreshAccessToken } from '../../src/auth/ynab-oauth.js';
 import { stageOfHandler } from '../../src/http/pipeline.js';
-import { Encryptor } from '../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
 import { plantAccessToken, plantUser } from './helpers/oauth-state.js';
@@ -115,7 +115,7 @@ async function oauthApp(overrides: Partial<HttpConfig> = {}): Promise<{ handle: 
   await plantUser(storage, {
     userId: 'u1',
     grantedScope: 'read-only',
-    encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-1'),
+    encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-1', refreshTokenContext('u1')),
   });
   const token = await plantAccessToken(storage, {
     clientId: 'client-a',

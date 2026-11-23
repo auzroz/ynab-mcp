@@ -3,17 +3,16 @@
  *
  * Returns all accounts in a budget with balances.
  *
- * Note: Currency formatting uses USD ($) symbols by default for display purposes.
- * The underlying data is always stored in milliunits regardless of currency.
- * To use the budget's actual currency format, use formatCurrencyWithFormat()
- * with the budget's currency_format settings (requires additional API call).
+ * Note: amounts are formatted with the budget's currency_format (moneyFormatterFor),
+ * falling back to the USD style when the settings cannot be read. Raw values stay
+ * in milliunits regardless of currency.
  */
 
 import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { accountDetailFields } from './account-fields.js';
 import { budgetId } from '../../utils/schemas.js';
@@ -76,6 +75,7 @@ export async function handleListAccounts(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const includeClosed = validated.include_closed ?? false;
   const cursor = validated.since_server_knowledge;
 
@@ -104,10 +104,10 @@ export async function handleListAccounts(
     byType[type].push({
       id: account.id,
       name: sanitizeName(account.name),
-      balance: formatCurrency(account.balance),
-      cleared_balance: formatCurrency(account.cleared_balance),
-      uncleared_balance: formatCurrency(account.uncleared_balance),
-      ...accountDetailFields(account, { includeEmptyMaps: false }),
+      balance: money(account.balance),
+      cleared_balance: money(account.cleared_balance),
+      uncleared_balance: money(account.uncleared_balance),
+      ...accountDetailFields(account, { includeEmptyMaps: false }, money),
     });
   }
 
@@ -174,14 +174,14 @@ export async function handleListAccounts(
       accounts_by_type: byType,
       summary: {
         total_accounts: accounts.length,
-        total_assets: formatCurrency(totalAssets),
+        total_assets: money(totalAssets),
         // Display liabilities as a positive number for readability
-        total_liabilities: formatCurrency(Math.abs(totalLiabilities)),
+        total_liabilities: money(Math.abs(totalLiabilities)),
         // Show credits on liability accounts if any exist
         ...(totalLiabilityCredits > 0 && {
-          liability_credits: formatCurrency(totalLiabilityCredits),
+          liability_credits: money(totalLiabilityCredits),
         }),
-        net_worth: formatCurrency(netWorth),
+        net_worth: money(netWorth),
       },
       server_knowledge: response.data.server_knowledge,
     },

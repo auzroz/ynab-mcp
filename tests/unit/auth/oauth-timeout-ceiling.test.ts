@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { MemoryStorage } from '../../../src/storage/memory.js';
-import { Encryptor } from '../../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../../src/crypto.js';
 import { YnabTokenResolver } from '../../../src/auth/user-session.js';
 import { getYnabUserId } from '../../../src/auth/ynab-oauth.js';
 import { OUTBOUND_TIMEOUT_MS } from '../../../src/services/outbound.js';
@@ -32,7 +32,7 @@ async function setup(timeoutMs: number | undefined) {
   await storage.upsertUser({
     userId: 'u1',
     grantedScope: 'read-only',
-    encryptedRefreshToken: encryptor.encrypt('rt0'),
+    encryptedRefreshToken: encryptor.encrypt('rt0', refreshTokenContext('u1')),
     updatedAt: Date.now(),
   });
   const resolver = new YnabTokenResolver(storage, encryptor, {

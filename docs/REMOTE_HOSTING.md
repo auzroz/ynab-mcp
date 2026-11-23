@@ -40,7 +40,9 @@ Set these environment variables (see `.env.example`):
 | `PUBLIC_URL` | yes | Public HTTPS base URL, e.g. `https://ynab-mcp.example.com`. It is also the OAuth issuer, so for local http testing use `http://localhost` or `http://127.0.0.1`: the server refuses to start with `http://[::1]` in OAuth mode |
 | `YNAB_OAUTH_CLIENT_ID` | yes | From step 1 |
 | `YNAB_OAUTH_CLIENT_SECRET` | yes | From step 1 |
-| `ENCRYPTION_KEY` | yes | 32-byte key for at-rest token encryption — `openssl rand -base64 32`. Unless `TOKEN_PEPPER` is set, the token-hash pepper is derived from it, so changing it then also refuses to start (see "Hashed tokens and the pepper") |
+| `ENCRYPTION_KEY` | yes | 32-byte key for at-rest token encryption — `openssl rand -base64 32`. Unless `TOKEN_PEPPER` is set, the token-hash pepper is derived from it, so changing it then also refuses to start (see "Hashed tokens and the pepper"). To change it, follow "Rotating ENCRYPTION_KEY" |
+| `ENCRYPTION_KEY_ID` | no | The key id `ENCRYPTION_KEY` is stored under, 1 to 999999 (default `1`). Each new key gets a new, higher id; a different key under an id the database has seen refuses to start |
+| `ENCRYPTION_KEY_PREVIOUS` | no | Older keys, as `<id>:<key>` separated by commas (e.g. `1:<old key>`), used only to read tokens stored under them while the rekey job moves those to the current key. Requires `TOKEN_PEPPER`. See "Rotating ENCRYPTION_KEY" |
 | `TOKEN_PEPPER` | no | 32-byte secret (base64 or 64 hex characters) keying the hashes of stored MCP tokens, codes and state — `openssl rand -base64 32`. Default: derived from `ENCRYPTION_KEY`. Set it **before the first 0.5.0 start** if you want one; see "Hashed tokens and the pepper" |
 | `YNAB_OAUTH_ALLOW_WRITE` | no | Allow writes (default `false`). Checked on every request, not only at consent: unless `true`, no connection can write, including one granted read-write earlier, so setting it back to `false` is an instant switch. Writes also need `YNAB_READ_ONLY=false`. `YNAB_ACCESS_TOKEN` and `YNAB_BUDGET_ID` must not be set in OAuth mode |
 | `STORAGE_DRIVER` | no | `memory` (default, **non-durable**), `sqlite`, or `postgres` |
@@ -545,6 +547,196 @@ DELETE FROM pending_auth; DELETE FROM consumed_refresh_tokens; DELETE FROM consu
 Users and their encrypted YNAB refresh tokens are kept; every client
 reconnects once.
 
+### Encrypted YNAB tokens (0.5.0)
+
+0.5.0 stores each user's YNAB refresh token as `v2.<key id>.<iv>.<tag>.<ct>`
+(AES-256-GCM). The ciphertext is bound to its column and to the user it
+belongs to, so one copied into another user's row, or restored into another
+column, fails to decrypt. Tokens stored by 0.4.x (`v1.…`, no key id, no
+binding) are still read, as key id 1.
+
+A background job (the rekey job, first run about 10 seconds after startup,
+then every 5 minutes) rewrites every `v1` row, and every row under an older
+key id, under the current key. It logs one line with counts only, for
+example:
+
+```text
+[Rekey] re-encrypted 3, 0 remaining
+```
+
+Retirement takes two steps:
+
+1. When a pass finds nothing left under an older key or in the `v1` format,
+   it announces the retirement in the database and logs `… nothing is left
+   under older keys: the v1 format and the older key ids are retired in
+   about an hour, and a replica still on an older ENCRYPTION_KEY_ID now
+   refuses to write`. From then on, a replica whose `ENCRYPTION_KEY_ID` is
+   older refuses every new refresh and sign-in before it calls YNAB, so it
+   doesn't spend a user's token on a write the others are about to stop
+   reading. (One already past that check finishes and is stored; see below.)
+   Its log says `Refusing to write with ENCRYPTION_KEY_ID …`, and its users
+   get an authorization error until it is updated.
+2. A pass at least an hour later that still finds nothing left retires them,
+   and logs:
+
+   ```text
+   [Rekey] no rows are left under older keys: the v1 format and key ids below 2 are now refused
+   ```
+
+   The raise checks the table again in the same statement: a token written
+   under an older key after the pass read the table (by a 0.4.x process, for
+   example, which has no key checks) holds it back, and the next pass moves
+   that token to the current key (`[Rekey] a token was written under an older
+   key since the pass began: retirement waits for the next pass`).
+
+Two guards keep a token from being stored where no replica can read it:
+
+- **At the write.** Every write of a YNAB token (a sign-in, a refresh) reads
+  the retired key id in the same database transaction as the write (on
+  Postgres, holding it `FOR SHARE`; the retirement takes the same row `FOR
+  UPDATE` first, so one waits for the other). A write under a retired key is
+  refused and nothing is stored. The user gets the same authorization error
+  as for any failed refresh or sign-in, and connects again. This covers a
+  request that passed its key check and then stalled past the retirement.
+
+  A write that lands after the announcement but before the retirement (a
+  refresh already in flight when the announcement came) is stored as usual.
+  The old key is still configured everywhere, so the token is readable, and
+  it holds the retirement back until the next pass moves it to the current
+  key. Refusing it would only throw away the token YNAB has just rotated.
+- **The grace outlasts every write.** The hour between the announcement and
+  the retirement is longer than the longest time a token write can take
+  after its check. A sign-in is bounded by the YNAB callback's 10-minute
+  deadline. A refresh is bounded by its YNAB call's own timeout (10 seconds),
+  not by `MCP_REQUEST_TIMEOUT_MS`: the request ceiling ends the client's
+  response but doesn't cancel a refresh already under way. Then the write
+  itself is bounded by the database time limits. The server adds these up,
+  with the request ceiling (at most 5 minutes) as a conservative allowance,
+  and refuses to start if a configuration would make the total reach the
+  hour. So a write that passed its check before the announcement has always
+  landed, and held the retirement back, before the retirement.
+- **Accepted residual.** Only a process that stops running escapes those
+  bounds. If a replica's process freezes (suspended, or stalled) for longer
+  than the retirement grace during a rotation, after YNAB has rotated a
+  user's token and before it is stored, that token can't be kept: the write
+  is refused, nothing unreadable is stored, and that user connects again
+  once.
+
+From then on every replica refuses `v1` and those key ids, so an old
+ciphertext restored from a backup can't get round the binding. The binding
+protects from the upgrade on: a `v1` ciphertext carries none, so one copied
+into another user's row before the upgrade is rewritten as that row's. Nothing
+needs doing on upgrade.
+
+- **Rolling back means restoring the backup** you took before upgrading. 0.4.x
+  has no schema-version check, so it does start on a 0.5.0 database, but it
+  can't read the tokens 0.5.0 stores (`v2` YNAB tokens, hashed MCP tokens), so
+  every user would reconnect and the rows would be left half converted.
+- **Don't run 0.4.x and 0.5.0 replicas against the same database**, not even
+  briefly during a rolling deploy: each writes rows the other can't read, and
+  `v1` rows a 0.4.x replica writes after 0.5.0 has retired `v1` are refused.
+- A line ending `… unreadable (those users must connect again)` counts rows
+  no configured key opens. Those users reconnect, which replaces the row.
+- A line with `N under a key id that is not configured` counts rows whose key
+  is missing from `ENCRYPTION_KEY_PREVIOUS`. They hold retirement back. Add
+  the key back as `<id>:<key>`; if that key is lost, those users can't be
+  read in any case: each one's row is replaced when they connect again, or
+  goes when the account is erased (deleting the account, or #54's
+  inactive-user erase). Once none are left, retirement proceeds.
+
+### Rotating ENCRYPTION_KEY
+
+Rotate without logging anyone out. Start 0.5.0 at least once with the
+current key before rotating: that start records which key id 1 is, so a
+wrong key given as `1:<old key>` later is refused instead of recorded.
+
+1. **Pin the pepper (once).** Unless `TOKEN_PEPPER` is already set, the
+   token-hash pepper is derived from `ENCRYPTION_KEY`, and a new key would
+   change it (the server then refuses to start). With the **current**
+   `ENCRYPTION_KEY` in the environment, run:
+
+   ```bash
+   # npm / npx
+   ENCRYPTION_KEY=<current key> npx -y ynab-mcp derive-pepper
+   # Docker: the entrypoint is dumb-init, so name the command in full
+   docker run --rm -e ENCRYPTION_KEY ghcr.io/auzroz/ynab-mcp:latest node dist/index.js derive-pepper
+   ```
+
+   It prints the pepper (64 hex characters) on stdout and nothing else there.
+   Set `TOKEN_PEPPER` to it, keep it as secret as the key, and restart. The
+   pepper is unchanged, so nobody is logged out; from now on it no longer
+   depends on `ENCRYPTION_KEY`. If `TOKEN_PEPPER` is already set it prints
+   nothing and exits with status 2; on a missing or malformed key it exits
+   with status 1.
+
+   A script that captures the output must check the exit status before it
+   stores or exports the value, and keep the existing value on failure. An
+   assignment like `TOKEN_PEPPER=$(…)` takes the empty output even when the
+   command fails:
+
+   ```bash
+   if pepper=$(npx -y ynab-mcp derive-pepper); then
+     printf 'TOKEN_PEPPER=%s\n' "$pepper" >> .env   # or store it in your secret manager
+   else
+     echo "derive-pepper failed; TOKEN_PEPPER left unchanged" >&2
+   fi
+   ```
+2. **Switch keys.** Generate a new key (`openssl rand -base64 32`) and set:
+
+   ```bash
+   ENCRYPTION_KEY=<new key>
+   ENCRYPTION_KEY_ID=2                  # the old key's id + 1 (the old key was 1 unless you set an id)
+   ENCRYPTION_KEY_PREVIOUS=1:<old key>  # comma-separate several: 1:<key>,2:<key>
+   ```
+
+   Restart. New tokens are written under id 2; tokens under id 1 are still
+   read.
+
+   With several replicas behind one database, do this in two rolling
+   restarts, so no replica meets a row it can't read:
+
+   1. First give every replica the new key to read only, keeping the old one
+      current: `ENCRYPTION_KEY=<old key>`, `ENCRYPTION_KEY_ID=1`,
+      `ENCRYPTION_KEY_PREVIOUS=2:<new key>`. Nothing is written under id 2
+      yet, and the rekey job leaves rows under a newer id alone.
+   2. Then switch every replica to the settings above (new key current as id
+      2, `1:<old key>` previous).
+
+   **Finish phase 2 on every replica before the old key can retire.** As
+   soon as a replica on id 2 finds nothing left under id 1, it announces the
+   retirement, and from then on any replica still on id 1 refuses to write
+   (see "Encrypted YNAB tokens" above): no token is lost, but that replica's
+   users can't refresh or sign in until it is updated. To confirm every
+   replica is on the new key, check that each one was restarted with
+   `ENCRYPTION_KEY_ID=2` (your deployment's config and restart times), and
+   that no replica logs `Refusing to write with ENCRYPTION_KEY_ID 1`. A
+   replica that restarts with the old settings after the announcement is
+   refused at startup.
+3. **Watch the log.** The rekey job rewrites the old rows (`[Rekey]
+   re-encrypted N, M remaining`), announces the retirement once none are
+   left, and about an hour later logs that key ids below 2 are now refused.
+4. **Drop the old key.** Remove `ENCRYPTION_KEY_PREVIOUS` and restart.
+
+To abandon a rotation after the announcement (going back to the old key on
+every replica), stop every replica and delete the announcement:
+`DELETE FROM schema_meta WHERE key = 'encryption_retiring_below';`. Once the
+retirement itself has been logged, it can't be undone this way: the old key
+ids are refused for good.
+
+The server refuses to start, naming no value, when the key under an id is not
+the one the database recorded for that id (a new key needs a new id), when
+`ENCRYPTION_KEY_ID` is below an id that has been retired or announced for
+retirement, or when
+`ENCRYPTION_KEY_PREVIOUS` is set without `TOKEN_PEPPER`. Before 0.5.0 a new
+`ENCRYPTION_KEY` could be swapped in place, with every user reconnecting; from
+0.5.0 on, a new key always needs a new `ENCRYPTION_KEY_ID`.
+
+If the old key is lost, set the new key under a new id without
+`ENCRYPTION_KEY_PREVIOUS`: every user reconnects once. If `TOKEN_PEPPER` was
+not set, the pepper was derived from the lost key and can't be recovered
+(`derive-pepper` needs that key), so also follow "Changing TOKEN_PEPPER"
+above, which logs every MCP client out as well.
+
 ## Prompts
 
 The server also exposes 7 MCP Prompts — guided, YNAB-methodology-grounded
@@ -563,11 +755,11 @@ any MCP client that supports the `prompts` capability:
 
 ## Security notes
 
-- YNAB refresh tokens are encrypted at rest with AES-256-GCM (`ENCRYPTION_KEY`).
-  Keep that key secret and stable; rotating it invalidates stored connections,
-  and when `TOKEN_PEPPER` is unset it also changes the token-hash pepper, so
-  the server refuses to start until you follow "Changing TOKEN_PEPPER". Setting
-  an independent `TOKEN_PEPPER` before the first 0.5.0 start decouples the two.
+- YNAB refresh tokens are encrypted at rest with AES-256-GCM (`ENCRYPTION_KEY`),
+  each bound to its user and column and tagged with its key id. Keep the key
+  secret. It can be rotated without logging anyone out: follow "Rotating
+  ENCRYPTION_KEY" (pin `TOKEN_PEPPER` with `ynab-mcp derive-pepper` first, or
+  the server refuses to start because the derived pepper would change).
 - MCP tokens, authorization codes and `state` are stored only as keyed hashes,
   and DCR client secrets only as SHA-256 hashes, so a copy of the database holds
   no usable MCP credential. A value that isn't a correctly tagged `ymcp1_` token

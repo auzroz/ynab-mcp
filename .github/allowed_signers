@@ -27,4 +27,6 @@
 # Lines starting with # and blank lines are ignored. A key is added or removed
 # by a pull request; the file on the tagged commit is the one that counts.
 #
-# No key is listed yet, so every tag fails until the maintainer adds theirs.
+
+# The maintainer's release signing key (added 2026-11-23).
+auzroz namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJHVGMixrmsLn+50fQfCjtafJ7QKTpdqy9Ed4mjvwe2g

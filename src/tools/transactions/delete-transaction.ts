@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
@@ -64,6 +64,7 @@ export async function handleDeleteTransaction(
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
   const response = await client.deleteTransaction(budgetId, validated.transaction_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const txn = response.data.transaction;
 
   if (txn == null) {
@@ -73,11 +74,11 @@ export async function handleDeleteTransaction(
   return JSON.stringify(
     {
       success: true,
-      message: `Transaction deleted: ${formatCurrency(txn.amount)} at ${sanitizeName(txn.payee_name)} on ${txn.date}`,
+      message: `Transaction deleted: ${money(txn.amount)} at ${sanitizeName(txn.payee_name)} on ${txn.date}`,
       deleted_transaction: {
         id: txn.id,
         date: txn.date,
-        amount: formatCurrency(txn.amount),
+        amount: money(txn.amount),
         payee_name: sanitizeName(txn.payee_name),
         category_name: sanitizeName(txn.category_name),
         account_name: sanitizeName(txn.account_name),

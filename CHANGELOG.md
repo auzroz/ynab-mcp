@@ -9,11 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- Replacing `ENCRYPTION_KEY` now needs a new `ENCRYPTION_KEY_ID` (#57). A
+  different key under an id the database has already recorded refuses to
+  start, so swapping the key in place and letting every user reconnect no
+  longer works. To rotate without logging anyone out, follow "Rotating
+  ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md. If the old key is lost, give the
+  new key a new id: every user then reconnects once.
 - Writes are capped at 20 write requests per user per hour (#61c). Before,
   writes were unlimited, so an automation that makes more than 20 write calls
   an hour (stdio included) is now refused with `write_limit_exceeded` until the
   window frees up. Set `YNAB_WRITE_LIMIT_PER_HOUR` (0 to 1000) to change it;
   `0` turns the cap off.
+
+### Security
+
+- Stored YNAB refresh tokens are bound to their user and column, and carry a
+  key id (#57). The new format is `v2.<kid>.<iv>.<tag>.<ct>`, with AAD
+  `ynab-mcp|<column>|v2|<user id>`, so a ciphertext copied into another user's
+  row no longer decrypts. 0.4.x tokens (`v1`) are still read. A background
+  rekey job rewrites them, and the rows under an older key, using
+  compare-and-set writes, logging counts only. When none are left it announces
+  the retirement. From then on a replica still on an older `ENCRYPTION_KEY_ID`
+  refuses new refreshes and sign-ins before calling YNAB. One already in
+  flight is still stored: its key is still configured everywhere, and it holds
+  the retirement back until it is rekeyed. Every token write also re-checks the
+  retired key id in the same database transaction, so a request that stalled
+  past the retirement is refused instead of storing a token no replica can
+  read. An hour later it retires `v1` and the older key ids for every
+  replica, unless a token was written under an older key in the meantime.
+- `ENCRYPTION_KEY` can be rotated without logging anyone out.
+  `ENCRYPTION_KEY_ID` (default 1) names the current key, and
+  `ENCRYPTION_KEY_PREVIOUS` (`<id>:<key>,…`) lists keys that are kept for
+  reading only. The new `ynab-mcp derive-pepper` command prints the token
+  pepper derived from `ENCRYPTION_KEY`, so it can be pinned as `TOKEN_PEPPER`
+  before a rotation. See "Rotating ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md.
+- The server refuses to start if:
+  - the key under an id differs from the one the database recorded for that id;
+  - `ENCRYPTION_KEY_ID` is below a retired id;
+  - `ENCRYPTION_KEY_PREVIOUS` is set without `TOKEN_PEPPER`.
+- Upgrading needs no configuration change. Back up the database first:
+  rolling back means restoring that backup. 0.4.x has no schema-version check,
+  so it does start on a 0.5.0 database, but it can't read the tokens 0.5.0
+  stores. Don't run 0.4.x and 0.5.0 replicas against the same database, not
+  even during a rolling deploy.
+- The binding protects tokens from the upgrade on. A `v1` token carries none,
+  so one copied into another user's row before the upgrade is re-encrypted as
+  that row's.
+- Release tags are verified (#62). `Release: Verify` refuses a `v*` tag,
+  release candidates included, unless it is an annotated tag signed with an
+  SSH key listed in `.github/allowed_signers`.
+- The Docker image is pushed to `ghcr.io/auzroz/ynab-mcp` with a token that
+  only the approved `production` environment holds, instead of the workflow's
+  `GITHUB_TOKEN`. No release job has `packages: write` any more, and the
+  package gives the repository's workflows read access only, so a workflow
+  run outside an approved release can't push an image (#62). The
+  image's attestation remains its proof of origin.
 
 ### Added
 
@@ -25,6 +75,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation gives its slot back; one YNAB rejects keeps it. The first refusal of
   each episode is recorded in the audit log as `write_limit_refused`. It is separate
   from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests.
+
+### Changed
+
+- Amounts are formatted with the budget's `currency_format` instead of a
+  hard-coded `$` (#49): symbol, symbol position, decimal places (0 for JPY, 3
+  for BHD), decimal and group separators, and `display_symbol`. This changes
+  only the human-readable strings (`balance`, `budgeted`, `summary` and
+  `*_formatted` fields, messages). Raw milliunit fields, keys and the shape of
+  every response are unchanged, and no field is added. For a USD budget,
+  amounts of 1,000 or more now carry group separators (`$3,000.00`, was
+  `$3000.00`). The format comes from the budget's cached settings, so it costs
+  at most one extra request per budget every 5 minutes; if the settings cannot
+  be read, amounts keep the previous `$1234.56` style. The format is reused for
+  an hour per budget, so it costs well under one request an hour. Symbols and
+  separators are cleaned of control and bidi characters but never trimmed, so
+  space group separators (French, Swedish, Polish, Czech, Norwegian) survive.
+  `ynab_transaction_search` now writes its `min`/`max` criteria as formatted
+  amounts (`min: $80.00`, was `min: $80`). The split-sum and `ynab_move_money`
+  minimum-amount validation messages, raised before the budget is known, no
+  longer name a currency (`... (splits total 100, transaction is 90)`, `amount
+  must be at least 0.001 (1 milliunit)`). `ynab_detect_recurring`'s
+  `estimated_monthly_total` is now summed from milliunits, so it can differ by a
+  milliunit or two.
 
 ### Fixed
 
@@ -39,18 +112,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serve the new version before it publishes `server.json`, and retries the
   publish twice on the registry's "version not found" error, so a release no
   longer needs a manual re-run when npm is slow (#121).
-
-### Security
-
-- Release tags are verified (#62). `Release: Verify` refuses a `v*` tag,
-  release candidates included, unless it is an annotated tag signed with an
-  SSH key listed in `.github/allowed_signers`.
-- The Docker image is pushed to `ghcr.io/auzroz/ynab-mcp` with a token that
-  only the approved `production` environment holds, instead of the workflow's
-  `GITHUB_TOKEN`. No release job has `packages: write` any more, and the
-  package gives the repository's workflows read access only, so a workflow
-  run outside an approved release can't push an image (#62). The
-  image's attestation remains its proof of origin.
 
 ## [0.4.3] - 2026-11-23
 

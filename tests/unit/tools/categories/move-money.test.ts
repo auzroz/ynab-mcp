@@ -23,6 +23,7 @@ describe('handleMoveMoney', () => {
 
   beforeEach(() => {
     mockClient = createMockClient();
+    mockClient.isReadOnly.mockReturnValue(false);
     auditLog = new AuditLog();
     Object.assign(mockClient, { getAuditLog: vi.fn(() => auditLog) });
     mockClient.getMonthCategoryById.mockImplementation(

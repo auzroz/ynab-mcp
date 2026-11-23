@@ -7,17 +7,23 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
+import type { HttpConfig } from '../../src/config/environment.js';
 import request from 'supertest';
 import { buildHttpApp, startHttpServer } from '../../src/http.js';
 import {
   createJobRunner,
+  jobs as registeredJobs,
   type ExtensionContext,
   type JobExtension,
   type RouteExtension,
 } from '../../src/http/extensions.js';
 import { makeHttpConfig } from './helpers/http-config.js';
+import { rekeyJob } from '../../src/auth/rekey-job.js';
 
 const HOST = 'mcp.example.com';
 
@@ -208,6 +214,50 @@ describe('jobs and the server lifecycle', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands jobs the keyring in oauth mode, and registers the rekey job (#57b)', async () => {
+    const seen: ExtensionContext[] = [];
+    const config = oauthConfig();
+    const { jobs } = await buildHttpApp(config, {
+      jobs: [{ name: 'j', start: (c) => (seen.push(c), undefined) }],
+    });
+    jobs.start();
+    await jobs.stop();
+    expect(seen[0]?.encryptor?.currentKeyId).toBe(1);
+    expect(registeredJobs.map((j) => j.name)).toContain('rekey');
+
+    const header: ExtensionContext[] = [];
+    const headerApp = await buildHttpApp(makeHttpConfig(), { jobs: [{ name: 'j', start: (c) => (header.push(c), undefined) }] });
+    headerApp.jobs.start();
+    await headerApp.jobs.stop();
+    expect(header[0]?.encryptor).toBeUndefined();
+    expect(rekeyJob.start(header[0] as ExtensionContext)).toBeUndefined();
+  });
+
+  it('refuses to start with another key under a key id the database recorded (#57b)', async () => {
+    const file = join(tmpdir(), `ynab-mcp-keycheck-${randomUUID()}.db`);
+    const tokenPepper = randomBytes(32).toString('hex');
+    const sqlite = (encryptionKey: string, extra: Partial<HttpConfig> = {}): HttpConfig => ({
+      ...oauthConfig(),
+      storageDriver: 'sqlite',
+      sqlitePath: file,
+      tokenPepper,
+      encryptionKey,
+      ...extra,
+    });
+    const k1 = randomBytes(32).toString('base64');
+    try {
+      await buildHttpApp(sqlite(k1));
+      const k2 = randomBytes(32).toString('base64');
+      await expect(buildHttpApp(sqlite(k2))).rejects.toThrow(/id 1 is not the key this database recorded/);
+      // The same new key under a new id, with the old one as previous, starts.
+      await expect(
+        buildHttpApp(sqlite(k2, { encryptionKeyId: '2', encryptionKeyPrevious: `1:${k1}` }))
+      ).resolves.toBeDefined();
+    } finally {
+      for (const suffix of ['', '-wal', '-shm']) rmSync(`${file}${suffix}`, { force: true });
+    }
   });
 
   it('calls the close callback only after an async job stop has finished', async () => {

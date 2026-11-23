@@ -10,7 +10,7 @@ import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeFlagName } from '../transactions/format.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
 
@@ -62,6 +62,7 @@ export async function handleGetScheduledTransaction(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   const response = await client.getScheduledTransactionById(
     budgetId,
@@ -76,7 +77,7 @@ export async function handleGetScheduledTransaction(
         date_first: txn.date_first,
         date_next: txn.date_next,
         frequency: txn.frequency,
-        amount: formatCurrency(txn.amount),
+        amount: money(txn.amount),
         memo: sanitizeMemo(txn.memo),
         ...omitNull({ flag_color: txn.flag_color }),
         flag_name: sanitizeFlagName(txn.flag_name),
@@ -94,7 +95,7 @@ export async function handleGetScheduledTransaction(
             ? subs.map((sub) => ({
                 id: sub.id,
                 scheduled_transaction_id: sub.scheduled_transaction_id,
-                amount: formatCurrency(sub.amount),
+                amount: money(sub.amount),
                 memo: sanitizeMemo(sub.memo),
                 ...omitNull({
                   payee_id: sub.payee_id,

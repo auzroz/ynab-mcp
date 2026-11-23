@@ -40,7 +40,7 @@ vi.mock('../../src/storage/index.js', async () => {
 });
 
 import { buildHttpApp, createHttpApp, type HttpApp } from '../../src/http.js';
-import { Encryptor } from '../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { anonymous, bearer, mcpConnect, mcpInitialize, rpcMessage, ynabToken } from './helpers/mcp-call.js';
 
@@ -126,7 +126,7 @@ describe('mcp-call helper in oauth mode', () => {
     await plantUser(storage, {
       userId: USER,
       grantedScope: 'read-only',
-      encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-1'),
+      encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-1', refreshTokenContext(USER)),
     });
     const tokens: string[] = [];
     for (const clientId of clients) {

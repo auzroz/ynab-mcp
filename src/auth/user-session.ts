@@ -14,10 +14,11 @@
  */
 
 import type { Storage, GrantedScope, UserRecord } from '../storage/types.js';
-import type { Encryptor } from '../crypto.js';
+import { refreshTokenContext, type Encryptor } from '../crypto.js';
 import { YnabAuthError } from '../utils/errors.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { refreshAccessToken, type YnabOAuthConfig, type YnabTokenSet } from './ynab-oauth.js';
+import { assertKeyWritable } from './rekey-job.js';
 
 /** Refresh a bit early so an access token doesn't expire mid-request. */
 const REFRESH_SKEW_MS = 60_000;
@@ -153,9 +154,15 @@ export class YnabTokenResolver {
    * refresh is redone once from it, or refused if the account was re-created.
    */
   private async refresh(user: UserRecord, retried = false): Promise<ResolvedUser> {
+    const context = refreshTokenContext(user.userId);
     let set: YnabTokenSet;
+    let refreshToken: string;
     try {
-      const refreshToken = this.encryptor.decrypt(user.encryptedRefreshToken);
+      // Before the YNAB call: a replica whose key is being retired must not
+      // spend the token and write its successor where the others can't read
+      // it (#57b). Re-read on every attempt, including the retry after a miss.
+      await assertKeyWritable(this.storage, this.encryptor);
+      refreshToken = this.encryptor.decrypt(user.encryptedRefreshToken, context);
       set = await refreshAccessToken(this.ynab, refreshToken);
     } catch (error) {
       this.failed.set(user.userId, {
@@ -168,18 +175,24 @@ export class YnabTokenResolver {
 
     // YNAB rotates the refresh token on every refresh — persist the new one,
     // but only over the token this refresh started from.
-    const stored = await this.storage.updateUserRefreshToken(
-      user.userId,
-      user.encryptedRefreshToken,
-      this.encryptor.encrypt(set.refreshToken)
-    );
+    const newCiphertext = this.encryptor.encrypt(set.refreshToken, context);
+    let stored = await this.storage.updateUserRefreshToken(user.userId, user.encryptedRefreshToken, newCiphertext);
     if (!stored) {
-      const current = await this.storage.getUser(user.userId);
-      if (!current || generationOf(current) !== generationOf(user) || retried) {
-        this.invalidate(user.userId);
-        throw new Error(RECONNECT);
+      let current = await this.storage.getUser(user.userId);
+      // The rekey job (#57b) moved the same YNAB token to the current key
+      // meanwhile: that token is spent now, so write over its new ciphertext
+      // instead of refreshing again from it.
+      if (current && generationOf(current) === generationOf(user) && this.holdsToken(current, refreshToken)) {
+        stored = await this.storage.updateUserRefreshToken(user.userId, current.encryptedRefreshToken, newCiphertext);
+        if (!stored) current = await this.storage.getUser(user.userId);
       }
-      return this.refresh(current, true);
+      if (!stored) {
+        if (!current || generationOf(current) !== generationOf(user) || retried) {
+          this.invalidate(user.userId);
+          throw new Error(RECONNECT);
+        }
+        return this.refresh(current, true);
+      }
     }
     this.cache.set(user.userId, {
       accessToken: set.accessToken,
@@ -189,5 +202,14 @@ export class YnabTokenResolver {
     // The access level as stored now, not as read before the YNAB call: a
     // re-consent that lowered it meanwhile (same YNAB token) applies at once.
     return { accessToken: set.accessToken, grantedScope: stored.grantedScope, generation: generationOf(stored) };
+  }
+
+  /** Whether `user`'s stored ciphertext (possibly re-encrypted) holds `refreshToken`. */
+  private holdsToken(user: UserRecord, refreshToken: string): boolean {
+    try {
+      return this.encryptor.decrypt(user.encryptedRefreshToken, refreshTokenContext(user.userId)) === refreshToken;
+    } catch {
+      return false;
+    }
   }
 }

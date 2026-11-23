@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import type { CurrencyFormat } from 'ynab';
 import type { YnabClient } from '../../../../src/services/ynab-client.js';
 
 /**
@@ -35,6 +36,8 @@ export function createMockClient() {
     getBudgets: vi.fn(),
     getBudgetById: vi.fn(),
     getBudgetSettingsById: vi.fn(),
+    // undefined = formats unreadable: tools fall back to the USD style (#49). Tests set a CurrencyFormat.
+    getCurrencyFormat: vi.fn(async (_budgetId: string): Promise<CurrencyFormat | undefined> => undefined),
     getBudgetFirstMonth: vi.fn(),
 
     // Account endpoints

@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, formatCurrencyWithFormat } from '../../utils/milliunits.js';
+import { makeMoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 
 // Input schema
@@ -86,14 +86,12 @@ export async function handleListBudgets(
 
     if (budget.accounts != null && budget.accounts.length > 0) {
       // Use budget's currency format if available, otherwise fall back to default formatting
-      const currencyFormat = budget.currency_format;
+      const money = makeMoneyFormatter(budget.currency_format);
       budgetInfo['accounts'] = budget.accounts.map((acc) => ({
         id: acc.id,
         name: sanitizeName(acc.name),
         type: acc.type,
-        balance: currencyFormat
-          ? formatCurrencyWithFormat(acc.balance, currencyFormat)
-          : formatCurrency(acc.balance),
+        balance: money(acc.balance),
         closed: acc.closed,
       }));
     }

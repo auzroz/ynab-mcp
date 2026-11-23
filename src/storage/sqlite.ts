@@ -35,7 +35,22 @@ import type {
   StagedSignIn,
   CodeSaveOutcome,
   ConsumeOutcome,
+  KeyCheckOutcome,
+  KeyFloors,
+  StoredUserCiphertext,
 } from './types.js';
+import {
+  CONDITIONAL_RAISE_FLOOR_SQL,
+  RAISE_FLOOR_SQL,
+  RETIRED_FLOOR_KEY,
+  RETIRING_FLOOR_KEY,
+  assertFloorAllows,
+  compareKeyCheck,
+  floorsFromRows,
+  keyCheckMetaKey,
+  parseRetiredFloor,
+  signInCiphertext,
+} from './encryption-meta.js';
 import { resolveStorageTimeouts } from './timeouts.js';
 import { applyMigrations, MIGRATION_PLAN, type MigrationDeps, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
@@ -409,7 +424,28 @@ export class SqliteStorage implements Storage, OAuthRowStore {
   // Users + YNAB tokens
 
   async upsertUser(rec: UserRecord): Promise<void> {
-    this.putUser(rec);
+    // The floor read and the write under one write lock (#57b).
+    this.database
+      .transaction((): void => {
+        this.guardCiphertext(rec.encryptedRefreshToken);
+        this.putUser(rec);
+      })
+      .immediate();
+  }
+
+  /**
+   * The persistence-time key floor guard (#57b): throw KeyRetiredError when
+   * `ciphertext` is under a key id below the retired floor (not the announced
+   * one: see assertFloorAllows). Call it
+   * inside the write's IMMEDIATE transaction, before its first write, so a
+   * retirement (one statement, under the same write lock) lands entirely
+   * before or after it.
+   */
+  private guardCiphertext(ciphertext: string): void {
+    const rows = this.database
+      .prepare('SELECT key, value FROM schema_meta WHERE key IN (?, ?)')
+      .all(RETIRED_FLOOR_KEY, RETIRING_FLOOR_KEY) as Array<{ key: string; value: string }>;
+    assertFloorAllows(floorsFromRows(rows), ciphertext);
   }
 
   /**
@@ -457,16 +493,102 @@ export class SqliteStorage implements Storage, OAuthRowStore {
     newCiphertext: string
   ): Promise<UserRecord | undefined> {
     const row = this.database
-      .prepare(
-        `UPDATE users SET encrypted_refresh_token = ?, updated_at = ?
-         WHERE user_id = ? AND encrypted_refresh_token = ? RETURNING *`
-      )
-      .get(newCiphertext, Date.now(), userId, oldCiphertext) as UserRow | undefined;
+      .transaction((): UserRow | undefined => {
+        this.guardCiphertext(newCiphertext);
+        return this.database
+          .prepare(
+            `UPDATE users SET encrypted_refresh_token = ?, updated_at = ?
+             WHERE user_id = ? AND encrypted_refresh_token = ? RETURNING *`
+          )
+          .get(newCiphertext, Date.now(), userId, oldCiphertext) as UserRow | undefined;
+      })
+      .immediate();
     return row ? userFromRow(row) : undefined;
   }
 
   async deleteUser(userId: string): Promise<void> {
     this.database.prepare('DELETE FROM users WHERE user_id = ?').run(userId);
+  }
+
+  // At-rest key rotation (#57b)
+
+  async listUserCiphertextsNotIn(
+    currentPrefix: string,
+    afterUserId: string | undefined,
+    limit: number
+  ): Promise<StoredUserCiphertext[]> {
+    const rows = this.database
+      .prepare(
+        `SELECT user_id, encrypted_refresh_token FROM users
+         WHERE substr(encrypted_refresh_token, 1, ?) <> ? AND (? IS NULL OR user_id > ?)
+         ORDER BY user_id LIMIT ?`
+      )
+      .all(currentPrefix.length, currentPrefix, afterUserId ?? null, afterUserId ?? null, limit) as Array<{
+      user_id: string;
+      encrypted_refresh_token: string;
+    }>;
+    return rows.map((r) => ({ userId: r.user_id, encryptedRefreshToken: r.encrypted_refresh_token }));
+  }
+
+  async rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
+    const result = this.database
+      .prepare('UPDATE users SET encrypted_refresh_token = ? WHERE user_id = ? AND encrypted_refresh_token = ?')
+      .run(newCiphertext, userId, oldCiphertext);
+    return result.changes === 1;
+  }
+
+  async listStagedSignInCiphertexts(now: number): Promise<string[]> {
+    const rows = this.database
+      .prepare(
+        `SELECT account_id, payload FROM oauth_rows
+         WHERE model = 'SignIn' AND (expires_at IS NULL OR expires_at >= ?)`
+      )
+      .all(now) as Array<{ account_id: string | null; payload: string }>;
+    return rows.flatMap((r) => signInCiphertext(r.account_id, r.payload) ?? []);
+  }
+
+  async getRetiredKeyFloor(): Promise<number> {
+    const row = this.database.prepare('SELECT value FROM schema_meta WHERE key = ?').get(RETIRED_FLOOR_KEY) as
+      | { value: string }
+      | undefined;
+    return parseRetiredFloor(row?.value);
+  }
+
+  async getKeyFloors(): Promise<KeyFloors> {
+    const rows = this.database
+      .prepare('SELECT key, value FROM schema_meta WHERE key IN (?, ?)')
+      .all(RETIRED_FLOOR_KEY, RETIRING_FLOOR_KEY) as Array<{ key: string; value: string }>;
+    return floorsFromRows(rows);
+  }
+
+  async ensureKeyFloorRows(): Promise<void> {
+    const insert = this.database.prepare("INSERT INTO schema_meta (key, value) VALUES (?, '0') ON CONFLICT (key) DO NOTHING");
+    insert.run(RETIRED_FLOOR_KEY);
+    insert.run(RETIRING_FLOOR_KEY);
+  }
+
+  async announceKeyRetirement(floor: number): Promise<number> {
+    this.database.prepare(RAISE_FLOOR_SQL.replace(/\$\d+/g, '?')).run(RETIRING_FLOOR_KEY, String(floor));
+    return (await this.getKeyFloors()).retiring;
+  }
+
+  async raiseRetiredKeyFloor(floor: number, deadCiphertexts: readonly string[] = []): Promise<number> {
+    // One statement: SQLite runs it under its write lock, so a users write
+    // lands either before it (and holds the raise back) or after it.
+    this.database
+      .prepare(CONDITIONAL_RAISE_FLOOR_SQL.sqlite)
+      .run(RETIRED_FLOOR_KEY, String(floor), floor, JSON.stringify(deadCiphertexts));
+    return this.getRetiredKeyFloor();
+  }
+
+  async recordEncryptionKeyCheck(keyId: number, check: string): Promise<KeyCheckOutcome> {
+    const key = keyCheckMetaKey(keyId);
+    const inserted = this.database
+      .prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING')
+      .run(key, check);
+    if (inserted.changes === 1) return 'recorded';
+    const row = this.database.prepare('SELECT value FROM schema_meta WHERE key = ?').get(key) as { value: string };
+    return compareKeyCheck(row.value, check);
   }
 
   async deleteUserData(userId: string): Promise<void> {
@@ -682,6 +804,7 @@ export class SqliteStorage implements Storage, OAuthRowStore {
           .get(signInKey, row.accountId, now) as { payload: string } | undefined;
         const user = signIn && userFromSignIn(row.accountId, signIn.payload);
         if (!user) return 'no-sign-in';
+        this.guardCiphertext(user.encryptedRefreshToken);
         db.prepare('UPDATE oauth_rows SET authorized_at = ? WHERE key = ?').run(now, clientKey);
         this.applyStagedUser(user, now);
         db.prepare('DELETE FROM oauth_rows WHERE key = ?').run(signInKey);
@@ -904,6 +1027,7 @@ export class SqliteStorage implements Storage, OAuthRowStore {
         .prepare('UPDATE oauth_clients SET last_seen_at = ? WHERE client_id = ?')
         .run(Date.now(), i.code.clientId);
       if (seen.changes === 0) return false;
+      this.guardCiphertext(i.user.encryptedRefreshToken);
       this.applyStagedUser(i.user, Date.now());
       this.insertAuthCode(i.code);
       return true;

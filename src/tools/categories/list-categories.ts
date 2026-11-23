@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor, type MoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
@@ -72,6 +72,7 @@ export async function handleListCategories(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const includeHidden = validated.include_hidden ?? false;
   const cursor = validated.since_server_knowledge;
 
@@ -81,7 +82,7 @@ export async function handleListCategories(
       : await client.getCategories(budgetId, { lastKnowledgeOfServer: cursor });
   let groups = response.data.category_groups;
 
-  if (cursor !== undefined) return formatCategoryDelta(groups, cursor, response.data.server_knowledge);
+  if (cursor !== undefined) return formatCategoryDelta(groups, cursor, response.data.server_knowledge, money);
 
   // Filter out internal category group unless explicitly including hidden
   if (!includeHidden) {
@@ -103,15 +104,15 @@ export async function handleListCategories(
       categories: categories.map((cat) => ({
         id: cat.id,
         name: sanitizeName(cat.name),
-        budgeted: formatCurrency(cat.budgeted),
-        activity: formatCurrency(cat.activity),
-        balance: formatCurrency(cat.balance),
+        budgeted: money(cat.budgeted),
+        activity: money(cat.activity),
+        balance: money(cat.balance),
         balance_raw: cat.balance,
         goal_type: cat.goal_type ?? null,
-        goal: buildGoalDetail(cat),
+        goal: buildGoalDetail(cat, money),
         goal_percentage_complete: cat.goal_percentage_complete ?? null,
         goal_under_funded:
-          cat.goal_under_funded != null ? formatCurrency(cat.goal_under_funded) : null,
+          cat.goal_under_funded != null ? money(cat.goal_under_funded) : null,
         goal_under_funded_raw: cat.goal_under_funded ?? null,
         hidden: cat.hidden,
       })),
@@ -140,9 +141,9 @@ export async function handleListCategories(
       summary: {
         group_count: categoryGroups.length,
         category_count: allCategories.length,
-        total_budgeted: formatCurrency(totalBudgeted),
-        total_activity: formatCurrency(totalActivity),
-        total_balance: formatCurrency(totalBalance),
+        total_budgeted: money(totalBudgeted),
+        total_activity: money(totalActivity),
+        total_balance: money(totalBalance),
         overspent_count: overspent.length,
         underfunded_count: underfunded.length,
       },
@@ -167,7 +168,12 @@ type CategoryGroups = Awaited<ReturnType<YnabClient['getCategories']>>['data']['
  * included) and the ids of deleted groups and categories. No totals or alerts,
  * which would only cover the changes.
  */
-function formatCategoryDelta(groups: CategoryGroups, cursor: number, serverKnowledge: number): string {
+function formatCategoryDelta(
+  groups: CategoryGroups,
+  cursor: number,
+  serverKnowledge: number,
+  money: MoneyFormatter
+): string {
   const { changed, deletedIds: deletedGroupIds } = splitDeleted(groups, (g) => g.id);
   const deletedCategoryIds: string[] = [];
   const categoryGroups = groups
@@ -184,15 +190,15 @@ function formatCategoryDelta(groups: CategoryGroups, cursor: number, serverKnowl
       categories: categories.map((cat) => ({
         id: cat.id,
         name: sanitizeName(cat.name),
-        budgeted: formatCurrency(cat.budgeted),
-        activity: formatCurrency(cat.activity),
-        balance: formatCurrency(cat.balance),
+        budgeted: money(cat.budgeted),
+        activity: money(cat.activity),
+        balance: money(cat.balance),
         balance_raw: cat.balance,
         goal_type: cat.goal_type ?? null,
-        goal: buildGoalDetail(cat),
+        goal: buildGoalDetail(cat, money),
         goal_percentage_complete: cat.goal_percentage_complete ?? null,
         goal_under_funded:
-          cat.goal_under_funded != null ? formatCurrency(cat.goal_under_funded) : null,
+          cat.goal_under_funded != null ? money(cat.goal_under_funded) : null,
         goal_under_funded_raw: cat.goal_under_funded ?? null,
         hidden: cat.hidden,
       })),

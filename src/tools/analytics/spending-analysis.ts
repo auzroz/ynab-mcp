@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 
@@ -90,6 +90,7 @@ export async function handleSpendingAnalysis(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const months = validated.months ?? 3;
 
   // Calculate since_date using UTC to avoid timezone drift
@@ -173,12 +174,12 @@ export async function handleSpendingAnalysis(
     categorySpending.push({
       category_name: lookup.name,
       group_name: lookup.group,
-      total_spent: formatCurrency(total),
+      total_spent: money(total),
       total_spent_milliunits: total, // Store raw value for sorting
       transaction_count: data.amounts.length,
-      average_per_transaction: formatCurrency(data.amounts.length > 0 ? total / data.amounts.length : 0),
+      average_per_transaction: money(data.amounts.length > 0 ? total / data.amounts.length : 0),
       percent_of_total: Math.round(percentOfTotal * 10) / 10,
-      monthly_average: formatCurrency(months > 0 ? total / months : 0),
+      monthly_average: money(months > 0 ? total / months : 0),
       trend,
       trend_percent: trendPercent,
     });
@@ -210,7 +211,7 @@ export async function handleSpendingAnalysis(
 
     for (const [catId, amount] of categories) {
       const lookup = categoryLookup.get(catId) ?? { name: sanitizeName('Uncategorized'), group: sanitizeName('Other') };
-      breakdownWithMilliunits.push({ name: lookup.name, amount: formatCurrency(amount), milliunits: amount });
+      breakdownWithMilliunits.push({ name: lookup.name, amount: money(amount), milliunits: amount });
     }
 
     // Sort using raw milliunits (highest first)
@@ -221,7 +222,7 @@ export async function handleSpendingAnalysis(
 
     monthlySpending.push({
       month,
-      total_spent: formatCurrency(total),
+      total_spent: money(total),
       category_breakdown: breakdown,
     });
   }
@@ -242,9 +243,9 @@ export async function handleSpendingAnalysis(
       spending_by_category: spendingByCategory,
       monthly_spending: monthlySpending,
       summary: {
-        total_spent: formatCurrency(totalSpending),
-        monthly_average: formatCurrency(months > 0 ? totalSpending / months : 0),
-        daily_average: formatCurrency(dailyAverage),
+        total_spent: money(totalSpending),
+        monthly_average: money(months > 0 ? totalSpending / months : 0),
+        daily_average: money(dailyAverage),
         transaction_count: transactions.length,
         category_count: categorySpending.length,
         analysis_period: `${months} months`,

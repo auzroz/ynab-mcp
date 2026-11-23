@@ -30,6 +30,15 @@ describe('redactSecretEnvValues', () => {
     expect(redactSecretEnvValues(path, env)).toBe(path);
   });
 
+  it('removes each key of ENCRYPTION_KEY_PREVIOUS on its own, not only the whole list (#57b)', () => {
+    const k1 = fake('PREV1');
+    const k2 = fake('PREV2');
+    const list = { ENCRYPTION_KEY_PREVIOUS: `1:${k1},2:${k2}` };
+    const out = redactSecretEnvValues(`one ${k1} two 2:${k2} all ${list.ENCRYPTION_KEY_PREVIOUS}`, list);
+    for (const v of [k1, k2]) expect(out).not.toContain(v);
+    expect(out).toContain('[ENCRYPTION_KEY_PREVIOUS REDACTED]');
+  });
+
   it('ignores unset and very short values', () => {
     expect(redactSecretEnvValues('the key is abc', { ENCRYPTION_KEY: 'abc' })).toBe('the key is abc');
     expect(redactSecretEnvValues('nothing here', { YNAB_ACCESS_TOKEN: undefined })).toBe('nothing here');

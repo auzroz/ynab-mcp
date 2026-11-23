@@ -25,6 +25,8 @@ import type { HttpConfig } from '../config/environment.js';
 import type { Storage } from '../storage/types.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { securityTxt } from './routes/security-txt.js';
+import type { Encryptor } from '../crypto.js';
+import { rekeyJob } from '../auth/rekey-job.js';
 
 /**
  * Whether `path` is /mcp or under it, as Express would match app.use('/mcp')
@@ -40,6 +42,8 @@ export interface ExtensionContext {
   readonly config: HttpConfig;
   /** The server's storage; undefined in header mode, which has none. */
   readonly storage: Storage | undefined;
+  /** The at-rest keyring (#57b), for jobs; undefined in header mode. Routes must not decrypt with it. */
+  readonly encryptor?: Encryptor | undefined;
 }
 
 /** A module that adds routes. */
@@ -114,4 +118,4 @@ export function createJobRunner(list: readonly JobExtension[], ctx: ExtensionCon
 export const routes: readonly RouteExtension[] = [securityTxt];
 
 /** Background jobs, started in this order. */
-export const jobs: readonly JobExtension[] = [];
+export const jobs: readonly JobExtension[] = [rekeyJob];

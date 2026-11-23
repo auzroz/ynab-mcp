@@ -6,7 +6,7 @@
 
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { z } from 'zod';
@@ -56,6 +56,7 @@ export async function handleQuickSummary(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const currentMonth = getCurrentMonth();
 
   // Get all the data we need in parallel
@@ -99,7 +100,7 @@ export async function handleQuickSummary(
     .filter((c) => c.balance < 0 && !c.hidden)
     .map((c) => ({
       name: sanitizeName(c.name),
-      overspent_by: formatCurrency(Math.abs(c.balance)),
+      overspent_by: money(Math.abs(c.balance)),
     }));
 
   // Get underfunded goals
@@ -107,7 +108,7 @@ export async function handleQuickSummary(
     .filter((c) => (c.goal_under_funded ?? 0) > 0 && !c.hidden)
     .map((c) => ({
       name: sanitizeName(c.name),
-      needed: formatCurrency(c.goal_under_funded ?? 0),
+      needed: money(c.goal_under_funded ?? 0),
     }))
     .slice(0, 5);
 
@@ -116,7 +117,7 @@ export async function handleQuickSummary(
     .filter((a) => a.balance < 10000 && a.balance >= 0)
     .map((a) => ({
       name: sanitizeName(a.name),
-      balance: formatCurrency(a.balance),
+      balance: money(a.balance),
     }));
 
   // Determine overall status
@@ -143,11 +144,11 @@ export async function handleQuickSummary(
       message: statusMessage,
       month: currentMonth,
       key_metrics: {
-        ready_to_assign: formatCurrency(readyToAssign),
-        spent_this_month: formatCurrency(thisMonthActivity),
-        total_in_budget_accounts: formatCurrency(totalBudgetAccountBalance),
-        total_debt: formatCurrency(totalDebt),
-        total_in_tracking_accounts: formatCurrency(totalTrackingBalance),
+        ready_to_assign: money(readyToAssign),
+        spent_this_month: money(thisMonthActivity),
+        total_in_budget_accounts: money(totalBudgetAccountBalance),
+        total_debt: money(totalDebt),
+        total_in_tracking_accounts: money(totalTrackingBalance),
         age_of_money: monthData.age_of_money != null ? `${monthData.age_of_money} days` : null,
       },
       alerts: {
@@ -158,10 +159,10 @@ export async function handleQuickSummary(
       account_summary: {
         checking_savings: budgetAccounts
           .filter((a) => cashTypes.has(String(a.type)))
-          .map((a) => ({ name: sanitizeName(a.name), balance: formatCurrency(a.balance) })),
+          .map((a) => ({ name: sanitizeName(a.name), balance: money(a.balance) })),
         debt_accounts: debtAccounts.map((a) => ({
           name: sanitizeName(a.name),
-          balance: formatCurrency(a.balance),
+          balance: money(a.balance),
         })),
       },
       tips:
