@@ -189,6 +189,61 @@ for (const driver of testDrivers) {
       expect((await h.storage.getUser('u1'))?.refreshLeaseUntil).toBeUndefined();
     });
 
+    it('a token YNAB rejects is invalidated on every replica: exactly one refresh follows, and no replica reuses it', async () => {
+      const h = await driver.open();
+      const other = await h.reopen();
+      await seed(h.storage);
+      const gate = deferred<void>();
+      refreshMock
+        .mockResolvedValueOnce({ accessToken: 'access-1', refreshToken: 'rt-1', expiresAt: Date.now() + 2 * HOUR })
+        .mockImplementationOnce(async () => {
+          await gate.promise;
+          return { accessToken: 'access-2', refreshToken: 'rt-2', expiresAt: Date.now() + 2 * HOUR };
+        });
+      const a = new YnabTokenResolver(h.storage, encryptor, YNAB, Date.now, fast);
+      const b = new YnabTokenResolver(other, encryptor, YNAB, Date.now, fast);
+      expect((await a.resolve('u1')).accessToken).toBe('access-1');
+      expect((await b.resolve('u1')).accessToken).toBe('access-1'); // the shared token, now cached by b too
+      expect(refreshMock).toHaveBeenCalledTimes(1);
+
+      // YNAB answers 401 to access-1 (revoked early): b invalidates it.
+      await b.invalidate('u1', 'access-1');
+      expect((await h.storage.getUser('u1'))?.encryptedAccessToken).toBeUndefined();
+
+      // Both replicas, a included (it still has access-1 in its own cache), refresh once between them.
+      const both = Promise.all([a.resolve('u1'), b.resolve('u1')]);
+      await calls(2);
+      gate.resolve();
+      const [ra, rb] = await both;
+      expect(ra.accessToken).toBe('access-2');
+      expect(rb.accessToken).toBe('access-2');
+      expect(refreshMock).toHaveBeenCalledTimes(2);
+      expect(refreshMock).toHaveBeenLastCalledWith(YNAB, 'rt-1');
+      expect((await a.resolve('u1')).accessToken).toBe('access-2');
+      expect((await b.resolve('u1')).accessToken).toBe('access-2');
+    });
+
+    it('invalidating a rejected token keeps a newer one another replica stored meanwhile', async () => {
+      const h = await driver.open();
+      const other = await h.reopen();
+      await seed(h.storage);
+      refreshMock
+        .mockResolvedValueOnce({ accessToken: 'access-1', refreshToken: 'rt-1', expiresAt: Date.now() + 2 * HOUR })
+        .mockResolvedValueOnce({ accessToken: 'access-2', refreshToken: 'rt-2', expiresAt: Date.now() + 2 * HOUR });
+      const a = new YnabTokenResolver(h.storage, encryptor, YNAB, Date.now, fast);
+      const b = new YnabTokenResolver(other, encryptor, YNAB, Date.now, fast);
+      await a.resolve('u1');
+      await a.invalidate('u1', 'access-1');
+      expect((await a.resolve('u1')).accessToken).toBe('access-2');
+
+      // b learns late that access-1 was rejected: access-2 stays.
+      await b.invalidate('u1', 'access-1');
+      const row = await other.getUser('u1');
+      expect(encryptor.decrypt(row?.encryptedAccessToken ?? '', accessTokenContext('u1'))).toBe('access-2');
+      expect((await b.resolve('u1')).accessToken).toBe('access-2');
+      expect(refreshMock).toHaveBeenCalledTimes(2);
+    });
+
     it('a re-consent during a refresh clears the lease and the shared token, and wins', async () => {
       const h = await driver.open();
       const other = await h.reopen();

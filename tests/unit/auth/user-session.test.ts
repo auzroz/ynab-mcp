@@ -152,7 +152,7 @@ describe('YnabTokenResolver concurrent refresh', () => {
     refreshAccessTokenMock.mockRejectedValueOnce(new Error('YNAB token request failed with status 503'));
     await expect(resolver.resolve('u1')).rejects.toThrow('status 503');
 
-    resolver.invalidate('u1');
+    await resolver.invalidate('u1');
     await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-fresh' });
     expect(refreshAccessTokenMock).toHaveBeenCalledTimes(2);
   });
@@ -160,18 +160,16 @@ describe('YnabTokenResolver concurrent refresh', () => {
 
 describe('YnabTokenResolver.accessTokenFor', () => {
   it("resolves the user's current token on every call", async () => {
-    let now = Date.now();
-    const { storage, encryptor, resolver } = setup(() => now);
+    const { storage, encryptor, resolver } = setup();
     await seedUser(storage, encryptor);
     const getToken = resolver.accessTokenFor('u1');
 
     await expect(getToken()).resolves.toBe('access-fresh');
-    // Past the access token's expiry (cached and shared alike): the next call refreshes.
-    now += 3600_000;
+    await resolver.invalidate('u1', 'access-fresh');
     refreshAccessTokenMock.mockResolvedValueOnce({
       accessToken: 'access-next',
       refreshToken: 'rt-next',
-      expiresAt: now + 3600_000,
+      expiresAt: Date.now() + 3600_000,
     });
     await expect(getToken()).resolves.toBe('access-next');
   });
@@ -222,12 +220,32 @@ describe('YnabTokenResolver.accessTokenFor', () => {
 });
 
 describe('YnabTokenResolver.invalidate', () => {
-  it('drops only this process\'s cache: the shared token in the row is used without a refresh (#48)', async () => {
+  it('forces a refresh on the next resolve after invalidation', async () => {
     const { storage, encryptor, resolver } = setup();
     await seedUser(storage, encryptor);
 
     await resolver.resolve('u1');
-    resolver.invalidate('u1');
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+
+    // YNAB rejected the token: dropped here and in the row (#48).
+    await resolver.invalidate('u1', 'access-fresh');
+    expect((await storage.getUser('u1'))?.encryptedAccessToken).toBeUndefined();
+
+    await resolver.resolve('u1');
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(2);
+    // The second refresh used the rotated token persisted by the first.
+    expect(refreshAccessTokenMock).toHaveBeenLastCalledWith(
+      { clientId: 'cid', clientSecret: 'sec' },
+      'rt-rotated'
+    );
+  });
+
+  it('without the rejected token, drops only this process\'s state: the shared token is still used (#48)', async () => {
+    const { storage, encryptor, resolver } = setup();
+    await seedUser(storage, encryptor);
+
+    await resolver.resolve('u1');
+    await resolver.invalidate('u1');
     await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-fresh' });
     expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
   });
@@ -240,7 +258,6 @@ describe('YnabTokenResolver.invalidate', () => {
     await resolver.resolve('u1');
     expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
 
-    resolver.invalidate('u1');
     now += 3600_000 - 30_000; // inside the minute before expiry
 
     await resolver.resolve('u1');

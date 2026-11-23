@@ -740,7 +740,8 @@ export interface CiphertextStore {
   /**
    * The same for the shared access token (#48): written only while
    * `encrypted_access_token` is still `oldCiphertext`. `undefined` clears it
-   * and its expiry (an expired or unreadable one: the next request refreshes).
+   * and its expiry (an expired or unreadable one, or one YNAB rejected, which
+   * `YnabTokenResolver.invalidate` clears: the next request refreshes).
    * Returns whether it wrote.
    */
   rekeyUserAccessToken(userId: string, oldCiphertext: string, newCiphertext: string | undefined): Promise<boolean>;

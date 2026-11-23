@@ -63,7 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seconds, then fails the request instead of refreshing. A lease whose holder
   crashed expires after 45 seconds. The rekey job also re-encrypts the stored
   access token, and its log line counts it. This needs schema 6: five
-  nullable columns on `users`, added on startup.
+  nullable columns on `users`, added on startup. Rolling back after schema 6
+  means restoring the backup taken before the upgrade.
 - Per-budget caches are keyed by the budget's UUID, never by the `last-used`
   or `default` alias (#66). A `budget_id` of `last-used` (or the default when
   `YNAB_BUDGET_ID` is unset) is resolved to the budget's UUID with one request

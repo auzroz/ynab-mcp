@@ -129,7 +129,13 @@ interface AccessToken {
 export class YnabTokenResolver {
   // Keyed by user, and only valid for the account generation that minted it:
   // an erased account's token is never served to the account that replaced it.
-  private readonly cache = new Map<string, { accessToken: string; expiresAt: number; generation: number }>();
+  // Also only while the row still holds the shared ciphertext it came from
+  // (#48): once any replica clears it (a token YNAB rejected) or replaces it
+  // (a refresh, a re-consent), this process stops using its copy.
+  private readonly cache = new Map<
+    string,
+    { accessToken: string; expiresAt: number; generation: number; ciphertext: string | undefined }
+  >();
   // Refreshes in progress, per user. Concurrent requests join one refresh: YNAB
   // rotates the refresh token on every refresh, so a parallel second refresh
   // would present an already-used one and fail. The lease does the same across
@@ -176,6 +182,7 @@ export class YnabTokenResolver {
     if (
       cached &&
       cached.generation === generationOf(user) &&
+      cached.ciphertext === user.encryptedAccessToken &&
       cached.expiresAt > this.now() + REFRESH_SKEW_MS
     ) {
       return { accessToken: cached.accessToken, grantedScope: user.grantedScope, generation: generationOf(user) };
@@ -228,11 +235,26 @@ export class YnabTokenResolver {
   }
 
   /**
-   * Drop this process's cached access token and remembered failure for a
-   * user. The shared access token in the user's row (#48) is left alone: it
-   * goes with the row, or with a re-consent, which clears it.
+   * Drop the user's access token, so the next resolve refreshes: this
+   * process's cached copy and remembered failure, and, given the token YNAB
+   * rejected (`rejectedAccessToken`, e.g. on a 401 for a revoked token), the
+   * shared copy in the user's row (#48), on every replica. The shared token is
+   * cleared with a compare-and-set on the exact ciphertext that holds the
+   * rejected token, so a newer one another replica stored meanwhile is kept.
+   * Without `rejectedAccessToken` only this process's state is dropped.
    */
-  invalidate(userId: string): void {
+  async invalidate(userId: string, rejectedAccessToken?: string): Promise<void> {
+    this.forget(userId);
+    if (rejectedAccessToken === undefined) return;
+    const user = await this.storage.getUser(userId);
+    const ciphertext = user?.encryptedAccessToken;
+    if (user === undefined || ciphertext === undefined) return;
+    if (this.openAccessToken(user.userId, ciphertext) !== rejectedAccessToken) return;
+    await this.storage.rekeyUserAccessToken(userId, ciphertext, undefined);
+  }
+
+  /** Drop this process's cached access token and remembered failure for a user. */
+  private forget(userId: string): void {
     this.cache.delete(userId);
     this.failed.delete(userId);
   }
@@ -256,7 +278,7 @@ export class YnabTokenResolver {
       if (claimed) {
         if (generationOf(claimed) !== generation) {
           await this.release(userId, holder);
-          this.invalidate(userId);
+          this.forget(userId);
           throw new Error(RECONNECT);
         }
         // Act on the row the claim returned, never on an older read: another
@@ -272,7 +294,7 @@ export class YnabTokenResolver {
       // Another replica holds the lease (or the row is gone): wait for its token.
       const current = await this.storage.getUser(userId);
       if (!current || generationOf(current) !== generation) {
-        this.invalidate(userId);
+        this.forget(userId);
         throw new Error(RECONNECT);
       }
       const shared = this.sharedAccessToken(current);
@@ -351,13 +373,13 @@ export class YnabTokenResolver {
       if (!stored) {
         await this.release(userId, holder);
         if (!current || generationOf(current) !== generationOf(user)) {
-          this.invalidate(userId);
+          this.forget(userId);
           throw new Error(RECONNECT);
         }
         const shared = this.sharedAccessToken(current);
         if (shared) return this.remember(current, shared);
         if (retried) {
-          this.invalidate(userId);
+          this.forget(userId);
           throw new Error(RECONNECT);
         }
         return this.refresh(current, true);
@@ -371,7 +393,12 @@ export class YnabTokenResolver {
   /** Cache `token` for `user`'s generation and return it with the access level as stored. */
   private remember(user: UserRecord, token: AccessToken): ResolvedUser {
     const generation = generationOf(user);
-    this.cache.set(user.userId, { accessToken: token.accessToken, expiresAt: token.expiresAt, generation });
+    this.cache.set(user.userId, {
+      accessToken: token.accessToken,
+      expiresAt: token.expiresAt,
+      generation,
+      ciphertext: user.encryptedAccessToken,
+    });
     return { accessToken: token.accessToken, grantedScope: user.grantedScope, generation };
   }
 
@@ -387,9 +414,15 @@ export class YnabTokenResolver {
     if (ciphertext === undefined || expiresAt === undefined || expiresAt <= this.now() + REFRESH_SKEW_MS) {
       return undefined;
     }
+    const accessToken = this.openAccessToken(user.userId, ciphertext);
+    return accessToken === undefined ? undefined : { accessToken, expiresAt };
+  }
+
+  /** A shared access-token ciphertext opened under its own context (`v2` only), or undefined. */
+  private openAccessToken(userId: string, ciphertext: string): string | undefined {
     if (ciphertextVersion(ciphertext)?.format !== 'v2') return undefined;
     try {
-      return { accessToken: this.encryptor.decrypt(ciphertext, accessTokenContext(user.userId)), expiresAt };
+      return this.encryptor.decrypt(ciphertext, accessTokenContext(userId));
     } catch {
       return undefined;
     }
