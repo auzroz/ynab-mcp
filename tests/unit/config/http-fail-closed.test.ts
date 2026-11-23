@@ -271,7 +271,7 @@ describe('loadHttpConfig composition', () => {
       'oauthClientSecret', 'port', 'privateUseSchemes', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour',
       'readOnly', 'registerRateLimitPerHost', 'registerRateLimitPerIp', 'requestTimeoutMs', 'resourceUrl',
       'securityContacts', 'securityPolicyUrl', 'sessionIdleTimeoutMs', 'sqlitePath', 'storageDriver', 'tokenPepper',
-      'trustCfConnectingIp', 'trustLoopbackRedirects', 'trustProxy', 'verifiedRedirectUris',
+      'trustCfConnectingIp', 'trustLoopbackRedirects', 'trustProxy', 'verifiedRedirectUris', 'writeLimitPerHour',
     ]);
   });
 });

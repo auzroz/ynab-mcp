@@ -286,6 +286,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     rateLimitPerHour: config.rateLimitPerHour,
     rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
     cacheTtlMs: config.cacheTtlMs,
+    writeLimitPerHour: config.writeLimitPerHour,
   });
   const inflight = new InflightLimiter({
     perUser: config.maxInflightPerUser,
@@ -450,6 +451,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
       rateLimitPerHour: config.rateLimitPerHour,
       rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
       cacheTtlMs: config.cacheTtlMs,
+      writeLimitPerHour: config.writeLimitPerHour,
     };
     if (!oauth) {
       const token = effectiveToken(req);
