@@ -396,6 +396,93 @@ for (const driver of testDrivers) {
       });
     });
 
+    describe('a replica below the key floor (#57b write-path rule)', () => {
+      const k1 = randomBytes(32).toString('base64');
+      const onKey1 = new Encryptor(k1);
+      const onKey2 = new Encryptor(randomBytes(32).toString('base64'), { keyId: '2', previousKeys: `1:${k1}` });
+
+      async function seedUnder(storage: Storage, enc: Encryptor, token = 'rt0'): Promise<void> {
+        await storage.upsertUser({
+          userId: 'u1',
+          grantedScope: 'read-write',
+          encryptedRefreshToken: enc.encrypt(token, refreshTokenContext('u1')),
+          updatedAt: Date.now(),
+        });
+      }
+
+      it('holding the lease, it is refused before YNAB, frees the lease, and no token is lost', async () => {
+        const h = await driver.open();
+        const other = await h.reopen();
+        await seedUnder(h.storage, onKey1);
+        const stored = (await h.storage.getUser('u1'))?.encryptedRefreshToken;
+        await other.announceKeyRetirement(2); // a replica on key 2 announced it
+        refreshMock.mockResolvedValue({ accessToken: 'access-new', refreshToken: 'rt-rotated', expiresAt: Date.now() + 2 * HOUR });
+        const old = new YnabTokenResolver(h.storage, onKey1, YNAB, Date.now, fast);
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(old.accessTokenFor('u1')()).rejects.toBeInstanceOf(YnabAuthError);
+        expect(refreshMock).not.toHaveBeenCalled();
+        const row = await other.getUser('u1');
+        expect(row?.encryptedRefreshToken).toBe(stored);
+        expect(row?.refreshLeaseUntil).toBeUndefined();
+        expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+
+        // The token is intact: a replica on the new key refreshes from it.
+        const current = new YnabTokenResolver(other, onKey2, YNAB, Date.now, fast);
+        await expect(current.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-new' });
+        expect(refreshMock).toHaveBeenCalledExactlyOnceWith(YNAB, 'rt0');
+      });
+
+      it('a shared access token left under the retired key neither holds the retirement back nor is read after it', async () => {
+        const h = await driver.open();
+        const keyring = new Encryptor(randomBytes(32).toString('base64'), { keyId: '2', previousKeys: `1:${k1}` });
+        await seedUnder(h.storage, keyring);
+        // Written just before the announcement by a replica still on key 1.
+        const row = await h.storage.getUser('u1');
+        await h.storage.updateUserRefreshToken('u1', row?.encryptedRefreshToken ?? '', row?.encryptedRefreshToken ?? '', {
+          encryptedAccessToken: onKey1.encrypt('access-old-key', accessTokenContext('u1')),
+          expiresAt: Date.now() + 2 * HOUR,
+          now: Date.now(),
+        });
+        await h.storage.announceKeyRetirement(2);
+        expect(await h.storage.raiseRetiredKeyFloor(2)).toBe(2);
+        keyring.retireBelow(await h.storage.getRetiredKeyFloor());
+
+        refreshMock.mockResolvedValue({ accessToken: 'access-new', refreshToken: 'rt-rotated', expiresAt: Date.now() + 2 * HOUR });
+        const resolver = new YnabTokenResolver(h.storage, keyring, YNAB, Date.now, fast);
+        await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-new' });
+        expect(refreshMock).toHaveBeenCalledExactlyOnceWith(YNAB, 'rt0');
+      });
+
+      it('re-checks on the retry after a compare-and-set miss: no second YNAB call once the retirement is announced', async () => {
+        const h = await driver.open();
+        const other = await h.reopen();
+        await seedUnder(h.storage, onKey1);
+        const gate = deferred<void>();
+        refreshMock.mockImplementationOnce(async () => {
+          await gate.promise;
+          return { accessToken: 'access-old-grant', refreshToken: 'rt-old-rotated', expiresAt: Date.now() + 2 * HOUR };
+        });
+        const old = new YnabTokenResolver(h.storage, onKey1, YNAB, Date.now, fast);
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const inFlight = old.resolve('u1');
+        await calls(1);
+        // Meanwhile: a re-consent on the new key, and the retirement is announced.
+        await seedUnder(other, onKey2, 'rt-new-grant');
+        const reconsented = (await other.getUser('u1'))?.encryptedRefreshToken;
+        await other.announceKeyRetirement(2);
+        gate.resolve();
+
+        await expect(inFlight).rejects.toThrow(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+        expect(refreshMock).toHaveBeenCalledTimes(1);
+        const row = await other.getUser('u1');
+        expect(row?.encryptedRefreshToken).toBe(reconsented);
+        expect(row?.refreshLeaseUntil).toBeUndefined();
+        expect(errorSpy).toHaveBeenCalled();
+      });
+    });
+
     it('a re-consent during a refresh clears the lease and the shared token, and wins', async () => {
       const h = await driver.open();
       const other = await h.reopen();

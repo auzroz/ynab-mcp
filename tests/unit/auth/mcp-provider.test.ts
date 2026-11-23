@@ -365,6 +365,19 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
     expect(url.searchParams.get('iss')).toBe('https://mcp.example.com/');
   });
 
+  it('a replica whose key is being retired redirects server_error without exchanging the YNAB code (#57b)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { provider, storage } = makeProvider();
+    await storage.announceKeyRetirement(2); // this provider's keyring is on key 1
+    const { state, nonce } = await pendingState(provider);
+    const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+    expect(url.searchParams.get('error')).toBe('server_error');
+    expect(exchangeCodeMock).not.toHaveBeenCalled();
+    expect(await storage.getUser('ynab-user-1')).toBeUndefined();
+    expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+    errorSpy.mockRestore();
+  });
+
   it('denyAuthorization throws for an unknown state', async () => {
     const { provider } = makeProvider();
     await expect(provider.denyAuthorization('bogus', 'access_denied', 'nonce')).rejects.toBeInstanceOf(InvalidGrantError);

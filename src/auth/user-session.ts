@@ -44,6 +44,7 @@ import {
 } from '../utils/errors.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { refreshAccessToken, YnabOAuthError, type YnabOAuthConfig, type YnabTokenSet } from './ynab-oauth.js';
+import { assertKeyWritable } from './rekey-job.js';
 
 /** Refresh a bit early so an access token doesn't expire mid-request. */
 const REFRESH_SKEW_MS = 60_000;
@@ -377,6 +378,10 @@ export class YnabTokenResolver {
     let refreshToken: string;
     let called = false;
     try {
+      // Before the YNAB call: a replica whose key is being retired must not
+      // spend the token and write its successor where the others can't read
+      // it (#57b). Re-read on every attempt, including the retry after a miss.
+      await assertKeyWritable(this.storage, this.encryptor);
       refreshToken = this.encryptor.decrypt(user.encryptedRefreshToken, context);
       called = true;
       set = await refreshAccessToken(this.ynab, refreshToken);

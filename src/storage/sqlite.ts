@@ -36,13 +36,16 @@ import type {
   CodeSaveOutcome,
   ConsumeOutcome,
   KeyCheckOutcome,
+  KeyFloors,
   StoredUserCiphertext,
   RefreshedAccessToken,
   InactiveUserCondition,
 } from './types.js';
 import {
+  CONDITIONAL_RAISE_FLOOR_SQL,
   RAISE_FLOOR_SQL,
   RETIRED_FLOOR_KEY,
+  RETIRING_FLOOR_KEY,
   compareKeyCheck,
   keyCheckMetaKey,
   parseRetiredFloor,
@@ -609,8 +612,28 @@ export class SqliteStorage implements Storage, OAuthRowStore {
     return parseRetiredFloor(row?.value);
   }
 
-  async raiseRetiredKeyFloor(floor: number): Promise<number> {
-    this.database.prepare(RAISE_FLOOR_SQL.replace(/\$\d+/g, '?')).run(RETIRED_FLOOR_KEY, String(floor));
+  async getKeyFloors(): Promise<KeyFloors> {
+    const rows = this.database
+      .prepare('SELECT key, value FROM schema_meta WHERE key IN (?, ?)')
+      .all(RETIRED_FLOOR_KEY, RETIRING_FLOOR_KEY) as Array<{ key: string; value: string }>;
+    const value = (key: string): string | undefined => rows.find((r) => r.key === key)?.value;
+    return {
+      retired: parseRetiredFloor(value(RETIRED_FLOOR_KEY)),
+      retiring: parseRetiredFloor(value(RETIRING_FLOOR_KEY), RETIRING_FLOOR_KEY),
+    };
+  }
+
+  async announceKeyRetirement(floor: number): Promise<number> {
+    this.database.prepare(RAISE_FLOOR_SQL.replace(/\$\d+/g, '?')).run(RETIRING_FLOOR_KEY, String(floor));
+    return (await this.getKeyFloors()).retiring;
+  }
+
+  async raiseRetiredKeyFloor(floor: number, deadCiphertexts: readonly string[] = []): Promise<number> {
+    // One statement: SQLite runs it under its write lock, so a users write
+    // lands either before it (and holds the raise back) or after it.
+    this.database
+      .prepare(CONDITIONAL_RAISE_FLOOR_SQL.sqlite)
+      .run(RETIRED_FLOOR_KEY, String(floor), floor, JSON.stringify(deadCiphertexts));
     return this.getRetiredKeyFloor();
   }
 

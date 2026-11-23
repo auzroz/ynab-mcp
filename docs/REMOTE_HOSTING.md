@@ -630,15 +630,36 @@ The shared YNAB access token (see "Several replicas: YNAB token refresh") is
 rewritten too, under its own binding. One that has expired, or that no
 configured key opens, is cleared instead (the next request refreshes), so it
 never holds retirement back. The line then ends
-`; shared access tokens: 2 re-encrypted, 1 dropped`.
+`; shared access tokens: 2 re-encrypted, 1 dropped`. The retirement's final
+check looks only at refresh tokens: a shared access token left under a
+retired key (written just before the announcement) can't be read any more,
+counts as absent, and the next request refreshes. It lasts two hours at most,
+and nothing is lost with it.
 
-When nothing is left under an older key or the `v1` format for an hour (two
-passes at least that far apart, so a sign-in in flight lands first), it
-records that in the database and logs:
+Retirement takes two steps:
 
-```text
-[Rekey] no rows are left under older keys: the v1 format and key ids below 2 are now refused
-```
+1. When a pass finds nothing left under an older key or in the `v1` format,
+   it announces the retirement in the database and logs `… nothing is left
+   under older keys: the v1 format and the older key ids are retired in
+   about an hour, and a replica still on an older ENCRYPTION_KEY_ID now
+   refuses to write`. From then on, a replica whose `ENCRYPTION_KEY_ID` is
+   older refuses every refresh and sign-in before it calls YNAB, so it never
+   spends a user's token or writes one the others are about to stop reading.
+   Its log says `Refusing to write with ENCRYPTION_KEY_ID …`, and its users
+   get an authorization error until it is updated.
+2. A pass at least an hour later that still finds nothing left retires them,
+   and logs:
+
+   ```text
+   [Rekey] no rows are left under older keys: the v1 format and key ids below 2 are now refused
+   ```
+
+   The raise checks the table again in the same statement: a token written
+   under an older key after the pass read the table (by a replica that
+   passed its check just before the announcement) holds it back, and the
+   next pass moves that token to the current key (`[Rekey] a token was
+   written under an older key since the pass began: retirement waits for the
+   next pass`).
 
 From then on every replica refuses `v1` and those key ids, so an old
 ciphertext restored from a backup can't get round the binding. The binding
@@ -684,8 +705,21 @@ wrong key given as `1:<old key>` later is refused instead of recorded.
    Set `TOKEN_PEPPER` to it, keep it as secret as the key, and restart. The
    pepper is unchanged, so nobody is logged out; from now on it no longer
    depends on `ENCRYPTION_KEY`. If `TOKEN_PEPPER` is already set it prints
-   nothing and exits with status 2, so a script capturing its output stops
-   instead of setting an empty `TOKEN_PEPPER`.
+   nothing and exits with status 2; on a missing or malformed key it exits
+   with status 1.
+
+   A script that captures the output must check the exit status before it
+   stores or exports the value, and keep the existing value on failure. An
+   assignment like `TOKEN_PEPPER=$(…)` takes the empty output even when the
+   command fails:
+
+   ```bash
+   if pepper=$(npx -y ynab-mcp derive-pepper); then
+     printf 'TOKEN_PEPPER=%s\n' "$pepper" >> .env   # or store it in your secret manager
+   else
+     echo "derive-pepper failed; TOKEN_PEPPER left unchanged" >&2
+   fi
+   ```
 2. **Switch keys.** Generate a new key (`openssl rand -base64 32`) and set:
 
    ```bash
@@ -706,14 +740,32 @@ wrong key given as `1:<old key>` later is refused instead of recorded.
       yet, and the rekey job leaves rows under a newer id alone.
    2. Then switch every replica to the settings above (new key current as id
       2, `1:<old key>` previous).
+
+   **Finish phase 2 on every replica before the old key can retire.** As
+   soon as a replica on id 2 finds nothing left under id 1, it announces the
+   retirement, and from then on any replica still on id 1 refuses to write
+   (see "Encrypted YNAB tokens" above): no token is lost, but that replica's
+   users can't refresh or sign in until it is updated. To confirm every
+   replica is on the new key, check that each one was restarted with
+   `ENCRYPTION_KEY_ID=2` (your deployment's config and restart times), and
+   that no replica logs `Refusing to write with ENCRYPTION_KEY_ID 1`. A
+   replica that restarts with the old settings after the announcement is
+   refused at startup.
 3. **Watch the log.** The rekey job rewrites the old rows (`[Rekey]
-   re-encrypted N, M remaining`), and about an hour after the last one logs
-   that key ids below 2 are now refused.
+   re-encrypted N, M remaining`), announces the retirement once none are
+   left, and about an hour later logs that key ids below 2 are now refused.
 4. **Drop the old key.** Remove `ENCRYPTION_KEY_PREVIOUS` and restart.
+
+To abandon a rotation after the announcement (going back to the old key on
+every replica), stop every replica and delete the announcement:
+`DELETE FROM schema_meta WHERE key = 'encryption_retiring_below';`. Once the
+retirement itself has been logged, it can't be undone this way: the old key
+ids are refused for good.
 
 The server refuses to start, naming no value, when the key under an id is not
 the one the database recorded for that id (a new key needs a new id), when
-`ENCRYPTION_KEY_ID` is below an id that has been retired, or when
+`ENCRYPTION_KEY_ID` is below an id that has been retired or announced for
+retirement, or when
 `ENCRYPTION_KEY_PREVIOUS` is set without `TOKEN_PEPPER`. Before 0.5.0 a new
 `ENCRYPTION_KEY` could be swapped in place, with every user reconnecting; from
 0.5.0 on, a new key always needs a new `ENCRYPTION_KEY_ID`.

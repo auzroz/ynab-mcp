@@ -5,12 +5,21 @@
  * At startup ({@link prepareEncryptionKeys}) every configured key's check
  * value is recorded under its id in `schema_meta`, or compared with the one
  * recorded, so a key replaced under the same id is refused instead of making
- * every stored token undecryptable; and the retirement floor is read and
- * applied, refusing to start when it is above `ENCRYPTION_KEY_ID`.
+ * every stored token undecryptable; and the floors are read and applied,
+ * refusing to start when either is above `ENCRYPTION_KEY_ID`.
+ *
+ * Two floors in `schema_meta`: `encryption_retiring_below` (announced) and
+ * `encryption_retired_below` (in force: `v1` and older key ids are refused).
+ * Every ciphertext write first passes {@link assertKeyWritable}, which reads
+ * both, and refuses (a loud log, and an error its caller maps) when this
+ * replica's current key id is below either: a replica still on an old key
+ * never writes a token the others are about to stop reading, and the token it
+ * would have spent at YNAB stays stored and readable.
  *
  * Each pass of the job ({@link rekeyPass}):
  *
- *   1. Re-reads the floor (another replica may have raised it) and applies it.
+ *   1. Re-reads the floors (another replica may have moved them) and applies
+ *      the retired one; a replica whose key id is below either fails the pass.
  *   2. Pages through the users whose refresh-token ciphertext is not in the
  *      current form (`v2.<current kid>.`): each one under an older key id or
  *      in the `v1` format is decrypted and written back under the current key
@@ -30,16 +39,23 @@
  *      happens: counted as unreadable, they don't hold retirement back.
  *   4. Logs one line with the counts (never a value), when there is anything
  *      to report.
- *   5. When nothing is left on two passes at least {@link RETIRE_GRACE_MS}
- *      apart (a sign-in in flight, or a replica restarting with the new
- *      config, has landed by then), raises the floor to the current key id:
- *      from then on `v1` and every older key id are refused, on every replica
- *      (each one's next pass reads the floor).
+ *   5. Retires in two steps. When a pass first finds nothing left, it
+ *      announces the retirement (raises `encryption_retiring_below` to the
+ *      current key id): from then on a replica still on an older key refuses
+ *      to write. When a pass at least {@link RETIRE_GRACE_MS} later still
+ *      finds nothing left (any write that passed its check before the
+ *      announcement has landed by then: a refresh or sign-in takes seconds),
+ *      it re-reads the staged sign-ins and raises the retired floor with a
+ *      compare-and-set that writes nothing while a `users` row under an older
+ *      key exists (other than rows it already found dead). A write that
+ *      landed after the scan therefore holds retirement back until the next
+ *      pass rekeys it, instead of being stranded.
  *
  * Two replicas running passes at once: every write is a compare-and-set on
  * the ciphertext it read, so of two writes to one row one lands and the other
- * misses and skips (the row is current either way); the floor is raised by a
- * single upsert that keeps the higher value. Both converge on the same state.
+ * misses and skips (the row is current either way); the floors are raised by
+ * single statements that keep the higher value. Both converge on the same
+ * state.
  */
 
 import {
@@ -80,7 +96,50 @@ export async function prepareEncryptionKeys(storage: CiphertextStore, encryptor:
       );
     }
   }
-  encryptor.retireBelow(await storage.getRetiredKeyFloor());
+  const floors = await storage.getKeyFloors();
+  if (floors.retiring > encryptor.currentKeyId) {
+    throw new Error(
+      `ENCRYPTION_KEY_ID ${encryptor.currentKeyId} is being retired by a replica with a newer key (key ids below ${floors.retiring}); ` +
+        'refusing to start. Set ENCRYPTION_KEY and ENCRYPTION_KEY_ID to the newest key, or, to abandon that rotation on every ' +
+        'replica, see "Rotating ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md.'
+    );
+  }
+  encryptor.retireBelow(floors.retired);
+}
+
+/** A ciphertext write refused because this replica's key is being, or has been, retired. Never carries a value. */
+export class KeyRetiredError extends Error {
+  constructor(currentKeyId: number, floor: number) {
+    super(
+      `Refusing to write with ENCRYPTION_KEY_ID ${currentKeyId}: key ids below ${floor} are being retired. ` +
+        'Set ENCRYPTION_KEY and ENCRYPTION_KEY_ID to the newest key on this replica (see "Rotating ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md).'
+    );
+    this.name = 'KeyRetiredError';
+  }
+}
+
+/**
+ * The write-path check (#57b): call before anything that ends in a
+ * ciphertext write (a YNAB refresh write-back, a sign-in), BEFORE spending the
+ * YNAB token or code. Reads both floors from storage (fresh on every call;
+ * writes are a refresh an hour per user, or a sign-in), applies the retired
+ * one, and throws {@link KeyRetiredError}, after a loud log, when this
+ * replica's current key id is below either. Callers map the error to their
+ * fixed client message.
+ */
+export async function assertKeyWritable(
+  storage: CiphertextStore,
+  encryptor: Encryptor,
+  log: (message: string) => void = (m) => console.error(m)
+): Promise<void> {
+  const floors = await storage.getKeyFloors();
+  const floor = Math.max(floors.retired, floors.retiring);
+  if (floor > encryptor.currentKeyId) {
+    const error = new KeyRetiredError(encryptor.currentKeyId, floor);
+    log(`[Rekey] ${error.message}`);
+    throw error;
+  }
+  encryptor.retireBelow(floors.retired);
 }
 
 /** What one pass did and found. Counts only. */
@@ -111,6 +170,10 @@ export interface RekeyResult {
   retiredBelow: number;
   /** Whether this pass raised the floor. */
   retiredNow: boolean;
+  /** Whether this pass announced the retirement (the first step). */
+  announcedNow: boolean;
+  /** Whether the compare-and-set raise found a row written under an older key since the scan, and held back. */
+  heldBack: boolean;
 }
 
 /** State one replica keeps between passes. */
@@ -140,8 +203,10 @@ export async function rekeyPass(
   const pageSize = options.pageSize ?? REKEY_PAGE_SIZE;
   const log = options.log ?? ((m: string) => console.error(m));
 
-  encryptor.retireBelow(await storage.getRetiredKeyFloor());
+  const floors = await storage.getKeyFloors();
   const current = encryptor.currentKeyId;
+  if (floors.retiring > current) throw new KeyRetiredError(current, floors.retiring);
+  encryptor.retireBelow(floors.retired);
   const configured = new Set(encryptor.keyIds);
   const result: RekeyResult = {
     rekeyed: 0,
@@ -155,14 +220,18 @@ export async function rekeyPass(
     accessDropped: 0,
     retiredBelow: encryptor.retiredBelow,
     retiredNow: false,
+    announcedNow: false,
+    heldBack: false,
   };
+  // Rows no configured key opens: the compare-and-set raise may pass over exactly these.
+  const dead: string[] = [];
 
   let after: string | undefined;
   for (;;) {
     const page = await storage.listUserCiphertextsNotIn(encryptor.currentPrefix, after, pageSize);
     for (const row of page) {
       if (!encryptor.isCurrent(row.encryptedRefreshToken)) {
-        await rekeyRefreshToken(storage, encryptor, configured, row.userId, row.encryptedRefreshToken, result);
+        await rekeyRefreshToken(storage, encryptor, configured, row.userId, row.encryptedRefreshToken, result, dead);
       }
       if (row.encryptedAccessToken !== undefined && !encryptor.isCurrent(row.encryptedAccessToken)) {
         await rekeyAccessToken(storage, encryptor, row.userId, row.encryptedAccessToken, row.accessTokenExpiresAt, now(), result);
@@ -182,19 +251,37 @@ export async function rekeyPass(
     state.clearSince = undefined;
   } else if (encryptor.retiredBelow < current) {
     const at = now();
-    if (state.clearSince === undefined) {
+    if (floors.retiring < current) {
+      // Step 1: announce. Replicas still on an older key refuse to write from now on.
+      await storage.announceKeyRetirement(current);
+      result.announcedNow = true;
+      state.clearSince = at;
+    } else if (state.clearSince === undefined) {
       state.clearSince = at;
     } else if (at - state.clearSince >= graceMs) {
-      const floor = await storage.raiseRetiredKeyFloor(current);
-      encryptor.retireBelow(floor);
-      result.retiredNow = true;
+      // Step 2: re-check right before the raise. Staged sign-ins here; users
+      // rows inside the raise itself, a compare-and-set.
+      const stagedNow = (await storage.listStagedSignInCiphertexts(now())).filter((c) => !encryptor.isCurrent(c)).length;
+      const floor = stagedNow === 0 ? await storage.raiseRetiredKeyFloor(current, dead) : encryptor.retiredBelow;
+      if (floor >= current) {
+        encryptor.retireBelow(floor);
+        result.retiredNow = true;
+      } else {
+        result.heldBack = true;
+        result.staged = stagedNow;
+        state.clearSince = undefined;
+      }
     }
   }
   result.retiredBelow = encryptor.retiredBelow;
 
   const line = rekeyLogLine(result);
-  const wrote = result.rekeyed + result.accessRekeyed + result.accessDropped > 0;
-  if (line !== undefined && (wrote || result.retiredNow || line !== state.lastLine)) log(line);
+  const event =
+    result.rekeyed + result.accessRekeyed + result.accessDropped > 0 ||
+    result.retiredNow ||
+    result.announcedNow ||
+    result.heldBack;
+  if (line !== undefined && (event || line !== state.lastLine)) log(line);
   state.lastLine = line;
   return result;
 }
@@ -206,7 +293,8 @@ async function rekeyRefreshToken(
   configured: ReadonlySet<number>,
   userId: string,
   stored: string,
-  result: RekeyResult
+  result: RekeyResult,
+  dead: string[]
 ): Promise<void> {
   const version = ciphertextVersion(stored);
   if (version?.format === 'v2' && version.kid > encryptor.currentKeyId) {
@@ -225,6 +313,8 @@ async function rekeyRefreshToken(
     plaintext = encryptor.decrypt(stored, context);
   } catch {
     result.unreadable++;
+    // The conditional raise may pass over exactly these.
+    dead.push(stored);
     return;
   }
   if (await storage.rekeyUserRefreshToken(userId, stored, encryptor.encrypt(plaintext, context))) {
@@ -275,17 +365,25 @@ async function rekeyAccessToken(
 
 /** The pass's log line (counts only), or undefined when there is nothing to say. */
 export function rekeyLogLine(r: RekeyResult): string | undefined {
+  const unreadable = r.unreadable > 0 ? `; ${r.unreadable} unreadable (those users must connect again)` : '';
   const access =
     r.accessRekeyed > 0 || r.accessDropped > 0
       ? `; shared access tokens: ${r.accessRekeyed} re-encrypted, ${r.accessDropped} dropped`
       : '';
   if (r.retiredNow) {
-    return `[Rekey] no rows are left under older keys: the v1 format and key ids below ${r.retiredBelow} are now refused` +
-      (r.unreadable > 0 ? `; ${r.unreadable} unreadable (those users must connect again)` : '') +
-      access;
+    return `[Rekey] no rows are left under older keys: the v1 format and key ids below ${r.retiredBelow} are now refused${unreadable}${access}`;
   }
-  if (r.rekeyed === 0 && r.remaining === 0 && r.unreadable === 0 && access === '') return undefined;
-  const parts = [`[Rekey] re-encrypted ${r.rekeyed}, ${r.remaining} remaining`];
+  if (r.heldBack) {
+    return `[Rekey] a token was written under an older key since the pass began: retirement waits for the next pass${unreadable}${access}`;
+  }
+  const announced = r.announcedNow
+    ? '; nothing is left under older keys: the v1 format and the older key ids are retired in about an hour, ' +
+      'and a replica still on an older ENCRYPTION_KEY_ID now refuses to write'
+    : '';
+  if (r.rekeyed === 0 && r.remaining === 0 && r.noKey === 0 && r.unreadable === 0 && !r.announcedNow && access === '') {
+    return undefined;
+  }
+  const parts = [`[Rekey] re-encrypted ${r.rekeyed}, ${r.remaining} remaining${announced}`];
   const detail: string[] = [];
   if (r.changed > 0) detail.push(`${r.changed} changed during the pass`);
   if (r.staged > 0) detail.push(`${r.staged} staged sign-ins`);
