@@ -123,6 +123,20 @@ function levelOf(row: OAuthRowWrite): string | undefined {
   }
 }
 
+/** Hold the fake YNAB code exchange: `entered` resolves once a call is waiting, `release` lets it finish. */
+function holdExchange(): { entered: Promise<void>; release: () => void } {
+  let entered!: () => void;
+  const enteredP = new Promise<void>((resolve) => (entered = resolve));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  vi.mocked(ynabExchangeCode).mockImplementation(async () => {
+    entered();
+    await gate;
+    return { accessToken: 'ynab-access', refreshToken: 'ynab-refresh-held', expiresAt: Date.now() + 7_200_000 };
+  });
+  return { entered: enteredP, release };
+}
+
 /** A gate that opens once two callers wait at it. */
 function twoAtOnce(): () => Promise<void> {
   const waiting: Array<() => void> = [];
@@ -516,6 +530,126 @@ for (const driver of testDrivers) {
       expect(complete.status).toBe(303);
       expect((await browse(t.app, jar, `/oauth/interaction/${uid}/start?scope=read-only`)).status).toBe(400);
       expect((await browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(state)}`)).status).toBe(400);
+      expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+    });
+
+    it('a cancel before complete wins: the complete is refused, with no exchange and no grant', async () => {
+      const jar = new CookieJar();
+      const { uid, state } = await toYnab(t, jar, clientId);
+      const cancel = await browse(t.app, jar, `/oauth/interaction/${uid}/cancel`);
+      expect(cancel.status).toBe(303);
+      const complete = await browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(state)}`);
+      expect(complete.status).toBe(400);
+      expect(vi.mocked(ynabExchangeCode)).not.toHaveBeenCalled();
+      expect((await oauthRowsOf(handle)).map((r) => r.model)).not.toContain('Grant');
+      // The denial is the outcome the client gets.
+      const resume = await browse(t.app, jar, cancel.headers['location'] as string);
+      expect(new URL(resume.headers['location'] as string).searchParams.get('error')).toBe('access_denied');
+      // And nothing starts again.
+      expect((await browse(t.app, jar, `/oauth/interaction/${uid}/start?scope=read-only`)).status).toBe(400);
+    });
+
+    it('a cancel while a complete is in the YNAB exchange is refused; the one outcome is the sign-in', async () => {
+      const jar = new CookieJar();
+      const pkce = pkcePair();
+      const auth = await browse(t.app, jar, authorizeUrl({ clientId, challenge: pkce.challenge, scope: 'read-write' }));
+      const uid = interactionUid(auth.headers['location'] as string);
+      const start = await browse(t.app, jar, `/oauth/interaction/${uid}/start?scope=read-write`);
+      const state = new URL(start.headers['location'] as string).searchParams.get('state') as string;
+      const held = holdExchange();
+      const completing = browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(state)}`);
+      await held.entered;
+      const cancel = await browse(t.app, jar, `/oauth/interaction/${uid}/cancel`);
+      expect(cancel.status).toBe(400);
+      held.release();
+      const complete = await completing;
+      expect(complete.status).toBe(303);
+      const resume = await browse(t.app, jar, complete.headers['location'] as string);
+      const params = new URL(resume.headers['location'] as string).searchParams;
+      expect(params.get('error')).toBeNull();
+      const tokens = await exchangeCode(t.app, { clientId, code: params.get('code') as string, verifier: pkce.verifier });
+      expect(tokens.body.scope).toBe('read-only read-write');
+      expect((await oauthRowsOf(handle)).filter((r) => r.model === 'Grant')).toHaveLength(1);
+      expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+    });
+
+    it('a YNAB denial racing a complete: whichever claims the state first is the one outcome', async () => {
+      // The code first: the denial is refused, the sign-in stands.
+      {
+        const jar = new CookieJar();
+        const pkce = pkcePair();
+        const auth = await browse(t.app, jar, authorizeUrl({ clientId, challenge: pkce.challenge, scope: 'read-write' }));
+        const uid = interactionUid(auth.headers['location'] as string);
+        const start = await browse(t.app, jar, `/oauth/interaction/${uid}/start?scope=read-write`);
+        const state = encodeURIComponent(new URL(start.headers['location'] as string).searchParams.get('state') as string);
+        const held = holdExchange();
+        const completing = browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${state}`);
+        await held.entered;
+        const denial = await browse(t.app, jar, `/oauth/interaction/${uid}/complete?error=access_denied&state=${state}`);
+        expect(denial.status).toBe(400);
+        held.release();
+        const complete = await completing;
+        const resume = await browse(t.app, jar, complete.headers['location'] as string);
+        expect(new URL(resume.headers['location'] as string).searchParams.get('code')).toBeTruthy();
+      }
+      // The denial first: the code is refused before any exchange, and no grant is saved.
+      {
+        vi.mocked(ynabExchangeCode).mockClear();
+        const before = (await oauthRowsOf(handle)).filter((r) => r.model === 'Grant').length;
+        const jar = new CookieJar();
+        const { uid, state } = await toYnab(t, jar, clientId);
+        const enc = encodeURIComponent(state);
+        const denial = await browse(t.app, jar, `/oauth/interaction/${uid}/complete?error=access_denied&state=${enc}`);
+        expect(denial.status).toBe(303);
+        expect((await browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${enc}`)).status).toBe(400);
+        const resume = await browse(t.app, jar, denial.headers['location'] as string);
+        expect(new URL(resume.headers['location'] as string).searchParams.get('error')).toBe('access_denied');
+        expect(vi.mocked(ynabExchangeCode)).not.toHaveBeenCalled();
+        expect((await oauthRowsOf(handle)).filter((r) => r.model === 'Grant')).toHaveLength(before);
+      }
+    });
+
+    it("CodeRabbit's sequence: an initial /start held until the other start's complete is in the YNAB exchange is refused", async () => {
+      // The read-only /start reads "no state yet" and is held at its compare-and-set.
+      let startWaiting!: () => void;
+      const startHeld = new Promise<void>((resolve) => (startWaiting = resolve));
+      let releaseStart!: () => void;
+      const startGate = new Promise<void>((resolve) => (releaseStart = resolve));
+      let holding = false;
+      await setup({
+        interactionStore: hookedStore(handle, (row) => {
+          if (holding || phaseOf(row) !== 'pending' || levelOf(row) !== 'read-only') return undefined;
+          holding = true;
+          startWaiting();
+          return startGate;
+        }),
+      });
+      const jar = new CookieJar();
+      const pkce = pkcePair();
+      const auth = await browse(t.app, jar, authorizeUrl({ clientId, challenge: pkce.challenge, scope: 'read-write' }));
+      const uid = interactionUid(auth.headers['location'] as string);
+      const cookie = jar.header(`/oauth/interaction/${uid}/start`);
+      const delayed = request(t.app).get(`/oauth/interaction/${uid}/start?scope=read-only`).set('Cookie', cookie).then((r) => r);
+      await startHeld;
+      // The other initial /start goes through, and its complete reaches the YNAB exchange.
+      const start = await browse(t.app, jar, `/oauth/interaction/${uid}/start?scope=read-write`);
+      expect(start.status).toBe(302);
+      const state = new URL(start.headers['location'] as string).searchParams.get('state') as string;
+      const held = holdExchange();
+      const completing = browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(state)}`);
+      await held.entered;
+      releaseStart();
+      const late = await delayed;
+      expect(late.status).toBe(400);
+      expect(late.headers['location']).toBeUndefined();
+      held.release();
+      const complete = await completing;
+      expect(complete.status).toBe(303);
+      const resume = await browse(t.app, jar, complete.headers['location'] as string);
+      const code = new URL(resume.headers['location'] as string).searchParams.get('code') as string;
+      const tokens = await exchangeCode(t.app, { clientId, code, verifier: pkce.verifier });
+      expect(tokens.body.scope).toBe('read-only read-write');
+      expect((await handle.storage.getUser('ynab-user-1'))?.grantedScope).toBe('read-write');
       expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
     });
 
