@@ -212,4 +212,29 @@ describe('handleDetectRecurring', () => {
     expect(parsed.recurring_transactions[0].suggested_frequency).toBe('every3Months');
     expect(parsed.by_frequency.quarterly).toBe(1);
   });
+
+  it('sorts and totals by number with a comma-decimal, dot-group currency format (#49)', async () => {
+    mockClient.getCurrencyFormat.mockResolvedValue({
+      iso_code: 'EUR',
+      example_format: '123.456,78',
+      decimal_digits: 2,
+      decimal_separator: ',',
+      symbol_first: false,
+      group_separator: '.',
+      currency_symbol: '€',
+      display_symbol: true,
+    });
+    mockClient.getTransactions.mockResolvedValue(
+      createTransactionsResponse([
+        ...monthlyPattern('payee-small', 'Small', -12500, 4),
+        ...monthlyPattern('payee-rent', 'Rent', -1250000, 4),
+      ] as never)
+    );
+
+    const parsed = JSON.parse(await handleDetectRecurring({ months: 12 }, mockClient as never));
+
+    expect(parsed.recurring_transactions.map((r: { payee_name: string }) => r.payee_name)).toEqual(['Rent', 'Small']);
+    expect(parsed.recurring_transactions[0].monthly_cost).toBe('1.250,00€');
+    expect(parsed.summary.estimated_monthly_total).toBe('1.262,50€');
+  });
 });

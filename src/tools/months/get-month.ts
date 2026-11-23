@@ -8,7 +8,7 @@ import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
@@ -73,6 +73,7 @@ export async function handleGetMonth(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   // Convert "current" to actual month date
   const monthParam = validated.month === 'current' ? getCurrentMonth() : validated.month;
@@ -120,9 +121,9 @@ export async function handleGetMonth(
     }
     groupEntry.categories.push({
       name: sanitizeName(category.name),
-      budgeted: formatCurrency(category.budgeted),
-      activity: formatCurrency(category.activity),
-      balance: formatCurrency(category.balance),
+      budgeted: money(category.budgeted),
+      activity: money(category.activity),
+      balance: money(category.balance),
     });
   }
 
@@ -136,10 +137,10 @@ export async function handleGetMonth(
       month: month.month,
       summary: {
         note: sanitizeMemo(month.note),
-        income: formatCurrency(month.income),
-        budgeted: formatCurrency(month.budgeted),
-        activity: formatCurrency(month.activity),
-        to_be_budgeted: formatCurrency(month.to_be_budgeted),
+        income: money(month.income),
+        budgeted: money(month.budgeted),
+        activity: money(month.activity),
+        to_be_budgeted: money(month.to_be_budgeted),
         ...omitNull({ age_of_money: month.age_of_money }),
       },
       category_count: month.categories.filter((c) => !c.hidden).length,

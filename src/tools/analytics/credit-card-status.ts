@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
@@ -66,6 +66,7 @@ export async function handleCreditCardStatus(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const currentMonth = getCurrentMonth();
 
   // Get accounts, categories, and month data
@@ -175,7 +176,7 @@ export async function handleCreditCardStatus(
     overallMessage = 'All credit card balances are covered by payment categories';
   } else if (underfundedCount === cardInfos.length) {
     overallStatus = 'underfunded';
-    overallMessage = `Need ${formatCurrency(totalShortfall)} more to cover all credit cards`;
+    overallMessage = `Need ${money(totalShortfall)} more to cover all credit cards`;
   } else {
     overallStatus = 'some_covered';
     overallMessage = `${coveredCount} of ${cardInfos.length} cards fully covered`;
@@ -188,20 +189,20 @@ export async function handleCreditCardStatus(
       month: currentMonth,
       summary: {
         total_cards: cardInfos.length,
-        total_balance: formatCurrency(totalBalance),
-        total_payment_available: formatCurrency(totalPaymentAvailable),
-        total_shortfall: formatCurrency(totalShortfall),
+        total_balance: money(totalBalance),
+        total_payment_available: money(totalPaymentAvailable),
+        total_shortfall: money(totalShortfall),
         cards_covered: coveredCount,
         cards_partial: cardInfos.filter((c) => c.status === 'partial').length,
         cards_underfunded: underfundedCount,
       },
       credit_cards: cardInfos.map((c) => ({
         account: c.account_name,
-        balance: formatCurrency(c.balance),
-        cleared: formatCurrency(c.cleared_balance),
-        pending: formatCurrency(c.uncleared_balance),
-        payment_available: formatCurrency(c.payment_category_balance),
-        shortfall: c.payment_shortfall > 0 ? formatCurrency(c.payment_shortfall) : null,
+        balance: money(c.balance),
+        cleared: money(c.cleared_balance),
+        pending: money(c.uncleared_balance),
+        payment_available: money(c.payment_category_balance),
+        shortfall: c.payment_shortfall > 0 ? money(c.payment_shortfall) : null,
         status: c.status,
       })),
       tips:

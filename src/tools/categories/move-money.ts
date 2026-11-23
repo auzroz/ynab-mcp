@@ -15,7 +15,7 @@ import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { addMilliunits, formatCurrency, subtractMilliunits, toMilliunits } from '../../utils/milliunits.js';
+import { addMilliunits, moneyFormatterFor, subtractMilliunits, toMilliunits, type MoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId, monthParam, ynabId, MONTH_MAX_LENGTH } from '../../utils/schemas.js';
 import { getCurrentMonth } from '../../utils/dates.js';
@@ -42,7 +42,7 @@ const inputSchema = z
     path: ['to_category_id'],
   })
   .refine((v) => toMilliunits(v.amount) > 0, {
-    message: 'amount must be at least $0.001',
+    message: 'amount must be at least 0.001 (1 milliunit)',
     path: ['amount'],
   });
 
@@ -119,14 +119,19 @@ function snapshot(category: {
   };
 }
 
-function describeSide(before: CategorySnapshot, afterBudgeted: number, afterBalance: number) {
+function describeSide(
+  before: CategorySnapshot,
+  afterBudgeted: number,
+  afterBalance: number,
+  money: MoneyFormatter
+) {
   return {
     id: before.id,
     name: before.name,
-    budgeted_before: formatCurrency(before.budgeted),
-    budgeted_after: formatCurrency(afterBudgeted),
+    budgeted_before: money(before.budgeted),
+    budgeted_after: money(afterBudgeted),
     budgeted_after_milliunits: afterBudgeted,
-    balance_after: formatCurrency(afterBalance),
+    balance_after: money(afterBalance),
   };
 }
 
@@ -180,6 +185,10 @@ export async function handleMoveMoney(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budget = await client.resolveBudgetId(validated.budget_id, { fresh: true });
+  // Fail fast in read-only sessions: no category reads and no settings request for a refused write.
+  if (client.isReadOnly()) {
+    throw new ReadOnlyModeError('updateMonthCategory');
+  }
   const month = validated.month === 'current' ? getCurrentMonth() : validated.month;
   const amount = toMilliunits(validated.amount);
 
@@ -219,9 +228,10 @@ export async function handleMoveMoney(
       outcome,
     });
 
+  const money = await moneyFormatterFor(client, budget);
   const sides = {
-    from: { id: from.id, name: from.name, original_budgeted: formatCurrency(from.budgeted), original_budgeted_milliunits: from.budgeted },
-    to: { id: to.id, name: to.name, original_budgeted: formatCurrency(to.budgeted), original_budgeted_milliunits: to.budgeted },
+    from: { id: from.id, name: from.name, original_budgeted: money(from.budgeted), original_budgeted_milliunits: from.budgeted },
+    to: { id: to.id, name: to.name, original_budgeted: money(to.budgeted), original_budgeted_milliunits: to.budgeted },
   };
 
   // Leg 1: a thrown error does not prove nothing changed (a timeout or 5xx can
@@ -272,12 +282,12 @@ export async function handleMoveMoney(
           success: false,
           type: 'move_outcome_uncertain',
           rolled_back: false,
-          message: `Could not confirm whether "${from.name}" was reduced by ${formatCurrency(amount)}. It was ${formatCurrency(from.budgeted)} before and may be ${formatCurrency(newFromBudgeted)}, unchanged, or something else if it was edited meanwhile; "${to.name}" was ${formatCurrency(to.budgeted)} and would become ${formatCurrency(newToBudgeted)}. No further writes were attempted. Check both categories with ynab_get_month_category and correct them with ynab_update_category.`,
+          message: `Could not confirm whether "${from.name}" was reduced by ${money(amount)}. It was ${money(from.budgeted)} before and may be ${money(newFromBudgeted)}, unchanged, or something else if it was edited meanwhile; "${to.name}" was ${money(to.budgeted)} and would become ${money(newToBudgeted)}. No further writes were attempted. Check both categories with ynab_get_month_category and correct them with ynab_update_category.`,
           month,
           ...sides,
-          from_intended_budgeted: formatCurrency(newFromBudgeted),
+          from_intended_budgeted: money(newFromBudgeted),
           from_intended_budgeted_milliunits: newFromBudgeted,
-          to_intended_budgeted: formatCurrency(newToBudgeted),
+          to_intended_budgeted: money(newToBudgeted),
           to_intended_budgeted_milliunits: newToBudgeted,
           cause: causeOf(error),
         },
@@ -320,7 +330,7 @@ export async function handleMoveMoney(
             success: false,
             type: 'move_outcome_uncertain',
             rolled_back: false,
-            message: `Could not confirm whether ${formatCurrency(amount)} was added to "${to.name}". "${from.name}" is now budgeted at ${formatCurrency(newFromBudgeted)} (was ${formatCurrency(from.budgeted)}); "${to.name}" was ${formatCurrency(to.budgeted)} before and may be ${formatCurrency(newToBudgeted)} or unchanged. No rollback was attempted. Check both categories with ynab_get_month_category and correct them with ynab_update_category.`,
+            message: `Could not confirm whether ${money(amount)} was added to "${to.name}". "${from.name}" is now budgeted at ${money(newFromBudgeted)} (was ${money(from.budgeted)}); "${to.name}" was ${money(to.budgeted)} before and may be ${money(newToBudgeted)} or unchanged. No rollback was attempted. Check both categories with ynab_get_month_category and correct them with ynab_update_category.`,
             month,
             ...sides,
             cause: causeOf(error),
@@ -351,8 +361,8 @@ export async function handleMoveMoney(
             rolled_back: false,
             message:
               fromNow === undefined
-                ? `Could not add ${formatCurrency(amount)} to "${to.name}", and "${from.name}" could not be re-read, so it was not restored. "${from.name}" was set to ${formatCurrency(newFromBudgeted)} (was ${formatCurrency(from.budgeted)}) and "${to.name}" is unchanged at ${formatCurrency(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and fix it with ynab_update_category.`
-                : `Could not add ${formatCurrency(amount)} to "${to.name}". "${from.name}" changed since the move (now ${formatCurrency(fromNow)}, expected ${formatCurrency(newFromBudgeted)}), so it was not restored to avoid overwriting that edit. It was ${formatCurrency(from.budgeted)} before the move and "${to.name}" is unchanged at ${formatCurrency(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and fix it with ynab_update_category if needed.`,
+                ? `Could not add ${money(amount)} to "${to.name}", and "${from.name}" could not be re-read, so it was not restored. "${from.name}" was set to ${money(newFromBudgeted)} (was ${money(from.budgeted)}) and "${to.name}" is unchanged at ${money(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and fix it with ynab_update_category.`
+                : `Could not add ${money(amount)} to "${to.name}". "${from.name}" changed since the move (now ${money(fromNow)}, expected ${money(newFromBudgeted)}), so it was not restored to avoid overwriting that edit. It was ${money(from.budgeted)} before the move and "${to.name}" is unchanged at ${money(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and fix it with ynab_update_category if needed.`,
             month,
             ...sides,
             cause: causeOf(error),
@@ -384,8 +394,8 @@ export async function handleMoveMoney(
           type: rolledBack ? 'move_failed_rolled_back' : 'move_partially_applied',
           rolled_back: rolledBack,
           message: rolledBack
-            ? `Could not add ${formatCurrency(amount)} to "${to.name}". "${from.name}" was restored to ${formatCurrency(from.budgeted)}; no budgeted amounts changed.`
-            : `Could not add ${formatCurrency(amount)} to "${to.name}", and restoring "${from.name}" also failed. "${from.name}" may still be budgeted at ${formatCurrency(newFromBudgeted)} (was ${formatCurrency(from.budgeted)}; the restore may have been applied despite the error) and "${to.name}" is unchanged at ${formatCurrency(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and, if it is not ${formatCurrency(from.budgeted)}, set it back with ynab_update_category.`,
+            ? `Could not add ${money(amount)} to "${to.name}". "${from.name}" was restored to ${money(from.budgeted)}; no budgeted amounts changed.`
+            : `Could not add ${money(amount)} to "${to.name}", and restoring "${from.name}" also failed. "${from.name}" may still be budgeted at ${money(newFromBudgeted)} (was ${money(from.budgeted)}; the restore may have been applied despite the error) and "${to.name}" is unchanged at ${money(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and, if it is not ${money(from.budgeted)}, set it back with ynab_update_category.`,
           month,
           ...sides,
           cause: causeOf(error),
@@ -416,19 +426,19 @@ export async function handleMoveMoney(
   }
   if (fromAfter.balance < 0) {
     warnings.push(
-      `"${from.name}" now has a negative balance (${formatCurrency(fromAfter.balance)}); it is overspent for this month.`
+      `"${from.name}" now has a negative balance (${money(fromAfter.balance)}); it is overspent for this month.`
     );
   }
 
   return JSON.stringify(
     {
       success: true,
-      message: `Moved ${formatCurrency(amount)} of budgeted money from "${from.name}" to "${to.name}" for ${month}`,
+      message: `Moved ${money(amount)} of budgeted money from "${from.name}" to "${to.name}" for ${month}`,
       month,
-      amount: formatCurrency(amount),
+      amount: money(amount),
       amount_milliunits: amount,
-      from: describeSide(from, fromAfter.budgeted, fromAfter.balance),
-      to: describeSide(to, toAfter.budgeted, toAfter.balance),
+      from: describeSide(from, fromAfter.budgeted, fromAfter.balance, money),
+      to: describeSide(to, toAfter.budgeted, toAfter.balance, money),
       ...(warnings.length > 0 && { warnings }),
       note: 'Budgeted amounts were changed; no YNAB money-movement record was created.',
     },

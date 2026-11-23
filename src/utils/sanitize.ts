@@ -92,6 +92,17 @@ export function sanitizeString(
 }
 
 /**
+ * Clean a currency symbol or separator from YNAB's currency_format: control and
+ * bidi characters are removed and the length is capped, but the text is never
+ * trimmed, because a group separator is often a space (U+0020, U+00A0, U+202F).
+ */
+export function sanitizeFormatText(input: string, maxLength: number): string {
+  // eslint-disable-next-line no-control-regex
+  const cleaned = input.replace(/[\x00-\x1F\x7F\x80-\x9F\u200B-\u200F\u2028\u2029\uFEFF]/g, '');
+  return stripBidi(cleaned).slice(0, maxLength);
+}
+
+/**
  * Sanitize a string, returning empty string instead of null for missing input.
  * Useful when a non-null string is required.
  */

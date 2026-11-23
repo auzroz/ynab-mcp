@@ -112,6 +112,8 @@ describe('flag_name in transaction read tools', () => {
 
 describe('ynab SDK response parsing keeps flag_name and chaining ids', () => {
   const fetchMock = vi.fn<typeof fetch>();
+  /** Fetch calls other than the budget settings read that formats amounts (#49). */
+  const dataCalls = () => fetchMock.mock.calls.filter(([u]) => !String(u).endsWith('/settings'));
 
   beforeEach(() => {
     fetchMock.mockReset();
@@ -170,7 +172,7 @@ describe('ynab SDK response parsing keeps flag_name and chaining ids', () => {
         client() as never
       )
     );
-    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    const url = new URL(String(dataCalls()[0]![0]));
     expect(url.pathname).toMatch(/\/accounts\/.+\/transactions$/);
     expect(url.searchParams.get('type')).toBe('unapproved');
     expect(parsed.transactions[0].flag_name).toBe('Needs receipt');
@@ -198,8 +200,8 @@ describe('ynab SDK response parsing keeps flag_name and chaining ids', () => {
         client() as never
       )
     );
-    expect(new URL(String(fetchMock.mock.calls[0]![0])).searchParams.get('type')).toBe('uncategorized');
-    expect(new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('type')).toBe('unapproved');
+    expect(new URL(String(dataCalls()[0]![0])).searchParams.get('type')).toBe('uncategorized');
+    expect(new URL(String(dataCalls()[1]![0])).searchParams.get('type')).toBe('unapproved');
     for (const out of [cat, payee]) {
       expect(out.transactions[0].flag_name).toBe('Needs receipt');
       expect(out.transactions[0].type).toBe('subtransaction');

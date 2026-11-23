@@ -3,10 +3,9 @@
  *
  * Creates a new account in a budget.
  *
- * Note: Currency formatting uses USD ($) symbols by default for display purposes.
- * The underlying data is always stored in milliunits regardless of currency.
- * To use the budget's actual currency format, use formatCurrencyWithFormat()
- * with the budget's currency_format settings (requires additional API call).
+ * Note: amounts are formatted with the budget's currency_format (moneyFormatterFor),
+ * falling back to the USD style when the settings cannot be read. Raw values stay
+ * in milliunits regardless of currency.
  */
 
 import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
@@ -14,7 +13,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
 
@@ -104,6 +103,7 @@ export async function handleCreateAccount(
     },
   });
 
+  const money = await moneyFormatterFor(client, budgetId);
   const account = response.data.account;
 
   const accountName = sanitizeName(account.name);
@@ -115,7 +115,7 @@ export async function handleCreateAccount(
         id: account.id,
         name: accountName,
         type: account.type,
-        balance: formatCurrency(account.balance),
+        balance: money(account.balance),
         on_budget: account.on_budget,
       },
     },

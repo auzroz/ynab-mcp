@@ -6,7 +6,7 @@
  */
 
 import DecimalJS from 'decimal.js';
-import { formatCurrency } from './milliunits.js';
+import { usdFallbackFormatter, type MoneyFormatter } from './milliunits.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
 
@@ -147,9 +147,6 @@ export interface GoalSource {
   goal_snoozed_at?: string | null;
 }
 
-function money(milliunits: number | null | undefined): string | null {
-  return milliunits !== null && milliunits !== undefined ? formatCurrency(milliunits) : null;
-}
 
 /**
  * Build the decoded goal object returned by the category tools. Returns null
@@ -157,7 +154,12 @@ function money(milliunits: number | null | undefined): string | null {
  * target_month, target, percentage_complete, months_to_budget, under_funded,
  * overall_funded, overall_left) are kept; everything else is additive.
  */
-export function buildGoalDetail(category: GoalSource): Record<string, unknown> | null {
+export function buildGoalDetail(
+  category: GoalSource,
+  format: MoneyFormatter = usdFallbackFormatter
+): Record<string, unknown> | null {
+  const money = (milliunits: number | null | undefined): string | null =>
+    milliunits !== null && milliunits !== undefined ? format(milliunits) : null;
   if (!category.goal_type) return null;
 
   const type = String(category.goal_type);

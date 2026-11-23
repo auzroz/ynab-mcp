@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
@@ -80,6 +80,7 @@ export async function handleBudgetSuggestions(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const monthCount = validated.months ?? 3;
 
   // Generate list of months to analyze (excluding current month)
@@ -272,31 +273,31 @@ export async function handleBudgetSuggestions(
         needs_increase: needsIncrease.length,
         can_decrease: canDecrease.length,
         on_target: onTarget.length,
-        net_adjustment_needed: formatCurrency(totalIncrease - totalDecrease),
+        net_adjustment_needed: money(totalIncrease - totalDecrease),
       },
       needs_increase: needsIncrease.slice(0, 10).map((s) => ({
         category: s.category_name,
         group: s.group_name,
-        current: formatCurrency(s.current_budget),
-        suggested: formatCurrency(s.suggested_budget),
-        average_spending: formatCurrency(s.average_spending),
-        increase_by: formatCurrency(s.suggested_budget - s.current_budget),
+        current: money(s.current_budget),
+        suggested: money(s.suggested_budget),
+        average_spending: money(s.average_spending),
+        increase_by: money(s.suggested_budget - s.current_budget),
         confidence: s.confidence,
       })),
       can_decrease: canDecrease.slice(0, 10).map((s) => ({
         category: s.category_name,
         group: s.group_name,
-        current: formatCurrency(s.current_budget),
-        suggested: formatCurrency(s.suggested_budget),
-        average_spending: formatCurrency(s.average_spending),
-        decrease_by: formatCurrency(s.current_budget - s.suggested_budget),
+        current: money(s.current_budget),
+        suggested: money(s.suggested_budget),
+        average_spending: money(s.average_spending),
+        decrease_by: money(s.current_budget - s.suggested_budget),
         confidence: s.confidence,
       })),
       on_target: onTarget.slice(0, 5).map((s) => ({
         category: s.category_name,
         group: s.group_name,
-        current: formatCurrency(s.current_budget),
-        average_spending: formatCurrency(s.average_spending),
+        current: money(s.current_budget),
+        average_spending: money(s.average_spending),
       })),
       tips: [
         'Suggestions include a 10% buffer above average spending',

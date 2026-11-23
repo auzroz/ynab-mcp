@@ -8,7 +8,7 @@ import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits, toMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { DATE_TEXT_MAX_LENGTH, NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
@@ -160,6 +160,7 @@ export async function handleTransactionSearch(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const limit = validated.limit ?? 25;
   const type = validated.type ?? 'all';
 
@@ -279,7 +280,7 @@ export async function handleTransactionSearch(
       date: t.date,
       payee: sanitizeName(t.payee_name),
       category: categoryName !== undefined ? sanitizeName(categoryName) : null,
-      amount: formatCurrency(t.amount),
+      amount: money(t.amount),
       amount_raw: t.amount,
       memo: sanitizeMemo(t.memo),
       account: sanitizeName(accountLookup.get(t.account_id) ?? 'Unknown'),
@@ -301,8 +302,8 @@ export async function handleTransactionSearch(
   if (validated.query) searchCriteria.push(`text: "${sanitizeName(validated.query)}"`);
   if (validated.payee) searchCriteria.push(`payee: "${sanitizeName(validated.payee)}"`);
   if (validated.category) searchCriteria.push(`category: "${sanitizeName(validated.category)}"`);
-  if (validated.min_amount) searchCriteria.push(`min: $${validated.min_amount}`);
-  if (validated.max_amount) searchCriteria.push(`max: $${validated.max_amount}`);
+  if (validated.min_amount) searchCriteria.push(`min: ${money(toMilliunits(validated.min_amount))}`);
+  if (validated.max_amount) searchCriteria.push(`max: ${money(toMilliunits(validated.max_amount))}`);
   if (explicitSinceDate) searchCriteria.push(`from: ${explicitSinceDate}`);
   if (untilDate) searchCriteria.push(`to: ${untilDate}`);
   if (type !== 'all') searchCriteria.push(`type: ${type}`);
@@ -326,9 +327,9 @@ export async function handleTransactionSearch(
       summary: {
         total_matches: transactions.length,
         showing: results.length,
-        total_amount: formatCurrency(totalAmount),
-        total_outflow: formatCurrency(totalOutflow),
-        total_inflow: formatCurrency(totalInflow),
+        total_amount: money(totalAmount),
+        total_outflow: money(totalOutflow),
+        total_inflow: money(totalInflow),
       },
       transactions: results.map((r) => ({
         date: r.date,

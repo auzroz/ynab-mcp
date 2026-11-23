@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
@@ -97,6 +97,7 @@ export async function handleBudgetVsActuals(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const month = validated.month ?? getCurrentMonth();
 
   // Get month data and categories in parallel
@@ -164,13 +165,13 @@ export async function handleBudgetVsActuals(
     const categoryReport: CategoryReport = {
       category_name: sanitizeName(category.name),
       group_name: sanitizeName(groupName),
-      budgeted: formatCurrency(budgeted),
-      activity: formatCurrency(activity),
-      available: formatCurrency(available),
+      budgeted: money(budgeted),
+      activity: money(activity),
+      available: money(available),
       budgeted_raw: budgeted,
       activity_raw: activity,
       available_raw: available,
-      variance: formatCurrency(variance),
+      variance: money(variance),
       variance_percent: variancePercent !== null ? Math.round(variancePercent) : null,
       status,
     };
@@ -181,9 +182,9 @@ export async function handleBudgetVsActuals(
     if (!groupReports.has(groupName)) {
       groupReports.set(groupName, {
         group_name: sanitizeName(groupName),
-        total_budgeted: formatCurrency(0),
-        total_activity: formatCurrency(0),
-        total_available: formatCurrency(0),
+        total_budgeted: money(0),
+        total_activity: money(0),
+        total_available: money(0),
         categories: [],
       });
     }
@@ -197,9 +198,9 @@ export async function handleBudgetVsActuals(
     const groupActivity = group.categories.reduce((sum, c) => sum + c.activity_raw, 0);
     const groupAvailable = group.categories.reduce((sum, c) => sum + c.available_raw, 0);
 
-    group.total_budgeted = formatCurrency(groupBudgeted);
-    group.total_activity = formatCurrency(groupActivity);
-    group.total_available = formatCurrency(groupAvailable);
+    group.total_budgeted = money(groupBudgeted);
+    group.total_activity = money(groupActivity);
+    group.total_available = money(groupAvailable);
 
     // Sort categories by activity (highest spending first)
     group.categories.sort((a, b) => b.activity_raw - a.activity_raw);
@@ -255,9 +256,9 @@ export async function handleBudgetVsActuals(
 
     previousMonthComparison = {
       month: prevMonth,
-      total_budgeted: formatCurrency(prevTotalBudgeted),
-      total_activity: formatCurrency(prevTotalActivity),
-      activity_change: formatCurrency(activityChange),
+      total_budgeted: money(prevTotalBudgeted),
+      total_activity: money(prevTotalActivity),
+      activity_change: money(activityChange),
       activity_change_percent: Math.round(activityChangePercent),
     };
   }
@@ -271,8 +272,8 @@ export async function handleBudgetVsActuals(
     {
       month,
       summary: {
-        total_budgeted: formatCurrency(totalBudgeted),
-        total_activity: formatCurrency(totalActivity),
+        total_budgeted: money(totalBudgeted),
+        total_activity: money(totalActivity),
         budget_usage_percent: budgetUsagePercent,
         overspent_categories: overspentCount,
         warning_categories: warningCount,
@@ -283,7 +284,7 @@ export async function handleBudgetVsActuals(
         overspent: overspentCategories.slice(0, 5).map((c) => ({
           category: c.category_name,
           group: c.group_name,
-          overspent_by: formatCurrency(Math.abs(c.available_raw)),
+          overspent_by: money(Math.abs(c.available_raw)),
         })),
         warnings: warningCategories.slice(0, 5).map((c) => ({
           category: c.category_name,

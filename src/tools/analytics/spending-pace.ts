@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
@@ -68,6 +68,7 @@ export async function handleSpendingPace(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   // getCurrentMonth() uses UTC internally for consistency with date calculations below
   const currentMonth = getCurrentMonth();
 
@@ -161,11 +162,11 @@ export async function handleSpendingPace(
 
   if (totalSpent > totalBudgeted) {
     overallStatus = 'overspent';
-    overallMessage = `Already over budget by ${formatCurrency(totalSpent - totalBudgeted)}`;
+    overallMessage = `Already over budget by ${money(totalSpent - totalBudgeted)}`;
   } else if (overallDailyActual > overallDailyTarget * 1.1) {
     overallStatus = 'behind';
     const projectedOver = projectedTotalSpend - totalBudgeted;
-    overallMessage = `At current pace, will exceed budget by ${formatCurrency(projectedOver)}`;
+    overallMessage = `At current pace, will exceed budget by ${money(projectedOver)}`;
   } else if (overallDailyActual < overallDailyTarget * 0.9) {
     overallStatus = 'ahead';
     overallMessage = 'Spending below target rate';
@@ -192,16 +193,16 @@ export async function handleSpendingPace(
         percent_elapsed: `${Math.round(percentMonthElapsed)}%`,
       },
       overall: {
-        total_budgeted: formatCurrency(totalBudgeted),
-        total_spent: formatCurrency(totalSpent),
-        remaining: formatCurrency(totalRemaining),
+        total_budgeted: money(totalBudgeted),
+        total_spent: money(totalSpent),
+        remaining: money(totalRemaining),
         percent_spent: totalBudgeted > 0
           ? `${Math.round((totalSpent / totalBudgeted) * 100)}%`
           : (totalSpent > 0 ? 'N/A (no budget)' : '0%'),
-        daily_target: formatCurrency(overallDailyTarget),
-        daily_actual: formatCurrency(overallDailyActual),
-        daily_allowance_remaining: formatCurrency(dailyAllowanceRemaining),
-        projected_end_of_month: formatCurrency(projectedTotalSpend),
+        daily_target: money(overallDailyTarget),
+        daily_actual: money(overallDailyActual),
+        daily_allowance_remaining: money(dailyAllowanceRemaining),
+        projected_end_of_month: money(projectedTotalSpend),
       },
       category_status: statusCounts,
       categories_needing_attention: categoryPaces
@@ -210,11 +211,11 @@ export async function handleSpendingPace(
         .map((c) => ({
           category: c.category_name,
           group: c.group_name,
-          budgeted: formatCurrency(c.budgeted),
-          spent: formatCurrency(c.spent),
-          remaining: formatCurrency(c.remaining),
-          daily_target: formatCurrency(c.daily_target),
-          daily_actual: formatCurrency(c.daily_actual),
+          budgeted: money(c.budgeted),
+          spent: money(c.spent),
+          remaining: money(c.remaining),
+          daily_target: money(c.daily_target),
+          daily_actual: money(c.daily_actual),
           status: c.status,
         })),
       categories_ahead: categoryPaces
@@ -223,7 +224,7 @@ export async function handleSpendingPace(
         .map((c) => ({
           category: c.category_name,
           group: c.group_name,
-          remaining: formatCurrency(c.remaining),
+          remaining: money(c.remaining),
           status: c.status,
         })),
     },

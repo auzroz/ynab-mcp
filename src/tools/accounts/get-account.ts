@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { accountDetailFields } from './account-fields.js';
 
@@ -67,6 +67,7 @@ export async function handleGetAccount(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   const response = await client.getAccountById(budgetId, validated.account_id);
   const account = response.data.account;
@@ -77,10 +78,10 @@ export async function handleGetAccount(
         id: account.id,
         name: sanitizeName(account.name),
         type: account.type,
-        balance: formatCurrency(account.balance),
-        cleared_balance: formatCurrency(account.cleared_balance),
-        uncleared_balance: formatCurrency(account.uncleared_balance),
-        ...accountDetailFields(account, { includeEmptyMaps: true }),
+        balance: money(account.balance),
+        cleared_balance: money(account.cleared_balance),
+        uncleared_balance: money(account.uncleared_balance),
+        ...accountDetailFields(account, { includeEmptyMaps: true }, money),
       },
     },
     null,

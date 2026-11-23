@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
@@ -96,6 +96,7 @@ export async function handleGoalProgress(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const currentMonth = getCurrentMonth();
   const filter = validated.filter ?? 'all';
 
@@ -171,7 +172,7 @@ export async function handleGoalProgress(
       }
     } else if (underfunded > 0) {
       status = 'underfunded';
-      statusMessage = `Needs ${formatCurrency(underfunded)} more this month`;
+      statusMessage = `Needs ${money(underfunded)} more this month`;
     } else if (targetDate && daysUntilTarget !== null && daysUntilTarget < 30 && (percentComplete ?? 0) < 90) {
       status = 'behind';
       statusMessage = `Only ${daysUntilTarget} days left, ${percentComplete ?? 0}% complete`;
@@ -193,14 +194,14 @@ export async function handleGoalProgress(
       group_name: sanitizeName(groupName),
       goal_type: goalTypeStr,
       goal_type_label: goalTypeLabels[goalTypeStr] ?? goalTypeStr,
-      target_amount: targetAmount !== null ? formatCurrency(targetAmount) : null,
+      target_amount: targetAmount !== null ? money(targetAmount) : null,
       target_date: targetDate,
       period: period?.label ?? null,
-      monthly_equivalent: monthlyEquivalent !== null ? formatCurrency(monthlyEquivalent) : null,
+      monthly_equivalent: monthlyEquivalent !== null ? money(monthlyEquivalent) : null,
       snoozed,
-      current_balance: formatCurrency(balance),
+      current_balance: money(balance),
       percent_complete: percentComplete,
-      underfunded: formatCurrency(underfunded),
+      underfunded: money(underfunded),
       underfunded_raw: underfunded,
       status,
       status_message: statusMessage,
@@ -269,7 +270,7 @@ export async function handleGoalProgress(
         behind: statusCounts.behind,
         underfunded: statusCounts.underfunded,
         snoozed: statusCounts.snoozed,
-        total_underfunded: formatCurrency(totalUnderfunded),
+        total_underfunded: money(totalUnderfunded),
       },
       goals: filteredGoals.map((g) => ({
         category: g.category_name,

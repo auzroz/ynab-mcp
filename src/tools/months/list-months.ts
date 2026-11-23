@@ -8,7 +8,7 @@ import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
@@ -60,6 +60,7 @@ export async function handleListMonths(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   const cursor = validated.since_server_knowledge;
   const response =
@@ -75,10 +76,10 @@ export async function handleListMonths(
   const formattedMonths = months.map((month) => ({
     month: month.month,
     note: sanitizeMemo(month.note),
-    income: formatCurrency(month.income),
-    budgeted: formatCurrency(month.budgeted),
-    activity: formatCurrency(month.activity),
-    to_be_budgeted: formatCurrency(month.to_be_budgeted),
+    income: money(month.income),
+    budgeted: money(month.budgeted),
+    activity: money(month.activity),
+    to_be_budgeted: money(month.to_be_budgeted),
     ...omitNull({ age_of_money: month.age_of_money }),
     deleted: month.deleted,
   }));

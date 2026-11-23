@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeFlagName } from './format.js';
 import { sanitizeName, sanitizeMemo, sanitizeString } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
@@ -63,6 +63,7 @@ export async function handleGetTransaction(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   const response = await client.getTransactionById(budgetId, validated.transaction_id);
   const txn = response.data.transaction;
@@ -72,7 +73,7 @@ export async function handleGetTransaction(
       transaction: {
         id: txn.id,
         date: txn.date,
-        amount: formatCurrency(txn.amount),
+        amount: money(txn.amount),
         memo: sanitizeMemo(txn.memo),
         ...omitNull({ payee_id: txn.payee_id }),
         payee_name: sanitizeName(txn.payee_name),
@@ -98,7 +99,7 @@ export async function handleGetTransaction(
             ? (txn.subtransactions ?? []).map((sub) => ({
                 id: sub.id,
                 transaction_id: sub.transaction_id,
-                amount: formatCurrency(sub.amount),
+                amount: money(sub.amount),
                 memo: sanitizeMemo(sub.memo),
                 ...omitNull({ payee_id: sub.payee_id }),
                 payee_name: sanitizeName(sub.payee_name),
