@@ -3,8 +3,8 @@
  * `verifyAccessToken` the bearer stage calls, with WS7.3's contract.
  *
  * The token is looked up with `provider.AccessToken.find` (public API: one
- * adapter read, refused before any read when it isn't 43 base64url
- * characters; joined to its grant and its user, so a token whose grant was
+ * adapter read; a value that isn't 43 base64url characters is refused here,
+ * by a Zod schema, before any read; joined to its grant and its user, so a token whose grant was
  * revoked or whose user is gone or newer reads as unknown, STOR-1). It must be
  * unexpired and bound to the canonical resource exactly (`aud`).
  *
@@ -22,10 +22,14 @@
  */
 
 import type Provider from 'oidc-provider';
+import { z } from 'zod';
 import type { AuthInfo, OAuthTokenVerifier } from '@modelcontextprotocol/server';
 import type { GrantedScope } from '../../storage/types.js';
 import { InvalidTokenError } from '../errors.js';
 import { sanitizeErrorMessage } from '../../utils/sanitize.js';
+
+/** An access token as the library issues it: 43 base64url characters. Anything else is refused unread. */
+const ACCESS_TOKEN = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 
 /** The one message of every refusal (as WS7.3's). */
 export const INVALID_ACCESS_TOKEN = 'Invalid or expired access token';
@@ -49,7 +53,8 @@ export function createAccessTokenVerifier({ provider, resource }: VerifierOption
     async verifyAccessToken(token: string): Promise<AuthInfo> {
       let verified: AuthInfo | undefined;
       try {
-        const found = typeof token === 'string' ? await provider.AccessToken.find(token) : undefined;
+        const presented = ACCESS_TOKEN.safeParse(token);
+        const found = presented.success ? await provider.AccessToken.find(presented.data) : undefined;
         const audience: unknown = found?.aud;
         const exp = found?.exp;
         if (

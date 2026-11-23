@@ -106,7 +106,12 @@ export async function oauthRowsOf(
 
 /** A browser's cookies, by name, with their paths. */
 export class CookieJar {
-  private readonly cookies = new Map<string, { value: string; path: string }>();
+  /** Keyed by name and path (RFC 6265: a cookie is its name, domain and path; one domain here). */
+  private readonly cookies = new Map<string, { name: string; value: string; path: string }>();
+
+  private static key(name: string, path: string): string {
+    return `${name}\0${path}`;
+  }
 
   take(res: Response): void {
     const raw = res.headers['set-cookie'] as unknown;
@@ -120,28 +125,34 @@ export class CookieJar {
       const pathAttr = attrs.map((a) => a.trim()).find((a) => a.toLowerCase().startsWith('path='));
       const path = pathAttr ? pathAttr.slice(5) : '/';
       const expired = attrs.some((a) => /^expires=Thu, 01 Jan 1970/i.test(a.trim())) || value === '';
-      if (expired) this.cookies.delete(name);
-      else this.cookies.set(name, { value, path });
+      const key = CookieJar.key(name, path);
+      if (expired) this.cookies.delete(key);
+      else this.cookies.set(key, { name, value, path });
     }
   }
 
+  /** The `Cookie` header for a request to `path`: every cookie whose path matches it. */
   header(path: string): string {
-    return [...this.cookies]
-      .filter(([, c]) => path === c.path || path.startsWith(c.path.endsWith('/') ? c.path : `${c.path}/`) || c.path === '/')
-      .map(([name, c]) => `${name}=${c.value}`)
+    return [...this.cookies.values()]
+      .filter((c) => c.path === '/' || path === c.path || path.startsWith(c.path.endsWith('/') ? c.path : `${c.path}/`))
+      .map((c) => `${c.name}=${c.value}`)
       .join('; ');
   }
 
-  value(name: string): string | undefined {
-    return this.cookies.get(name)?.value;
+  /** The value of `name` (at `path`, or the first one stored under any path). */
+  value(name: string, path?: string): string | undefined {
+    if (path !== undefined) return this.cookies.get(CookieJar.key(name, path))?.value;
+    return [...this.cookies.values()].find((c) => c.name === name)?.value;
   }
 
+  /** The cookie names held, once each. */
   names(): string[] {
-    return [...this.cookies.keys()];
+    return [...new Set([...this.cookies.values()].map((c) => c.name))];
   }
 
+  /** Forget `name` at every path. */
   delete(name: string): void {
-    this.cookies.delete(name);
+    for (const [key, c] of this.cookies) if (c.name === name) this.cookies.delete(key);
   }
 }
 

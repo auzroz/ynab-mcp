@@ -41,6 +41,7 @@
  */
 
 import express, { type Request, type Response, type Router } from 'express';
+import { z } from 'zod';
 import type Provider from 'oidc-provider';
 import type { Interaction, InteractionResults } from 'oidc-provider';
 import type { GrantedScope, OAuthRowStore } from '../../storage/types.js';
@@ -67,9 +68,12 @@ export function refreshTokenContext(ynabUserId: string): EncryptionContext {
   return { column: 'users.encrypted_refresh_token', subject: ynabUserId };
 }
 
-/** What the broker needs of the `Encryptor` (#57b adds the optional context; today's ignores it). */
+/**
+ * What the broker needs of the `Encryptor`: #57b makes the context required;
+ * today's `Encryptor` (one argument) also satisfies this.
+ */
 export interface BrokerEncryptor {
-  encrypt(plaintext: string, context?: EncryptionContext): string;
+  encrypt(plaintext: string, context: EncryptionContext): string;
 }
 
 /** The denials an interaction finishes with (RFC 6749 section 4.1.2.1). */
@@ -164,14 +168,33 @@ export function parseYnabState(state: unknown): { uid: string; value: string } |
   return UID.test(uid) && value !== '' ? { uid, value } : undefined;
 }
 
+/**
+ * The query parameters of the browser legs, parsed before use. A parameter
+ * that fails its schema reads as absent, so it takes the same fixed refusal
+ * (or the read-only clamp, for `scope`) as a missing one.
+ */
+const QUERY_SCHEMAS = {
+  /** The consent choice; anything but `read-write` is read-only. */
+  scope: z.enum(['read-only', 'read-write']),
+  /** `<uid>.<value>`, checked further by {@link parseYnabState}. */
+  state: z.string().min(45).max(200),
+  /** YNAB's authorization code: opaque, bounded. */
+  code: z.string().min(1).max(2048),
+  /** YNAB's error code (only `access_denied` is told apart). */
+  error: z.string().min(1).max(200),
+} as const;
+
+/** The interaction uid in the path. */
+const UID_PARAM = z.string().regex(UID);
+
 function refuse(res: Response, message: string): void {
   res.setHeader('Cache-Control', 'no-store');
   res.status(400).type('text/plain').send(message);
 }
 
-function queryString(req: Request, name: string): string | undefined {
-  const value = req.query[name];
-  return typeof value === 'string' ? value : undefined;
+function queryParam(req: Request, name: keyof typeof QUERY_SCHEMAS): string | undefined {
+  const parsed = QUERY_SCHEMAS[name].safeParse(req.query[name]);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** The interaction router (D3). Mount it under `/oauth`. */
@@ -186,8 +209,10 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
   /** The interaction this browser holds, only when it is the one the path names. */
   const details = async (req: Request, res: Response): Promise<Interaction | undefined> => {
     try {
+      const uid = UID_PARAM.safeParse(req.params['uid']);
+      if (!uid.success) return undefined;
       const interaction = await provider.interactionDetails(req, res);
-      return interaction.uid === req.params['uid'] ? interaction : undefined;
+      return interaction.uid === uid.data ? interaction : undefined;
     } catch {
       // No (or a forged) cookie, an expired interaction: the library's SessionNotFound.
       return undefined;
@@ -234,7 +259,7 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
       refuse(res, EXPIRED_OR_INVALID);
       return;
     }
-    const choice: GrantedScope = queryString(req, 'scope') === 'read-write' ? 'read-write' : 'read-only';
+    const choice: GrantedScope = queryParam(req, 'scope') === 'read-write' ? 'read-write' : 'read-only';
     const grantedScope: GrantedScope =
       writeAllowed && choice === 'read-write' && scopeCeiling(requestedScopes(interaction)) === 'read-write'
         ? 'read-write'
@@ -260,7 +285,7 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
 
   // YNAB's redirect. No interaction cookie reaches this path: only route to the interaction.
   router.get('/ynab/callback', (req: Request, res: Response) => {
-    const state = queryString(req, 'state');
+    const state = queryParam(req, 'state');
     const parsed = parseYnabState(state);
     if (!parsed || state === undefined) {
       refuse(res, EXPIRED_OR_INVALID);
@@ -268,8 +293,8 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
     }
     const target = new URL(`${interactionUrl(parsed.uid)}/complete`);
     target.searchParams.set('state', state);
-    const error = queryString(req, 'error');
-    const code = queryString(req, 'code');
+    const error = queryParam(req, 'error');
+    const code = queryParam(req, 'code');
     // Only a fixed code is carried on: YNAB's own error text is never forwarded.
     if (error !== undefined) target.searchParams.set('error', error === 'access_denied' ? 'access_denied' : 'server_error');
     else if (code !== undefined) target.searchParams.set('code', code);
@@ -283,7 +308,7 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
     const startedAt = now();
     const interaction = await details(req, res);
     const pending = interaction ? pendingOf(interaction) : undefined;
-    const presented = parseYnabState(queryString(req, 'state'));
+    const presented = parseYnabState(queryParam(req, 'state'));
     const presentedKey = presented ? tokenHasher.keyFor('state', presented.value) : undefined;
     if (
       !interaction ||
@@ -306,7 +331,7 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
       return;
     }
 
-    const denial = queryString(req, 'error');
+    const denial = queryParam(req, 'error');
     if (denial !== undefined) {
       await deny(req, res, denial === 'access_denied' ? 'access_denied' : 'server_error').catch(() =>
         refuse(res, COULD_NOT_COMPLETE)
@@ -317,8 +342,8 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
     let grant: InstanceType<Provider['Grant']> | undefined;
     let result: InteractionResults;
     try {
-      const code = queryString(req, 'code');
-      if (code === undefined || code === '') throw new Error('YNAB callback without a code');
+      const code = queryParam(req, 'code');
+      if (code === undefined) throw new Error('YNAB callback without a code');
       const resources = requestedResources(interaction);
       if (resources.length === 0 || resources.some((r) => r !== resource)) {
         throw new Error('The interaction requested a resource this server does not serve');

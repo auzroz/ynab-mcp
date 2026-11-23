@@ -28,7 +28,12 @@ vi.mock('../../../../src/auth/ynab-oauth.js', async () => {
 import { exchangeCode as ynabExchangeCode, getYnabUserId } from '../../../../src/auth/ynab-oauth.js';
 import { Encryptor } from '../../../../src/crypto.js';
 import { plainRowKey } from '../../../../src/storage/oauth-rows.js';
-import { DENIAL_DESCRIPTIONS, parseYnabState } from '../../../../src/auth/oidc/interaction.js';
+import {
+  DENIAL_DESCRIPTIONS,
+  parseYnabState,
+  refreshTokenContext,
+  type EncryptionContext,
+} from '../../../../src/auth/oidc/interaction.js';
 import { REFRESH_TOKEN_TTL_DAYS } from '../../../../src/auth/retention-defaults.js';
 import { testDrivers, cleanupDrivers, type DriverHandle } from '../../helpers/storage-drivers.js';
 import {
@@ -271,7 +276,8 @@ for (const driver of testDrivers) {
       const jar = new CookieJar();
       const { uid, state } = await toYnab(t, jar, clientId);
       const parsed = parseYnabState(state)!;
-      const wrong = `${uid}.${parsed.value.slice(0, -2)}AA`;
+      const last = parsed.value.slice(-1);
+      const wrong = `${uid}.${parsed.value.slice(0, -1)}${last === 'A' ? 'B' : 'A'}`;
       for (const s of [wrong, `${uid}.`, 'garbage', state.replace(uid, 'A'.repeat(43))]) {
         const res = await browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=ynab-code&state=${encodeURIComponent(s)}`);
         expect(res.status).toBe(400);
@@ -285,6 +291,19 @@ for (const driver of testDrivers) {
       const replay = await browse(t.app, jar, completeUrl);
       expect(replay.status).toBe(400);
       expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+    });
+
+    it('a repeated or oversized YNAB code is never exchanged: server_error, with state and iss', async () => {
+      for (const codes of [['a', 'b'], ['x'.repeat(2049)]]) {
+        const jar = new CookieJar();
+        const { uid, state } = await toYnab(t, jar, clientId);
+        const query = new URLSearchParams({ state });
+        for (const c of codes) query.append('code', c);
+        const params = await finish(t, jar, `/oauth/interaction/${uid}/complete?${query.toString()}`);
+        expect(params.get('error')).toBe('server_error');
+        expect(params.get('iss')).toBe(ISSUER);
+      }
+      expect(vi.mocked(ynabExchangeCode)).not.toHaveBeenCalled();
     });
 
     it('a state presented twice in flight is spent by the first (only one exchange)', async () => {
@@ -376,7 +395,9 @@ for (const driver of testDrivers) {
         subject: 'ynab-user-1',
       });
       const user = await handle.storage.getUser('ynab-user-1');
-      expect(encryptor.decrypt(user!.encryptedRefreshToken)).toBe('ynab-refresh-ynab-user-1');
+      // With the same context (#57b: required once it lands; today's Encryptor ignores it).
+      const decrypt = encryptor.decrypt.bind(encryptor) as (ct: string, context: EncryptionContext) => string;
+      expect(decrypt(user!.encryptedRefreshToken, refreshTokenContext('ynab-user-1'))).toBe('ynab-refresh-ynab-user-1');
     });
 
     it('no silent sign-in: a browser that just signed in goes through consent and YNAB again', async () => {
