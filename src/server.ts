@@ -232,6 +232,10 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
         const outcome = await runWithin(toolCalls, call);
         if (!outcome.done) {
           const outcomeUnknown = outcome.started && writeToolNames.has(name);
+          // The handler never ran (deadline already passed, or the request had
+          // ended): nothing reached YNAB, so the slot goes back. A write that
+          // started and timed out keeps it, since it may have reached YNAB.
+          if (!outcome.started) releaseSlot?.();
           if (outcome.started) {
             console.error(`[Request] tools/call reached its deadline${outcomeUnknown ? ' (write; outcome unknown)' : ''}`);
           }

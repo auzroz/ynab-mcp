@@ -329,6 +329,50 @@ describe('the write cap in the tools/call handler', () => {
   });
 });
 
+describe('slots and request bounds', () => {
+  const payee = { budget_id: BUDGET, name: 'X' };
+
+  async function boundedClient(bounds: { deadline: number; run: <T>(w: () => Promise<T>) => Promise<T> | undefined }) {
+    const components = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 5 });
+    const ynabClient = buildYnabClient(userCtx({ writeLimitPerHour: 5 }), components);
+    const client = await connect(createServerFromClient(ynabClient, bounds));
+    return { components, client };
+  }
+
+  it('gives the slot back when the deadline has already passed (handler never starts)', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const { components, client } = await boundedClient({ deadline: Date.now() - 1, run: (w) => w() });
+    const result = await client.callTool({ name: 'ynab_create_payee', arguments: payee });
+    expect(JSON.parse(textOf(result))).toMatchObject({ type: 'request_timeout' });
+    expect(components.writeLimiter.used()).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await client.close();
+  });
+
+  it('gives the slot back when the request has ended (run returns undefined)', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const { components, client } = await boundedClient({ deadline: Date.now() + 60_000, run: () => undefined });
+    const result = await client.callTool({ name: 'ynab_create_payee', arguments: payee });
+    expect(JSON.parse(textOf(result))).toMatchObject({ type: 'request_timeout' });
+    expect(components.writeLimiter.used()).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await client.close();
+  });
+
+  it('keeps the slot for a write that started and then timed out', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    // YNAB never answers within the deadline.
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const { components, client } = await boundedClient({ deadline: Date.now() + 300, run: (w) => w() });
+    const result = await client.callTool({ name: 'ynab_create_payee', arguments: payee });
+    expect(JSON.parse(textOf(result))).toMatchObject({ type: 'request_timeout', outcome: 'unknown' });
+    expect(components.writeLimiter.used()).toBe(1);
+    await client.close();
+  });
+});
+
 describe('UserRegistry', () => {
   it('gives each user a write limiter of the configured size, kept between requests', async () => {
     const { UserRegistry } = await import('../../src/services/user-registry.js');
