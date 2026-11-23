@@ -301,6 +301,11 @@ holding a spent token, and the user would have to reconnect. Since 0.5.0
   client tries again.
 - A lease whose holder crashed expires after 45 seconds, and the next request
   refreshes. Requests in one process share one refresh as before.
+- When YNAB answers `401` to a call made with the stored access token (it was
+  revoked or expired early), that token is dropped for every replica, with a
+  compare-and-set so a newer one is kept. The call fails with an `auth_error`
+  and is not retried, since a write could otherwise apply twice. The next call
+  refreshes.
 
 The same code runs on every driver; for several replicas, use `postgres`.
 The replicas' clocks must agree to within a few seconds (use NTP),

@@ -10,7 +10,7 @@ import type { RequestLimiter } from './rate-limiter.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
 import { outboundFetch } from './outbound.js';
 import type { Cache } from './cache.js';
-import { CircuitOpenError, OutboundTimeoutError, ReadOnlyModeError, YnabApiError } from '../utils/errors.js';
+import { CircuitOpenError, OutboundTimeoutError, ReadOnlyModeError, YnabApiError, YnabAuthError } from '../utils/errors.js';
 import { getAuditLog, type AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { isBudgetIdSentinel, type BudgetIdSentinel } from '../utils/schemas.js';
@@ -57,6 +57,21 @@ export interface YnabClientOptions {
   /** Replaces the global fetch for this client's YNAB calls (tests). */
   fetch?: typeof fetch | undefined;
   now?: (() => number) | undefined;
+  /**
+   * OAuth mode (#48): called with the access token a YNAB API call was made
+   * with when YNAB answers 401 (the token was revoked or expired early), so
+   * the resolver drops it everywhere and the next call refreshes. The call
+   * itself is not retried (a write could apply twice): it fails with a
+   * YnabAuthError. Unset (stdio, header mode): a 401 is mapped as before.
+   */
+  onUnauthorized?: ((rejectedAccessToken: string) => Promise<void>) | undefined;
+}
+
+/** The bearer token a request carried, read from its headers (never logged). */
+function bearerOf(init: RequestInit | undefined): string | undefined {
+  const value = new Headers(init?.headers).get('authorization');
+  const match = value === null ? null : /^Bearer (.+)$/.exec(value);
+  return match?.[1];
 }
 
 /** Tokens a fan-out reserved up front (see YnabClient.withFanOut). */
@@ -382,8 +397,21 @@ export class YnabClient {
           if (error instanceof OutboundTimeoutError || error instanceof CircuitOpenError) throw error;
           return undefined;
         },
-        post: async ({ response }) => {
+        post: async ({ response, init }) => {
           if (response.status === 429) throw this.noteYnabRateLimited(response);
+          const onUnauthorized = options.onUnauthorized;
+          if (response.status === 401 && onUnauthorized) {
+            // YNAB rejected the access token: drop it (here and, through the
+            // resolver, for every replica), then fail this call without
+            // retrying it. The next call refreshes.
+            const rejected = bearerOf(init);
+            if (rejected !== undefined) {
+              await onUnauthorized(rejected).catch((error: unknown) => {
+                console.error('[YnabClient] could not drop a rejected access token:', sanitizeErrorMessage(error));
+              });
+            }
+            throw new YnabAuthError();
+          }
           if (!response.ok && !/\bjson\b/i.test(response.headers.get('content-type') ?? '')) {
             throw new YnabApiError('YNAB API request failed', String(response.status));
           }

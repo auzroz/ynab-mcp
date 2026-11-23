@@ -27,6 +27,25 @@ import type { Storage } from '../../../src/storage/types.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
 import { YnabOAuthError } from '../../../src/auth/ynab-oauth.js';
 import { cleanupDrivers, testDrivers } from '../helpers/storage-drivers.js';
+import { YnabClient, type AccessTokenSource } from '../../../src/services/ynab-client.js';
+import { RateLimiter } from '../../../src/services/rate-limiter.js';
+import { Cache } from '../../../src/services/cache.js';
+import { AuditLog } from '../../../src/services/audit-log.js';
+
+/** A YnabClient as OAuth mode builds one: the resolver's token, and a 401 dropping it (#48). */
+function oauthClient(token: AccessTokenSource, resolver: YnabTokenResolver, userId = 'u1'): YnabClient {
+  return new YnabClient(token, 'budget-1', new RateLimiter(180), new Cache(300000), false, new AuditLog(), undefined, undefined, {
+    onUnauthorized: (rejected) => resolver.invalidate(userId, rejected),
+  });
+}
+
+const ynabUser = (): Response =>
+  new Response(JSON.stringify({ data: { user: { id: 'u1' } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+const ynab401 = (): Response =>
+  new Response(JSON.stringify({ error: { id: '401', name: 'unauthorized', detail: 'Unauthorized' } }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  });
 
 const refreshMock = vi.mocked(ynabOauth.refreshAccessToken);
 const YNAB = { clientId: 'cid', clientSecret: 'sec' };
@@ -302,6 +321,79 @@ for (const driver of testDrivers) {
       expect(encryptor.decrypt(row?.encryptedAccessToken ?? '', accessTokenContext('u1'))).toBe('access-2');
       expect((await b.resolve('u1')).accessToken).toBe('access-2');
       expect(refreshMock).toHaveBeenCalledTimes(2);
+    });
+
+    describe('a 401 from the YNAB API (#48)', () => {
+      const fetchMock = vi.fn<typeof fetch>();
+      beforeEach(() => {
+        fetchMock.mockReset();
+        vi.stubGlobal('fetch', fetchMock);
+      });
+      afterEach(() => {
+        vi.unstubAllGlobals();
+      });
+
+      it('a tool call that gets a 401 drops the shared token; the next call makes exactly one refresh, on any replica', async () => {
+        const h = await driver.open();
+        const other = await h.reopen();
+        await seed(h.storage);
+        refreshMock
+          .mockResolvedValueOnce({ accessToken: 'access-1', refreshToken: 'rt-1', expiresAt: Date.now() + 2 * HOUR })
+          .mockResolvedValueOnce({ accessToken: 'access-2', refreshToken: 'rt-2', expiresAt: Date.now() + 2 * HOUR });
+        const a = new YnabTokenResolver(h.storage, encryptor, YNAB, Date.now, fast);
+        const b = new YnabTokenResolver(other, encryptor, YNAB, Date.now, fast);
+        await a.resolve('u1');
+        await b.resolve('u1'); // b holds access-1 too, from the row
+        fetchMock.mockResolvedValueOnce(ynab401()).mockImplementation(async () => ynabUser());
+
+        await expect(oauthClient(a.accessTokenFor('u1'), a).getUser()).rejects.toBeInstanceOf(YnabAuthError);
+        expect(fetchMock).toHaveBeenCalledTimes(1); // not retried
+        expect((await other.getUser('u1'))?.encryptedAccessToken).toBeUndefined();
+
+        await oauthClient(b.accessTokenFor('u1'), b).getUser();
+        await oauthClient(a.accessTokenFor('u1'), a).getUser();
+        expect(refreshMock).toHaveBeenCalledTimes(2);
+        expect(refreshMock).toHaveBeenLastCalledWith(YNAB, 'rt-1');
+        const sent = fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get('authorization'));
+        expect(sent).toEqual(['Bearer access-1', 'Bearer access-2', 'Bearer access-2']);
+      });
+
+      it('a write that gets a 401 is not retried', async () => {
+        const h = await driver.open();
+        await seed(h.storage);
+        refreshMock.mockResolvedValue({ accessToken: 'access-1', refreshToken: 'rt-1', expiresAt: Date.now() + 2 * HOUR });
+        const a = new YnabTokenResolver(h.storage, encryptor, YNAB, Date.now, fast);
+        fetchMock.mockImplementation(async () => ynab401());
+
+        const error = await oauthClient(a.accessTokenFor('u1'), a)
+          .createTransaction('budget-1', { transaction: { account_id: 'acct-1', date: '2026-11-01', amount: -1000 } })
+          .catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(YnabAuthError);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(refreshMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('a 401 on a token another replica has already replaced keeps the newer token', async () => {
+        const h = await driver.open();
+        const other = await h.reopen();
+        await seed(h.storage);
+        refreshMock
+          .mockResolvedValueOnce({ accessToken: 'access-1', refreshToken: 'rt-1', expiresAt: Date.now() + 2 * HOUR })
+          .mockResolvedValueOnce({ accessToken: 'access-2', refreshToken: 'rt-2', expiresAt: Date.now() + 2 * HOUR });
+        const a = new YnabTokenResolver(h.storage, encryptor, YNAB, Date.now, fast);
+        const b = new YnabTokenResolver(other, encryptor, YNAB, Date.now, fast);
+        await a.resolve('u1');
+        await a.invalidate('u1', 'access-1');
+        await a.resolve('u1'); // the row now holds access-2
+
+        // b's call went out with access-1 before that, and comes back 401.
+        fetchMock.mockResolvedValueOnce(ynab401()).mockImplementation(async () => ynabUser());
+        await expect(oauthClient(async () => 'access-1', b).getUser()).rejects.toBeInstanceOf(YnabAuthError);
+        const row = await other.getUser('u1');
+        expect(encryptor.decrypt(row?.encryptedAccessToken ?? '', accessTokenContext('u1'))).toBe('access-2');
+        await oauthClient(b.accessTokenFor('u1'), b).getUser();
+        expect(refreshMock).toHaveBeenCalledTimes(2);
+      });
     });
 
     it('a re-consent during a refresh clears the lease and the shared token, and wins', async () => {

@@ -36,7 +36,7 @@ import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
 import { refreshAccessToken, YnabOAuthError } from '../../src/auth/ynab-oauth.js';
 import { CircuitOpenError, OutboundTimeoutError } from '../../src/utils/errors.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { bearer, mcpInitialize, rpcMessage } from './helpers/mcp-call.js';
+import { bearer, mcpConnect, mcpInitialize, rpcMessage } from './helpers/mcp-call.js';
 
 const refreshMock = vi.mocked(refreshAccessToken);
 const PUBLIC_URL = 'https://mcp.example.com';
@@ -130,6 +130,47 @@ describe('/mcp and transient YNAB token failures (#48 Q1)', () => {
     expect((await storage.getUser(USER))?.encryptedRefreshToken).toBe(before);
     expect((await mcpInitialize(app, bearer(token))).status).toBe(401);
     expect(refreshMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a tool call that gets a 401 from the YNAB API drops the stored token, without a retry; the next call refreshes once', async () => {
+    const { app, token, storage } = await oauthApp();
+    refreshMock
+      .mockResolvedValueOnce({ ...OK(), accessToken: 'ynab-access-1' })
+      .mockResolvedValueOnce({ ...OK(), accessToken: 'ynab-access-2' });
+    const mcp = await mcpConnect(app, bearer(token));
+    expect(refreshMock).toHaveBeenCalledTimes(1);
+
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { id: '401', name: 'unauthorized', detail: 'Unauthorized' } }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+      fetchMock.mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ data: { user: { id: USER } } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+      );
+
+      const rejected = await mcp.callTool('ynab_get_user');
+      expect(rejected.isError).toBe(true);
+      expect(JSON.parse(rejected.text)).toMatchObject({ type: 'auth_error' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect((await storage.getUser(USER))?.encryptedAccessToken).toBeUndefined();
+
+      const next = await mcp.callTool('ynab_get_user');
+      expect(next.isError).toBe(false);
+      expect(refreshMock).toHaveBeenCalledTimes(2);
+      const sent = fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get('authorization'));
+      expect(sent).toEqual(['Bearer ynab-access-1', 'Bearer ynab-access-2']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('another rejected refresh (a 401 from the token endpoint) is not transient either', async () => {

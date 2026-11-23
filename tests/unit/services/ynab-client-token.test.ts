@@ -23,8 +23,21 @@ function bearerTokens(): (string | null)[] {
   return fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get('authorization'));
 }
 
-function makeClient(token: AccessTokenSource, rateLimiter = new RateLimiter(180)): YnabClient {
-  return new YnabClient(token, 'budget-1', rateLimiter, new Cache(300000), false, new AuditLog());
+function makeClient(
+  token: AccessTokenSource,
+  rateLimiter = new RateLimiter(180),
+  onUnauthorized?: (rejected: string) => Promise<void>
+): YnabClient {
+  return new YnabClient(token, 'budget-1', rateLimiter, new Cache(300000), false, new AuditLog(), undefined, undefined, {
+    onUnauthorized,
+  });
+}
+
+function unauthorized(): Response {
+  return new Response(JSON.stringify({ error: { id: '401', name: 'unauthorized', detail: 'Unauthorized' } }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 const categoryWithFrequency = {
@@ -110,6 +123,53 @@ describe('YnabClient token provider', () => {
     await client.createCategory('budget-1', categoryWithFrequency).catch(() => undefined);
 
     expect(rateLimiter.getAvailableTokens()).toBe(180);
+  });
+
+  describe('a 401 from YNAB in OAuth mode (#48)', () => {
+    it('drops the rejected token and fails the call with the mapped auth error', async () => {
+      fetchMock.mockImplementation(async () => unauthorized());
+      const onUnauthorized = vi.fn(async () => undefined);
+      const client = makeClient(async () => 'token-a', undefined, onUnauthorized);
+
+      const error = await client.getUser().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(YnabAuthError);
+      expect(JSON.parse(formatErrorResponse(error))).toMatchObject({ type: 'auth_error' });
+      expect(onUnauthorized).toHaveBeenCalledExactlyOnceWith('token-a');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('never retries a write that got a 401', async () => {
+      fetchMock.mockImplementation(async () => unauthorized());
+      const onUnauthorized = vi.fn(async () => undefined);
+      const client = makeClient(async () => 'token-a', undefined, onUnauthorized);
+
+      const error = await client
+        .createTransaction('budget-1', {
+          transaction: { account_id: 'acct-1', date: '2026-11-01', amount: -1000 },
+        })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(YnabAuthError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    });
+
+    it('still fails the call when dropping the token fails, logging no token', async () => {
+      fetchMock.mockImplementation(async () => unauthorized());
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const client = makeClient(async () => 'token-a', undefined, async () => {
+        throw new Error('storage down');
+      });
+
+      await expect(client.getUser()).rejects.toBeInstanceOf(YnabAuthError);
+      expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('token-a');
+    });
+
+    it('without the hook (stdio, header mode), maps a 401 as before', async () => {
+      fetchMock.mockImplementation(async () => unauthorized());
+      const error = await makeClient('fixed-token').getUser().catch((e: unknown) => e);
+      expect(error).not.toBeInstanceOf(YnabAuthError);
+      expect(JSON.parse(formatErrorResponse(error))).toMatchObject({ code: '401' });
+    });
   });
 
   it('keeps the rate-limit token for a request that was sent', async () => {

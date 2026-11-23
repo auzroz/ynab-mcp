@@ -484,6 +484,8 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
         ...limits,
         // Pinned to the account generation resolved here.
         accessToken: resolver.accessTokenFor(userId, generation),
+        // A token YNAB rejects is dropped on every replica; the call is not retried.
+        onUnauthorized: (rejected: string) => resolver.invalidate(userId, rejected),
         readOnly:
           config.readOnly || !config.allowWrite || tokenScope === 'read-only' || grantedScope === 'read-only',
       },

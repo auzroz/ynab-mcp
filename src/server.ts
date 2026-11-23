@@ -35,6 +35,11 @@ import { assertSafeToolInput } from './utils/input-guard.js';
 export interface UserContext {
   /** A fixed token (stdio, header mode) or a per-request resolver (oauth mode). */
   accessToken: AccessTokenSource;
+  /**
+   * OAuth mode (#48): drop an access token YNAB answered 401 to, for every
+   * replica, so the next call refreshes. See YnabClientOptions.onUnauthorized.
+   */
+  onUnauthorized?: ((rejectedAccessToken: string) => Promise<void>) | undefined;
   defaultBudgetId?: string | undefined;
   readOnly: boolean;
   rateLimitPerHour: number;
@@ -102,7 +107,7 @@ export function buildYnabClient(
     components.auditLog,
     components.deltaCache,
     components.feedState,
-    { breaker: components.breaker, deadline }
+    { breaker: components.breaker, deadline, onUnauthorized: ctx.onUnauthorized }
   );
 }
 
