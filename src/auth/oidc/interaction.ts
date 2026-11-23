@@ -11,29 +11,36 @@
  *   GET /oauth/interaction/:uid/cancel    `access_denied`
  *
  * **Browser binding.** Every route under `/oauth/interaction/:uid` starts with
- * `interactionDetails` (or `interactionResult`), which needs the library's
+ * `interactionDetails`, which needs the library's
  * signed interaction cookie, scoped to that path. Without it the call throws
  * before anything else happens, so the library's cookie replaces our consent
  * cookie (D3). The interaction must also be the one the path names.
  *
- * **State.** `start` sends YNAB `state = <uid>.<value>`, where `value` is a
- * fresh `ymcp1_` value of kind `state` (#52). Only its `h1.` key is kept: as
- * a one-time `oauth_rows` row (model `Interaction`, expiring with the
- * interaction) that also holds the access level chosen, and in the
- * interaction's own result (`interactionResult`, public API), so only the
- * latest choice counts. A new `start` must first spend the previous state's
- * row, and is refused once the interaction has an outcome. The callback, which has no
- * interaction cookie (another path), only reads the uid out of the state and
- * redirects to that interaction's `complete`. `complete` checks the cookie,
- * then the state's key in constant time against the interaction's, then
- * spends the row with a delete that only one caller can win
- * (`destroyOAuthRow`), all before the YNAB code is exchanged: two concurrent
- * completes of one state exchange it once (#94's class of race). The level
- * `complete` grants is the one in the row it spent, so a `start` that races
- * it (and is refused, having lost the delete) can't change it. A state is never stored in the 0.4.x
- * `pending_auth` table: D12 has nothing read the old tables after the
- * cut-over, and 0.6 drops them. Knowing a uid gives nothing: the cookie is
- * signed, and the state's value is needed too.
+ * **State: at most one live choice per interaction.** Each interaction has
+ * one state row in `oauth_rows` (model `Interaction`, keyed by the `h1.` key
+ * of its uid, expiring with the interaction), changed only by compare-and-set
+ * (`compareAndSetOAuthRow`):
+ *   - `start` issues a fresh `ymcp1_` value of kind `state` (#52), sends YNAB
+ *     `state = <uid>.<value>`, and sets the row to `pending` with the value's
+ *     `h1.` key and the access level chosen, only over the exact row it read
+ *     (or none). Of two concurrent `start`s one wins and the other is refused;
+ *     a later `start` replaces the earlier choice, whose state is then dead.
+ *   - `complete` swaps the exact `pending` row whose state key matches the
+ *     presented state (constant time) for a `completing` marker, before the
+ *     YNAB code is exchanged, and takes the access level from the value it
+ *     swapped out. Of two completes, a replay, or a complete and a `start`,
+ *     exactly one wins (#94's class of race), so the grant, the staged sign-in
+ *     and `interactionFinished`'s result all carry the level of the one state
+ *     that was spent.
+ *   - `start` is refused while the marker is there (it stays until the
+ *     interaction expires) and once the interaction has an outcome. A failed
+ *     `complete` leaves the interaction unusable: the user starts again from
+ *     the client.
+ * The callback, which has no interaction cookie (another path), only reads
+ * the uid out of the state and redirects to that interaction's `complete`.
+ * Nothing is stored in the 0.4.x `pending_auth` table: D12 has nothing read
+ * the old tables after the cut-over, and 0.6 drops them. Knowing a uid gives
+ * nothing: the cookie is signed, and the state's value is needed too.
  *
  * **Completing.** `complete` exchanges the YNAB code, resolves the YNAB user,
  * saves a `Grant` for exactly the requested resource (read-only: `read-only`
@@ -52,7 +59,7 @@ import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
 import type Provider from 'oidc-provider';
 import type { Interaction, InteractionResults } from 'oidc-provider';
-import type { GrantedScope, OAuthRowStore } from '../../storage/types.js';
+import type { GrantedScope, OAuthRowStore, OAuthRowWrite } from '../../storage/types.js';
 import { constantTimeEqual, type TokenHasher } from '../token-hash.js';
 import { buildAuthorizeUrl, exchangeCode, getYnabUserId, type YnabOAuthConfig } from '../ynab-oauth.js';
 import { HTML_CONTENT_TYPE, PAGE_HEADERS, renderConsentPage } from '../auth-pages.js';
@@ -106,7 +113,7 @@ const ROUTER_INTERACTION_PATH = INTERACTION_BASE_PATH.replace(/^\/oauth/, '');
 export interface InteractionRouterOptions {
   provider: Provider;
   /** The store the provider's adapter uses (a `Storage`): the state row and the staged sign-in. */
-  store: Pick<OAuthRowStore, 'stageSignIn' | 'upsertOAuthRow' | 'findOAuthRow' | 'destroyOAuthRow'>;
+  store: Pick<OAuthRowStore, 'stageSignIn' | 'findOAuthRow' | 'compareAndSetOAuthRow'>;
   encryptor: BrokerEncryptor;
   /** Issues the YNAB `state` and derives its key (#52). */
   tokenHasher: Pick<TokenHasher, 'issue' | 'keyFor'>;
@@ -131,30 +138,10 @@ const NO_REDIRECT_TRUST: RedirectPolicy = {
   trustLoopbackRedirects: false,
 };
 
-/**
- * What `start` keeps on the interaction: only the key of its latest state.
- * The choice itself is in that state's one-time row, so whoever spends the
- * row also holds the choice it was made with.
- */
-interface PendingYnab {
-  /** The `h1.` key of the state's value. */
-  stateKey: string;
-}
-
-/** The one-time state row's payload: the interaction it belongs to and the access level chosen with it. */
-interface StateRow {
-  ynabState: string;
-  grantedScope: GrantedScope;
-}
-
-function pendingOf(interaction: Interaction): PendingYnab | undefined {
-  const result: unknown = interaction.result;
-  if (result === null || typeof result !== 'object') return undefined;
-  const ynab = (result as Record<string, unknown>)['ynab'];
-  if (ynab === null || typeof ynab !== 'object') return undefined;
-  const { stateKey } = ynab as Record<string, unknown>;
-  return typeof stateKey === 'string' ? { stateKey } : undefined;
-}
+/** The interaction's state row: a live choice, or the marker of a completion in flight. */
+type StateRow =
+  | { uid: string; phase: 'pending'; stateKey: string; grantedScope: GrantedScope }
+  | { uid: string; phase: 'completing' };
 
 /** Whether an interaction already has its outcome (a sign-in or a denial): nothing may change it. */
 function isFinished(interaction: Interaction): boolean {
@@ -172,9 +159,11 @@ function stateRowFor(payload: string, uid: string): StateRow | undefined {
     return undefined;
   }
   if (parsed === null || typeof parsed !== 'object') return undefined;
-  const { ynabState, grantedScope } = parsed as Record<string, unknown>;
-  if (ynabState !== uid) return undefined;
-  return { ynabState, grantedScope: grantedScope === 'read-write' ? 'read-write' : 'read-only' };
+  const p = parsed as Record<string, unknown>;
+  if (p['uid'] !== uid) return undefined;
+  if (p['phase'] === 'completing') return { uid, phase: 'completing' };
+  if (p['phase'] !== 'pending' || typeof p['stateKey'] !== 'string') return undefined;
+  return { uid, phase: 'pending', stateKey: p['stateKey'], grantedScope: p['grantedScope'] === 'read-write' ? 'read-write' : 'read-only' };
 }
 
 /** The requested scope words of an interaction (D7 has normalized them). */
@@ -243,6 +232,29 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
   const interactionUrl = (uid: string): string => `${publicUrl}${INTERACTION_BASE_PATH}/${uid}`;
   const writeAllowed = options.allowWrite && !options.globalReadOnly;
 
+  /** The key of an interaction's state row: the `h1.` key of its uid (a library id), of kind `state`. */
+  const slotKey = (interaction: Interaction): string => {
+    const key = tokenHasher.keyFor('state', interaction.uid);
+    // The uid was checked against the library's id shape (UID_PARAM), so this can't happen.
+    if (key === undefined) throw new Error('Unkeyable interaction uid');
+    return key;
+  };
+
+  /** The row that holds `row` for `interaction`; it keeps the interaction's client from the sweep. */
+  const stateRowWrite = (interaction: Interaction, row: StateRow): OAuthRowWrite => {
+    const clientId = interaction.params['client_id'];
+    return {
+      key: slotKey(interaction),
+      model: 'Interaction',
+      payload: JSON.stringify(row),
+      grantId: undefined,
+      accountId: undefined,
+      clientId: typeof clientId === 'string' ? clientId : undefined,
+      uid: undefined,
+      expiresAt: typeof interaction.exp === 'number' ? interaction.exp * 1000 : now(),
+    };
+  };
+
   /** The interaction this browser holds, only when it is the one the path names. */
   const details = async (req: Request, res: Response): Promise<Interaction | undefined> => {
     try {
@@ -302,29 +314,23 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
         ? 'read-write'
         : 'read-only';
     const { value, key } = tokenHasher.issue('state');
-    const clientId = interaction.params['client_id'];
     try {
-      // A new choice replaces the last one only by spending its state, so it can't race a complete that
-      // spent it first (that complete finishes with its own choice), nor change a finished interaction.
-      const previous = pendingOf(interaction);
-      if (isFinished(interaction) || (previous !== undefined && !(await store.destroyOAuthRow(previous.stateKey)))) {
+      // The choice replaces exactly the row read: never a completion in flight (its marker), never a
+      // finished interaction, and of two concurrent starts only one.
+      const current = await store.findOAuthRow(slotKey(interaction));
+      const read = current ? stateRowFor(current.payload, interaction.uid) : undefined;
+      const replaceable = current === undefined || (current.model === 'Interaction' && read?.phase === 'pending');
+      const written =
+        !isFinished(interaction) &&
+        replaceable &&
+        (await store.compareAndSetOAuthRow(
+          current?.payload,
+          stateRowWrite(interaction, { uid: interaction.uid, phase: 'pending', stateKey: key, grantedScope })
+        ));
+      if (!written) {
         refuse(res, EXPIRED_OR_INVALID);
         return;
       }
-      // The one-time row complete spends, holding the choice; it keeps the interaction's client from the sweep.
-      const row: StateRow = { ynabState: interaction.uid, grantedScope };
-      await store.upsertOAuthRow({
-        key,
-        model: 'Interaction',
-        payload: JSON.stringify(row),
-        grantId: undefined,
-        accountId: undefined,
-        clientId: typeof clientId === 'string' ? clientId : undefined,
-        uid: undefined,
-        expiresAt: typeof interaction.exp === 'number' ? interaction.exp * 1000 : now(),
-      });
-      const pending: PendingYnab = { stateKey: key };
-      await provider.interactionResult(req, res, { ynab: pending }, { mergeWithLastSubmission: false });
     } catch (err) {
       console.error('[OAuth] Could not record the consent choice:', sanitizeErrorMessage(err));
       refuse(res, EXPIRED_OR_INVALID);
@@ -364,29 +370,31 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
     // Taken first, so the deadline is measured from no later than the request.
     const startedAt = now();
     const interaction = await details(req, res);
-    const pending = interaction ? pendingOf(interaction) : undefined;
     const presented = parseYnabState(queryParam(req, 'state'));
     const presentedKey = presented ? tokenHasher.keyFor('state', presented.value) : undefined;
-    if (
-      !interaction ||
-      !pending ||
-      !presented ||
-      presented.uid !== interaction.uid ||
-      presentedKey === undefined ||
-      !constantTimeEqual(presentedKey, pending.stateKey)
-    ) {
+    if (!interaction || !presented || presented.uid !== interaction.uid || presentedKey === undefined) {
       refuse(res, EXPIRED_OR_INVALID);
       return;
     }
 
-    // Spend the state before anything else, atomically: of two completes, a replay, or a complete and a
-    // new start, only one deletes the row. The choice is the spent row's (rows are written once, never
-    // updated), so nothing that lands later can change what this complete finishes with.
-    let choice: StateRow | undefined;
+    // Spend the state before anything else: swap the exact live choice it names for the completing
+    // marker. Of two completes, a replay, or a complete and a start, only one swaps it, and the level
+    // used below is the one in the value swapped out.
+    let choice: Extract<StateRow, { phase: 'pending' }> | undefined;
     try {
-      const row = await store.findOAuthRow(pending.stateKey);
-      const parsed = row && row.model === 'Interaction' ? stateRowFor(row.payload, interaction.uid) : undefined;
-      if (parsed && (await store.destroyOAuthRow(pending.stateKey))) choice = parsed;
+      const current = await store.findOAuthRow(slotKey(interaction));
+      const read = current?.model === 'Interaction' ? stateRowFor(current.payload, interaction.uid) : undefined;
+      if (
+        current !== undefined &&
+        read?.phase === 'pending' &&
+        constantTimeEqual(presentedKey, read.stateKey) &&
+        (await store.compareAndSetOAuthRow(
+          current.payload,
+          stateRowWrite(interaction, { uid: interaction.uid, phase: 'completing' })
+        ))
+      ) {
+        choice = read;
+      }
     } catch (err) {
       console.error('[OAuth] Could not spend the YNAB state:', sanitizeErrorMessage(err));
       refuse(res, COULD_NOT_COMPLETE);

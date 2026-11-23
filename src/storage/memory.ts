@@ -507,6 +507,17 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     this.putOAuthRow(row, Date.now());
   }
 
+  async compareAndSetOAuthRow(expected: string | undefined, row: OAuthRowWrite): Promise<boolean> {
+    if (GRANT_TOKEN_MODELS.has(row.model) || row.model === 'SignIn') {
+      throw new Error(`compareAndSetOAuthRow cannot write a ${row.model} row`);
+    }
+    const current = this.oauthRows.get(row.key);
+    const matches = expected === undefined ? current === undefined : current?.model === row.model && current.payload === expected;
+    if (!matches) return false;
+    this.putOAuthRow(row, Date.now());
+    return true;
+  }
+
   async saveGrantToken(row: OAuthRowWrite): Promise<boolean> {
     if (row.model !== 'AccessToken' && row.model !== 'RefreshToken') {
       throw new Error(`saveGrantToken cannot write a ${row.model} row`);

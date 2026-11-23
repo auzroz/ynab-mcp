@@ -287,6 +287,15 @@ const UPSERT_OAUTH_ROW = `INSERT INTO oauth_rows (key, model, payload, grant_id,
     grant_id = excluded.grant_id, account_id = excluded.account_id, client_id = excluded.client_id,
     uid = excluded.uid, expires_at = excluded.expires_at`;
 
+/** compareAndSetOAuthRow: insert while no row has the key. */
+const INSERT_OAUTH_ROW_IF_ABSENT = `INSERT INTO oauth_rows (key, model, payload, grant_id, account_id, client_id, uid, expires_at, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (key) DO NOTHING`;
+
+/** compareAndSetOAuthRow: replace while the row has the model and exactly the expected payload. */
+const REPLACE_OAUTH_ROW_IF = `UPDATE oauth_rows SET payload = ?, grant_id = ?, account_id = ?, client_id = ?, uid = ?, expires_at = ?
+  WHERE key = ? AND model = ? AND payload = ?`;
+
 /** The grant row a grant-bound row names, for the same account and client. */
 const LIVE_GRANT_SQL = `SELECT 1 AS one FROM oauth_rows WHERE key = ? AND model = 'Grant' AND account_id = ? AND client_id = ?`;
 
@@ -601,6 +610,25 @@ export class SqliteStorage implements Storage, OAuthRowStore {
     this.database
       .transaction((): void => {
         this.database.prepare(UPSERT_OAUTH_ROW).run(...this.oauthRowParams(row, now));
+      })
+      .immediate();
+  }
+
+  async compareAndSetOAuthRow(expected: string | undefined, row: OAuthRowWrite): Promise<boolean> {
+    if (GRANT_TOKEN_MODELS.has(row.model) || row.model === 'SignIn') {
+      throw new Error(`compareAndSetOAuthRow cannot write a ${row.model} row`);
+    }
+    return this.database
+      .transaction((): boolean => {
+        if (expected === undefined) {
+          return this.database.prepare(INSERT_OAUTH_ROW_IF_ABSENT).run(...this.oauthRowParams(row, Date.now())).changes > 0;
+        }
+        return (
+          this.database
+            .prepare(REPLACE_OAUTH_ROW_IF)
+            .run(row.payload, row.grantId ?? null, row.accountId ?? null, row.clientId ?? null, row.uid ?? null, row.expiresAt ?? null, row.key, row.model, expected)
+            .changes > 0
+        );
       })
       .immediate();
   }

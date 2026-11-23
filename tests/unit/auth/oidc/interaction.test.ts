@@ -28,6 +28,7 @@ vi.mock('../../../../src/auth/ynab-oauth.js', async () => {
 import { exchangeCode as ynabExchangeCode, getYnabUserId } from '../../../../src/auth/ynab-oauth.js';
 import { Encryptor } from '../../../../src/crypto.js';
 import { plainRowKey } from '../../../../src/storage/oauth-rows.js';
+import type { OAuthRowWrite, Storage } from '../../../../src/storage/types.js';
 import {
   DENIAL_DESCRIPTIONS,
   parseYnabState,
@@ -102,6 +103,49 @@ async function finish(t: OidcTestApp, jar: CookieJar, completeUrl: string): Prom
   const target = new URL(resume.headers['location'] as string);
   expect(`${target.origin}${target.pathname}`).toBe(REDIRECT_URI);
   return target.searchParams;
+}
+
+/** The phase a state-row write sets ('pending' or 'completing'). */
+function phaseOf(row: OAuthRowWrite): string | undefined {
+  try {
+    return (JSON.parse(row.payload) as { phase?: string }).phase;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The access level a pending state-row write records. */
+function levelOf(row: OAuthRowWrite): string | undefined {
+  try {
+    return (JSON.parse(row.payload) as { grantedScope?: string }).grantedScope;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A gate that opens once two callers wait at it. */
+function twoAtOnce(): () => Promise<void> {
+  const waiting: Array<() => void> = [];
+  return () =>
+    new Promise<void>((resolve) => {
+      waiting.push(resolve);
+      if (waiting.length >= 2) for (const release of waiting.splice(0)) release();
+    });
+}
+
+/** The interaction's store over `handle`, with `before` awaited ahead of every compare-and-set. */
+function hookedStore(
+  handle: DriverHandle,
+  before: (row: OAuthRowWrite) => Promise<void> | undefined
+): Pick<Storage, 'stageSignIn' | 'findOAuthRow' | 'compareAndSetOAuthRow'> {
+  return {
+    stageSignIn: (signIn) => handle.storage.stageSignIn(signIn),
+    findOAuthRow: (key) => handle.storage.findOAuthRow(key),
+    compareAndSetOAuthRow: async (expected, row) => {
+      await before(row);
+      return handle.storage.compareAndSetOAuthRow(expected, row);
+    },
+  };
 }
 
 for (const driver of testDrivers) {
@@ -308,22 +352,9 @@ for (const driver of testDrivers) {
     });
 
     it('two concurrent completes with one cookie and state exchange the YNAB code once (atomic spend)', async () => {
-      // Both requests pass every check and reach the spend before either deletes the state row.
-      const waiting: Array<() => void> = [];
-      await setup({
-        interactionStore: {
-          stageSignIn: (signIn) => handle.storage.stageSignIn(signIn),
-          upsertOAuthRow: (row) => handle.storage.upsertOAuthRow(row),
-          findOAuthRow: (key) => handle.storage.findOAuthRow(key),
-          destroyOAuthRow: async (key) => {
-            await new Promise<void>((resolve) => {
-              waiting.push(resolve);
-              if (waiting.length >= 2) for (const release of waiting.splice(0)) release();
-            });
-            return handle.storage.destroyOAuthRow(key);
-          },
-        },
-      });
+      // Both requests pass every check and reach the swap before either makes it.
+      const barrier = twoAtOnce();
+      await setup({ interactionStore: hookedStore(handle, (row) => (phaseOf(row) === 'completing' ? barrier() : undefined)) });
       const jar = new CookieJar();
       const { uid, state } = await toYnab(t, jar, clientId);
       const url = `/oauth/interaction/${uid}/complete?code=ynab-code&state=${encodeURIComponent(state)}`;
@@ -393,6 +424,101 @@ for (const driver of testDrivers) {
       expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
     });
 
+    it('two concurrent initial /starts: one live choice; only its state completes, with its level', async () => {
+      // Both read "no state yet" before either writes.
+      const barrier = twoAtOnce();
+      await setup({ interactionStore: hookedStore(handle, (row) => (phaseOf(row) === 'pending' ? barrier() : undefined)) });
+      const jar = new CookieJar();
+      const pkce = pkcePair();
+      const auth = await browse(t.app, jar, authorizeUrl({ clientId, challenge: pkce.challenge, scope: 'read-write' }));
+      const uid = interactionUid(auth.headers['location'] as string);
+      const cookie = jar.header(`/oauth/interaction/${uid}/start`);
+      const [rw, ro] = await Promise.all([
+        request(t.app).get(`/oauth/interaction/${uid}/start?scope=read-write`).set('Cookie', cookie),
+        request(t.app).get(`/oauth/interaction/${uid}/start?scope=read-only`).set('Cookie', cookie),
+      ]);
+      expect([rw.status, ro.status].sort()).toEqual([302, 400]);
+      const winner = rw.status === 302 ? rw : ro;
+      const loser = winner === rw ? ro : rw;
+      const level = winner === rw ? 'read-write' : 'read-only';
+      // The refused /start published no state: it never sent the browser to YNAB.
+      expect(loser.headers['location']).toBeUndefined();
+      const state = new URL(winner.headers['location'] as string).searchParams.get('state') as string;
+      const params = await finish(t, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(state)}`);
+      const tokens = await exchangeCode(t.app, { clientId, code: params.get('code') as string, verifier: pkce.verifier });
+      expect(tokens.body.scope).toBe(level === 'read-write' ? 'read-only read-write' : 'read-only');
+      expect((await handle.storage.getUser('ynab-user-1'))?.grantedScope).toBe(level);
+      expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+    });
+
+    it("CodeRabbit's interleaving: a delayed read-only /start that read the choice before a read-write complete swapped in its marker is refused", async () => {
+      // The read-only /start reads the row, then waits at its compare-and-set until the complete is inside the YNAB exchange.
+      let startWaiting!: () => void;
+      const startHeld = new Promise<void>((resolve) => (startWaiting = resolve));
+      let releaseStart!: () => void;
+      const startGate = new Promise<void>((resolve) => (releaseStart = resolve));
+      let held = false;
+      await setup({
+        interactionStore: hookedStore(handle, (row) => {
+          if (held || phaseOf(row) !== 'pending' || levelOf(row) !== 'read-only') return undefined;
+          held = true;
+          startWaiting();
+          return startGate;
+        }),
+      });
+      const jar = new CookieJar();
+      const pkce = pkcePair();
+      const auth = await browse(t.app, jar, authorizeUrl({ clientId, challenge: pkce.challenge, scope: 'read-write' }));
+      const uid = interactionUid(auth.headers['location'] as string);
+      const start = await browse(t.app, jar, `/oauth/interaction/${uid}/start?scope=read-write`);
+      const state = new URL(start.headers['location'] as string).searchParams.get('state') as string;
+
+      const delayed = request(t.app)
+        .get(`/oauth/interaction/${uid}/start?scope=read-only`)
+        .set('Cookie', jar.header(`/oauth/interaction/${uid}/start`))
+        .then((r) => r);
+      await startHeld;
+
+      let entered!: () => void;
+      const inExchange = new Promise<void>((resolve) => (entered = resolve));
+      let releaseExchange!: () => void;
+      const exchangeGate = new Promise<void>((resolve) => (releaseExchange = resolve));
+      vi.mocked(ynabExchangeCode).mockImplementation(async () => {
+        entered();
+        await exchangeGate;
+        return { accessToken: 'ynab-access', refreshToken: 'ynab-refresh-x', expiresAt: Date.now() + 7_200_000 };
+      });
+      const completing = browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(state)}`);
+      await inExchange;
+      releaseStart();
+      expect((await delayed).status).toBe(400);
+      releaseExchange();
+      const complete = await completing;
+      expect(complete.status).toBe(303);
+      const resume = await browse(t.app, jar, complete.headers['location'] as string);
+      const code = new URL(resume.headers['location'] as string).searchParams.get('code') as string;
+      const tokens = await exchangeCode(t.app, { clientId, code, verifier: pkce.verifier });
+      expect(tokens.body.scope).toBe('read-only read-write');
+      const info = await t.verifier.verifyAccessToken(tokens.body.access_token as string);
+      const grant = await t.oidc.provider.Grant.find(info.extra?.['grantId'] as string);
+      expect(grant?.getResourceScopeFiltered(RESOURCE, ['read-only', 'read-write'])).toBe('read-only read-write');
+      expect((await handle.storage.getUser('ynab-user-1'))?.grantedScope).toBe('read-write');
+      expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failed complete leaves the interaction unusable: no new choice, no second complete', async () => {
+      vi.mocked(ynabExchangeCode).mockImplementation(async () => {
+        throw new Error('YNAB down');
+      });
+      const jar = new CookieJar();
+      const { uid, state } = await toYnab(t, jar, clientId);
+      const complete = await browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(state)}`);
+      expect(complete.status).toBe(303);
+      expect((await browse(t.app, jar, `/oauth/interaction/${uid}/start?scope=read-only`)).status).toBe(400);
+      expect((await browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(state)}`)).status).toBe(400);
+      expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+    });
+
     it('a state presented twice in flight is spent by the first (only one exchange)', async () => {
       const jar = new CookieJar();
       const { uid, state } = await toYnab(t, jar, clientId);
@@ -455,9 +581,8 @@ for (const driver of testDrivers) {
       await setup({
         interactionStore: {
           stageSignIn: async () => false,
-          upsertOAuthRow: (row) => handle.storage.upsertOAuthRow(row),
           findOAuthRow: (key) => handle.storage.findOAuthRow(key),
-          destroyOAuthRow: (key) => handle.storage.destroyOAuthRow(key),
+          compareAndSetOAuthRow: (expected, row) => handle.storage.compareAndSetOAuthRow(expected, row),
         },
       });
       const flow = await browserFlow(t.app, new CookieJar(), { clientId, challenge: pkcePair().challenge });
