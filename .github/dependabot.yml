@@ -3,6 +3,10 @@ version: 2
 updates:
   - package-ecosystem: npm
     directory: /
+    # During the 0.5.0 cycle, version-update PRs go to the release branch.
+    # Security-update PRs still open against main: apply each fix to
+    # release/0.5.0 too. Remove target-branch when 0.5.0 merges to main.
+    target-branch: release/0.5.0
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -49,6 +53,10 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    # During the 0.5.0 cycle, version-update PRs go to the release branch.
+    # Security-update PRs still open against main: apply each fix to
+    # release/0.5.0 too. Remove target-branch when 0.5.0 merges to main.
+    target-branch: release/0.5.0
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -60,6 +68,10 @@ updates:
 
   - package-ecosystem: docker
     directory: /
+    # During the 0.5.0 cycle, version-update PRs go to the release branch.
+    # Security-update PRs still open against main: apply each fix to
+    # release/0.5.0 too. Remove target-branch when 0.5.0 merges to main.
+    target-branch: release/0.5.0
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
