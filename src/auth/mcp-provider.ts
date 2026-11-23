@@ -98,7 +98,7 @@ import type {
   AccessTokenRecord,
   RefreshTokenRecord,
 } from '../storage/types.js';
-import type { Encryptor } from '../crypto.js';
+import { refreshTokenContext, type Encryptor } from '../crypto.js';
 import { hashClientSecret, isClientSecretHash, type TokenHasher, type TokenKind } from './token-hash.js';
 import {
   buildAuthorizeUrl,
@@ -531,7 +531,7 @@ export class McpOAuthProvider implements OAuthServerProvider {
         user: {
           userId,
           grantedScope: rec.grantedScope,
-          encryptedRefreshToken: this.opts.encryptor.encrypt(tokens.refreshToken),
+          encryptedRefreshToken: this.opts.encryptor.encrypt(tokens.refreshToken, refreshTokenContext(userId)),
           updatedAt: Date.now(),
         },
         code: {

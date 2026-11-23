@@ -34,7 +34,7 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 
 import { MemoryStorage } from '../../../src/storage/memory.js';
 import { MIN_ABANDONED_CLIENT_MS, YNAB_CALLBACK_DEADLINE_MS } from '../../../src/auth/retention-defaults.js';
-import { Encryptor } from '../../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../../src/crypto.js';
 import {
   McpOAuthProvider,
   REFRESH_TOKEN_REUSE_WINDOW_MS,
@@ -284,7 +284,7 @@ describe('McpOAuthProvider.handleYnabCallback', () => {
     expect(user).toBeDefined();
     expect(user?.grantedScope).toBe('read-write');
     expect(user?.encryptedRefreshToken).not.toBe('yr');
-    expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '')).toBe('yr');
+    expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '', refreshTokenContext('ynab-user-1'))).toBe('yr');
 
     // The YNAB calls were made with the callback URL / access token.
     expect(exchangeCodeMock).toHaveBeenCalledWith(

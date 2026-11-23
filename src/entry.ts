@@ -12,6 +12,7 @@ import { startHttpServer } from './http.js';
 import { loadConfig, loadHttpConfig } from './config/environment.js';
 import { LOOPBACK_HOSTNAMES, type Env } from './config/parse.js';
 import type { HttpConfig } from './config/environment.js';
+import { derivePepperFromEncryptionKey } from './auth/token-hash.js';
 
 export type Transport = 'stdio' | 'http';
 
@@ -161,8 +162,56 @@ export async function main(env: Env = process.env): Promise<void> {
   console.error(`YNAB MCP Server started (budget: ${config.defaultBudgetId ?? 'last-used'})`);
 }
 
+/** What `derive-pepper` needs: its environment and where to write. */
+export interface DerivePepperIo {
+  env: Env;
+  /** The pepper, alone on a line (so `TOKEN_PEPPER=$(ynab-mcp derive-pepper)` works). */
+  out: (line: string) => void;
+  /** Guidance and errors. Never a value. */
+  err: (line: string) => void;
+}
+
+/**
+ * `ynab-mcp derive-pepper` (#57b): print the token pepper this server uses
+ * when `TOKEN_PEPPER` is unset, derived from `ENCRYPTION_KEY` in the
+ * environment, as 64 hex characters on stdout. Run it once with the current
+ * key before rotating `ENCRYPTION_KEY`, and set `TOKEN_PEPPER` to the output,
+ * so the rotation doesn't change the pepper (docs/REMOTE_HOSTING.md,
+ * "Rotating ENCRYPTION_KEY"). The key is read from the environment only,
+ * never from the command line. Returns the exit code.
+ */
+export function derivePepper(io: DerivePepperIo): number {
+  const pepper = io.env['TOKEN_PEPPER'];
+  if (pepper !== undefined && pepper.trim() !== '') {
+    io.err('TOKEN_PEPPER is already set: the pepper does not depend on ENCRYPTION_KEY, so there is nothing to derive.');
+    return 0;
+  }
+  let derived: Buffer;
+  try {
+    derived = derivePepperFromEncryptionKey(io.env['ENCRYPTION_KEY']);
+  } catch (error) {
+    io.err(`derive-pepper: ${errorMessage(error)}`);
+    return 1;
+  }
+  io.out(derived.toString('hex'));
+  io.err(
+    'Set TOKEN_PEPPER to the value above (a secret: store it like ENCRYPTION_KEY) and restart before rotating ENCRYPTION_KEY.'
+  );
+  return 0;
+}
+
 /** Run `main` as the process entry: a startup failure is logged (message only) and exits 1. */
-export function runEntry(): void {
+export function runEntry(argv: readonly string[] = process.argv): void {
+  // A subcommand runs instead of the server, before any config is loaded.
+  if (argv[2] === 'derive-pepper') {
+    const code = derivePepper({
+      env: process.env,
+      out: (line) => process.stdout.write(`${line}\n`),
+      err: (line) => console.error(line),
+    });
+    process.exitCode = code;
+    return;
+  }
   main().catch((error: unknown) => {
     console.error('Failed to start YNAB MCP Server:', errorMessage(error));
     process.exit(1);

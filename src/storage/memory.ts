@@ -35,7 +35,10 @@ import type {
   StagedSignIn,
   CodeSaveOutcome,
   ConsumeOutcome,
+  KeyCheckOutcome,
+  StoredUserCiphertext,
 } from './types.js';
+import { compareKeyCheck, keyCheckMetaKey, signInCiphertext } from './encryption-meta.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 import {
   CONSUMED_CREDENTIAL_RETENTION_MS,
@@ -105,6 +108,9 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   private consumedAuthCodes = new Map<string, ConsumedAuthCodeRecord>();
   /** `oauth_rows` (ADR-0002 D4), by key. */
   private oauthRows = new Map<string, OAuthRowRecord>();
+  /** The key rotation's `schema_meta` entries (#57b): the floor and the key checks. */
+  private retiredKeyFloor = 0;
+  private keyChecks = new Map<string, string>();
   private readonly retention: RetentionPolicy;
 
   constructor(options: StorageDriverOptions = {}) {
@@ -165,6 +171,52 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   }
   async deleteUser(userId: string): Promise<void> {
     this.users.delete(userId);
+  }
+
+  // At-rest key rotation (#57b)
+
+  async listUserCiphertextsNotIn(
+    currentPrefix: string,
+    afterUserId: string | undefined,
+    limit: number
+  ): Promise<StoredUserCiphertext[]> {
+    return [...this.users.values()]
+      .filter((u) => !u.encryptedRefreshToken.startsWith(currentPrefix))
+      .filter((u) => afterUserId === undefined || u.userId > afterUserId)
+      .sort((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0))
+      .slice(0, limit)
+      .map((u) => ({ userId: u.userId, encryptedRefreshToken: u.encryptedRefreshToken }));
+  }
+  async rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
+    const rec = this.users.get(userId);
+    if (!rec || rec.encryptedRefreshToken !== oldCiphertext) return false;
+    this.users.set(userId, { ...rec, encryptedRefreshToken: newCiphertext });
+    return true;
+  }
+  async listStagedSignInCiphertexts(now: number): Promise<string[]> {
+    const out: string[] = [];
+    for (const row of this.oauthRows.values()) {
+      if (row.model !== 'SignIn' || (row.expiresAt !== undefined && row.expiresAt < now)) continue;
+      const ciphertext = signInCiphertext(row.accountId, row.payload);
+      if (ciphertext !== undefined) out.push(ciphertext);
+    }
+    return out;
+  }
+  async getRetiredKeyFloor(): Promise<number> {
+    return this.retiredKeyFloor;
+  }
+  async raiseRetiredKeyFloor(floor: number): Promise<number> {
+    if (floor > this.retiredKeyFloor) this.retiredKeyFloor = floor;
+    return this.retiredKeyFloor;
+  }
+  async recordEncryptionKeyCheck(keyId: number, check: string): Promise<KeyCheckOutcome> {
+    const key = keyCheckMetaKey(keyId);
+    const stored = this.keyChecks.get(key);
+    if (stored === undefined) {
+      this.keyChecks.set(key, check);
+      return 'recorded';
+    }
+    return compareKeyCheck(stored, check);
   }
 
   async deleteUserData(userId: string): Promise<void> {

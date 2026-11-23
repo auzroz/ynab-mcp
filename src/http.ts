@@ -46,6 +46,7 @@ import { OUTBOUND_TIMEOUT_MS } from './services/outbound.js';
 import type { HttpConfig } from './config/environment.js';
 import { deprecatedSessionSettingsWarning } from './config/http/limits.js';
 import { Encryptor } from './crypto.js';
+import { prepareEncryptionKeys } from './auth/rekey-job.js';
 import { createStorage } from './storage/index.js';
 import { TokenHasher } from './auth/token-hash.js';
 import type { GrantedScope, Storage } from './storage/types.js';
@@ -242,6 +243,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   // limiter, ahead of it), so the AS is mounted before the global JSON parser.
   let storage: Storage | undefined;
   let oauth: { as: AuthorizationServer; resolver: YnabTokenResolver } | undefined;
+  let encryptor: Encryptor | undefined;
   if (config.authMode === 'oauth') {
     // One hasher (TOKEN_PEPPER, else derived from ENCRYPTION_KEY) for storage's
     // migration and the provider's lookups, so the two can't use different peppers.
@@ -250,7 +252,15 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
       encryptionKey: config.encryptionKey,
     });
     storage = await buildStorage(config, tokenHasher);
-    const encryptor = new Encryptor(config.encryptionKey);
+    // The keyring (#57b): ENCRYPTION_KEY under ENCRYPTION_KEY_ID, plus the
+    // previous keys. Checked against the database, and the retirement floor
+    // applied, before anything decrypts; the rekey job keeps it current.
+    const keyring = new Encryptor(config.encryptionKey, {
+      keyId: config.encryptionKeyId,
+      previousKeys: config.encryptionKeyPrevious,
+    });
+    await prepareEncryptionKeys(storage, keyring);
+    encryptor = keyring;
     const ynab = {
       clientId: config.oauthClientId as string,
       clientSecret: config.oauthClientSecret as string,
@@ -262,12 +272,12 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
       as: mountAuthorizationServer(app, {
         config,
         storage,
-        encryptor,
+        encryptor: keyring,
         tokenHasher,
         ynab,
         observeStage: options.observeStage,
       }),
-      resolver: new YnabTokenResolver(storage, encryptor, ynab),
+      resolver: new YnabTokenResolver(storage, keyring, ynab),
     };
   }
   const asPipeline = oauth?.as.routes.map((r) => ({ route: r.route, stages: [...upstreamStages, ...r.stages] }));
@@ -586,7 +596,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   // Extension routes (src/http/extensions.ts): after host validation, the AS
   // and the JSON parser. Unauthenticated, so they never see a request for /mcp
   // or under it.
-  const extensionContext: ExtensionContext = { config, storage };
+  const extensionContext: ExtensionContext = { config, storage, encryptor };
   const extensionRouter = express.Router();
   for (const route of options.routes ?? registeredRoutes) route.mount(extensionRouter, extensionContext);
   app.use((req: Request, res: Response, next: NextFunction) => {

@@ -4,29 +4,178 @@
 
 import { describe, it, expect } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { Encryptor, encrypt, decrypt, parseEncryptionKey } from '../../src/crypto.js';
+import {
+  Encryptor,
+  aadFor,
+  ciphertextVersion,
+  encrypt,
+  decrypt,
+  parseEncryptionKey,
+  parseKeyring,
+  parsePreviousKeys,
+  refreshTokenContext,
+  type CipherContext,
+} from '../../src/crypto.js';
 
 const keyB64 = randomBytes(32).toString('base64');
+const ctx = refreshTokenContext('user-a');
 
 describe('crypto', () => {
-  it('round-trips a secret', () => {
+  it('round-trips a secret in the v2 format, under key id 1 by default', () => {
     const enc = new Encryptor(keyB64);
     const secret = 'ynab-refresh-token-abc123';
-    const token = enc.encrypt(secret);
+    const token = enc.encrypt(secret, ctx);
     expect(token).not.toContain(secret);
-    expect(token.startsWith('v1.')).toBe(true);
-    expect(enc.decrypt(token)).toBe(secret);
+    expect(token.startsWith('v2.1.')).toBe(true);
+    expect(token.split('.')).toHaveLength(5);
+    expect(enc.isCurrent(token)).toBe(true);
+    expect(enc.decrypt(token, ctx)).toBe(secret);
   });
 
   it('produces distinct ciphertexts for the same plaintext (random IV)', () => {
     const enc = new Encryptor(keyB64);
-    expect(enc.encrypt('same')).not.toBe(enc.encrypt('same'));
+    expect(enc.encrypt('same', ctx)).not.toBe(enc.encrypt('same', ctx));
   });
 
   it('accepts a 64-char hex key', () => {
     const hex = randomBytes(32).toString('hex');
     const enc = new Encryptor(hex);
-    expect(enc.decrypt(enc.encrypt('x'))).toBe('x');
+    expect(enc.decrypt(enc.encrypt('x', ctx), ctx)).toBe('x');
+  });
+
+  describe('AAD binding (#57b)', () => {
+    it('is ynab-mcp|<column>|v2|<subject>', () => {
+      expect(aadFor(ctx).toString('utf8')).toBe('ynab-mcp|users.encrypted_refresh_token|v2|user-a');
+    });
+
+    it("refuses another user's ciphertext (a swapped row)", () => {
+      const enc = new Encryptor(keyB64);
+      const token = enc.encrypt('secret', refreshTokenContext('user-a'));
+      expect(() => enc.decrypt(token, refreshTokenContext('user-b'))).toThrow();
+    });
+
+    it('refuses a ciphertext moved to another column', () => {
+      const enc = new Encryptor(keyB64);
+      const token = enc.encrypt('secret', ctx);
+      const other = { column: 'users.other_column', subject: 'user-a' } as unknown as CipherContext;
+      expect(() => enc.decrypt(token, other)).toThrow(/column/);
+    });
+
+    it('needs a context to encrypt, and to decrypt v2', () => {
+      const enc = new Encryptor(keyB64);
+      expect(() => enc.encrypt('secret')).toThrow(/context/);
+      expect(() => enc.decrypt(enc.encrypt('secret', ctx))).toThrow(/context/);
+    });
+
+    it.each(['', 'a|b', 'line\nbreak', 'x'.repeat(257)])('refuses the subject %j', (subject) => {
+      expect(() => aadFor({ column: 'users.encrypted_refresh_token', subject })).toThrow(/subject/);
+    });
+
+    it('rejects a truncated tag in the v2 format too', () => {
+      const enc = new Encryptor(keyB64);
+      const p = enc.encrypt('secret', ctx).split('.');
+      const short = Buffer.from(p[3] as string, 'base64url').subarray(0, 12).toString('base64url');
+      expect(() => enc.decrypt([p[0], p[1], p[2], short, p[4]].join('.'), ctx)).toThrow(/format/i);
+    });
+
+    it('refuses a key id that was edited in the ciphertext', () => {
+      const k2 = randomBytes(32).toString('base64');
+      const enc = new Encryptor(k2, { keyId: '2', previousKeys: `1:${keyB64}` });
+      const p = enc.encrypt('secret', ctx).split('.');
+      expect(() => enc.decrypt(['v2', '1', ...p.slice(2)].join('.'), ctx)).toThrow();
+    });
+  });
+
+  describe('keyring and rotation (#57b)', () => {
+    const k1 = randomBytes(32).toString('base64');
+    const k2 = randomBytes(32).toString('hex');
+
+    it('keeps every row readable through a rotation: v1, old key id, new key id', () => {
+      const legacy = encrypt('legacy', parseEncryptionKey(k1));
+      const before = new Encryptor(k1);
+      const underOne = before.encrypt('one', ctx);
+
+      const after = new Encryptor(k2, { keyId: '2', previousKeys: `1:${k1}` });
+      expect(after.decrypt(legacy, ctx)).toBe('legacy');
+      expect(after.decrypt(legacy)).toBe('legacy');
+      expect(after.decrypt(underOne, ctx)).toBe('one');
+      const underTwo = after.encrypt('two', ctx);
+      expect(underTwo.startsWith('v2.2.')).toBe(true);
+      expect(after.decrypt(underTwo, ctx)).toBe('two');
+      expect(after.isCurrent(underOne)).toBe(false);
+      expect(after.isCurrent(underTwo)).toBe(true);
+    });
+
+    it('refuses v1 and older key ids once retired, and never lowers the floor', () => {
+      const legacy = encrypt('legacy', parseEncryptionKey(k1));
+      const underOne = new Encryptor(k1).encrypt('one', ctx);
+      const enc = new Encryptor(k2, { keyId: '2', previousKeys: `1:${k1}` });
+      enc.retireBelow(1);
+      expect(() => enc.decrypt(legacy)).toThrow(/retired/);
+      expect(enc.decrypt(underOne, ctx)).toBe('one');
+      enc.retireBelow(2);
+      expect(() => enc.decrypt(underOne, ctx)).toThrow(/retired/);
+      enc.retireBelow(0);
+      expect(enc.retiredBelow).toBe(2);
+    });
+
+    it('refuses a floor above the current key id', () => {
+      const enc = new Encryptor(k1);
+      expect(() => enc.retireBelow(2)).toThrow(/ENCRYPTION_KEY_ID/);
+    });
+
+    it('fails for a key id that is not configured', () => {
+      const underTwo = new Encryptor(k2, { keyId: '2' }).encrypt('two', ctx);
+      expect(() => new Encryptor(k1).decrypt(underTwo, ctx)).toThrow(/No configured key/);
+      // v1 needs key id 1.
+      const legacy = encrypt('legacy', parseEncryptionKey(k1));
+      expect(() => new Encryptor(k2, { keyId: '2' }).decrypt(legacy)).toThrow(/No configured key/);
+    });
+
+    it('parses ENCRYPTION_KEY_PREVIOUS', () => {
+      expect(parsePreviousKeys(undefined)).toEqual([]);
+      expect(parsePreviousKeys('  ')).toEqual([]);
+      const parsed = parsePreviousKeys(`1:${k1}, 3:${k2}`);
+      expect(parsed.map((e) => e.id)).toEqual([1, 3]);
+    });
+
+    it.each([
+      ['no separator', () => parsePreviousKeys(k1), /entry 1 must be <id>:<key>/],
+      ['a bad id', () => parsePreviousKeys(`0:${k1}`), /entry 1's id/],
+      ['a short key', () => parsePreviousKeys(`1:${k1},2:abcd`), /entry 2 must decode to 32 bytes/],
+      ['the current id', () => parseKeyring(k2, { keyId: '1', previousKeys: `1:${k1}` }), /needs an id of its own/],
+      ['an id twice', () => parseKeyring(k2, { keyId: '3', previousKeys: `1:${k1},1:${randomBytes(32).toString('base64')}` }), /twice/],
+      ['one key under two ids', () => parseKeyring(k1, { keyId: '2', previousKeys: `1:${k1}` }), /another id/],
+      ['a bad ENCRYPTION_KEY_ID', () => parseKeyring(k1, { keyId: '01' }), /ENCRYPTION_KEY_ID/],
+    ])('refuses %s, without echoing a value', (_name, run, pattern) => {
+      let message = '';
+      try {
+        run();
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(pattern);
+      for (const secret of [k1, k2]) expect(message).not.toContain(secret);
+    });
+
+    it('reads the format and key id of a stored ciphertext', () => {
+      const enc = new Encryptor(k2, { keyId: '42' });
+      expect(ciphertextVersion(enc.encrypt('x', ctx))).toEqual({ format: 'v2', kid: 42 });
+      expect(ciphertextVersion(encrypt('x', parseEncryptionKey(k1)))).toEqual({ format: 'v1' });
+      expect(ciphertextVersion('v2.0.a.b.c')).toBeUndefined();
+      expect(ciphertextVersion('garbage')).toBeUndefined();
+    });
+
+    it('gives each key a stable check value that reveals no key', () => {
+      const a = new Encryptor(k2, { keyId: '2', previousKeys: `1:${k1}` }).keyChecks();
+      const b = new Encryptor(k1).keyChecks();
+      expect(a.map((c) => c.id)).toEqual([2, 1]);
+      expect(a.find((c) => c.id === 1)?.check).toBe(b[0]?.check);
+      for (const { check } of a) {
+        expect(check).toMatch(/^[0-9a-f]{64}$/);
+        expect(check).not.toContain(Buffer.from(k1, 'base64').toString('hex'));
+      }
+    });
   });
 
   it('rejects a missing or wrong-length key', () => {

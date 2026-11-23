@@ -295,7 +295,7 @@ export interface AccountStore {
   deleteUserData(userId: string): Promise<void>;
 }
 
-export interface Storage extends OAuthRowStore {
+export interface Storage extends OAuthRowStore, CiphertextStore {
   init(): Promise<void>;
   close(): Promise<void>;
 
@@ -628,4 +628,65 @@ export interface OAuthRowStore {
    * rows deleted.
    */
   revokeOAuthGrant(grantId: string): Promise<number>;
+}
+
+// ---------------------------------------------------------------------------
+// At-rest key rotation (#57b): what the rekey job (src/auth/rekey-job.ts) and
+// the startup key check read and write. Runtime writes to existing tables
+// only (`users`, `oauth_rows`, `schema_meta`); no schema step.
+// ---------------------------------------------------------------------------
+
+/** A user's stored YNAB refresh-token ciphertext. */
+export interface StoredUserCiphertext {
+  userId: string;
+  encryptedRefreshToken: string;
+}
+
+/** What {@link CiphertextStore.recordEncryptionKeyCheck} found. */
+export type KeyCheckOutcome = 'recorded' | 'matches' | 'differs';
+
+export interface CiphertextStore {
+  /**
+   * Up to `limit` users, by user id and after `afterUserId` when given, whose
+   * `encrypted_refresh_token` does not start with `currentPrefix` (the
+   * keyring's `v2.<kid>.`). A page shorter than `limit` is the last.
+   */
+  listUserCiphertextsNotIn(
+    currentPrefix: string,
+    afterUserId: string | undefined,
+    limit: number
+  ): Promise<StoredUserCiphertext[]>;
+  /**
+   * Compare-and-set a user's refresh-token ciphertext to the same token under
+   * another key: written only while the stored value is still
+   * `oldCiphertext`. Unlike {@link Storage.updateUserRefreshToken} it stamps
+   * nothing else (`updated_at` is the YNAB token's, which hasn't changed).
+   * Returns whether it wrote.
+   */
+  rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean>;
+  /**
+   * The refresh-token ciphertexts of the staged sign-ins (`SignIn` rows) not
+   * expired at `now` (epoch ms, storage clock). Their bytes are copied into
+   * `users` when their code is saved, so the rekey job counts them before
+   * retiring a key; it does not rewrite them.
+   */
+  listStagedSignInCiphertexts(now: number): Promise<string[]>;
+  /**
+   * The retirement floor (`schema_meta.encryption_retired_below`): the legacy
+   * `v1` format and key ids below it are refused. 0 when none is recorded;
+   * an unreadable stored value throws.
+   */
+  getRetiredKeyFloor(): Promise<number>;
+  /**
+   * Raise the retirement floor to `floor` when that is higher than the stored
+   * one, atomically (two replicas raising it at once keep the higher), and
+   * return the floor now stored.
+   */
+  raiseRetiredKeyFloor(floor: number): Promise<number>;
+  /**
+   * Record key `keyId`'s check value (`schema_meta`,
+   * `encryption_key_check.<id>`) when none is recorded; otherwise compare it
+   * with the recorded one, in constant time.
+   */
+  recordEncryptionKeyCheck(keyId: number, check: string): Promise<KeyCheckOutcome>;
 }

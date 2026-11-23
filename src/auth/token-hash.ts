@@ -77,6 +77,16 @@ function hkdf32(ikm: Buffer, info: string): Buffer {
   return Buffer.from(hkdfSync('sha256', ikm, Buffer.alloc(0), info, 32));
 }
 
+/**
+ * The pepper used when `TOKEN_PEPPER` is unset: HKDF-SHA256 of
+ * `ENCRYPTION_KEY`. `ynab-mcp derive-pepper` prints it, so an operator can pin
+ * it as `TOKEN_PEPPER` before rotating the key (#57b). Throws, naming only the
+ * variable, when the key is missing or malformed.
+ */
+export function derivePepperFromEncryptionKey(rawEncryptionKey: string | undefined): Buffer {
+  return hkdf32(parseKey32(rawEncryptionKey, 'ENCRYPTION_KEY'), PEPPER_FROM_ENCRYPTION_KEY);
+}
+
 /** Constant-time equality of two strings (false, still in constant time per length, when lengths differ). */
 export function constantTimeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a, 'utf8');
@@ -148,8 +158,7 @@ export class TokenHasher implements TokenKeyDeriver, LibraryKeyDeriver {
     if (source.tokenPepper !== undefined && source.tokenPepper.trim() !== '') {
       return new TokenHasher(parseKey32(source.tokenPepper, 'TOKEN_PEPPER'));
     }
-    const encryptionKey = parseKey32(source.encryptionKey, 'ENCRYPTION_KEY');
-    return new TokenHasher(hkdf32(encryptionKey, PEPPER_FROM_ENCRYPTION_KEY));
+    return new TokenHasher(derivePepperFromEncryptionKey(source.encryptionKey));
   }
 
   private tag(kind: TokenKind, rand: string): string {

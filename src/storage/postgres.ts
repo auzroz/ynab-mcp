@@ -35,7 +35,17 @@ import type {
   StagedSignIn,
   CodeSaveOutcome,
   ConsumeOutcome,
+  KeyCheckOutcome,
+  StoredUserCiphertext,
 } from './types.js';
+import {
+  RAISE_FLOOR_SQL,
+  RETIRED_FLOOR_KEY,
+  compareKeyCheck,
+  keyCheckMetaKey,
+  parseRetiredFloor,
+  signInCiphertext,
+} from './encryption-meta.js';
 import { resolveStorageTimeouts } from './timeouts.js';
 import { applyMigrations, MIGRATION_PLAN, type MigrationDeps, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
@@ -614,6 +624,62 @@ export class PostgresStorage implements Storage, OAuthRowStore {
 
   async deleteUser(userId: string): Promise<void> {
     await this.db.query('DELETE FROM users WHERE user_id = $1', [userId]);
+  }
+
+  // At-rest key rotation (#57b)
+
+  async listUserCiphertextsNotIn(
+    currentPrefix: string,
+    afterUserId: string | undefined,
+    limit: number
+  ): Promise<StoredUserCiphertext[]> {
+    const res = await this.db.query<{ user_id: string; encrypted_refresh_token: string }>(
+      `SELECT user_id, encrypted_refresh_token FROM users
+       WHERE substr(encrypted_refresh_token, 1, $1) <> $2 AND ($3::text IS NULL OR user_id > $3)
+       ORDER BY user_id LIMIT $4`,
+      [currentPrefix.length, currentPrefix, afterUserId ?? null, limit]
+    );
+    return res.rows.map((r) => ({ userId: r.user_id, encryptedRefreshToken: r.encrypted_refresh_token }));
+  }
+
+  async rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
+    const res = await this.db.query(
+      'UPDATE users SET encrypted_refresh_token = $1 WHERE user_id = $2 AND encrypted_refresh_token = $3',
+      [newCiphertext, userId, oldCiphertext]
+    );
+    return res.rowCount === 1;
+  }
+
+  async listStagedSignInCiphertexts(now: number): Promise<string[]> {
+    const res = await this.db.query<{ account_id: string | null; payload: string }>(
+      `SELECT account_id, payload FROM oauth_rows
+       WHERE model = 'SignIn' AND (expires_at IS NULL OR expires_at >= $1)`,
+      [now]
+    );
+    return res.rows.flatMap((r) => signInCiphertext(r.account_id, r.payload) ?? []);
+  }
+
+  async getRetiredKeyFloor(): Promise<number> {
+    const res = await this.db.query<{ value: string }>('SELECT value FROM schema_meta WHERE key = $1', [
+      RETIRED_FLOOR_KEY,
+    ]);
+    return parseRetiredFloor(res.rows[0]?.value);
+  }
+
+  async raiseRetiredKeyFloor(floor: number): Promise<number> {
+    await this.db.query(RAISE_FLOOR_SQL, [RETIRED_FLOOR_KEY, String(floor)]);
+    return this.getRetiredKeyFloor();
+  }
+
+  async recordEncryptionKeyCheck(keyId: number, check: string): Promise<KeyCheckOutcome> {
+    const key = keyCheckMetaKey(keyId);
+    const inserted = await this.db.query(
+      'INSERT INTO schema_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING',
+      [key, check]
+    );
+    if (inserted.rowCount === 1) return 'recorded';
+    const res = await this.db.query<{ value: string }>('SELECT value FROM schema_meta WHERE key = $1', [key]);
+    return compareKeyCheck(res.rows[0]?.value ?? '', check);
   }
 
   async deleteUserData(userId: string): Promise<void> {

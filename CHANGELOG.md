@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Stored YNAB refresh tokens are bound to their user and column, and carry a
+  key id (#57). The new format is `v2.<kid>.<iv>.<tag>.<ct>`, with AAD
+  `ynab-mcp|<column>|v2|<user id>`, so a ciphertext copied into another user's
+  row no longer decrypts. 0.4.x tokens (`v1`) are still read. A background
+  rekey job rewrites them, and the rows under an older key, using
+  compare-and-set writes, logging counts only. An hour after none are left it
+  retires `v1` and the older key ids for every replica.
+- `ENCRYPTION_KEY` can be rotated without logging anyone out.
+  `ENCRYPTION_KEY_ID` (default 1) names the current key, and
+  `ENCRYPTION_KEY_PREVIOUS` (`<id>:<key>,…`) lists keys that are kept for
+  reading only. The new `ynab-mcp derive-pepper` command prints the token
+  pepper derived from `ENCRYPTION_KEY`, so it can be pinned as `TOKEN_PEPPER`
+  before a rotation. See "Rotating ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md.
+- The server refuses to start if:
+  - the key under an id differs from the one the database recorded for that id;
+  - `ENCRYPTION_KEY_ID` is below a retired id;
+  - `ENCRYPTION_KEY_PREVIOUS` is set without `TOKEN_PEPPER`.
+- Upgrading needs no action. Once the rekey job has run, a rollback to 0.4.x
+  can't read the stored YNAB tokens and every user reconnects. Back up before
+  upgrading.
+
 ### Fixed
 
 - Per-budget caches are keyed by the budget's UUID, never by the `last-used`
