@@ -247,7 +247,8 @@ function requestNormalizer({ resource, publicUrl }: NormalizerDeps) {
 
     // Discovery lists the MCP scopes, as the SDK's metadata did, not the library's OIDC scopes.
     if ((DISCOVERY_PATHS as readonly string[]).includes(path) && isRecord(ctx.body)) {
-      ctx.body = { ...ctx.body, scopes_supported: [...KNOWN_SCOPES] };
+      // `response_mode` is dropped (IGNORED_AUTHORIZE_PARAMS): every answer is a query redirect.
+      ctx.body = { ...ctx.body, scopes_supported: [...KNOWN_SCOPES], response_modes_supported: ['query'] };
     }
     // The DCR response doesn't point at the configuration endpoint, which isn't served.
     if (path === registration && ctx.status === 201 && isRecord(ctx.body)) {

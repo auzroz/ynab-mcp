@@ -38,7 +38,11 @@ export function dcrValidator(policy: ClientMetadataPolicy): RequestHandler {
       res.status(400).json(result.error);
       return;
     }
-    req.body = result.metadata;
+    // The library's client `scope` names its own (OIDC) scopes, which ours aren't: a registered
+    // `scope` would be refused. Ours are resource scopes (D2), asked for at /authorize; the
+    // SDK never limited a client by it. Dropped, as M4 drops it from converted clients.
+    const { scope: _scope, ...metadata } = result.metadata as Record<string, unknown>;
+    req.body = metadata;
     next();
   };
 }

@@ -186,6 +186,8 @@ Since 0.5.0 the registration response also carries the library's defaults
 (`application_type`, `subject_type`, `id_token_signed_response_alg`,
 `require_auth_time`), and `client_secret_expires_at` is `0`: a client secret
 no longer expires after 30 days. A client unused for 90 days is still removed.
+A registered `scope`, `software_id` and `software_version` are accepted but
+not kept: scopes are asked for at `/authorize`.
 The token response's `token_type` is `Bearer`, and a read-write token's
 `scope` is `read-only read-write`.
 

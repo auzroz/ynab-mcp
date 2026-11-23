@@ -45,6 +45,7 @@ import { MemoryStorage } from '../../src/storage/memory.js';
 import type { OAuthRowRecord } from '../../src/storage/types.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 import { Encryptor } from '../../src/crypto.js';
+import { MIN_ABANDONED_CLIENT_MS, YNAB_CALLBACK_DEADLINE_MS } from '../../src/auth/retention-defaults.js';
 import { exchangeCode as ynabExchangeCode, getYnabUserId, refreshAccessToken } from '../../src/auth/ynab-oauth.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
@@ -54,6 +55,7 @@ import {
   REDIRECT_URI,
   CookieJar,
   authorizeUrl,
+  browse,
   browserFlow,
   exchangeCode,
   pkcePair,
@@ -131,6 +133,118 @@ describe('one authorization through the mounted library', () => {
       .send({ token: refreshed.body.refresh_token, client_id: client.clientId });
     expect(revoked.status).toBe(200);
     expect((await mcpInitialize(app, bearer(refreshed.body.access_token as string))).status).toBe(401);
+  });
+});
+
+describe('registrations as real clients send them', () => {
+  it('accepts scope, grant types, response types and software fields, and signs in read-write', async () => {
+    const reg = await request(app)
+      .post('/register')
+      .send({
+        redirect_uris: [REDIRECT_URI],
+        client_name: 'Claude-like',
+        token_endpoint_auth_method: 'client_secret_post',
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        scope: 'read-only read-write',
+        software_id: 'claude-like',
+        software_version: '1.2.3',
+      });
+    expect(reg.status, JSON.stringify(reg.body)).toBe(201);
+    // The library's client `scope` is OIDC's; ours are asked for at /authorize, so it isn't kept.
+    // Nor are the software fields: the library keeps only the metadata it recognizes.
+    expect(reg.body.scope).toBeUndefined();
+    expect(reg.body.software_id).toBeUndefined();
+    const clientId = reg.body.client_id as string;
+    const { verifier, challenge } = pkcePair();
+    const flow = await browserFlow(app, new CookieJar(), { clientId, challenge, scope: 'read-only read-write', choice: 'read-write' });
+    const tokens = await exchangeCode(app, {
+      clientId,
+      clientSecret: reg.body.client_secret as string,
+      code: flow.params.get('code') as string,
+      verifier,
+    });
+    expect(tokens.status).toBe(200);
+    expect(tokens.body.scope).toBe('read-only read-write');
+  });
+
+  it('an authorization without redirect_uri uses the only registered one', async () => {
+    const client = await registerClient(app);
+    const { challenge } = pkcePair();
+    const url = new URL(authorizeUrl({ clientId: client.clientId, challenge }), PUBLIC_URL);
+    url.searchParams.delete('redirect_uri');
+    const res = await request(app).get(`${url.pathname}${url.search}`);
+    expect(res.status).toBe(303);
+    expect(res.headers['location']).toMatch(/\/oauth\/interaction\/[A-Za-z0-9_-]{43}$/);
+  });
+});
+
+describe('the YNAB legs, as McpOAuthProvider tested them (moved from mcp-provider.test.ts)', () => {
+  it('a sign-in whose YNAB exchange runs past its deadline saves no user or code and answers server_error', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.mocked(ynabExchangeCode).mockImplementationOnce(async () => {
+      vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS + 1);
+      return { accessToken: 'ynab-access', refreshToken: 'ynab-refresh', expiresAt: Date.now() + 7_200_000 };
+    });
+    // An interaction that outlives the deadline (the default MCP_AUTH_CODE_TTL_SEC equals it, and
+    // an expired interaction ends on this server's own page instead of a redirect; see below).
+    const as = mountedAs({ authCodeTtlSec: 1800 });
+    const client = await registerClient(as.app);
+    const { challenge } = pkcePair();
+    const flow = await browserFlow(as.app, new CookieJar(), { clientId: client.clientId, challenge });
+    expect(flow.params.get('error')).toBe('server_error');
+    expect(flow.params.has('code')).toBe(false);
+    expect(flow.params.get('iss')).toBe(`${PUBLIC_URL}/`);
+    expect(await as.storage.getUser('ynab-user-1')).toBeUndefined();
+  });
+
+  it('with the default lifetimes, a sign-in past the deadline ends on this server\'s page and saves nothing', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.mocked(ynabExchangeCode).mockImplementationOnce(async () => {
+      vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS + 1);
+      return { accessToken: 'ynab-access', refreshToken: 'ynab-refresh', expiresAt: Date.now() + 7_200_000 };
+    });
+    const client = await registerClient(app);
+    const { challenge } = pkcePair();
+    const jar = new CookieJar();
+    const auth = await browse(app, jar, authorizeUrl({ clientId: client.clientId, challenge }));
+    const uid = /\/oauth\/interaction\/([A-Za-z0-9_-]{43})$/.exec(auth.headers['location'] as string)?.[1] as string;
+    const start = await browse(app, jar, `/oauth/interaction/${uid}/start?scope=read-only`);
+    const state = new URL(start.headers['location'] as string).searchParams.get('state') as string;
+    const callback = await browse(app, jar, `/oauth/ynab/callback?${new URLSearchParams({ state, code: 'c' }).toString()}`);
+    const complete = await browse(app, jar, callback.headers['location'] as string);
+    expect(complete.status).toBe(400);
+    expect(complete.headers['location']).toBeUndefined();
+    expect(await created.storage!.getUser('ynab-user-1')).toBeUndefined();
+  });
+
+  it('/revoke answers a storage failure with a generic server_error, without its details', async () => {
+    const pair = await tokenPair();
+    vi.spyOn(created.storage!, 'destroyOAuthRow').mockRejectedValue(
+      new Error('connect ECONNREFUSED 10.1.2.3:5432 (postgres://app:hunter2@db.internal/ynab)')
+    );
+    const res = await request(app).post('/revoke').type('form').send({ token: pair.access, client_id: pair.client.clientId });
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('server_error');
+    expect(res.text).not.toMatch(/ECONNREFUSED|hunter2|10\.1\.2\.3/);
+  });
+
+  it('the deadline is shorter than the shortest sweep protection of a client', () => {
+    expect(YNAB_CALLBACK_DEADLINE_MS).toBeLessThan(MIN_ABANDONED_CLIENT_MS);
+  });
+
+  it('the consent page promises no in-app disconnect; it points to YNAB, where access can be removed', async () => {
+    const client = await registerClient(app);
+    const { challenge } = pkcePair();
+    const jar = new CookieJar();
+    const auth = await browse(app, jar, authorizeUrl({ clientId: client.clientId, challenge }));
+    const page = await browse(app, jar, auth.headers['location'] as string);
+    expect(page.status).toBe(200);
+    expect(page.text).not.toMatch(/disconnect/i);
+    expect(page.text).toContain(
+      'To end this access later, open your YNAB settings at app.ynab.com/settings, find Authorized Applications, ' +
+        "and choose Revoke next to this server's app."
+    );
   });
 });
 
@@ -251,6 +365,7 @@ describe('D8: methods and routes', () => {
         code_challenge_methods_supported: ['S256'],
         authorization_response_iss_parameter_supported: true,
         scopes_supported: ['read-only', 'read-write'],
+        response_modes_supported: ['query'],
       });
     }
     expect((await request(app).get('/jwks')).status).toBe(200);

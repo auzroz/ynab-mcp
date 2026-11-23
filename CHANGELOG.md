@@ -26,9 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `subject_type`, `id_token_signed_response_alg` and `require_auth_time`,
     with the defaults filled in. `client_secret_expires_at` is `0`: new client
     secrets no longer expire after 30 days, though a client unused for 90 days
-    is still removed. `sector_identifier_uri` is refused.
+    is still removed. `sector_identifier_uri` is refused. A registered
+    `scope`, `software_id` and `software_version` are accepted but no longer
+    kept or echoed (none of them ever limited a client; scopes are asked for
+    at `/authorize`).
   - The discovery document lists OIDC fields and a `jwks_uri`, and is also
-    served at `/.well-known/openid-configuration`. Error descriptions read
+    served at `/.well-known/openid-configuration`. Like `/jwks`, it echoes
+    the request's `Origin` in `Access-Control-Allow-Origin` (`*` without
+    one), so any origin can still read it. Error descriptions read
     differently, and an `invalid_client` that comes from the library itself
     is 401 (this server's own client check still answers 400). Client
     credentials are read only from the form body, as before: an
