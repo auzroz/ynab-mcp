@@ -645,8 +645,12 @@ Retirement takes two steps:
    refuses to write`. From then on, a replica whose `ENCRYPTION_KEY_ID` is
    older refuses every refresh and sign-in before it calls YNAB, so it never
    spends a user's token or writes one the others are about to stop reading.
-   Its log says `Refusing to write with ENCRYPTION_KEY_ID …`, and its users
-   get an authorization error until it is updated.
+   Its log says `Refusing to write with ENCRYPTION_KEY_ID …`. Until it is
+   restarted with the current key, a request it would have to refresh a
+   token for gets `503` with `Retry-After: 30` (a tool call an
+   `upstream_unavailable` result), not a reconnect: the user's stored token
+   is fine, and a retry may reach another replica. A sign-in through it
+   fails.
 2. A pass at least an hour later that still finds nothing left retires them,
    and logs:
 

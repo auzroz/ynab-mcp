@@ -173,6 +173,26 @@ describe('/mcp and transient YNAB token failures (#48 Q1)', () => {
     }
   });
 
+  it('a replica below the key floor answers 503 with Retry-After before calling YNAB, keeping the token', async () => {
+    const { app, token, storage } = await oauthApp();
+    const before = (await storage.getUser(USER))?.encryptedRefreshToken;
+    // A replica on key 2 announced the retirement of key 1, which this one still runs on.
+    await storage.announceKeyRetirement(2);
+    refreshMock.mockResolvedValue(OK());
+    const errorSpy = vi.mocked(console.error);
+
+    const res = await mcpInitialize(app, bearer(token));
+    expect(res.status).toBe(503);
+    expect(res.headers['retry-after']).toBe('30');
+    expect(res.headers['www-authenticate']).toBeUndefined();
+    expect(refreshMock).not.toHaveBeenCalled();
+    expect((await storage.getUser(USER))?.encryptedRefreshToken).toBe(before);
+    // The line the operator acts on.
+    expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+    // Not remembered: the next request is refused the same way, not as a recent failure.
+    expect((await mcpInitialize(app, bearer(token))).status).toBe(503);
+  });
+
   it('another rejected refresh (a 401 from the token endpoint) is not transient either', async () => {
     const { app, token } = await oauthApp();
     refreshMock.mockRejectedValueOnce(new YnabOAuthError('YNAB token request failed with status 401: invalid_client', 401, 'invalid_client'));

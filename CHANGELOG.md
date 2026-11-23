@@ -62,7 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of forcing the client to reconnect; only a rejected (`invalid_grant`)
   refresh token does (#48). A tool call gets `upstream_unavailable` with
   `retry_after_seconds`. The stored grant is kept, and the failure is not
-  remembered.
+  remembered. A replica below the key floor (still on a key that is being
+  retired) answers `503` the same way until it is restarted with the current
+  key.
 
 ### Fixed
 

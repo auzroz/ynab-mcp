@@ -44,7 +44,7 @@ import {
 } from '../utils/errors.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { refreshAccessToken, YnabOAuthError, type YnabOAuthConfig, type YnabTokenSet } from './ynab-oauth.js';
-import { assertKeyWritable } from './rekey-job.js';
+import { assertKeyWritable, KeyRetiredError } from './rekey-job.js';
 
 /** Refresh a bit early so an access token doesn't expire mid-request. */
 const REFRESH_SKEW_MS = 60_000;
@@ -84,6 +84,13 @@ class RecentRefreshFailureError extends Error {
 
 /** How long a client is asked to wait after a transient token failure, when nothing says longer. */
 export const TOKEN_RETRY_AFTER_SEC = 5;
+
+/**
+ * How long a client is asked to wait when this replica's key is below the
+ * key floor (#57b). It refuses until an operator restarts it with the current
+ * key; a retry may reach a healthy replica meanwhile.
+ */
+export const KEY_RETIRED_RETRY_AFTER_SEC = 30;
 
 /**
  * The YNAB access token can't be had right now, for a reason that clears by
@@ -382,6 +389,17 @@ export class YnabTokenResolver {
       // spend the token and write its successor where the others can't read
       // it (#57b). Re-read on every attempt, including the retry after a miss.
       await assertKeyWritable(this.storage, this.encryptor);
+    } catch (error) {
+      await this.release(userId, holder);
+      // An operator problem (a replica left on an old key), not the user's
+      // token: transient (Q1), so the client retries, possibly on a healthy
+      // replica, and nothing is remembered. assertKeyWritable logged it loudly.
+      if (error instanceof KeyRetiredError) {
+        throw new YnabTokenUnavailableError(KEY_RETIRED_RETRY_AFTER_SEC, sanitizeErrorMessage(error));
+      }
+      throw error;
+    }
+    try {
       refreshToken = this.encryptor.decrypt(user.encryptedRefreshToken, context);
       called = true;
       set = await refreshAccessToken(this.ynab, refreshToken);

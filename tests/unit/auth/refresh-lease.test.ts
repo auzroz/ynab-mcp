@@ -420,7 +420,13 @@ for (const driver of testDrivers) {
         const old = new YnabTokenResolver(h.storage, onKey1, YNAB, Date.now, fast);
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-        await expect(old.accessTokenFor('u1')()).rejects.toBeInstanceOf(YnabAuthError);
+        // An operator problem, not the user's token: transient (503 at /mcp), not a reconnect.
+        const refused = await old.accessTokenFor('u1')().catch((e: unknown) => e);
+        expect(refused).toBeInstanceOf(YnabAuthUnavailableError);
+        expect((refused as YnabAuthUnavailableError).retryAfterSeconds).toBe(30);
+        await expect(old.resolve('u1')).rejects.toBeInstanceOf(YnabTokenUnavailableError);
+        // Not remembered as failed: each attempt checks the floors again.
+        await expect(old.resolve('u1')).rejects.not.toThrow(/failed recently/);
         expect(refreshMock).not.toHaveBeenCalled();
         const row = await other.getUser('u1');
         expect(row?.encryptedRefreshToken).toBe(stored);
