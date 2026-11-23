@@ -11,8 +11,9 @@ name: Release
 #   npm enforces the environment server side once its trusted publisher names
 #   `production` (admin checklist in scripts/release-rehearsal.md). For ghcr,
 #   no job holds `packages: write`: the image job pushes with GHCR_PUSH_TOKEN,
-#   a `production` environment secret, and the package grants this
-#   repository's GITHUB_TOKEN Read only. The image's proof of origin is still
+#   a `production` environment secret, and from the 0.5.0 release on the
+#   package grants this repository's GITHUB_TOKEN Read only (set when 0.5.0
+#   merges to main, see the admin checklist). The image's proof of origin is still
 #   its attestation (`gh attestation verify --source-ref refs/tags/v...`). See
 #   CONTRIBUTING.md "What the gate does not cover".
 # - A pull request that touches the release inputs runs verify (with a parse
@@ -131,7 +132,8 @@ jobs:
       # The tag object itself, fetched by name, so the checks below read the
       # annotated, signed object and never a lightweight ref made from the
       # commit. checkout's full fetch keeps it too, but this doesn't rely on
-      # that. The repository is public, so the fetch needs no credentials.
+      # that.
+      # Anonymous because the repo is public; a private repo would need credentials here.
       - name: Fetch the tag object
         if: github.event_name == 'push'
         run: git fetch --no-tags --force origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
@@ -367,7 +369,8 @@ jobs:
     # No packages: write (decision D-1 on #62). The push and the attestation
     # pushes use GHCR_PUSH_TOKEN, a classic PAT with only write:packages held
     # as a `production` environment secret, so only an approved tag run can
-    # push. The package gives this repository's GITHUB_TOKEN Read access only.
+    # push. From the 0.5.0 release on, the package gives this repository's
+    # GITHUB_TOKEN Read access only.
     permissions:
       contents: read
       id-token: write

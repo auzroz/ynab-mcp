@@ -13,7 +13,13 @@
 #
 #   principal namespaces="git" key-type base64-key [comment]
 #
-# - principal: the signer's email address, used in messages only;
+# for example (the key shortened):
+#
+#   auzroz namespaces="git" ssh-ed25519 AAAAC3Nza...
+#
+# - principal: a label for the signer, such as their GitHub login. It is used
+#   in messages only and doesn't have to match the tagger's email. This file is
+#   public: put no email address here;
 # - namespaces="git": the key may sign git objects only;
 # - key-type and base64-key: the first two fields of the public key file, for
 #   example from `cut -d' ' -f1-2 ~/.ssh/id_ed25519_signing.pub`.

@@ -139,12 +139,15 @@ publish. Don't clear the Environment field to make an old workflow work.
 To check, open the package's Settings page and confirm the trusted publisher
 shows `release.yml` and `production`.
 
-Steps 5 to 8 are 62b of #62 (decisions D-1 and D-2). Do them, in this order,
-once the 62b pull request has merged into `release/0.5.0` and before the
-`v0.5.0-rc.1` tag. Until step 5 is done, `Release: Publish image` fails; until
-step 8 is merged, `Release: Verify` refuses every tag.
+Steps 5 to 7 and step 10 are 62b of #62 (decisions D-1 and D-2). Steps 5 to 7
+come, in this order, once the 62b pull request has merged into `release/0.5.0`
+and before the `v0.5.0-rc.1` tag. Until step 5 is done, `Release: Publish
+image` fails; until step 7 is merged, `Release: Verify` refuses every tag.
+Step 10, the package's switch to Read, waits for the 0.5.0 release.
 
 ### 5. Before rc.1: the ghcr push token (`GHCR_PUSH_TOKEN`)
+
+Done already for 0.5.0; these steps are also the renewal.
 
 `Release: Publish image` has no `packages: write`. It logs in to ghcr with this
 token, and fails with "The production environment has no GHCR_PUSH_TOKEN
@@ -170,7 +173,7 @@ secret" if it is missing.
 
 ```bash
 gh api repos/auzroz/ynab-mcp/environments/production/secrets --jq '.secrets[] | [.name, .updated_at] | @tsv'
-# expect exactly one line: GHCR_PUSH_TOKEN  <now>
+# expect exactly one line: GHCR_PUSH_TOKEN  <when you set it>
 gh secret list -R auzroz/ynab-mcp
 # expect no GHCR_PUSH_TOKEN: a repository secret would be readable by every job
 ```
@@ -179,7 +182,73 @@ Renew it for each release (the token page → **Regenerate token**, 90 days),
 then set the secret again. An expired token shows up as a `denied` or
 `unauthorized` ghcr login in `Release: Publish image`.
 
-### 6. Before rc.1: ghcr package access set to Read
+### 6. Before rc.1: an SSH signing key for tags
+
+Every `v*` tag, release candidates included, is an annotated tag signed with
+an SSH key. Use a dedicated key for release tags, with a passphrase (a
+hardware key, `-t ed25519-sk`, also works). Configure it in your clone of
+`auzroz/ynab-mcp` only, not globally, so other repositories keep their own
+signing setup:
+
+```bash
+REPO=<path to your auzroz/ynab-mcp clone>
+ssh-keygen -t ed25519 -C "ynab-mcp release tag signing" -f "$HOME/.ssh/id_ed25519_release_signing"   # set a passphrase when asked
+git -C "$REPO" config gpg.format ssh
+git -C "$REPO" config user.signingkey "$HOME/.ssh/id_ed25519_release_signing.pub"
+```
+
+Optional: add the public key to GitHub as a **Signing key** (Settings → SSH and
+GPG keys → New SSH key → Key type: Signing key), so GitHub shows the tags as
+Verified. The release gate doesn't use that; it reads only
+`.github/allowed_signers`.
+
+### 7. Before rc.1: the key in `.github/allowed_signers`
+
+A pull request into `release/0.5.0` adds one line, and removes the header's
+last line ("No key is listed yet…"). The first field, the principal, is a
+label, such as your GitHub login. It doesn't have to match the email on your
+tags, and the file is public, so it must not be an email address:
+
+```bash
+printf 'auzroz namespaces="git" %s\n' "$(cut -d' ' -f1-2 "$HOME/.ssh/id_ed25519_release_signing.pub")" >> .github/allowed_signers
+bash scripts/verify-tag-signature.sh   # expect ".github/allowed_signers parses: 1 key(s)."
+```
+
+The pull request runs `Release: Verify`, which checks that the file parses.
+After it merges, check a local signed tag against the file, from your clone
+(configured in step 6) at the merge commit on `release/0.5.0`. Never push this
+tag:
+
+```bash
+git tag -s v0.0.0-signing-check -m v0.0.0-signing-check HEAD
+bash scripts/verify-tag-signature.sh v0.0.0-signing-check
+# expect "v0.0.0-signing-check is an annotated tag signed by a key listed in .github/allowed_signers."
+git tag -d v0.0.0-signing-check
+```
+
+### 8. Optional: the scratch repository
+
+Only if you also want a scratch rehearsal (see the note at the top). Do "Before
+you start" below. It is the only place where the signature refusals of check
+1 and the `GITHUB_TOKEN` push refusal (section 3b) are exercised; a release
+candidate proves only the path that passes.
+
+### 9. Thu Dec 10: the release candidate
+
+Follow CONTRIBUTING.md "Release candidates" for `v0.5.0-rc.1` (#86), with a
+signed tag. The package is still Write at this point, which is fine: the
+candidate's `release.yml` has no `packages: write` and pushes with
+`GHCR_PUSH_TOKEN`. A scratch rehearsal (sections 1 to 6 below, with 2b and 3b)
+can come first, but it doesn't replace the candidate: it runs npm in dry-run
+mode outside this repository, so it never exercises the real publish.
+
+### 10. When 0.5.0 merges to `main`, before the 0.5.0 tag: ghcr package access set to Read
+
+Not earlier: until 0.5.0 is on `main`, `main`'s `release.yml` pushes the image
+with `GITHUB_TOKEN` and `packages: write`, and a 0.4.x patch release from
+`main` needs that. Once the REL PR has merged `release/0.5.0` into `main`,
+every branch that can release has 62b, so the switch closes the gap without
+breaking a release.
 
 `https://github.com/users/auzroz/packages/container/ynab-mcp/settings`:
 
@@ -190,80 +259,27 @@ then set the secret again. An expired token shows up as a `denied` or
   Remove any other repository.
 
 With Read, the workflow's own `GITHUB_TOKEN` can pull but not push, even in a
-job that asks for `packages: write`. Your token from step 5 still pushes, as
-the package's owner. There is no API for this setting: check the page shows
+job that asks for `packages: write`. `GHCR_PUSH_TOKEN` still pushes, as the
+package's owner. There is no API for this setting: check the page shows
 `auzroz/ynab-mcp` with role Read and nothing else.
 
-### 7. Before rc.1: an SSH signing key for tags
-
-Every `v*` tag, release candidates included, is an annotated tag signed with
-an SSH key. A dedicated key, with a passphrase, is the suggestion (a hardware
-key, `-t ed25519-sk`, also works):
-
-```bash
-ssh-keygen -t ed25519 -C "ynab-mcp release tag signing" -f ~/.ssh/id_ed25519_release_signing
-git config --global gpg.format ssh
-git config --global user.signingkey ~/.ssh/id_ed25519_release_signing.pub
-```
-
-Optional: add the public key to GitHub as a **Signing key** (Settings → SSH and
-GPG keys → New SSH key → Key type: Signing key), so GitHub shows the tags as
-Verified. The release gate doesn't use that; it reads only
-`.github/allowed_signers`.
-
-### 8. Before rc.1: the key in `.github/allowed_signers`
-
-A pull request into `release/0.5.0` adds one line, and removes the header's
-last line ("No key is listed yet…"):
-
-```bash
-EMAIL=<your email>
-printf '%s namespaces="git" %s\n' "$EMAIL" "$(cut -d' ' -f1-2 ~/.ssh/id_ed25519_release_signing.pub)" >> .github/allowed_signers
-bash scripts/verify-tag-signature.sh   # expect ".github/allowed_signers parses: 1 key(s)."
-```
-
-The pull request runs `Release: Verify`, which checks that the file parses.
-After it merges, check a local signed tag against the file, from a clone of
-`release/0.5.0` at the merge commit. Never push this tag:
-
-```bash
-git tag -s v0.0.0-signing-check -m v0.0.0-signing-check HEAD
-bash scripts/verify-tag-signature.sh v0.0.0-signing-check
-# expect "v0.0.0-signing-check is an annotated tag signed by a key listed in .github/allowed_signers."
-git tag -d v0.0.0-signing-check
-```
-
-`main` gets the file, and the rest of 62b, when `release/0.5.0` merges into
-it. Until then, a 0.4.x patch tagged on `main` runs `main`'s `release.yml`,
-which has no signature check and pushes the image with `GITHUB_TOKEN`. After
-step 6, that push fails.
-
-### 9. Optional: the scratch repository
-
-Only if you also want a scratch rehearsal (see the note at the top). Do "Before
-you start" below. It is the only place where the signature refusals of check
-1 and the `GITHUB_TOKEN` push refusal (section 3b) are exercised; a release
-candidate proves only the path that passes.
-
-### 10. Thu Dec 10: the release candidate
-
-Follow CONTRIBUTING.md "Release candidates" for `v0.5.0-rc.1` (#86), with a
-signed tag. A scratch rehearsal (sections 1 to 6 below, with 2b and 3b) can come first, but it
-doesn't replace the candidate: it runs npm in dry-run mode outside this
-repository, so it never exercises the real publish.
+**A 0.4.x patch needed before 0.5.0 merges to `main`** ships before this
+switch, from `main` as today, or after 62b has been backported to `main`
+first. While `main`'s `release.yml` still has `packages: write`, switching
+the package to Read breaks its image push.
 
 ### 11. Fri Dec 18: the release
 
-Follow CONTRIBUTING.md "How a release runs": merge the REL PR into `main`,
-dispatch the dry run on `main` (G16d), make and push the signed tag, approve
-the two prompts (image, then npm), and run the step 6 checks (G16e). Then move
-npm's `next` tag off the candidate: `npm dist-tag add ynab-mcp@0.5.0 next`.
-The final tag is also the first run of the npm wait in `Release: MCP Registry`
-(#121), which candidates skip.
+Follow CONTRIBUTING.md "How a release runs": merge the REL PR into `main`, do
+step 10, dispatch the dry run on `main` (G16d), make and push the signed tag,
+approve the two prompts (image, then npm), and run the step 6 checks of "How a
+release runs" (G16e). Then move npm's `next` tag off the candidate: `npm
+dist-tag add ynab-mcp@0.5.0 next`. The final tag is also the first run of the
+npm wait in `Release: MCP Registry` (#121), which candidates skip.
 
 ## Before you start (one time)
 
-These are the scratch-repo steps of admin checklist step 9.
+These are the scratch-repo steps of admin checklist step 8.
 
 1. Create a **public** repository `auzroz/ynab-mcp-release-rehearsal` with no
    README, license or `.gitignore`. It has to be public, because artifact
@@ -287,9 +303,8 @@ These are the scratch-repo steps of admin checklist step 9.
    gh auth refresh -s workflow,read:packages,delete:packages   # only if they're missing
    gh auth setup-git
    ```
-4. Set up tag signing as in admin checklist step 7: `git config gpg.format`
-   is `ssh` and `git config user.signingkey` names your signing key's `.pub`
-   file. The steps below read it as `SIGNING_PUB`.
+4. Have your release signing key from admin checklist step 6. Section 1
+   configures it in the rehearsal clone only, as `SIGNING_PUB`.
 
 ## 1. Prepare a rehearsal copy
 
@@ -303,13 +318,15 @@ SCRATCH=auzroz/ynab-mcp-release-rehearsal
 REF=release/0.5.0   # the branch under test (see above)
 V=0.0.0-rehearsal.1
 WORK="$(mktemp -d)"
-SIGNING_PUB="$(git config user.signingkey)"
-SIGNING_PUB="${SIGNING_PUB/#\~/$HOME}"
-test "$(git config gpg.format)" = ssh && test -f "$SIGNING_PUB" && echo "signing with $SIGNING_PUB"
+SIGNING_PUB="$HOME/.ssh/id_ed25519_release_signing.pub"   # admin checklist step 6
+test -f "$SIGNING_PUB" && echo "signing with $SIGNING_PUB"
 
 git clone --no-tags --single-branch --branch "$REF" https://github.com/auzroz/ynab-mcp.git "$WORK/r"
 cd "$WORK/r"
 git switch -c rehearsal-main
+# Signing for this clone only.
+git config gpg.format ssh
+git config user.signingkey "$SIGNING_PUB"
 ```
 
 `--no-tags` matters: none of the real `v*` tags may reach the scratch repo,
@@ -505,7 +522,7 @@ dry-run notice and `ynab-mcp@0.0.0-rehearsal.1` with `(dry-run)`.
 ## 3b. The workflow's `GITHUB_TOKEN` can't push the image
 
 The push in section 3 created the scratch package. Set its Actions access as
-in admin checklist step 6:
+in admin checklist step 10 (the scratch repo has no 0.4.x line to wait for):
 `https://github.com/users/auzroz/packages/container/ynab-mcp-release-rehearsal/settings`
 → untick **Inherit access from source repository** if it is ticked →
 **Manage Actions access**: `auzroz/ynab-mcp-release-rehearsal` with role
