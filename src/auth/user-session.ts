@@ -36,9 +36,14 @@
 import { randomUUID } from 'node:crypto';
 import type { Storage, GrantedScope, UserRecord } from '../storage/types.js';
 import { accessTokenContext, ciphertextVersion, refreshTokenContext, type Encryptor } from '../crypto.js';
-import { YnabAuthError } from '../utils/errors.js';
+import {
+  CircuitOpenError,
+  OutboundTimeoutError,
+  YnabAuthError,
+  YnabAuthUnavailableError,
+} from '../utils/errors.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
-import { refreshAccessToken, type YnabOAuthConfig, type YnabTokenSet } from './ynab-oauth.js';
+import { refreshAccessToken, YnabOAuthError, type YnabOAuthConfig, type YnabTokenSet } from './ynab-oauth.js';
 
 /** Refresh a bit early so an access token doesn't expire mid-request. */
 const REFRESH_SKEW_MS = 60_000;
@@ -76,12 +81,52 @@ class RecentRefreshFailureError extends Error {
   }
 }
 
-/** Another replica held the refresh lease for longer than the wait bound (#48). Not remembered as a failure. */
-export class RefreshLeaseTimeoutError extends Error {
-  constructor() {
-    super('Another replica is refreshing the YNAB token: timed out waiting for it');
+/** How long a client is asked to wait after a transient token failure, when nothing says longer. */
+export const TOKEN_RETRY_AFTER_SEC = 5;
+
+/**
+ * The YNAB access token can't be had right now, for a reason that clears by
+ * itself (#48, Q1): the token call timed out, failed on the network, got a
+ * 5xx, a 429 or `temporarily_unavailable`, or the circuit breaker is open; or
+ * another replica's refresh outlasted the wait. The stored refresh token is
+ * kept and nothing is remembered as failed: HTTP answers 503 with
+ * `Retry-After`, a tool call an `upstream_unavailable` result. Only a
+ * rejected refresh token (`invalid_grant`, or another 4xx) needs a reconnect.
+ */
+export class YnabTokenUnavailableError extends Error {
+  constructor(
+    public readonly retryAfterSeconds: number,
+    message = 'YNAB token refresh is temporarily unavailable'
+  ) {
+    super(message);
+    this.name = 'YnabTokenUnavailableError';
+  }
+}
+
+/** Another replica held the refresh lease for longer than the wait bound (#48). Transient, not remembered as a failure. */
+export class RefreshLeaseTimeoutError extends YnabTokenUnavailableError {
+  constructor(retryAfterSeconds: number = TOKEN_RETRY_AFTER_SEC) {
+    super(retryAfterSeconds, 'Another replica is refreshing the YNAB token: timed out waiting for it');
     this.name = 'RefreshLeaseTimeoutError';
   }
+}
+
+/**
+ * Seconds to wait before retrying, when a failed YNAB token call is
+ * transient; undefined when it is not (a 4xx other than 429 and
+ * `temporarily_unavailable`: `invalid_grant` above all, the refresh token is
+ * dead). A failure without a YNAB answer (timeout, network, unreadable body)
+ * is transient: if YNAB did rotate the token meanwhile, the retry gets
+ * `invalid_grant` and the user reconnects then.
+ */
+export function transientRetryAfterSeconds(error: unknown): number | undefined {
+  if (error instanceof CircuitOpenError) return Math.max(1, Math.ceil(error.retryAfterMs / 1000));
+  if (error instanceof OutboundTimeoutError) return TOKEN_RETRY_AFTER_SEC;
+  if (error instanceof YnabOAuthError) {
+    const transient = error.status >= 500 || error.status === 429 || error.oauthError === 'temporarily_unavailable';
+    return transient ? TOKEN_RETRY_AFTER_SEC : undefined;
+  }
+  return TOKEN_RETRY_AFTER_SEC;
 }
 
 export interface ResolvedUser {
@@ -229,6 +274,7 @@ export class YnabTokenResolver {
         if (!(error instanceof RecentRefreshFailureError)) {
           console.error('[YnabToken] could not resolve a YNAB access token:', sanitizeErrorMessage(error));
         }
+        if (error instanceof YnabTokenUnavailableError) throw new YnabAuthUnavailableError(error.retryAfterSeconds);
         throw new YnabAuthError();
       }
     };
@@ -302,7 +348,13 @@ export class YnabTokenResolver {
       // Never a refresh of our own while the lease holds: fail closed instead.
       // Elapsed time (storage calls included), on a monotonic clock.
       const left = deadline - performance.now();
-      if (left <= 0) throw new RefreshLeaseTimeoutError();
+      if (left <= 0) {
+        // Retry once the holder's lease would have run out (it may have crashed).
+        const leaseLeft = (current.refreshLeaseUntil ?? 0) - this.now();
+        throw new RefreshLeaseTimeoutError(
+          leaseLeft > 0 ? Math.max(1, Math.ceil(leaseLeft / 1000)) : TOKEN_RETRY_AFTER_SEC
+        );
+      }
       await this.sleep(Math.min(pause, left));
       pause = Math.min(pause * 2, this.pollMaxMs);
     }
@@ -323,8 +375,10 @@ export class YnabTokenResolver {
     const context = refreshTokenContext(userId);
     let set: YnabTokenSet;
     let refreshToken: string;
+    let called = false;
     try {
       refreshToken = this.encryptor.decrypt(user.encryptedRefreshToken, context);
+      called = true;
       set = await refreshAccessToken(this.ynab, refreshToken);
     } catch (error) {
       await this.release(userId, holder);
@@ -333,6 +387,12 @@ export class YnabTokenResolver {
       const shared =
         current && generationOf(current) === generationOf(user) ? this.sharedAccessToken(current) : undefined;
       if (current && shared) return this.remember(current, shared);
+      // A transient YNAB failure keeps the grant and is not remembered (Q1).
+      // An unreadable stored token is not transient: it never opens again.
+      const retryAfter = called ? transientRetryAfterSeconds(error) : undefined;
+      if (retryAfter !== undefined) {
+        throw new YnabTokenUnavailableError(retryAfter, `YNAB token refresh failed transiently: ${sanitizeErrorMessage(error)}`);
+      }
       this.failed.set(userId, {
         encryptedRefreshToken: user.encryptedRefreshToken,
         until: this.now() + REFRESH_FAILURE_TTL_MS,

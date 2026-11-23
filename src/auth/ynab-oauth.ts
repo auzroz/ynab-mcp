@@ -71,15 +71,34 @@ export function buildAuthorizeUrl(
 }
 
 /**
+ * A non-2xx answer from YNAB's token or user endpoint: the HTTP status and the
+ * OAuth `error` code, when the body has one (`invalid_grant`,
+ * `temporarily_unavailable`, ...). The message carries only those and any
+ * `error_description`, never token or secret material.
+ */
+export class YnabOAuthError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly oauthError: string | undefined
+  ) {
+    super(message);
+    this.name = 'YnabOAuthError';
+  }
+}
+
+/**
  * Extract a sanitized error message from a non-2xx token/API response body.
  * Never includes token or secret material — only status and any error fields.
  */
-async function sanitizedError(res: Response, context: string): Promise<Error> {
+async function sanitizedError(res: Response, context: string): Promise<YnabOAuthError> {
   let detail = '';
+  let oauthError: string | undefined;
   try {
     const body: unknown = await res.json();
     if (isRecord(body)) {
       const err = typeof body['error'] === 'string' ? body['error'] : undefined;
+      oauthError = err;
       const desc =
         typeof body['error_description'] === 'string' ? body['error_description'] : undefined;
       const parts = [err, desc].filter((p): p is string => p !== undefined);
@@ -90,7 +109,7 @@ async function sanitizedError(res: Response, context: string): Promise<Error> {
   } catch {
     // Body was not JSON; fall back to status only. Never surface raw body text.
   }
-  return new Error(`${context} failed with status ${res.status}${detail}`);
+  return new YnabOAuthError(`${context} failed with status ${res.status}${detail}`, res.status, oauthError);
 }
 
 /** Parse a token response defensively and compute the absolute expiry. */

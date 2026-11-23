@@ -16,10 +16,16 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 });
 
 import { Encryptor, accessTokenContext, refreshTokenContext } from '../../../src/crypto.js';
-import { RefreshLeaseTimeoutError, YnabTokenResolver, type RefreshLeaseOptions } from '../../../src/auth/user-session.js';
-import { YnabAuthError } from '../../../src/utils/errors.js';
+import {
+  RefreshLeaseTimeoutError,
+  YnabTokenResolver,
+  YnabTokenUnavailableError,
+  type RefreshLeaseOptions,
+} from '../../../src/auth/user-session.js';
+import { OutboundTimeoutError, YnabAuthError, YnabAuthUnavailableError } from '../../../src/utils/errors.js';
 import type { Storage } from '../../../src/storage/types.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
+import { YnabOAuthError } from '../../../src/auth/ynab-oauth.js';
 import { cleanupDrivers, testDrivers } from '../helpers/storage-drivers.js';
 
 const refreshMock = vi.mocked(ynabOauth.refreshAccessToken);
@@ -121,9 +127,17 @@ for (const driver of testDrivers) {
       const resolver = new YnabTokenResolver(h.storage, encryptor, YNAB, () => now, { ...fast, leaseWaitMs: 60 });
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-      await expect(resolver.resolve('u1')).rejects.toBeInstanceOf(RefreshLeaseTimeoutError);
-      await expect(resolver.accessTokenFor('u1')()).rejects.toBeInstanceOf(YnabAuthError);
+      const before = (await h.storage.getUser('u1'))?.encryptedRefreshToken;
+      const timedOut = await resolver.resolve('u1').catch((e: unknown) => e);
+      expect(timedOut).toBeInstanceOf(RefreshLeaseTimeoutError);
+      // Transient (Q1): retry once the crashed holder's lease has run out.
+      expect(timedOut).toBeInstanceOf(YnabTokenUnavailableError);
+      expect((timedOut as YnabTokenUnavailableError).retryAfterSeconds).toBe(45);
+      const mapped = await resolver.accessTokenFor('u1')().catch((e: unknown) => e);
+      expect(mapped).toBeInstanceOf(YnabAuthUnavailableError);
+      expect((mapped as YnabAuthUnavailableError).retryAfterSeconds).toBe(45);
       expect(refreshMock).not.toHaveBeenCalled();
+      expect((await h.storage.getUser('u1'))?.encryptedRefreshToken).toBe(before);
       // The message names no token.
       expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('rt0');
 
@@ -131,6 +145,52 @@ for (const driver of testDrivers) {
       now += 45_001;
       await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-new' });
       expect(refreshMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('a YNAB refresh timeout is transient: the token is kept and not remembered; a following invalid_grant needs a reconnect', async () => {
+      const h = await driver.open();
+      const other = await h.reopen();
+      await seed(h.storage);
+      refreshMock
+        .mockRejectedValueOnce(new OutboundTimeoutError(false))
+        .mockRejectedValueOnce(new YnabOAuthError('YNAB token request failed with status 400: invalid_grant', 400, 'invalid_grant'));
+      const a = new YnabTokenResolver(h.storage, encryptor, YNAB, Date.now, fast);
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const before = (await h.storage.getUser('u1'))?.encryptedRefreshToken;
+
+      const timedOut = await a.accessTokenFor('u1')().catch((e: unknown) => e);
+      expect(timedOut).toBeInstanceOf(YnabAuthUnavailableError);
+      expect((timedOut as YnabAuthUnavailableError).retryAfterSeconds).toBe(5);
+      const row = await other.getUser('u1');
+      expect(row?.encryptedRefreshToken).toBe(before);
+      expect(row?.refreshLeaseUntil).toBeUndefined();
+
+      // Not remembered: the same replica tries again at once, and YNAB says the token is dead.
+      const dead = await a.accessTokenFor('u1')().catch((e: unknown) => e);
+      expect(dead).toBeInstanceOf(YnabAuthError);
+      expect(dead).not.toBeInstanceOf(YnabAuthUnavailableError);
+      expect(refreshMock).toHaveBeenCalledTimes(2);
+      // That one is remembered on the replica that saw it.
+      await expect(a.resolve('u1')).rejects.toThrow(/failed recently/);
+      expect(refreshMock).toHaveBeenCalledTimes(2);
+      // The lease is free for the other replica.
+      expect((await other.getUser('u1'))?.refreshLeaseUntil).toBeUndefined();
+    });
+
+    it('a YNAB 5xx is transient and not remembered: the next attempt refreshes at once', async () => {
+      const h = await driver.open();
+      await seed(h.storage);
+      refreshMock
+        .mockRejectedValueOnce(new YnabOAuthError('YNAB token request failed with status 503', 503, undefined))
+        .mockResolvedValueOnce({ accessToken: 'access-new', refreshToken: 'rt-rotated', expiresAt: Date.now() + 2 * HOUR });
+      const resolver = new YnabTokenResolver(h.storage, encryptor, YNAB, Date.now, fast);
+      const before = (await h.storage.getUser('u1'))?.encryptedRefreshToken;
+
+      await expect(resolver.resolve('u1')).rejects.toBeInstanceOf(YnabTokenUnavailableError);
+      expect((await h.storage.getUser('u1'))?.encryptedRefreshToken).toBe(before);
+      await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-new' });
+      expect(refreshMock).toHaveBeenCalledTimes(2);
+      expect(refreshMock).toHaveBeenLastCalledWith(YNAB, 'rt0');
     });
 
     it('a holder whose lease ran out mid-call still stores its token (the compare-and-set is on the ciphertext)', async () => {
@@ -145,7 +205,7 @@ for (const driver of testDrivers) {
           return { accessToken: 'access-a', refreshToken: 'rt-a', expiresAt: now + 2 * HOUR };
         })
         // YNAB refuses the second use of the same refresh token.
-        .mockRejectedValueOnce(new Error('YNAB token request failed with status 400'));
+        .mockRejectedValueOnce(new YnabOAuthError('YNAB token request failed with status 400: invalid_grant', 400, 'invalid_grant'));
       const a = new YnabTokenResolver(h.storage, encryptor, YNAB, () => now, { ...fast, leaseTtlMs: 1_000 });
       const b = new YnabTokenResolver(other, encryptor, YNAB, () => now, fast);
 
@@ -172,7 +232,7 @@ for (const driver of testDrivers) {
       refreshMock
         .mockImplementationOnce(async () => {
           await gate.promise;
-          throw new Error('YNAB token request failed with status 400');
+          throw new YnabOAuthError('YNAB token request failed with status 400: invalid_grant', 400, 'invalid_grant');
         })
         .mockResolvedValueOnce({ accessToken: 'access-b', refreshToken: 'rt-b', expiresAt: now + 2 * HOUR });
       const a = new YnabTokenResolver(h.storage, encryptor, YNAB, () => now, { ...fast, leaseTtlMs: 1_000 });

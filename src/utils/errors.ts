@@ -42,9 +42,24 @@ export class YnabApiError extends Error {
  * logged server-side only.
  */
 export class YnabAuthError extends Error {
-  constructor() {
-    super('YNAB authorization unavailable');
+  constructor(message = 'YNAB authorization unavailable') {
+    super(message);
     this.name = 'YnabAuthError';
+  }
+}
+
+/**
+ * The user's YNAB access token can't be resolved right now, for a reason that
+ * clears by itself (#48, Q1): YNAB timed out or answered 5xx, the circuit
+ * breaker is open, or another replica's refresh outlasted the wait. The stored
+ * YNAB grant is kept; retry after `retryAfterSeconds`. Only a rejected refresh
+ * token (`invalid_grant`) is a plain {@link YnabAuthError}, which needs a
+ * reconnect. Nothing was sent to YNAB's API, as for its parent class.
+ */
+export class YnabAuthUnavailableError extends YnabAuthError {
+  constructor(public readonly retryAfterSeconds: number) {
+    super('YNAB authorization temporarily unavailable');
+    this.name = 'YnabAuthUnavailableError';
   }
 }
 
@@ -158,6 +173,16 @@ export function formatErrorResponse(error: unknown): string {
       type: 'read_only_mode',
       message: 'Write operation not allowed in read-only mode',
       suggestion: 'Set YNAB_READ_ONLY=false in your environment to enable write operations.',
+    }, null, 2);
+  }
+
+  if (error instanceof YnabAuthUnavailableError) {
+    return JSON.stringify({
+      error: true,
+      type: 'upstream_unavailable',
+      message: 'YNAB authorization is temporarily unavailable',
+      retry_after_seconds: error.retryAfterSeconds,
+      suggestion: 'Try again after the retry time. The YNAB connection is kept; no reconnect is needed.',
     }, null, 2);
   }
 

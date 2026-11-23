@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection. It re-checks both inside the erase's transaction and logs a
   count only. For existing users the clock starts at the upgrade.
 
+### Changed
+
+- Temporary YNAB token failures (a timeout, YNAB unavailable, or another
+  replica's refresh in progress) now return `503` with `Retry-After` instead
+  of forcing the client to reconnect; only a rejected (`invalid_grant`)
+  refresh token does (#48). A tool call gets `upstream_unavailable` with
+  `retry_after_seconds`. The stored grant is kept, and the failure is not
+  remembered.
+
 ### Fixed
 
 - Replicas sharing one database no longer race to refresh a user's YNAB token

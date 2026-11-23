@@ -267,10 +267,14 @@ minutes unused), so budget roughly that much memory per active user. This state
 is kept for an hour after the user's last request, so a quiet hour doesn't reset
 the rate limit. With several replicas, these caps, the rate limit and the caches
 are per process. In OAuth mode every request looks up the user's YNAB grant and
-access token, refreshing the token when it expires; once the user's YNAB grant
-is gone (or the token can't be refreshed), requests are refused with `401` and
-the client re-authorizes, and a tool call whose token can't be refreshed
-midway fails with an `auth_error`.
+access token, refreshing the token when it expires. Once the user's YNAB grant
+is gone, or YNAB rejects its refresh token (`invalid_grant`), requests are
+refused with `401` and the client re-authorizes, and a tool call whose token
+can't be refreshed midway fails with an `auth_error`. A failure that clears by
+itself (YNAB timing out or answering `5xx`, the circuit breaker being open, or
+another replica's refresh taking too long) keeps the grant: the request gets
+`503` with `Retry-After`, and a tool call an `upstream_unavailable` result with
+`retry_after_seconds`.
 
 ### Several replicas: YNAB token refresh
 
@@ -292,9 +296,9 @@ holding a spent token, and the user would have to reconnect. Since 0.5.0
   refreshing on its own.
 - A replica that loses the claim polls the row for up to 15 seconds and uses
   the stored access token as soon as it is there. It never calls YNAB itself
-  while the lease is held. If the wait runs out, that request fails like any
-  other token failure (`401`, or an `auth_error` for a tool call), and the next
-  request tries again.
+  while the lease is held. If the wait runs out, that request gets `503` with
+  `Retry-After` (an `upstream_unavailable` result for a tool call), and the
+  client tries again.
 - A lease whose holder crashed expires after 45 seconds, and the next request
   refreshes. Requests in one process share one refresh as before.
 

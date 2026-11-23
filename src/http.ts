@@ -51,7 +51,7 @@ import { createStorage } from './storage/index.js';
 import { TokenHasher } from './auth/token-hash.js';
 import type { GrantedScope, Storage } from './storage/types.js';
 import { mountAuthorizationServer, type AuthorizationServer } from './auth/as-router.js';
-import { YnabTokenResolver } from './auth/user-session.js';
+import { YnabTokenResolver, YnabTokenUnavailableError } from './auth/user-session.js';
 import { deriveOriginsFromHosts, hostValidation, originValidation } from './middleware/origin-validation.js';
 import {
   MAX_JSON_BODY,
@@ -438,13 +438,15 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
 
   /**
    * The user settings for this request, or why there are none: `refused`
-   * (answer 401) or `ended` (the response closed meanwhile; answer nothing).
+   * (answer 401), `unavailable` (a transient YNAB token failure, #48 Q1:
+   * answer 503 with `Retry-After`; the grant is kept) or `ended` (the
+   * response closed meanwhile; answer nothing).
    */
   const resolveUser = async (
     req: Request,
     identity: Identity,
     lifetime: RequestLifetime
-  ): Promise<{ user: UserContext } | 'refused' | 'ended'> => {
+  ): Promise<{ user: UserContext } | { unavailable: number } | 'refused' | 'ended'> => {
     const limits = {
       defaultBudgetId: config.defaultBudgetId,
       rateLimitPerHour: config.rateLimitPerHour,
@@ -466,7 +468,8 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     let generation: number;
     try {
       ({ grantedScope, generation } = await pending);
-    } catch {
+    } catch (error) {
+      if (error instanceof YnabTokenUnavailableError) return { unavailable: error.retryAfterSeconds };
       return 'refused';
     }
     const auth = req.auth;
@@ -499,6 +502,14 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     if (resolved === 'ended' || responseDone(res) || lifetime.isClosed) return;
     if (resolved === 'refused') {
       refuseCredentials(res);
+      return;
+    }
+    if ('unavailable' in resolved) {
+      // Transient (#48 Q1): the client retries; it must not re-authorize.
+      res.set('Retry-After', String(resolved.unavailable));
+      res
+        .status(503)
+        .json(jsonRpcError(-32000, 'YNAB authorization is temporarily unavailable; retry shortly', echoableId(req.body)));
       return;
     }
     const lease = registry.acquire(identity.userKey);

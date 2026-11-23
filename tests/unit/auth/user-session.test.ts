@@ -17,10 +17,17 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 
 import { MemoryStorage } from '../../../src/storage/memory.js';
 import { Encryptor, refreshTokenContext } from '../../../src/crypto.js';
-import { YnabTokenResolver } from '../../../src/auth/user-session.js';
+import { YnabTokenResolver, transientRetryAfterSeconds } from '../../../src/auth/user-session.js';
 import { rekeyPass } from '../../../src/auth/rekey-job.js';
-import { YnabAuthError } from '../../../src/utils/errors.js';
+import {
+  CircuitOpenError,
+  OutboundTimeoutError,
+  YnabAuthError,
+  YnabAuthUnavailableError,
+  formatErrorResponse,
+} from '../../../src/utils/errors.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
+import { YnabOAuthError } from '../../../src/auth/ynab-oauth.js';
 
 const refreshAccessTokenMock = vi.mocked(ynabOauth.refreshAccessToken);
 
@@ -117,7 +124,7 @@ describe('YnabTokenResolver concurrent refresh', () => {
     let now = Date.now();
     const { storage, encryptor, resolver } = setup(() => now);
     await seedUser(storage, encryptor);
-    refreshAccessTokenMock.mockRejectedValueOnce(new Error('YNAB token request failed with status 400'));
+    refreshAccessTokenMock.mockRejectedValueOnce(new YnabOAuthError('YNAB token request failed with status 400: invalid_grant', 400, 'invalid_grant'));
 
     await expect(resolver.resolve('u1')).rejects.toThrow('status 400');
     // Within the window: refused without another token-endpoint call.
@@ -132,7 +139,7 @@ describe('YnabTokenResolver concurrent refresh', () => {
   it('tries a newly stored grant at once, despite a remembered failure', async () => {
     const { storage, encryptor, resolver } = setup();
     await seedUser(storage, encryptor);
-    refreshAccessTokenMock.mockRejectedValueOnce(new Error('YNAB token request failed with status 400'));
+    refreshAccessTokenMock.mockRejectedValueOnce(new YnabOAuthError('YNAB token request failed with status 400: invalid_grant', 400, 'invalid_grant'));
     await expect(resolver.resolve('u1')).rejects.toThrow('status 400');
 
     // The user re-authorizes: a new refresh token is stored.
@@ -149,8 +156,8 @@ describe('YnabTokenResolver concurrent refresh', () => {
   it('forgets a remembered failure on invalidate()', async () => {
     const { storage, encryptor, resolver } = setup();
     await seedUser(storage, encryptor);
-    refreshAccessTokenMock.mockRejectedValueOnce(new Error('YNAB token request failed with status 503'));
-    await expect(resolver.resolve('u1')).rejects.toThrow('status 503');
+    refreshAccessTokenMock.mockRejectedValueOnce(new YnabOAuthError('YNAB token request failed with status 400: invalid_grant', 400, 'invalid_grant'));
+    await expect(resolver.resolve('u1')).rejects.toThrow('invalid_grant');
 
     await resolver.invalidate('u1');
     await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-fresh' });
@@ -194,7 +201,7 @@ describe('YnabTokenResolver.accessTokenFor', () => {
   it('maps a failed refresh to the same generic error', async () => {
     const { storage, encryptor, resolver } = setup();
     await seedUser(storage, encryptor);
-    refreshAccessTokenMock.mockRejectedValueOnce(new Error('YNAB token request failed with status 401'));
+    refreshAccessTokenMock.mockRejectedValueOnce(new YnabOAuthError('YNAB token request failed with status 401', 401, undefined));
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const err = await resolver.accessTokenFor('u1')().catch((e: unknown) => e);
@@ -206,7 +213,7 @@ describe('YnabTokenResolver.accessTokenFor', () => {
   it('logs a failed refresh once, not again for each call refused while it is remembered', async () => {
     const { storage, encryptor, resolver } = setup();
     await seedUser(storage, encryptor);
-    refreshAccessTokenMock.mockRejectedValueOnce(new Error('YNAB token request failed with status 401'));
+    refreshAccessTokenMock.mockRejectedValueOnce(new YnabOAuthError('YNAB token request failed with status 401', 401, undefined));
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const getToken = resolver.accessTokenFor('u1');
 
@@ -267,6 +274,34 @@ describe('YnabTokenResolver.invalidate', () => {
       { clientId: 'cid', clientSecret: 'sec' },
       'rt-rotated'
     );
+  });
+});
+
+describe('transient token failures (#48 Q1)', () => {
+  const oauth = (status: number, code?: string): YnabOAuthError =>
+    new YnabOAuthError(`YNAB token request failed with status ${status}`, status, code);
+
+  it('classifies what clears by itself as transient, with a retry time', () => {
+    expect(transientRetryAfterSeconds(new OutboundTimeoutError(false))).toBe(5);
+    expect(transientRetryAfterSeconds(new CircuitOpenError(1_200))).toBe(2);
+    expect(transientRetryAfterSeconds(new CircuitOpenError(0))).toBe(1);
+    expect(transientRetryAfterSeconds(new TypeError('fetch failed'))).toBe(5);
+    expect(transientRetryAfterSeconds(oauth(500))).toBe(5);
+    expect(transientRetryAfterSeconds(oauth(503))).toBe(5);
+    expect(transientRetryAfterSeconds(oauth(429))).toBe(5);
+    expect(transientRetryAfterSeconds(oauth(400, 'temporarily_unavailable'))).toBe(5);
+  });
+
+  it('classifies a rejected refresh as not transient', () => {
+    expect(transientRetryAfterSeconds(oauth(400, 'invalid_grant'))).toBeUndefined();
+    expect(transientRetryAfterSeconds(oauth(401, 'invalid_client'))).toBeUndefined();
+    expect(transientRetryAfterSeconds(oauth(400))).toBeUndefined();
+  });
+
+  it('a tool call gets upstream_unavailable with the retry time, not auth_error', () => {
+    const body = JSON.parse(formatErrorResponse(new YnabAuthUnavailableError(7))) as Record<string, unknown>;
+    expect(body).toMatchObject({ error: true, type: 'upstream_unavailable', retry_after_seconds: 7 });
+    expect(new YnabAuthUnavailableError(7)).toBeInstanceOf(YnabAuthError);
   });
 });
 
