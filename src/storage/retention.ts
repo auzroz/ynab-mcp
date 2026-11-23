@@ -10,7 +10,7 @@
  */
 
 import type { RetentionPolicy } from '../auth/retention-defaults.js';
-import { SWEEP_BATCH_SIZE } from '../auth/retention-defaults.js';
+import { CONSUMED_CREDENTIAL_RETENTION_MS, SWEEP_BATCH_SIZE } from '../auth/retention-defaults.js';
 import type { Dialect } from './migrations.js';
 import type { ConnectionRecord, SweepCounts } from './types.js';
 import { parseOptionalGrantedScope } from '../auth/scope.js';
@@ -135,6 +135,12 @@ export function emptySweepCounts(): SweepCounts {
     orphanTokens: 0,
     abandonedClients: 0,
     unusedClients: 0,
+    oauthExpired: 0,
+    oauthConsumed: 0,
+    oauthOrphans: 0,
+    oauthGrants: 0,
+    oauthAbandonedClients: 0,
+    oauthUnusedClients: 0,
   };
 }
 
@@ -169,6 +175,103 @@ const CLIENT_HAS_NO_GRANT = `
   AND NOT EXISTS (SELECT 1 FROM consumed_auth_codes k WHERE k.client_id = c.client_id)
   AND NOT EXISTS (SELECT 1 FROM access_tokens t WHERE t.client_id = c.client_id)
   AND NOT EXISTS (SELECT 1 FROM refresh_tokens r WHERE r.client_id = c.client_id)`;
+
+/** The grant-bound models of `oauth_rows` (src/storage/oauth-rows.ts) as an SQL list. */
+export const GRANT_TOKEN_MODELS_SQL = "('AccessToken', 'RefreshToken', 'AuthorizationCode')";
+
+/**
+ * A library client (`oauth_rows` alias `c`) that nothing refers to: no grant,
+ * token, code, staged sign-in or interaction carries its id. Its registration
+ * access tokens don't count; they go with it.
+ */
+const LIBRARY_CLIENT_IDLE = `
+  NOT EXISTS (SELECT 1 FROM oauth_rows r
+    WHERE r.client_id = c.client_id AND r.model NOT IN ('Client', 'RegistrationAccessToken'))`;
+
+/**
+ * The `oauth_rows` rules (ADR-0002 D4, D6), after the 0.4.x tables'. Every
+ * DELETE is by primary key, from a batch the SELECT picked.
+ *
+ *   - Expired rows never consumed: AccessToken, Session, Interaction,
+ *     RegistrationAccessToken, SignIn, and codes and refresh tokens that
+ *     expired unused. Grants have their own rule; clients have no expiry.
+ *   - Consumed codes and refresh tokens, retained so a replay revokes the
+ *     grant (D6), until the later of {@link CONSUMED_CREDENTIAL_RETENTION_MS}
+ *     after consumption and the expiry of the grant's last live token.
+ *   - Grant-bound rows whose grant row is gone, or whose user row is gone or
+ *     newer than the row (STOR-1).
+ *   - Expired grants once nothing is left under them.
+ *   - Library clients, by the abandoned window on `created_at` (never
+ *     signed in) and the unused window on `authorized_at` (the last code
+ *     issued, or M4's conversion), when nothing refers to them; then the
+ *     registration access tokens of clients that are gone.
+ */
+function oauthRowRules(now: number, policy: RetentionPolicy): SweepRule[] {
+  const rule = (counter: keyof SweepCounts, select: string, params: readonly unknown[]): SweepRule => ({
+    counter,
+    table: 'oauth_rows',
+    key: 'key',
+    select,
+    params,
+  });
+  return [
+    rule(
+      'oauthExpired',
+      `SELECT key FROM oauth_rows
+        WHERE expires_at < $1 AND consumed_at IS NULL AND model <> 'Grant' LIMIT $2 {lock}`,
+      [now]
+    ),
+    rule(
+      'oauthConsumed',
+      `SELECT k.key FROM oauth_rows k
+        WHERE k.consumed_at < $1
+          AND NOT EXISTS (SELECT 1 FROM oauth_rows l
+            WHERE l.grant_id = k.grant_id AND l.model IN ${GRANT_TOKEN_MODELS_SQL}
+              AND l.consumed_at IS NULL AND l.expires_at >= $2)
+        LIMIT $3 {lock:k}`,
+      [now - CONSUMED_CREDENTIAL_RETENTION_MS, now]
+    ),
+    rule(
+      'oauthOrphans',
+      `SELECT t.key FROM oauth_rows t LEFT JOIN users u ON u.user_id = t.account_id
+        WHERE t.model IN ${GRANT_TOKEN_MODELS_SQL}
+          AND (u.user_id IS NULL OR t.created_at < COALESCE(u.created_at, 0)
+            OR NOT EXISTS (SELECT 1 FROM oauth_rows g WHERE g.grant_id = t.grant_id AND g.model = 'Grant'))
+        LIMIT $1 {lock:t}`,
+      []
+    ),
+    rule(
+      'oauthGrants',
+      `SELECT g.key FROM oauth_rows g
+        WHERE g.model = 'Grant' AND g.expires_at < $1
+          AND NOT EXISTS (SELECT 1 FROM oauth_rows r WHERE r.grant_id = g.grant_id AND r.model <> 'Grant')
+        LIMIT $2 {lock:g}`,
+      [now]
+    ),
+    rule(
+      'oauthAbandonedClients',
+      `SELECT c.key FROM oauth_rows c
+        WHERE c.model = 'Client' AND c.authorized_at IS NULL AND c.created_at < $1 AND ${LIBRARY_CLIENT_IDLE}
+        LIMIT $2 {lock:c}`,
+      [now - policy.abandonedClientMs]
+    ),
+    rule(
+      'oauthUnusedClients',
+      `SELECT c.key FROM oauth_rows c
+        WHERE c.model = 'Client' AND c.authorized_at < $1 AND ${LIBRARY_CLIENT_IDLE}
+        LIMIT $2 {lock:c}`,
+      [now - policy.unusedClientMs]
+    ),
+    rule(
+      'oauthOrphans',
+      `SELECT t.key FROM oauth_rows t
+        WHERE t.model = 'RegistrationAccessToken'
+          AND NOT EXISTS (SELECT 1 FROM oauth_rows c WHERE c.client_id = t.client_id AND c.model = 'Client')
+        LIMIT $1 {lock:t}`,
+      []
+    ),
+  ];
+}
 
 function sweepRules(now: number, policy: RetentionPolicy): SweepRule[] {
   const expired = (counter: keyof SweepCounts, table: string, key: string): SweepRule => ({
@@ -221,6 +324,7 @@ function sweepRules(now: number, policy: RetentionPolicy): SweepRule[] {
         LIMIT $3 {lock:c}`,
       params: [now - policy.unusedClientMs, now - policy.abandonedClientMs],
     },
+    ...oauthRowRules(now, policy),
   ];
 }
 

@@ -550,6 +550,13 @@ for (const driver of testDrivers) {
             orphanTokens: 2,
             abandonedClients: 1,
             unusedClients: 1,
+            // oauth_rows (ADR-0002 D4) holds nothing here; its rules are in oauth-adapter-conformance.test.ts.
+            oauthExpired: 0,
+            oauthConsumed: 0,
+            oauthOrphans: 0,
+            oauthGrants: 0,
+            oauthAbandonedClients: 0,
+            oauthUnusedClients: 0,
           },
         });
 
@@ -820,14 +827,36 @@ describe.skipIf(!pgDriver?.enabled)('STOR-1 on Postgres: races on two pools', ()
     const holder = new pg.Client({ connectionString: h.connectionString });
     await holder.connect();
     try {
-      await holder.query('SELECT pg_advisory_lock($1)', [SWEEP_LOCK_KEY]);
+      await holder.query('SELECT pg_advisory_lock($1, hashtext(current_schema()))', [SWEEP_LOCK_KEY]);
       expect(await other.storage.sweepExpired()).toMatchObject({ ran: false });
-      await holder.query('SELECT pg_advisory_unlock($1)', [SWEEP_LOCK_KEY]);
+      await holder.query('SELECT pg_advisory_unlock($1, hashtext(current_schema()))', [SWEEP_LOCK_KEY]);
       expect(await other.storage.sweepExpired()).toMatchObject({ ran: true });
       // Concurrent sweeps never fail; at least one runs.
       const both = await Promise.all([h.storage.sweepExpired(), other.storage.sweepExpired()]);
       expect(both.some((r) => r.ran)).toBe(true);
     } finally {
+      await holder.end();
+    }
+  });
+
+  it('a sweep lock held in one schema never makes a sweeper in another schema skip', async () => {
+    const { SWEEP_LOCK_KEY } = await import('../../../src/storage/postgres.js');
+    const pg = (await import('pg')).default;
+    const stranger = await (pgDriver as NonNullable<typeof pgDriver>).open(); // its own schema
+    // The lock is taken on a dedicated connection in h's schema and held throughout.
+    const holder = new pg.Client({ connectionString: h.connectionString });
+    await holder.connect();
+    try {
+      const got = await holder.query<{ locked: boolean }>('SELECT pg_try_advisory_lock($1, hashtext(current_schema())) AS locked', [
+        SWEEP_LOCK_KEY,
+      ]);
+      expect(got.rows[0]?.locked).toBe(true);
+      // Control: the same schema's sweeper skips while the lock is held.
+      expect(await other.storage.sweepExpired()).toMatchObject({ ran: false });
+      // Another schema's sweeper runs, every time.
+      for (let i = 0; i < 3; i++) expect(await stranger.storage.sweepExpired()).toMatchObject({ ran: true });
+    } finally {
+      await holder.query('SELECT pg_advisory_unlock($1, hashtext(current_schema()))', [SWEEP_LOCK_KEY]).catch(() => undefined);
       await holder.end();
     }
   });
