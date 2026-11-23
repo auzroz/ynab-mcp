@@ -574,6 +574,15 @@ export interface OAuthRowStore {
    */
   upsertOAuthRow(row: OAuthRowWrite): Promise<void>;
   /**
+   * Compare-and-set one row of the models {@link upsertOAuthRow} writes: with
+   * `expected` undefined, insert `row` only while no row has its key; otherwise
+   * replace the row only while it has `row.model` and exactly the payload
+   * `expected`. Returns whether it wrote; of two concurrent calls expecting
+   * the same thing, exactly one does. The interaction's YNAB state uses it
+   * (src/auth/oidc/interaction.ts).
+   */
+  compareAndSetOAuthRow(expected: string | undefined, row: OAuthRowWrite): Promise<boolean>;
+  /**
    * Save an AccessToken or RefreshToken, only while its grant row exists for
    * the same account and client and the account's user row exists, checked
    * and written in one transaction (on Postgres under the grant's lock, with
