@@ -4,17 +4,23 @@ name: Release
 # - A `v*.*.*` tag push is a release. Every publish job is guarded by the literal
 #   `if:` "a tag push in auzroz/ynab-mcp". The docker and npm jobs wait for an
 #   approval on the `production` environment, and only publish jobs hold
-#   `id-token: write`. Nothing publishes before `verify` has proven the tagged
-#   commit is on main or a release/* branch.
+#   `id-token: write`. Nothing publishes before `verify` has proven that the
+#   tag is an annotated tag signed with an SSH key listed in
+#   .github/allowed_signers, and that the tagged commit is on main or a
+#   release/* branch.
 #   npm enforces the environment server side once its trusted publisher names
-#   `production` (admin checklist in scripts/release-rehearsal.md). ghcr does
-#   not: any workflow run in this repository that is granted `packages: write`
-#   can push the image, approval or not. The image's proof of origin is its
-#   attestation (`gh attestation verify --source-ref refs/tags/v...`). See
+#   `production` (admin checklist in scripts/release-rehearsal.md). For ghcr,
+#   no job holds `packages: write`: the image job pushes with GHCR_PUSH_TOKEN,
+#   a `production` environment secret, and from the 0.5.0 release on the
+#   package grants this repository's GITHUB_TOKEN Read only (set when 0.5.0
+#   merges to main, see the admin checklist). The image's proof of origin is still
+#   its attestation (`gh attestation verify --source-ref refs/tags/v...`). See
 #   CONTRIBUTING.md "What the gate does not cover".
-# - A pull request that touches the release inputs runs verify, test, build and
-#   pack, and the image build for amd64 and arm64 with a better-sqlite3 load
-#   check. Those jobs use no environment, no id-token, and `contents: read`.
+# - A pull request that touches the release inputs runs verify (with a parse
+#   check of .github/allowed_signers instead of a tag signature), test, build
+#   and pack, and the image build for amd64 and arm64 with a better-sqlite3
+#   load check. Those jobs use no environment, no id-token, and
+#   `contents: read`.
 # - workflow_dispatch (`dry_run`, default true) runs the same jobs as a pull
 #   request on the chosen ref. It never publishes; `dry_run: false` is refused.
 #
@@ -28,6 +34,9 @@ on:
   pull_request:
     paths:
       - '.github/workflows/release.yml'
+      - '.github/allowed_signers'
+      - 'scripts/verify-tag-signature.sh'
+      - 'scripts/test-verify-tag-signature.sh'
       - 'Dockerfile'
       - '.dockerignore'
       - 'package*.json'
@@ -114,6 +123,30 @@ jobs:
             exit 1
           fi
 
+      # Pull requests and dry runs have no tag to verify. They check that
+      # .github/allowed_signers parses, so a bad entry fails here and not on
+      # the next tag.
+      - name: Check .github/allowed_signers parses
+        if: github.event_name != 'push'
+        run: bash scripts/verify-tag-signature.sh
+
+      # A release candidate only proves that a good tag passes. This proves
+      # the refusals on this runner's git and OpenSSH: throwaway keys and
+      # tags (good, lightweight, unsigned, unlisted key, renamed ref) in a
+      # temporary repository. No secrets, no network, a few seconds.
+      - name: Self-test the tag signature check
+        if: github.event_name != 'push'
+        run: bash scripts/test-verify-tag-signature.sh
+
+      # The tag object itself, fetched by name, so the checks below read the
+      # annotated, signed object and never a lightweight ref made from the
+      # commit. checkout's full fetch keeps it too, but this doesn't rely on
+      # that.
+      # Anonymous because the repo is public; a private repo would need credentials here.
+      - name: Fetch the tag object
+        if: github.event_name == 'push'
+        run: git fetch --no-tags --force origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
       # Anyone with push rights can create a tag on any commit. Only a commit
       # that is already on main or a release/* branch may be released. This is
       # only as strong as the rulesets on those branches: main requires a PR,
@@ -146,6 +179,18 @@ jobs:
             echo "::error::Tagged commit $commit is not on main or any release/* branch. Refusing to release."
             exit 1
           fi
+
+      # Decision D-2 on #62: every v* tag, release candidates included, is an
+      # annotated tag signed with an SSH key listed in .github/allowed_signers.
+      # The file is read from the tagged commit, which the step above proved is
+      # on main or a release/* branch, so a key only gets there through a
+      # reviewed pull request. The script runs
+      #   git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=.github/allowed_signers verify-tag <tag>
+      # (plus gpg.minTrustLevel=fully) and decides on its exit status. While
+      # the file lists no key, every tag fails here.
+      - name: Verify the tag is signed by an allowed key
+        if: github.event_name == 'push'
+        run: bash scripts/verify-tag-signature.sh "$GITHUB_REF_NAME"
 
   test:
     name: 'Release: Test'
@@ -330,9 +375,13 @@ jobs:
     needs: [verify, test, build, image]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'auzroz/ynab-mcp'
     environment: production
+    # No packages: write (decision D-1 on #62). The push and the attestation
+    # pushes use GHCR_PUSH_TOKEN, a classic PAT with only write:packages held
+    # as a `production` environment secret, so only an approved tag run can
+    # push. From the 0.5.0 release on, the package gives this repository's
+    # GITHUB_TOKEN Read access only.
     permissions:
       contents: read
-      packages: write
       id-token: write
       attestations: write
     env:
@@ -340,6 +389,17 @@ jobs:
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
+      # Fail with a clear message instead of a login error, and never fall
+      # back to GITHUB_TOKEN.
+      - name: Check the ghcr push token is set
+        env:
+          GHCR_PUSH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN }}
+        run: |
+          if [ -z "${GHCR_PUSH_TOKEN}" ]; then
+            echo "::error::The production environment has no GHCR_PUSH_TOKEN secret, so the image can't be pushed. Add it (a classic PAT with only write:packages; scripts/release-rehearsal.md, admin checklist), then re-run the failed jobs."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -360,12 +420,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # The PAT's owner is the repository owner (the maintainer). The attest
+      # steps below push to ghcr with the credentials this login stores.
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN }}
 
       - name: Extract metadata for Docker
         id: meta
@@ -494,13 +556,15 @@ jobs:
   mcp-registry:
     name: 'Release: MCP Registry'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [npm-publish, docker]
+    # Up to 10 minutes waiting for npm, plus the download and the publish retries.
+    timeout-minutes: 20
+    needs: [verify, npm-publish, docker]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'auzroz/ynab-mcp' && vars.PUBLISH_MCP_REGISTRY == 'true' && !contains(github.ref, '-')
     permissions:
       contents: read
       id-token: write
     env:
+      VERSION: ${{ needs.verify.outputs.version }}
       MCP_PUBLISHER_VERSION: v1.8.6
       # sha256 of mcp-publisher_linux_amd64.tar.gz for the pinned version
       MCP_PUBLISHER_SHA256: 1fbe93fc0783c2394d8012c8d6e50a59e98cb2cc2d216264cc69f405d0e21340
@@ -528,11 +592,59 @@ jobs:
           tar xzf "$archive" mcp-publisher
           ./mcp-publisher --help >/dev/null
 
-      - name: Login to MCP Registry (GitHub OIDC)
-        run: ./mcp-publisher login github-oidc
+      # #121: the registry refuses server.json until npm serves the version,
+      # and npm can take minutes to serve one it has just accepted. Poll the
+      # registry itself (no local cache: --prefer-online revalidates, and the
+      # second check is the URL the MCP Registry's validator fetches) every 15
+      # seconds for up to 10 minutes. No credentials: it runs before the OIDC
+      # login. Each probe is bounded: npm gets a 20 s fetch timeout and no
+      # retries (its defaults are 5 minutes and 2 retries), and `timeout 30`
+      # on top, because the fetch timeout doesn't cover a stalled connect;
+      # curl gets 10 s in all. The deadline is checked after every attempt,
+      # so an attempt takes at most about 55 s and the loop's own error
+      # prints well before the step timeout.
+      - name: Wait for npm to serve the version
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 600 ))
+          url="https://registry.npmjs.org/ynab-mcp/${VERSION}"
+          while :; do
+            seen="$(timeout 30 npm view "ynab-mcp@${VERSION}" version --prefer-online --fetch-timeout=20000 --fetch-retries=0 --registry https://registry.npmjs.org/ 2>/dev/null || true)"
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 -H 'Cache-Control: no-cache' "$url" || true)"
+            if [ "$seen" = "$VERSION" ] && [ "$status" = "200" ]; then
+              echo "npm serves ynab-mcp@${VERSION}."
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::npm still doesn't serve ynab-mcp@${VERSION} after 10 minutes (npm view: '${seen}', ${url}: HTTP ${status}). Check that Release: Publish npm published it, then re-run this job (CONTRIBUTING.md, \"If a publish job fails\")."
+              exit 1
+            fi
+            echo "Waiting for npm to serve ynab-mcp@${VERSION} (npm view: '${seen}', HTTP ${status})"
+            sleep 15
+          done
 
-      - name: Publish to MCP Registry
-        run: ./mcp-publisher publish server.json
+      # A lag that outlasts the wait still recovers: on the registry's "version
+      # not found (404)" error, log in again (the registry token is
+      # short-lived) and retry, at most twice, a minute apart.
+      - name: Publish to MCP Registry (GitHub OIDC)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            ./mcp-publisher login github-oidc
+            if out="$(./mcp-publisher publish server.json 2>&1)"; then
+              printf '%s\n' "$out"
+              exit 0
+            fi
+            printf '%s\n' "$out"
+            if [ "$attempt" -lt 3 ] && grep -q 'was not found (status: 404)' <<<"$out"; then
+              echo "The registry doesn't see ynab-mcp@${VERSION} on npm yet. Retrying in 60 seconds."
+              sleep 60
+              continue
+            fi
+            echo "::error::mcp-publisher publish failed (attempt ${attempt})."
+            exit 1
+          done
 
   github-release:
     name: 'Release: GitHub release'

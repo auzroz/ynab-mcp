@@ -176,15 +176,26 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
 
 1. **Release PR.** It bumps the version in `package.json`, `package-lock.json` and `server.json` and adds the CHANGELOG entry. It merges into `main`.
 2. **Dry run.** Run `gh workflow run release.yml --ref main -f dry_run=true` and wait for it to go green. A dispatch never publishes, and `dry_run=false` is refused.
-3. **Tag.** Tag the merge commit on `main` and push the tag: `git tag -a vX.Y.Z -m vX.Y.Z <sha> && git push origin vX.Y.Z`. `Release: Verify` refuses the tag unless:
+3. **Tag.** Make a signed tag on the merge commit on `main`, check it, and push it:
+
+   ```bash
+   git tag -s vX.Y.Z -m vX.Y.Z <sha>
+   git -c gpg.ssh.allowedSignersFile=.github/allowed_signers verify-tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+   `git tag -s` signs with your SSH key once your clone is set up for it, in that repository's config rather than globally: `git -C <repo> config gpg.format ssh` and `git -C <repo> config user.signingkey "$HOME/.ssh/<signing key>.pub"`. Use a dedicated key for release tags, with a passphrase (admin checklist step 6 in [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md)). `Release: Verify` refuses the tag unless:
+   - it is an annotated tag signed with an SSH key listed in [`.github/allowed_signers`](.github/allowed_signers), as that file stands on the tagged commit. This applies to every `v*` tag, release candidates included. A lightweight tag, an unsigned `git tag -a` tag, a GPG signature or a key not in the file is refused. While the file lists no key, every tag is refused. Pull requests and the dry run have no tag, so they check that the file parses, and run `scripts/test-verify-tag-signature.sh`, which proves on the runner that the check passes a good tag and refuses the bad kinds, with throwaway keys and tags;
    - it matches the version in `package.json` (every run, including pull requests and the dry run, also checks that `package-lock.json` and `server.json` carry that version, so a mismatch shows up before the tag exists);
    - the tagged commit is already on `main` or a `release/*` branch. That check is only as strong as the rulesets on those branches (see "Settings the gate relies on").
+
+   Run from a checkout of the tagged commit, the local `verify-tag` above makes the same signature check as `Release: Verify`, so a key missing from `.github/allowed_signers` shows up before the tag is pushed.
 4. **Checks before publishing.** These run with no environment, no `id-token` and read-only contents:
    - lint, type check and tests;
    - **build and pack:** `npm ci --ignore-scripts`, `npm audit --omit=dev --audit-level=moderate`, the build, `npm pack`, the SBOM, the skills zips and `SHA256SUMS`;
    - the image built for amd64 and for arm64, with a check that better-sqlite3 loads in each.
 5. **Two approvals.** The publish jobs use the `production` environment, so the run stops twice for the maintainer's approval:
-   - first `Release: Publish image`: push, build provenance attestation, and an SBOM attestation of the production npm dependencies (the image's OS packages are only in its unsigned BuildKit SBOM);
+   - first `Release: Publish image`: push with the `GHCR_PUSH_TOKEN` environment secret (no job has `packages: write`), build provenance attestation, and an SBOM attestation of the production npm dependencies (the image's OS packages are only in its unsigned BuildKit SBOM);
    - then `Release: Publish npm`: provenance attestation over every file in `SHA256SUMS`, SBOM attestation, `npm publish` of the packed tarball with no checkout and no install.
 
    Only these jobs and `Release: MCP Registry` (which runs after both, if `PUBLISH_MCP_REGISTRY` is set and the version is not a prerelease) hold `id-token: write`.
@@ -196,7 +207,7 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
    npm view ynab-mcp@X.Y.Z dist.attestations
    ```
 
-**Release candidates.** A release with breaking changes, or the first release after a change to the tag path, goes out first as a candidate `X.Y.Z-rc.N`. Its release PR (the version bump only, no CHANGELOG entry) merges into `release/x.y.z`, not `main`. Run the dry run with `--ref release/x.y.z` and tag that merge commit: `Release: Verify` accepts a commit on a `release/*` branch. Both approvals still apply. A version with a `-`:
+**Release candidates.** A release with breaking changes, or the first release after a change to the tag path, goes out first as a candidate `X.Y.Z-rc.N`. Its release PR (the version bump only, no CHANGELOG entry) merges into `release/x.y.z`, not `main`. Run the dry run with `--ref release/x.y.z` and tag that merge commit with a signed tag, as in step 3 (`git tag -s vX.Y.Z-rc.N -m vX.Y.Z-rc.N <sha>`): `Release: Verify` accepts a commit on a `release/*` branch, and checks the candidate's signature like any other tag. Both approvals still apply. A version with a `-`:
 - publishes to npm under the `next` dist-tag, so `npx ynab-mcp` keeps installing the last stable release, and testers use `npx -y ynab-mcp@next`;
 - pushes only the exact image tag `X.Y.Z-rc.N` (never `latest`, `X.Y` or `X`);
 - creates a GitHub prerelease;
@@ -204,9 +215,13 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
 
 Verify all of it, not only step 6: run the commands in section 4 of [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md) with `SCRATCH=auzroz/ynab-mcp`, `V=X.Y.Z-rc.N` and `WORK` set to an empty directory, leaving out the negative check at its end. They check `SHA256SUMS` against the downloaded release files, build provenance on every file in it, the SBOM attestation on the tarball, and provenance and SBOM attestations on the image. The final release then ships the release branch: its release PR merges `release/x.y.z` into `main` with the bump to `X.Y.Z`, and it follows the steps above. Anything merged into `release/x.y.z` after the candidate's tag ships without having been in a candidate, so after a candidate only fixes go into that branch. A change to the tag path after the candidate, on either branch (a patch release from `main` included), gets a new candidate (`rc.N+1`) before the final tag. Before tagging, `git diff vX.Y.Z-rc.N <final merge commit>` lists everything that didn't go through the candidate; the version bump and CHANGELOG should be most of it. Afterwards `next` still points at the candidate: move it with `npm dist-tag add ynab-mcp@X.Y.Z next` from your own terminal.
 
-**Pull requests that touch `release.yml`, `Dockerfile`, `.dockerignore` or `package*.json`** also run the release workflow's checks: verify, test, build and pack, and both image builds. They use no environment and no `id-token`, and they must be green before merge. A change to the tag path is proven by the next release candidate (above), or, without publishing anything, in a scratch repository following [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md).
+**Pull requests that touch `release.yml`, `.github/allowed_signers`, `scripts/verify-tag-signature.sh`, `scripts/test-verify-tag-signature.sh`, `Dockerfile`, `.dockerignore` or `package*.json`** also run the release workflow's checks: verify (including the check that `.github/allowed_signers` parses, and a self-test that the tag signature check refuses lightweight, unsigned, unlisted-key and renamed tags on the runner), test, build and pack, and both image builds. They use no environment and no `id-token`, and they must be green before merge. A change to the tag path is proven by the next release candidate (above), or, without publishing anything, in a scratch repository following [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md).
 
-**If a publish job fails.** Tags can't be moved or re-pushed, so re-run **only the failed jobs** from the run page (not the whole run, which would rebuild `release-dist` under the published image). Each re-run asks for approval again. The npm job publishes stable versions as `latest`, so before re-running it, check `npm view ynab-mcp dist-tags.latest`: if a newer version already holds `latest`, don't re-run it, and finish by hand below with `--tag previous`. **Finish within 30 days of the original run:** GitHub allows re-runs only for 30 days, and an approval request also expires after 30. The `release-dist` artifact is kept for 90 days, but that doesn't extend the re-run window. If npm still can't be published from the workflow, the maintainer has two ways out:
+**If a publish job fails.** Tags can't be moved or re-pushed, so re-run **only the failed jobs** from the run page (not the whole run, which would rebuild `release-dist` under the published image). Each re-run asks for approval again. The npm job publishes stable versions as `latest`, so before re-running it, check `npm view ynab-mcp dist-tags.latest`: if a newer version already holds `latest`, don't re-run it, and finish by hand below with `--tag previous`. **Finish within 30 days of the original run:** GitHub allows re-runs only for 30 days, and an approval request also expires after 30. The `release-dist` artifact is kept for 90 days, but that doesn't extend the re-run window. Two failures have a known cause:
+- `Release: Publish image` stops at "The production environment has no GHCR_PUSH_TOKEN secret", or the ghcr login is refused with `denied` or `unauthorized`: the token is missing or has expired. Create a new one and store it as in the admin checklist in [`scripts/release-rehearsal.md`](scripts/release-rehearsal.md), then re-run the failed jobs.
+- `Release: MCP Registry` fails with "version '…' was not found (status: 404)": npm hadn't served the new version to the registry yet. The job already waits up to 10 minutes for npm and retries the publish twice, so this means a longer lag. Re-run the failed job.
+
+If npm still can't be published from the workflow, the maintainer has two ways out:
 - cut the next patch version instead (preferred: the whole release then runs through the gate);
 - publish npm by hand and finish the rest by hand, as below.
 
@@ -226,12 +241,18 @@ The workflow can't enforce these itself. The maintainer sets them up following t
 - the `production` environment has the maintainer as required reviewer and accepts only tags matching `v*.*.*` (no branches);
 - the npm trusted publisher for `ynab-mcp` names `release.yml` **and** the `production` environment, so npm refuses an OIDC token from any job outside that environment;
 - `main` and `release/**` require a pull request and block force-pushes and deletion, and `release/**` also restricts creations to the maintainer;
-- the `v*` tag ruleset blocks updates and deletion and restricts creations to the maintainer.
+- the `v*` tag ruleset blocks updates and deletion and restricts creations to the maintainer;
+- the `production` environment holds the secret `GHCR_PUSH_TOKEN`: a classic personal access token of the maintainer's with only the `write:packages` scope, with a 90-day expiry, renewed for each release. `Release: Publish image` logs in to ghcr with it and fails if it is missing; it never falls back to `GITHUB_TOKEN`;
+- from the 0.5.0 release on, the `ghcr.io/auzroz/ynab-mcp` package's **Manage Actions access** gives `auzroz/ynab-mcp` the role **Read**, so the workflow's own `GITHUB_TOKEN` can't push an image even if a job asks for `packages: write`. The switch happens when 0.5.0 merges to `main`, before the 0.5.0 tag, not earlier: until then `main`'s `release.yml` still pushes with `GITHUB_TOKEN`, which 0.4.x patch releases need. A 0.4.x patch needed before 0.5.0 merges to `main` ships before the switch, or after 62b has been backported to `main`;
+- [`.github/allowed_signers`](.github/allowed_signers) lists the maintainer's SSH signing key, under a label principal such as their GitHub login. The principal doesn't have to match the tagger's email, and the file is public, so it holds no email address. A key is added or removed by pull request, and the file on the tagged commit is the one `Release: Verify` reads.
 
 ### What the gate does not cover
 
-- **ghcr images.** The image is pushed with the workflow's `GITHUB_TOKEN`. Any workflow run in this repository that is granted `packages: write` can push to `ghcr.io/auzroz/ynab-mcp`, with no tag and no approval, and GitHub doesn't tie that permission to an environment. So someone who can push a workflow file can push an image. The proof that an image came from a release is its attestation: verify it with `--signer-workflow auzroz/ynab-mcp/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z` as in step 6, rather than trusting a tag such as `latest`. Closing this (a package credential held only by the `production` environment) is tracked as part 62b of [#62](https://github.com/auzroz/ynab-mcp/issues/62).
-- **Tag signatures.** The workflow doesn't check that the tag is signed by an allowed key. That is a later part of #62 too.
+- **ghcr images.** Since 0.5.0 ([#62](https://github.com/auzroz/ynab-mcp/issues/62), part 62b), no job holds `packages: write`. The image is pushed with `GHCR_PUSH_TOKEN`, which only a run in the `production` environment can read, so an image push needs a signed tag and the maintainer's approval, like npm. What remains:
+  - the gap is closed only while the package's Actions access is **Read**, which it is from the 0.5.0 release on (see "Settings the gate relies on"). Before that switch, and whenever it is **Write**, any workflow run granted `packages: write` can push;
+  - the token is a user credential: anyone holding it can push to every container package the maintainer owns, from anywhere, until it expires. It lives only in the environment secret and is renewed for each release;
+  - the attestation is still the image's proof of origin. Verify it with `--signer-workflow auzroz/ynab-mcp/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z` as in step 6, rather than trusting a tag such as `latest`.
+- **Tag signatures.** Since 0.5.0, `Release: Verify` refuses a tag not signed by a key in `.github/allowed_signers`. It trusts that file as it stands on the tagged commit, which the ancestry check proves is on `main` or a `release/*` branch, so a key gets there only through a merged pull request. Reviewing a change to that file is reviewing who can release. A stolen signing key can sign a tag, but the tag still needs the tag ruleset's creation bypass and both approvals.
 
 ## Dependency advisories and triage
 
