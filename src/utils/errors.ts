@@ -21,6 +21,22 @@ export class ReadOnlyModeError extends Error {
 }
 
 /**
+ * Error thrown when a user has used up their per-hour write cap (#61c).
+ * The message is fixed: it names the limit and when it resets, nothing else.
+ */
+export class WriteLimitError extends Error {
+  constructor(
+    public readonly limit: number,
+    /** Epoch ms at which the next write is allowed. */
+    public readonly resetsAt: number,
+    public readonly retryAfterMs: number
+  ) {
+    super(`Write limit of ${limit} per hour reached.`);
+    this.name = 'WriteLimitError';
+  }
+}
+
+/**
  * Error thrown when the YNAB API returns an error.
  */
 export class YnabApiError extends Error {
@@ -158,6 +174,19 @@ export function formatErrorResponse(error: unknown): string {
       type: 'read_only_mode',
       message: 'Write operation not allowed in read-only mode',
       suggestion: 'Set YNAB_READ_ONLY=false in your environment to enable write operations.',
+    }, null, 2);
+  }
+
+  if (error instanceof WriteLimitError) {
+    return JSON.stringify({
+      error: true,
+      type: 'write_limit_exceeded',
+      message: `Write limit reached: at most ${error.limit} write requests per hour per user. The next write is allowed at ${new Date(error.resetsAt).toISOString()}.`,
+      limit_per_hour: error.limit,
+      resets_at: new Date(error.resetsAt).toISOString(),
+      retry_after_seconds: Math.max(1, Math.ceil(error.retryAfterMs / 1000)),
+      suggestion:
+        'Nothing was changed. Wait until the reset time, or ask the server operator to raise YNAB_WRITE_LIMIT_PER_HOUR (0 disables the cap).',
     }, null, 2);
   }
 
@@ -360,6 +389,14 @@ function mapZodIssueMessage(issue: { code?: unknown; message?: unknown }): strin
     default:
       return 'Validation error';
   }
+}
+
+/**
+ * Whether a tool call failed its Zod input validation, which every handler
+ * runs before its first YNAB request (the write cap gives such a call's slot back).
+ */
+export function isInputValidationError(error: unknown): boolean {
+  return isZodError(error);
 }
 
 /**

@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     credentials are read only from the form body, as before: an
     `Authorization` header on `/token` or `/revoke` is ignored. The JSON error
     shapes and the 405 for a wrong method are unchanged.
+- Writes are capped at 20 write requests per user per hour (#61c). Before,
+  writes were unlimited, so an automation that makes more than 20 write calls
+  an hour (stdio included) is now refused with `write_limit_exceeded` until the
+  window frees up. Set `YNAB_WRITE_LIMIT_PER_HOUR` (0 to 1000) to change it;
+  `0` turns the cap off.
 
 ### Changed
 
@@ -69,6 +74,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connector shows as disconnected until it's reconnected. Tell your users to
   expect this. Rolling back to 0.4.x also means signing in again.
 
+### Added
+
+- `YNAB_WRITE_LIMIT_PER_HOUR`: a per-user write cap on every transport (#61c).
+  One write tool call is one write request, so a bulk call such as
+  `ynab_create_transactions` counts as 1. It is checked once, before the tool
+  runs, so a refused write takes no YNAB request and changes nothing. The error
+  names the limit and when the next write is allowed. A call that fails input
+  validation gives its slot back; one YNAB rejects keeps it. The first refusal of
+  each episode is recorded in the audit log as `write_limit_refused`. It is separate
+  from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests.
+
 ### Fixed
 
 - Per-budget caches are keyed by the budget's UUID, never by the `last-used`
@@ -78,6 +94,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   YNAB is picked up within 5 minutes for reads. Writes always resolve fresh, and
   a write invalidates exactly the entries a read created. The budget-settings cache now has the same generation guard as the
   other caches.
+- The release workflow's MCP Registry job waits up to 10 minutes for npm to
+  serve the new version before it publishes `server.json`, and retries the
+  publish twice on the registry's "version not found" error, so a release no
+  longer needs a manual re-run when npm is slow (#121).
+
+### Security
+
+- Release tags are verified (#62). `Release: Verify` refuses a `v*` tag,
+  release candidates included, unless it is an annotated tag signed with an
+  SSH key listed in `.github/allowed_signers`.
+- The Docker image is pushed to `ghcr.io/auzroz/ynab-mcp` with a token that
+  only the approved `production` environment holds, instead of the workflow's
+  `GITHUB_TOKEN`. No release job has `packages: write` any more, and the
+  package gives the repository's workflows read access only, so a workflow
+  run outside an approved release can't push an image (#62). The
+  image's attestation remains its proof of origin.
 
 ## [0.4.3] - 2026-11-23
 
