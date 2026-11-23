@@ -301,6 +301,51 @@ describe('the YNAB legs, as McpOAuthProvider tested them (moved from mcp-provide
     expect((await browse(app, jar, `/oauth/interaction/${uid}/start?scope=read-only`)).status).toBe(400);
   });
 
+  it('#57b: a replica below the key floor gets server_error at sign-in, and YNAB is never called', async () => {
+    // Another replica announced the retirement of key id 1, this one's current key.
+    await created.storage!.announceKeyRetirement(2);
+    vi.mocked(ynabExchangeCode).mockClear();
+    const client = await registerClient(app);
+    const { challenge } = pkcePair();
+    const flow = await browserFlow(app, new CookieJar(), { clientId: client.clientId, challenge });
+    expect(flow.params.get('error')).toBe('server_error');
+    expect(flow.params.has('code')).toBe(false);
+    expect(vi.mocked(ynabExchangeCode)).not.toHaveBeenCalled();
+    expect(await created.storage!.getUser('ynab-user-1')).toBeUndefined();
+  });
+
+  it('#57b: a key retired during the YNAB exchange is caught when the sign-in is stored', async () => {
+    // The retired floor rises after the pre-check passed (a sign-in that stalled past the
+    // retirement): the code's save, which applies the user, refuses the ciphertext.
+    vi.mocked(ynabExchangeCode).mockImplementationOnce(async () => {
+      expect(await created.storage!.raiseRetiredKeyFloor(2)).toBe(2);
+      return { accessToken: 'ynab-access', refreshToken: 'ynab-refresh', expiresAt: Date.now() + 7_200_000 };
+    });
+    const client = await registerClient(app);
+    const { challenge } = pkcePair();
+    const jar = new CookieJar();
+    const auth = await browse(app, jar, authorizeUrl({ clientId: client.clientId, challenge }));
+    const uid = interactionUid(auth.headers['location'] as string);
+    await browse(app, jar, auth.headers['location'] as string);
+    const start = await browse(app, jar, `/oauth/interaction/${uid}/start?scope=read-only`);
+    const state = new URL(start.headers['location'] as string).searchParams.get('state') as string;
+    let res = await browse(app, jar, `/oauth/ynab/callback?${new URLSearchParams({ state, code: 'c' }).toString()}`);
+    for (let hops = 0; hops < 5 && res.status >= 300 && res.status < 400; hops++) {
+      const next = new URL(res.headers['location'] as string, PUBLIC_URL);
+      if (next.origin !== PUBLIC_URL) break;
+      res = await browse(app, jar, next.href);
+    }
+    // Whatever the client is told, no code is issued and no user is stored.
+    if (res.headers['location'] !== undefined) {
+      expect(new URL(res.headers['location'] as string).searchParams.has('code')).toBe(false);
+    }
+    expect(await created.storage!.getUser('ynab-user-1')).toBeUndefined();
+    const codes = [...(created.storage as unknown as { oauthRows: Map<string, OAuthRowRecord> }).oauthRows.values()].filter(
+      (r) => r.model === 'AuthorizationCode'
+    );
+    expect(codes).toEqual([]);
+  });
+
   it('the deadline is shorter than the shortest sweep protection of a client', () => {
     expect(YNAB_CALLBACK_DEADLINE_MS).toBeLessThan(MIN_ABANDONED_CLIENT_MS);
   });

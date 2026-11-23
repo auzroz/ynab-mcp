@@ -19,7 +19,7 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 });
 
 import type { Storage } from '../../../src/storage/types.js';
-import { Encryptor } from '../../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../../src/crypto.js';
 import { YnabTokenResolver } from '../../../src/auth/user-session.js';
 import { YnabAuthError } from '../../../src/utils/errors.js';
 import { DEFAULT_RETENTION } from '../../../src/auth/retention-defaults.js';
@@ -93,7 +93,7 @@ for (const driver of testDrivers) {
       await storage.upsertUser({
         userId,
         grantedScope: 'read-write',
-        encryptedRefreshToken: encryptor.encrypt(ynabRefresh),
+        encryptedRefreshToken: encryptor.encrypt(ynabRefresh, refreshTokenContext(userId)),
         updatedAt: Date.now(),
       });
     }
@@ -132,7 +132,7 @@ for (const driver of testDrivers) {
         expect(refreshMock).toHaveBeenCalledTimes(2);
         expect(refreshMock).toHaveBeenLastCalledWith({ clientId: 'cid', clientSecret: 'sec' }, 'yr-new-grant');
         const user = await storage.getUser('u');
-        expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '')).toBe('yr-rotated-new-grant');
+        expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '', refreshTokenContext('u'))).toBe('yr-rotated-new-grant');
         expect(user?.createdAt).toBe(created);
       });
 
@@ -157,7 +157,7 @@ for (const driver of testDrivers) {
         await expect(resolving).resolves.toMatchObject({ accessToken: 'ya-yr-rotated', grantedScope: 'read-only' });
         const after = await storage.getUser('u');
         expect(after?.grantedScope).toBe('read-only');
-        expect(encryptor.decrypt(after?.encryptedRefreshToken ?? '')).toBe('yr-rotated');
+        expect(encryptor.decrypt(after?.encryptedRefreshToken ?? '', refreshTokenContext('u'))).toBe('yr-rotated');
         expect(after?.createdAt).toBe(before?.createdAt);
         expect(refreshMock).toHaveBeenCalledTimes(1);
         // Later calls (from the cache) read the level from the row too.
@@ -172,7 +172,7 @@ for (const driver of testDrivers) {
         await storage.upsertUser({
           userId: 'u',
           grantedScope: 'read-only',
-          encryptedRefreshToken: encryptor.encrypt('yr-read-only-grant'),
+          encryptedRefreshToken: encryptor.encrypt('yr-read-only-grant', refreshTokenContext('u')),
           updatedAt: Date.now(),
         });
         refreshMock.mockResolvedValueOnce({
@@ -191,7 +191,7 @@ for (const driver of testDrivers) {
         expect(refreshMock).toHaveBeenLastCalledWith({ clientId: 'cid', clientSecret: 'sec' }, 'yr-read-only-grant');
         const after = await storage.getUser('u');
         expect(after?.grantedScope).toBe('read-only');
-        expect(encryptor.decrypt(after?.encryptedRefreshToken ?? '')).toBe('yr-rotated-read-only-grant');
+        expect(encryptor.decrypt(after?.encryptedRefreshToken ?? '', refreshTokenContext('u'))).toBe('yr-rotated-read-only-grant');
       });
 
       it('a refresh racing an erase and a new connection does not use the new account', async () => {
@@ -208,7 +208,7 @@ for (const driver of testDrivers) {
         await expect(resolving).rejects.toThrow(/re-authorize/);
         expect(refreshMock).toHaveBeenCalledTimes(1);
         const user = await storage.getUser('u');
-        expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '')).toBe('yr-new-account');
+        expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '', refreshTokenContext('u'))).toBe('yr-new-account');
       });
 
       it("never serves the erased account's cached YNAB token to the account that replaced it", async () => {

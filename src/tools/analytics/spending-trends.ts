@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
 
@@ -91,6 +91,7 @@ export async function handleSpendingTrends(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const monthCount = validated.months ?? 6;
 
   // Generate list of months to fetch
@@ -145,7 +146,7 @@ export async function handleSpendingTrends(
       categoryData.get(cat.id)!.months.push({
         month: monthStr,
         spending,
-        formatted: formatCurrency(spending),
+        formatted: money(spending),
       });
     }
   }
@@ -199,10 +200,10 @@ export async function handleSpendingTrends(
       category_name: data.name,
       group_name: data.group,
       monthly_data: data.months,
-      average: formatCurrency(average),
+      average: money(average),
       trend,
       trend_percent: Math.round(trendPercent),
-      total: formatCurrency(total),
+      total: money(total),
       total_raw: total,
     });
   }
@@ -224,7 +225,7 @@ export async function handleSpendingTrends(
     }
     return {
       month,
-      total: formatCurrency(total),
+      total: money(total),
       total_raw: total,
     };
   });

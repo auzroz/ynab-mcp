@@ -1,13 +1,13 @@
 /**
  * Shared account field mapping for ynab_list_accounts and ynab_get_account.
  *
- * Money values are formatted with formatCurrency; the raw maps keep YNAB's
+ * Money values are formatted with the budget's money formatter; the raw maps keep YNAB's
  * values (milliunits for payments and escrow) so existing consumers keep working.
  */
 
 import DecimalJS from 'decimal.js';
 import type { Account } from 'ynab';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { usdFallbackFormatter, type MoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
@@ -42,7 +42,8 @@ function hasEntries(map: MonthMap): boolean {
  */
 export function accountDetailFields(
   account: Account,
-  options: { includeEmptyMaps: boolean }
+  options: { includeEmptyMaps: boolean },
+  money: MoneyFormatter = usdFallbackFormatter
 ): Record<string, unknown> {
   const fields: Record<string, unknown> = {
     on_budget: account.on_budget,
@@ -54,14 +55,14 @@ export function accountDetailFields(
     transfer_payee_id: account.transfer_payee_id ?? null,
     debt_original_balance:
       account.debt_original_balance != null
-        ? formatCurrency(account.debt_original_balance)
+        ? money(account.debt_original_balance)
         : null,
   };
 
   const maps: Array<[string, MonthMap, (value: number) => string]> = [
     ['debt_interest_rates', account.debt_interest_rates, formatRate],
-    ['debt_minimum_payments', account.debt_minimum_payments, formatCurrency],
-    ['debt_escrow_amounts', account.debt_escrow_amounts, formatCurrency],
+    ['debt_minimum_payments', account.debt_minimum_payments, money],
+    ['debt_escrow_amounts', account.debt_escrow_amounts, money],
   ];
   for (const [key, map, format] of maps) {
     if (!options.includeEmptyMaps && !hasEntries(map)) continue;

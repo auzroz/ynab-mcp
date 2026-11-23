@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 
 // Input schema
@@ -74,18 +74,19 @@ export async function handleDeleteScheduledTransaction(
     budgetId,
     validated.scheduled_transaction_id
   );
+  const money = await moneyFormatterFor(client, budgetId);
   const txn = response.data.scheduled_transaction;
 
   return JSON.stringify(
     {
       success: true,
-      message: `Scheduled transaction deleted: ${formatCurrency(txn.amount)} at ${sanitizeName(txn.payee_name)} (${txn.frequency})`,
+      message: `Scheduled transaction deleted: ${money(txn.amount)} at ${sanitizeName(txn.payee_name)} (${txn.frequency})`,
       deleted_scheduled_transaction: {
         id: txn.id,
         date_first: txn.date_first,
         date_next: txn.date_next,
         frequency: txn.frequency,
-        amount: formatCurrency(txn.amount),
+        amount: money(txn.amount),
         payee_name: sanitizeName(txn.payee_name),
         category_name: sanitizeName(txn.category_name),
         account_name: sanitizeName(txn.account_name),

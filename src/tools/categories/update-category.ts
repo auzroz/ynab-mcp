@@ -8,7 +8,7 @@ import { UNTRUSTED_TEXT_NOTE } from '../untrusted-note.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 
@@ -97,20 +97,21 @@ export async function handleUpdateCategory(
     }
   );
 
+  const money = await moneyFormatterFor(client, budgetId);
   const category = response.data.category;
 
   const categoryName = sanitizeName(category.name);
   return JSON.stringify(
     {
       success: true,
-      message: `Budget for "${categoryName}" updated to ${formatCurrency(category.budgeted)}`,
+      message: `Budget for "${categoryName}" updated to ${money(category.budgeted)}`,
       month: validated.month,
       category: {
         id: category.id,
         name: categoryName,
-        budgeted: formatCurrency(category.budgeted),
-        activity: formatCurrency(category.activity),
-        balance: formatCurrency(category.balance),
+        budgeted: money(category.budgeted),
+        activity: money(category.activity),
+        balance: money(category.balance),
       },
     },
     null,

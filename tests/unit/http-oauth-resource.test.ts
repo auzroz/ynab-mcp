@@ -48,7 +48,7 @@ vi.mock('../../src/storage/index.js', async () => {
 });
 
 import { createHttpApp } from '../../src/http.js';
-import { Encryptor } from '../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
 import type { Storage } from '../../src/storage/types.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_PEPPER, legacyToken } from './helpers/token-hasher.js';
@@ -295,7 +295,7 @@ describe('/mcp bearer audience check', () => {
     await plantUser(storage, {
       userId: 'ynab-user-1',
       grantedScope: 'read-only',
-      encryptedRefreshToken: new Encryptor(ENCRYPTION_KEY).encrypt('yr'),
+      encryptedRefreshToken: new Encryptor(ENCRYPTION_KEY).encrypt('yr', refreshTokenContext('ynab-user-1')),
     });
     const access = await plantAccessToken(storage, {
       clientId: 'c',

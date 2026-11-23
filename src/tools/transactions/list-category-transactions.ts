@@ -16,7 +16,7 @@ import {
 } from '../../utils/delta.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import {
@@ -127,6 +127,7 @@ export async function handleListCategoryTransactions(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const limit = validated.limit ?? 100;
 
   // Parse natural language dates
@@ -166,12 +167,12 @@ export async function handleListCategoryTransactions(
   const topPayees = Object.entries(byPayee)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
-    .map(([name, amount]) => ({ name, amount: formatCurrency(amount) }));
+    .map(([name, amount]) => ({ name, amount: money(amount) }));
 
   const formattedTransactions = transactions.map((txn) => ({
     id: txn.id,
     date: txn.date,
-    amount: formatCurrency(txn.amount),
+    amount: money(txn.amount),
     memo: sanitizeMemo(txn.memo),
     payee_name: sanitizeName(txn.payee_name),
     account_name: sanitizeName(txn.account_name),
@@ -208,7 +209,7 @@ export async function handleListCategoryTransactions(
               count: formattedTransactions.length,
               ...truncationSummary(totalCount, formattedTransactions.length),
               ...rangeNote,
-              total_spent: formatCurrency(totalSpent),
+              total_spent: money(totalSpent),
               top_payees: topPayees,
             },
       ...delta.cursor,

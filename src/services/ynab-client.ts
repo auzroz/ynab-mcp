@@ -72,6 +72,16 @@ interface FanOutReservation {
 /** How long a read reuses a resolved "last-used" / "default" budget id (#66); writes resolve fresh. */
 export const BUDGET_ALIAS_TTL_MS = 300_000;
 
+/** How long a failed currency-format lookup is not retried (#49). */
+export const CURRENCY_FORMAT_RETRY_MS = 60_000;
+
+/**
+ * How long a budget's currency format is reused (#49). It almost never changes,
+ * and re-reading it every 5 minutes would cost an active budget 12 of YNAB's
+ * 200 requests an hour.
+ */
+export const CURRENCY_FORMAT_TTL_MS = 3_600_000;
+
 /**
  * server_knowledge no budget has reached: asking for changes since it returns
  * the plan's id and an empty delta, not the whole budget.
@@ -438,6 +448,9 @@ export class YnabClient {
     this.breaker = options.breaker;
     this.writeLimiter = options.writeLimiter ?? new WriteLimiter(WRITE_LIMIT_DEFAULT_PER_HOUR, options.now);
   }
+
+  // In-flight budget settings requests, one per budget UUID (#49).
+  private readonly settingsLookups = new Map<string, Promise<ynab.PlanSettingsResponse>>();
 
   // In-flight budget alias lookups, so concurrent callers share one request.
   private readonly aliasLookups = new Map<string, Promise<string>>();
@@ -1015,11 +1028,59 @@ export class YnabClient {
     const cached = this.cache.get<ynab.PlanSettingsResponse>(cacheKey);
     if (cached !== undefined) return cached;
 
+    // Overlapping callers for one budget (the settings tool, currency format
+    // lookups) share a single request and a single rate-limit token.
+    let pending = this.settingsLookups.get(cacheKey);
+    if (pending === undefined) {
+      pending = this.fetchBudgetSettings(budgetId, cacheKey).finally(() => {
+        this.settingsLookups.delete(cacheKey);
+      });
+      this.settingsLookups.set(cacheKey, pending);
+    }
+    return pending;
+  }
+
+  private async fetchBudgetSettings(budgetId: string, cacheKey: string): Promise<ynab.PlanSettingsResponse> {
     const generation = this.cache.generation();
     await this.takeToken();
     const response = await this.api.plans.getPlanSettingsById(budgetId);
-    if (generation === this.cache.generation()) this.cache.set(cacheKey, response);
+    if (generation === this.cache.generation()) {
+      this.cache.set(cacheKey, response);
+      // A refreshed settings response also refreshes the long-lived format memo.
+      const format = response.data?.settings?.currency_format;
+      if (format != null) this.cache.set(`currency-format:${budgetId}`, format, CURRENCY_FORMAT_TTL_MS);
+    }
     return response;
+  }
+
+  /**
+   * The budget's currency format (#49), read from its cached settings so a tool
+   * call costs no extra request once they are cached. `budgetId` must be a
+   * resolved UUID (see resolveBudgetId), never an alias. Never throws: when the
+   * settings cannot be read it returns undefined and callers format amounts in
+   * the USD style. A failure is remembered for a minute so an unreadable
+   * settings endpoint does not cost a request on every tool call.
+   */
+  async getCurrencyFormat(budgetId: string): Promise<ynab.CurrencyFormat | undefined> {
+    const memoKey = `currency-format:${budgetId}`;
+    const memo = this.cache.get<ynab.CurrencyFormat>(memoKey);
+    if (memo !== undefined) return memo;
+    const failedKey = `currency-format-failed:${budgetId}`;
+    if (this.cache.get<boolean>(failedKey) === true) return undefined;
+    return this.lookUpCurrencyFormat(budgetId, failedKey);
+  }
+
+  private async lookUpCurrencyFormat(budgetId: string, failedKey: string): Promise<ynab.CurrencyFormat | undefined> {
+    try {
+      // Outside any fan-out reservation: the tool's reserved count covers its
+      // own reads, and this lookup (a cache miss only) takes its own token.
+      const response = await this.fanOut.exit(() => this.getBudgetSettingsById(budgetId));
+      // getBudgetSettingsById memoizes it for CURRENCY_FORMAT_TTL_MS.
+      return response.data.settings.currency_format ?? undefined;
+    } catch {
+      this.cache.set(failedKey, true, CURRENCY_FORMAT_RETRY_MS);
+      return undefined;
+    }
   }
 
   /**

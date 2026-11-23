@@ -10,7 +10,7 @@ import { MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '..
 import type { Tool } from '@modelcontextprotocol/server';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
 
@@ -190,16 +190,17 @@ export async function handleUpdateTransaction(
     transaction: updateData,
   });
 
+  const money = await moneyFormatterFor(client, budgetId);
   const txn = response.data.transaction;
 
   return JSON.stringify(
     {
       success: true,
-      message: `Transaction updated: ${formatCurrency(txn.amount)} at ${sanitizeName(txn.payee_name)}`,
+      message: `Transaction updated: ${money(txn.amount)} at ${sanitizeName(txn.payee_name)}`,
       transaction: {
         id: txn.id,
         date: txn.date,
-        amount: formatCurrency(txn.amount),
+        amount: money(txn.amount),
         payee_name: sanitizeName(txn.payee_name),
         category_name: sanitizeName(txn.category_name),
         account_name: sanitizeName(txn.account_name),

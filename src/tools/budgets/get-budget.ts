@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, formatCurrencyWithFormat } from '../../utils/milliunits.js';
+import { makeMoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { isInternalGroup } from '../../utils/categories.js';
@@ -85,10 +85,8 @@ export async function handleGetBudget(
       }
     : null;
 
-  const fmt = (milliunits: number): string =>
-    sanitizedCurrencyFormat
-      ? formatCurrencyWithFormat(milliunits, sanitizedCurrencyFormat)
-      : formatCurrency(milliunits);
+  // The budget response carries its own currency format: no settings request.
+  const fmt = makeMoneyFormatter(sanitizedCurrencyFormat);
 
   // Summarize accounts by type
   const accountsByType: Record<string, Array<{ id: string; name: string; balance: string }>> = {};

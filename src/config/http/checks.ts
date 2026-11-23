@@ -8,6 +8,7 @@
 import type { ConfigProblems } from '../parse.js';
 import type { HttpConfig } from './index.js';
 import { isLoopbackBind } from './server.js';
+import { parseKeyring } from '../../crypto.js';
 
 export type HttpCheck = (config: HttpConfig, problems: ConfigProblems) => void;
 
@@ -74,10 +75,38 @@ const oauthStorageRequired: HttpCheck = (config, problems) => {
   }
 };
 
+/**
+ * The keyring (#57b) must be consistent: no id twice, no key under two ids.
+ * And a rotation needs TOKEN_PEPPER: without it the pepper is derived from
+ * ENCRYPTION_KEY, so the new key would change it and the start be refused
+ * (run `ynab-mcp derive-pepper` with the old key first).
+ */
+const oauthKeyring: HttpCheck = (config, problems) => {
+  if (config.authMode !== 'oauth' || problems.failed('AUTH_MODE')) return;
+  if (problems.failed('ENCRYPTION_KEY_ID') || problems.failed('ENCRYPTION_KEY_PREVIOUS')) return;
+  if (config.encryptionKeyPrevious !== undefined && config.tokenPepper === undefined && !problems.failed('TOKEN_PEPPER')) {
+    problems.add(
+      'ENCRYPTION_KEY_PREVIOUS',
+      'ENCRYPTION_KEY_PREVIOUS requires TOKEN_PEPPER: run `ynab-mcp derive-pepper` with the previous ENCRYPTION_KEY and set TOKEN_PEPPER to its output ' +
+        '(see "Rotating ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md).'
+    );
+  }
+  // The ids can only clash when there are previous keys (ENCRYPTION_KEY's own
+  // format is checked where the keyring is built, as before).
+  if (config.encryptionKey === undefined || config.encryptionKeyPrevious === undefined) return;
+  try {
+    parseKeyring(config.encryptionKey, { keyId: config.encryptionKeyId, previousKeys: config.encryptionKeyPrevious });
+  } catch (error) {
+    // parseKeyring's messages name variables only, never a value.
+    problems.add('ENCRYPTION_KEY', error instanceof Error ? error.message : 'Invalid ENCRYPTION_KEY.');
+  }
+};
+
 /** Append-only: one line per rule. */
 export const HTTP_CHECKS: readonly HttpCheck[] = [
   oauthRefusesStaticYnab,
   oauthIssuerScheme,
   headerFallbackNeedsLoopback,
   oauthStorageRequired,
+  oauthKeyring,
 ];

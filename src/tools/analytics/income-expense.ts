@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { budgetId } from '../../utils/schemas.js';
 
 // Input schema
@@ -77,6 +77,7 @@ export async function handleIncomeExpense(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const monthsToAnalyze = validated.months ?? 6;
 
   // Calculate date range
@@ -127,9 +128,9 @@ export async function handleIncomeExpense(
 
     monthlyData.push({
       month,
-      income: formatCurrency(income),
-      expenses: formatCurrency(expenses),
-      net: formatCurrency(net),
+      income: money(income),
+      expenses: money(expenses),
+      net: money(net),
       income_raw: income,
       expenses_raw: expenses,
       net_raw: net,
@@ -221,15 +222,15 @@ export async function handleIncomeExpense(
         since_date: sinceDateStr,
       },
       totals: {
-        total_income: formatCurrency(totalIncome),
-        total_expenses: formatCurrency(totalExpenses),
-        net_savings: formatCurrency(totalNet),
+        total_income: money(totalIncome),
+        total_expenses: money(totalExpenses),
+        net_savings: money(totalNet),
         savings_rate: overallSavingsRate !== null ? `${Math.round(overallSavingsRate)}%` : 'N/A',
       },
       averages: {
-        avg_monthly_income: formatCurrency(avgIncome),
-        avg_monthly_expenses: formatCurrency(avgExpenses),
-        avg_monthly_net: formatCurrency(avgNet),
+        avg_monthly_income: money(avgIncome),
+        avg_monthly_expenses: money(avgExpenses),
+        avg_monthly_net: money(avgNet),
       },
       monthly_breakdown: monthlyData.map((m) => ({
         month: m.month,

@@ -16,7 +16,7 @@ import {
 } from '../../utils/delta.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import {
@@ -127,6 +127,7 @@ export async function handleListAccountTransactions(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const limit = validated.limit ?? 100;
 
   // Parse natural language dates
@@ -163,7 +164,7 @@ export async function handleListAccountTransactions(
   const formattedTransactions = transactions.map((txn) => ({
     id: txn.id,
     date: txn.date,
-    amount: formatCurrency(txn.amount),
+    amount: money(txn.amount),
     memo: sanitizeMemo(txn.memo),
     payee_name: sanitizeName(txn.payee_name),
     category_name: sanitizeName(txn.category_name),
@@ -174,7 +175,7 @@ export async function handleListAccountTransactions(
     // A delta may list removed split lines as deleted.
     subtransactions:
       (txn.subtransactions ?? []).some((sub) => !sub.deleted)
-        ? (txn.subtransactions ?? []).filter((sub) => !sub.deleted).map(formatSubtransaction)
+        ? (txn.subtransactions ?? []).filter((sub) => !sub.deleted).map((sub) => formatSubtransaction(sub, money))
         : undefined,
   }));
 
@@ -202,9 +203,9 @@ export async function handleListAccountTransactions(
               count: formattedTransactions.length,
               ...truncationSummary(totalCount, formattedTransactions.length),
               ...rangeNote,
-              total_inflow: formatCurrency(totalInflow),
-              total_outflow: formatCurrency(totalOutflow),
-              net: formatCurrency(totalInflow - totalOutflow),
+              total_inflow: money(totalInflow),
+              total_outflow: money(totalOutflow),
+              net: money(totalInflow - totalOutflow),
             },
       ...delta.cursor,
     },

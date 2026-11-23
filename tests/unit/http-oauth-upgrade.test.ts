@@ -35,7 +35,7 @@ vi.mock('../../src/storage/index.js', async () => {
 import { buildHttpApp, type HttpApp } from '../../src/http.js';
 import { exchangeCode as ynabExchangeCode, getYnabUserId, refreshAccessToken } from '../../src/auth/ynab-oauth.js';
 import { hashClientSecret } from '../../src/auth/token-hash.js';
-import { Encryptor } from '../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_PEPPER, legacyToken, testKey } from './helpers/token-hasher.js';
 import { testDrivers, cleanupDrivers, type DriverHandle } from './helpers/storage-drivers.js';
@@ -108,7 +108,7 @@ async function plant04x(h: DriverHandle, encryptionKey: string) {
   await h.storage.upsertUser({
     userId: USER,
     grantedScope: 'read-write',
-    encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-0'),
+    encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-0', refreshTokenContext(USER)),
     updatedAt: at,
   });
   const values = { access: legacyToken(), refresh: legacyToken(), code: legacyToken() };

@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 
@@ -77,6 +77,7 @@ export async function handleNetWorth(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const includeClosed = validated.include_closed ?? false;
 
   // Get all accounts
@@ -121,7 +122,7 @@ export async function handleNetWorth(
     byType.get(typeStr)!.push({
       name: sanitizeName(account.name),
       type: typeStr,
-      balance: formatCurrency(account.balance),
+      balance: money(account.balance),
       balance_raw: account.balance,
       on_budget: account.on_budget,
     });
@@ -134,7 +135,7 @@ export async function handleNetWorth(
     typeGroups.push({
       type,
       accounts: accts.sort((a, b) => b.balance_raw - a.balance_raw),
-      total: formatCurrency(total),
+      total: money(total),
       total_raw: total,
     });
   }
@@ -191,20 +192,20 @@ export async function handleNetWorth(
     {
       status,
       message,
-      net_worth: formatCurrency(netWorth),
+      net_worth: money(netWorth),
       summary: {
-        total_assets: formatCurrency(totalAssets),
-        total_liabilities: formatCurrency(totalLiabilities),
-        net_worth: formatCurrency(netWorth),
+        total_assets: money(totalAssets),
+        total_liabilities: money(totalLiabilities),
+        net_worth: money(netWorth),
       },
       breakdown: {
         budget_accounts: {
           count: budgetAccounts.length,
-          total: formatCurrency(budgetTotal),
+          total: money(budgetTotal),
         },
         tracking_accounts: {
           count: trackingAccounts.length,
-          total: formatCurrency(trackingTotal),
+          total: money(trackingTotal),
         },
       },
       by_account_type: typeGroups.map((g) => ({

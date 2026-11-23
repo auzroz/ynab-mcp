@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, toMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
@@ -76,6 +76,7 @@ export async function handleOverspendingAlerts(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const thresholdMilliunits = toMilliunits(validated.threshold ?? 0);
 
   const currentMonth = getCurrentMonth();
@@ -135,7 +136,7 @@ export async function handleOverspendingAlerts(
     message = `${overspent.length} category(ies) slightly over budget`;
   } else {
     status = 'significant_overspend';
-    message = `${overspent.length} category(ies) over budget by ${formatCurrency(totalOverspent)} total`;
+    message = `${overspent.length} category(ies) over budget by ${money(totalOverspent)} total`;
   }
 
   // Group by category group
@@ -154,22 +155,22 @@ export async function handleOverspendingAlerts(
       month: currentMonth,
       summary: {
         overspent_categories: overspent.length,
-        total_overspent: formatCurrency(totalOverspent),
-        total_budgeted_in_overspent: formatCurrency(totalBudgeted),
-        total_spent_in_overspent: formatCurrency(totalSpending),
+        total_overspent: money(totalOverspent),
+        total_budgeted_in_overspent: money(totalBudgeted),
+        total_spent_in_overspent: money(totalSpending),
       },
       alerts: overspent.map((c) => ({
         category: c.category_name,
         group: c.group_name,
-        budgeted: formatCurrency(c.budgeted),
-        spent: formatCurrency(c.activity),
-        over_by: formatCurrency(c.overspent),
+        budgeted: money(c.budgeted),
+        spent: money(c.activity),
+        over_by: money(c.overspent),
         percent_over: `${Math.round(c.percent_over)}%`,
       })),
       by_group: Array.from(byGroup.entries()).map(([group, cats]) => ({
         group,
         count: cats.length,
-        total_over: formatCurrency(cats.reduce((sum, c) => sum + c.overspent, 0)),
+        total_over: money(cats.reduce((sum, c) => sum + c.overspent, 0)),
         categories: cats.map((c) => c.category_name),
       })),
       suggestions:

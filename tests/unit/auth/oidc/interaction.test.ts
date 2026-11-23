@@ -26,15 +26,10 @@ vi.mock('../../../../src/auth/ynab-oauth.js', async () => {
 });
 
 import { exchangeCode as ynabExchangeCode, getYnabUserId } from '../../../../src/auth/ynab-oauth.js';
-import { Encryptor } from '../../../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../../../src/crypto.js';
 import { plainRowKey } from '../../../../src/storage/oauth-rows.js';
 import type { OAuthRowWrite, Storage } from '../../../../src/storage/types.js';
-import {
-  DENIAL_DESCRIPTIONS,
-  parseYnabState,
-  refreshTokenContext,
-  type EncryptionContext,
-} from '../../../../src/auth/oidc/interaction.js';
+import { DENIAL_DESCRIPTIONS, parseYnabState, type InteractionStore } from '../../../../src/auth/oidc/interaction.js';
 import { REFRESH_TOKEN_TTL_DAYS } from '../../../../src/auth/retention-defaults.js';
 import { testDrivers, cleanupDrivers, type DriverHandle } from '../../helpers/storage-drivers.js';
 import {
@@ -148,18 +143,24 @@ function twoAtOnce(): () => Promise<void> {
 }
 
 /** The interaction's store over `handle`, with `before` awaited ahead of every compare-and-set. */
-function hookedStore(
-  handle: DriverHandle,
-  before: (row: OAuthRowWrite) => Promise<void> | undefined
-): Pick<Storage, 'stageSignIn' | 'findOAuthRow' | 'compareAndSetOAuthRow'> {
-  return {
-    stageSignIn: (signIn) => handle.storage.stageSignIn(signIn),
-    findOAuthRow: (key) => handle.storage.findOAuthRow(key),
-    compareAndSetOAuthRow: async (expected, row) => {
+function hookedStore(handle: DriverHandle, before: (row: OAuthRowWrite) => Promise<void> | undefined): InteractionStore {
+  return overriding(handle.storage, {
+    compareAndSetOAuthRow: async (expected: string | undefined, row: OAuthRowWrite) => {
       await before(row);
       return handle.storage.compareAndSetOAuthRow(expected, row);
     },
-  };
+  });
+}
+
+/** `storage` with some methods replaced (every other method bound to it). */
+function overriding(storage: Storage, methods: Partial<Storage>): Storage {
+  return new Proxy(storage, {
+    get(target, prop) {
+      if (Object.hasOwn(methods, prop)) return (methods as Record<string | symbol, unknown>)[prop];
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+    },
+  });
 }
 
 for (const driver of testDrivers) {
@@ -653,6 +654,45 @@ for (const driver of testDrivers) {
       expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
     });
 
+    it('#57b: a replica below the announced or retired key floor gets server_error, and the YNAB code is never spent', async () => {
+      await handle.storage.ensureKeyFloorRows();
+      // This replica writes under key id 1 (the test Encryptor's default).
+      for (const raise of [() => handle.storage.announceKeyRetirement(2), () => handle.storage.raiseRetiredKeyFloor(2)]) {
+        await raise();
+        const flow = await browserFlow(t.app, new CookieJar(), { clientId, challenge: pkcePair().challenge });
+        expect(Object.fromEntries(flow.params)).toEqual({
+          error: 'server_error',
+          error_description: DENIAL_DESCRIPTIONS.server_error,
+          state: 'client-state',
+          iss: ISSUER,
+        });
+      }
+      expect(vi.mocked(ynabExchangeCode)).not.toHaveBeenCalled();
+      const models = (await oauthRowsOf(handle)).map((r) => r.model);
+      expect(models).not.toContain('Grant');
+      expect(models).not.toContain('SignIn');
+      expect(await handle.storage.getUser('ynab-user-1')).toBeUndefined();
+    });
+
+    it('#57b: a floor raised after the exchange and before persistence is refused by storage, and nothing is stored', async () => {
+      await handle.storage.ensureKeyFloorRows();
+      const jar = new CookieJar();
+      const { uid, state } = await toYnab(t, jar, clientId);
+      const complete = await browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(state)}`);
+      expect(complete.status).toBe(303);
+      expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+      // The staged sign-in is under key 1; the retirement is raised before the code's save applies it.
+      expect(await handle.storage.raiseRetiredKeyFloor(2)).toBe(2);
+      // The code's save throws (a plain error into the library, as for #94's client-gone refusal): the
+      // library answers server_error on its own page (renderError's JSON), and issues no code.
+      const resume = await browse(t.app, jar, complete.headers['location'] as string);
+      expect(resume.status).toBe(500);
+      expect(resume.headers['location']).toBeUndefined();
+      expect(resume.body.error).toBe('server_error');
+      expect(await handle.storage.getUser('ynab-user-1')).toBeUndefined();
+      expect((await oauthRowsOf(handle)).map((r) => r.model)).not.toContain('AuthorizationCode');
+    });
+
     it('a state presented twice in flight is spent by the first (only one exchange)', async () => {
       const jar = new CookieJar();
       const { uid, state } = await toYnab(t, jar, clientId);
@@ -712,13 +752,7 @@ for (const driver of testDrivers) {
     });
 
     it('a grant revoked before its sign-in is staged: server_error, and the grant is gone', async () => {
-      await setup({
-        interactionStore: {
-          stageSignIn: async () => false,
-          findOAuthRow: (key) => handle.storage.findOAuthRow(key),
-          compareAndSetOAuthRow: (expected, row) => handle.storage.compareAndSetOAuthRow(expected, row),
-        },
-      });
+      await setup({ interactionStore: overriding(handle.storage, { stageSignIn: async () => false }) });
       const flow = await browserFlow(t.app, new CookieJar(), { clientId, challenge: pkcePair().challenge });
       expect(flow.params.get('error')).toBe('server_error');
       expect((await oauthRowsOf(handle)).map((r) => r.model)).not.toContain('Grant');
@@ -748,9 +782,9 @@ for (const driver of testDrivers) {
         subject: 'ynab-user-1',
       });
       const user = await handle.storage.getUser('ynab-user-1');
-      // With the same context (#57b: required once it lands; today's Encryptor ignores it).
-      const decrypt = encryptor.decrypt.bind(encryptor) as (ct: string, context: EncryptionContext) => string;
-      expect(decrypt(user!.encryptedRefreshToken, refreshTokenContext('ynab-user-1'))).toBe('ynab-refresh-ynab-user-1');
+      // Only under the same context (#57b's AAD): another user's doesn't open it.
+      expect(encryptor.decrypt(user!.encryptedRefreshToken, refreshTokenContext('ynab-user-1'))).toBe('ynab-refresh-ynab-user-1');
+      expect(() => encryptor.decrypt(user!.encryptedRefreshToken, refreshTokenContext('ynab-user-2'))).toThrow();
     });
 
     it('no silent sign-in: a browser that just signed in goes through consent and YNAB again', async () => {

@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { isInternalGroup } from '../../utils/categories.js';
@@ -86,6 +86,7 @@ export async function handleUnusedCategories(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const months = validated.months ?? 6;
   const includeFunded = validated.include_funded ?? false;
 
@@ -177,9 +178,9 @@ export async function handleUnusedCategories(
         unusedCategories.push({
           category_name: sanitizeName(category.name),
           group_name: sanitizeName(group.name),
-          balance: formatCurrency(balance),
+          balance: money(balance),
           balance_raw: balance,
-          budgeted_this_month: formatCurrency(budgeted),
+          budgeted_this_month: money(budgeted),
           budgeted_raw: budgeted,
           has_goal: hasGoal,
           last_activity: lastActivityMap.get(category.id) ?? null,

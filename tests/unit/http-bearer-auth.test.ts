@@ -43,7 +43,7 @@ vi.mock('../../src/storage/index.js', async () => {
 });
 
 import { createHttpApp } from '../../src/http.js';
-import { Encryptor } from '../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_PEPPER, legacyToken } from './helpers/token-hasher.js';
 import { INVALID_ACCESS_TOKEN_MESSAGE } from './helpers/invalid-token.js';
@@ -77,7 +77,7 @@ async function startApp(overrides: Partial<HttpConfig> = {}): Promise<{ app: Exp
   const storage = factory.storage;
   if (!storage) throw new Error('the app opened no storage');
   // A grant the request-context stage can resolve (its refresh is mocked above).
-  const encryptedRefreshToken = new Encryptor(config.encryptionKey).encrypt('ynab-refresh-1');
+  const encryptedRefreshToken = new Encryptor(config.encryptionKey).encrypt('ynab-refresh-1', refreshTokenContext(USER));
   await plantUser(storage, { userId: USER, grantedScope: 'read-write', encryptedRefreshToken });
   return { app, storage };
 }

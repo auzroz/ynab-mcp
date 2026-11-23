@@ -16,8 +16,9 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 });
 
 import { MemoryStorage } from '../../../src/storage/memory.js';
-import { Encryptor } from '../../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../../src/crypto.js';
 import { YnabTokenResolver } from '../../../src/auth/user-session.js';
+import { rekeyPass } from '../../../src/auth/rekey-job.js';
 import { YnabAuthError } from '../../../src/utils/errors.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
 
@@ -43,7 +44,7 @@ async function seedUser(storage: MemoryStorage, encryptor: Encryptor): Promise<v
   await storage.upsertUser({
     userId: 'u1',
     grantedScope: 'read-only',
-    encryptedRefreshToken: encryptor.encrypt('rt0'),
+    encryptedRefreshToken: encryptor.encrypt('rt0', refreshTokenContext('u1')),
     updatedAt: Date.now(),
   });
 }
@@ -92,7 +93,7 @@ describe('YnabTokenResolver.resolve', () => {
     expect(user).toBeDefined();
     // Stored value is not the plaintext, and decrypts to the rotated token.
     expect(user?.encryptedRefreshToken).not.toBe('rt-rotated');
-    expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '')).toBe('rt-rotated');
+    expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '', refreshTokenContext('u1'))).toBe('rt-rotated');
   });
 
   it('throws for an unknown user', async () => {
@@ -138,7 +139,7 @@ describe('YnabTokenResolver concurrent refresh', () => {
     await storage.upsertUser({
       userId: 'u1',
       grantedScope: 'read-only',
-      encryptedRefreshToken: encryptor.encrypt('rt-new-grant'),
+      encryptedRefreshToken: encryptor.encrypt('rt-new-grant', refreshTokenContext('u1')),
       updatedAt: Date.now(),
     });
     await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-fresh' });
@@ -235,5 +236,122 @@ describe('YnabTokenResolver.invalidate', () => {
       { clientId: 'cid', clientSecret: 'sec' },
       'rt-rotated'
     );
+  });
+});
+
+describe('YnabTokenResolver and the rekey job (#57b)', () => {
+  it('a rekey during a refresh does not make the resolver refresh again from the spent token', async () => {
+    const storage = new MemoryStorage();
+    const k1 = randomBytes(32).toString('base64');
+    const before = new Encryptor(k1);
+    await storage.upsertUser({
+      userId: 'u1',
+      grantedScope: 'read-only',
+      encryptedRefreshToken: before.encrypt('rt0', refreshTokenContext('u1')),
+      updatedAt: Date.now(),
+    });
+    const keyring = new Encryptor(randomBytes(32).toString('base64'), { keyId: '2', previousKeys: `1:${k1}` });
+    const resolver = new YnabTokenResolver(storage, keyring, { clientId: 'cid', clientSecret: 'sec' });
+
+    // The rekey job moves the row to key 2 while YNAB is rotating the token.
+    refreshAccessTokenMock.mockImplementationOnce(async () => {
+      await rekeyPass(storage, keyring, {}, { log: () => undefined });
+      return { accessToken: 'access-fresh', refreshToken: 'rt-rotated', expiresAt: Date.now() + 3600_000 };
+    });
+
+    await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-fresh' });
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+    const user = await storage.getUser('u1');
+    expect(user?.encryptedRefreshToken.startsWith('v2.2.')).toBe(true);
+    expect(keyring.decrypt(user?.encryptedRefreshToken ?? '', refreshTokenContext('u1'))).toBe('rt-rotated');
+  });
+
+  it('a replica whose key is being retired refuses to refresh, before spending the YNAB token', async () => {
+    const { storage, encryptor, resolver } = setup();
+    await seedUser(storage, encryptor);
+    const stored = (await storage.getUser('u1'))?.encryptedRefreshToken;
+    await storage.announceKeyRetirement(2); // a replica on key 2 announced it; this one is on key 1
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(resolver.accessTokenFor('u1')()).rejects.toBeInstanceOf(YnabAuthError);
+    expect(refreshAccessTokenMock).not.toHaveBeenCalled();
+    expect((await storage.getUser('u1'))?.encryptedRefreshToken).toBe(stored);
+    expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+    errorSpy.mockRestore();
+  });
+
+  it('a refresh that passed the key check and paused past a retirement is refused at the write-back', async () => {
+    const storage = new MemoryStorage();
+    const k1 = randomBytes(32).toString('base64');
+    const k2 = randomBytes(32).toString('base64');
+    const lagging = new Encryptor(k1, { keyId: '1', previousKeys: `2:${k2}` }); // phase A: key 2 read-only
+    const current = new Encryptor(k2, { keyId: '2', previousKeys: `1:${k1}` });
+    await storage.upsertUser({
+      userId: 'u1',
+      grantedScope: 'read-only',
+      encryptedRefreshToken: lagging.encrypt('rt0', refreshTokenContext('u1')),
+      updatedAt: Date.now(),
+    });
+    const resolver = new YnabTokenResolver(storage, lagging, { clientId: 'cid', clientSecret: 'sec' });
+    // During the YNAB call, a replica on key 2 rekeys the row, announces and retires key 1.
+    refreshAccessTokenMock.mockImplementationOnce(async () => {
+      const opts = { log: () => undefined, graceMs: 0 };
+      const state = {};
+      await rekeyPass(storage, current, state, opts); // rekeys and announces
+      await rekeyPass(storage, current, state, opts); // retires
+      return { accessToken: 'access-fresh', refreshToken: 'rt-rotated', expiresAt: Date.now() + 3600_000 };
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(resolver.accessTokenFor('u1')()).rejects.toBeInstanceOf(YnabAuthError);
+    expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+    errorSpy.mockRestore();
+    // No key-1 ciphertext was stored: the row is the replica on key 2's, readable by it; the retirement stands.
+    const stored = (await storage.getUser('u1'))?.encryptedRefreshToken ?? '';
+    expect(stored.startsWith('v2.2.')).toBe(true);
+    expect(current.decrypt(stored, refreshTokenContext('u1'))).toBe('rt0');
+    expect(await storage.getKeyFloors()).toEqual({ retired: 2, retiring: 2 });
+  });
+
+  it('a refresh in flight when a retirement is announced keeps the rotated token, and the next pass rekeys it', async () => {
+    const storage = new MemoryStorage();
+    const k1 = randomBytes(32).toString('base64');
+    const k2 = randomBytes(32).toString('base64');
+    const lagging = new Encryptor(k1, { keyId: '1', previousKeys: `2:${k2}` });
+    const current = new Encryptor(k2, { keyId: '2', previousKeys: `1:${k1}` });
+    await storage.upsertUser({
+      userId: 'u1',
+      grantedScope: 'read-only',
+      encryptedRefreshToken: lagging.encrypt('rt0', refreshTokenContext('u1')),
+      updatedAt: Date.now(),
+    });
+    const resolver = new YnabTokenResolver(storage, lagging, { clientId: 'cid', clientSecret: 'sec' });
+    const state = {};
+    const opts = { log: () => undefined, graceMs: 0 };
+    // During the YNAB call, a replica on key 2 rekeys the row and announces (but doesn't yet retire) key 1.
+    refreshAccessTokenMock.mockImplementationOnce(async () => {
+      expect(await rekeyPass(storage, current, state, opts)).toMatchObject({ announcedNow: true });
+      return { accessToken: 'access-fresh', refreshToken: 'rt-rotated', expiresAt: Date.now() + 3600_000 };
+    });
+    await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-fresh' });
+    // The rotated token is stored under key 1, readable everywhere; the retirement waits for it.
+    const stored = (await storage.getUser('u1'))?.encryptedRefreshToken ?? '';
+    expect(stored.startsWith('v2.1.')).toBe(true);
+    expect(current.decrypt(stored, refreshTokenContext('u1'))).toBe('rt-rotated');
+    // The next pass rewrites it under key 2 (and, with no grace here, then retires key 1).
+    expect(await rekeyPass(storage, current, state, opts)).toMatchObject({ rekeyed: 1, retiredNow: true });
+    const final = (await storage.getUser('u1'))?.encryptedRefreshToken ?? '';
+    expect(final.startsWith('v2.2.')).toBe(true);
+    expect(current.decrypt(final, refreshTokenContext('u1'))).toBe('rt-rotated');
+  });
+
+  it("refuses another user's ciphertext copied into the row, before calling YNAB", async () => {
+    const { storage, encryptor, resolver } = setup();
+    await storage.upsertUser({
+      userId: 'u1',
+      grantedScope: 'read-only',
+      encryptedRefreshToken: encryptor.encrypt('rt-of-u2', refreshTokenContext('u2')),
+      updatedAt: Date.now(),
+    });
+    await expect(resolver.resolve('u1')).rejects.toThrow();
+    expect(refreshAccessTokenMock).not.toHaveBeenCalled();
   });
 });
