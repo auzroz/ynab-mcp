@@ -62,6 +62,10 @@ import {
 import type { CiphertextStore, Storage } from '../storage/types.js';
 import type { JobExtension, JobHandle } from '../http/extensions.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
+import { KeyRetiredError } from '../storage/encryption-meta.js';
+import { DEFAULT_PG_CONNECTION_TIMEOUT_MS, DEFAULT_PG_QUERY_TIMEOUT_MS } from '../storage/timeouts.js';
+import { YNAB_CALLBACK_DEADLINE_MS } from './retention-defaults.js';
+import { OUTBOUND_TIMEOUT_MS } from '../services/outbound.js';
 
 /** Users per page of a pass. */
 export const REKEY_PAGE_SIZE = 100;
@@ -91,6 +95,8 @@ export async function prepareEncryptionKeys(storage: CiphertextStore, encryptor:
       );
     }
   }
+  // The floor rows the storage guard locks against a concurrent retirement.
+  await storage.ensureKeyFloorRows();
   const floors = await storage.getKeyFloors();
   if (floors.retiring > encryptor.currentKeyId) {
     throw new Error(
@@ -102,14 +108,41 @@ export async function prepareEncryptionKeys(storage: CiphertextStore, encryptor:
   encryptor.retireBelow(floors.retired);
 }
 
-/** A ciphertext write refused because this replica's key is being, or has been, retired. Never carries a value. */
-export class KeyRetiredError extends Error {
-  constructor(currentKeyId: number, floor: number) {
-    super(
-      `Refusing to write with ENCRYPTION_KEY_ID ${currentKeyId}: key ids below ${floor} are being retired. ` +
-        'Set ENCRYPTION_KEY and ENCRYPTION_KEY_ID to the newest key on this replica (see "Rotating ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md).'
+/** A ciphertext write refused because its key is being, or has been, retired (defined beside the storage guard). */
+export { KeyRetiredError };
+
+/**
+ * The longest a write that passed {@link assertKeyWritable} can take to reach
+ * storage, from the check to its last statement:
+ *   - a sign-in: the YNAB callback's deadline (`YNAB_CALLBACK_DEADLINE_MS`,
+ *     checked right before the write);
+ *   - a refresh: its YNAB call, bounded by the request ceiling
+ *     (`MCP_REQUEST_TIMEOUT_MS`);
+ *   - either way, then the storage write: a pooled connection and a few
+ *     statements, each bounded (src/storage/timeouts.ts).
+ * Summed, not maxed, to stay an upper bound whichever path is longest.
+ */
+export function longestKeyedWriteMs(requestTimeoutMs: number): number {
+  const storageWriteMs = DEFAULT_PG_CONNECTION_TIMEOUT_MS + 8 * DEFAULT_PG_QUERY_TIMEOUT_MS;
+  return YNAB_CALLBACK_DEADLINE_MS + Math.max(requestTimeoutMs, OUTBOUND_TIMEOUT_MS) + storageWriteMs;
+}
+
+/**
+ * Refuse a configuration whose longest in-flight write could outlast the
+ * retirement grace. Why: the retirement is raised only after the announcement
+ * has stood for the grace, so every write that passed its check before the
+ * announcement must have landed by then (and so holds the raise back). The
+ * storage guard (`assertFloorAllows`, src/storage/encryption-meta.ts) refuses a write that lands after
+ * the raise anyway; this keeps that refusal for the pathological case, not
+ * for an ordinary slow request.
+ */
+export function assertGraceOutlastsWrites(graceMs: number, requestTimeoutMs: number): void {
+  const longest = longestKeyedWriteMs(requestTimeoutMs);
+  if (longest >= graceMs) {
+    throw new Error(
+      `The key retirement grace (${graceMs} ms) must be longer than the longest request that writes a token (${longest} ms); ` +
+        'lower MCP_REQUEST_TIMEOUT_MS.'
     );
-    this.name = 'KeyRetiredError';
   }
 }
 

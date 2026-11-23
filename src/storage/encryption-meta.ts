@@ -9,7 +9,7 @@
 import { constantTimeEqual } from '../auth/token-hash.js';
 import { ciphertextVersion } from '../crypto.js';
 import { userFromSignIn } from './oauth-rows.js';
-import type { KeyCheckOutcome } from './types.js';
+import type { KeyCheckOutcome, KeyFloors } from './types.js';
 
 /** `schema_meta` key of the retirement floor: `v1` and key ids below it are refused. */
 export const RETIRED_FLOOR_KEY = 'encryption_retired_below';
@@ -84,6 +84,52 @@ export function parseRetiredFloor(value: string | undefined, key: string = RETIR
     );
   }
   return Number(value);
+}
+
+/**
+ * A ciphertext write refused because its key id is below the retired or the
+ * announced floor. Thrown by {@link assertFloorAllows} (the storage write
+ * itself) and by the write-path check before a YNAB call
+ * (src/auth/rekey-job.ts). Never carries a value; callers map it to their
+ * fixed client message.
+ */
+export class KeyRetiredError extends Error {
+  constructor(keyId: number, floor: number) {
+    super(
+      `Refusing to write with ENCRYPTION_KEY_ID ${keyId}: key ids below ${floor} are being retired. ` +
+        'Set ENCRYPTION_KEY and ENCRYPTION_KEY_ID to the newest key on this replica (see "Rotating ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md).'
+    );
+    this.name = 'KeyRetiredError';
+  }
+}
+
+/** The key id a ciphertext is written under; 0 for `v1` or anything not `v2` (refused under any floor). */
+export function writeKeyId(ciphertext: string): number {
+  const version = ciphertextVersion(ciphertext);
+  return version?.format === 'v2' ? version.kid : 0;
+}
+
+/**
+ * The persistence-time guard (#57b): throw {@link KeyRetiredError} when
+ * `ciphertext` is under a key id below either floor, so a write that passed
+ * the write-path check and then waited past a retirement is refused instead
+ * of storing a token no replica reads. Drivers call it with floors read in
+ * the same transaction as the write (Postgres: locked FOR SHARE, which the
+ * retirement's FOR UPDATE waits for; SQLite: under the write lock).
+ */
+export function assertFloorAllows(floors: KeyFloors, ciphertext: string): void {
+  const floor = Math.max(floors.retired, floors.retiring);
+  const kid = writeKeyId(ciphertext);
+  if (kid < floor) throw new KeyRetiredError(kid, floor);
+}
+
+/** Both floors from `schema_meta` rows (`key`, `value`). */
+export function floorsFromRows(rows: ReadonlyArray<{ key: string; value: string }>): KeyFloors {
+  const value = (key: string): string | undefined => rows.find((r) => r.key === key)?.value;
+  return {
+    retired: parseRetiredFloor(value(RETIRED_FLOOR_KEY)),
+    retiring: parseRetiredFloor(value(RETIRING_FLOOR_KEY), RETIRING_FLOOR_KEY),
+  };
 }
 
 /** Compare a recorded key check with this key's (constant time). */

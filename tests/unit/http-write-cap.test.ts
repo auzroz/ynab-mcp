@@ -37,7 +37,7 @@ vi.mock('../../src/storage/index.js', async () => {
 });
 
 import { buildHttpApp, createHttpApp, type HttpApp } from '../../src/http.js';
-import { Encryptor } from '../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { bearer, mcpConnect, ynabToken, type McpAuth } from './helpers/mcp-call.js';
 
@@ -123,7 +123,7 @@ describe('write cap across stateless HTTP requests', () => {
     await storage.upsertUser({
       userId: 'ynab-user-1',
       grantedScope: 'read-write',
-      encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-1'),
+      encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-1', refreshTokenContext('ynab-user-1')),
       updatedAt: Date.now(),
     });
     const tokens: string[] = [];

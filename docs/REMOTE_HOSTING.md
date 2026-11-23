@@ -583,11 +583,28 @@ Retirement takes two steps:
    ```
 
    The raise checks the table again in the same statement: a token written
-   under an older key after the pass read the table (by a replica that
-   passed its check just before the announcement) holds it back, and the
-   next pass moves that token to the current key (`[Rekey] a token was
-   written under an older key since the pass began: retirement waits for the
-   next pass`).
+   under an older key after the pass read the table (by a 0.4.x process, for
+   example, which has no key checks) holds it back, and the next pass moves
+   that token to the current key (`[Rekey] a token was written under an older
+   key since the pass began: retirement waits for the next pass`).
+
+Two guards keep a token from being stored where no replica can read it:
+
+- **At the write.** Every write of a YNAB token (a sign-in, a refresh) reads
+  the announced and retired key ids in the same database transaction as the
+  write (on Postgres, holding them `FOR SHARE`; the retirement takes the
+  retired row `FOR UPDATE` first, so one waits for the other). A write under
+  an older key is refused and nothing is stored. The user gets the same
+  authorization error as for any failed refresh or sign-in, and connects
+  again. This covers a request that passed its key check and then stalled.
+- **The grace outlasts every request.** The hour between the announcement
+  and the retirement is longer than the longest request that writes a token:
+  the YNAB callback's 10-minute deadline, plus the request ceiling
+  (`MCP_REQUEST_TIMEOUT_MS`, at most 5 minutes), plus the database time
+  limits. The server refuses to start if a configuration would make that
+  total reach the hour, so in practice a write that passed its check before
+  the announcement has always landed, and held the retirement back, before
+  the retirement.
 
 From then on every replica refuses `v1` and those key ids, so an old
 ciphertext restored from a backup can't get round the binding. The binding
