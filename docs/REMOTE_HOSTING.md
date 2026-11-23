@@ -598,7 +598,8 @@ wrong key given as `1:<old key>` later is refused instead of recorded.
    Set `TOKEN_PEPPER` to it, keep it as secret as the key, and restart. The
    pepper is unchanged, so nobody is logged out; from now on it no longer
    depends on `ENCRYPTION_KEY`. If `TOKEN_PEPPER` is already set it prints
-   nothing and exits with status 2, so `TOKEN_PEPPER=$(…)` can't blank it.
+   nothing and exits with status 2, so a script capturing its output stops
+   instead of setting an empty `TOKEN_PEPPER`.
 2. **Switch keys.** Generate a new key (`openssl rand -base64 32`) and set:
 
    ```bash

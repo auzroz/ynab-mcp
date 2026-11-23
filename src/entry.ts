@@ -165,7 +165,7 @@ export async function main(env: Env = process.env): Promise<void> {
 /** What `derive-pepper` needs: its environment and where to write. */
 export interface DerivePepperIo {
   env: Env;
-  /** The pepper, alone on a line (so `TOKEN_PEPPER=$(ynab-mcp derive-pepper)` works). */
+  /** The pepper alone on one line, so a script can capture it (stdout carries nothing else). */
   out: (line: string) => void;
   /** Guidance and errors. Never a value. */
   err: (line: string) => void;
@@ -183,7 +183,7 @@ export interface DerivePepperIo {
 export function derivePepper(io: DerivePepperIo): number {
   const pepper = io.env['TOKEN_PEPPER'];
   if (pepper !== undefined && pepper.trim() !== '') {
-    // Non-zero, so `TOKEN_PEPPER=$(ynab-mcp derive-pepper)` can't silently blank it.
+    // Non-zero, so a script that captures the output (`set -e`, `&&`) stops instead of using an empty value.
     io.err('TOKEN_PEPPER is already set: the pepper does not depend on ENCRYPTION_KEY, so there is nothing to derive.');
     return 2;
   }
