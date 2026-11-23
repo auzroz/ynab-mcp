@@ -34,7 +34,7 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 
 import { MemoryStorage } from '../../../src/storage/memory.js';
 import { MIN_ABANDONED_CLIENT_MS, YNAB_CALLBACK_DEADLINE_MS } from '../../../src/auth/retention-defaults.js';
-import { Encryptor } from '../../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../../src/crypto.js';
 import {
   McpOAuthProvider,
   REFRESH_TOKEN_REUSE_WINDOW_MS,
@@ -284,7 +284,7 @@ describe('McpOAuthProvider.handleYnabCallback', () => {
     expect(user).toBeDefined();
     expect(user?.grantedScope).toBe('read-write');
     expect(user?.encryptedRefreshToken).not.toBe('yr');
-    expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '')).toBe('yr');
+    expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '', refreshTokenContext('ynab-user-1'))).toBe('yr');
 
     // The YNAB calls were made with the callback URL / access token.
     expect(exchangeCodeMock).toHaveBeenCalledWith(
@@ -363,6 +363,54 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
     expect(url.searchParams.get('error')).toBe('server_error');
     expect(url.searchParams.has('state')).toBe(false);
     expect(url.searchParams.get('iss')).toBe('https://mcp.example.com/');
+  });
+
+  it('a replica whose key is being retired redirects server_error without exchanging the YNAB code (#57b)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { provider, storage } = makeProvider();
+    await storage.announceKeyRetirement(2); // this provider's keyring is on key 1
+    const { state, nonce } = await pendingState(provider);
+    const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+    expect(url.searchParams.get('error')).toBe('server_error');
+    expect(exchangeCodeMock).not.toHaveBeenCalled();
+    expect(await storage.getUser('ynab-user-1')).toBeUndefined();
+    expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+    errorSpy.mockRestore();
+  });
+
+  it('a sign-in that passed the key check and paused past a retirement is refused at the write (#57b)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { provider, storage } = makeProvider(); // keyring on key 1
+    const { state, nonce } = await pendingState(provider);
+    // The check passes; while the YNAB exchange is in flight, another replica
+    // (on key 2) announces and then raises the retirement.
+    exchangeCodeMock.mockImplementationOnce(async () => {
+      await storage.announceKeyRetirement(2);
+      expect(await storage.raiseRetiredKeyFloor(2)).toBe(2);
+      return { accessToken: 'ya', refreshToken: 'yr', expiresAt: Date.now() + 3_600_000 };
+    });
+    const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+    expect(url.searchParams.get('error')).toBe('server_error');
+    expect(exchangeCodeMock).toHaveBeenCalledTimes(1);
+    // Nothing unreadable was stored, and the retirement stands.
+    expect(await storage.getUser('ynab-user-1')).toBeUndefined();
+    expect(await storage.getKeyFloors()).toEqual({ retired: 2, retiring: 2 });
+    expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
+    errorSpy.mockRestore();
+  });
+
+  it('a sign-in in flight when a retirement is only announced completes; its token holds the retirement back (#57b)', async () => {
+    const { provider, storage, encryptor } = makeProvider(); // keyring on key 1
+    const { state, nonce } = await pendingState(provider);
+    exchangeCodeMock.mockImplementationOnce(async () => {
+      await storage.announceKeyRetirement(2);
+      return { accessToken: 'ya', refreshToken: 'yr', expiresAt: Date.now() + 3_600_000 };
+    });
+    const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+    expect(url.searchParams.has('code')).toBe(true);
+    const user = await storage.getUser('ynab-user-1');
+    expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '', refreshTokenContext('ynab-user-1'))).toBe('yr');
+    expect(await storage.raiseRetiredKeyFloor(2)).toBe(0);
   });
 
   it('denyAuthorization throws for an unknown state', async () => {

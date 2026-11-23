@@ -295,7 +295,7 @@ export interface AccountStore {
   deleteUserData(userId: string): Promise<void>;
 }
 
-export interface Storage extends OAuthRowStore {
+export interface Storage extends OAuthRowStore, CiphertextStore {
   init(): Promise<void>;
   close(): Promise<void>;
 
@@ -628,4 +628,106 @@ export interface OAuthRowStore {
    * rows deleted.
    */
   revokeOAuthGrant(grantId: string): Promise<number>;
+}
+
+// ---------------------------------------------------------------------------
+// At-rest key rotation (#57b): what the rekey job (src/auth/rekey-job.ts) and
+// the startup key check read and write. Runtime writes to existing tables
+// only (`users`, `oauth_rows`, `schema_meta`); no schema step.
+// ---------------------------------------------------------------------------
+
+/** A user's stored YNAB refresh-token ciphertext. */
+export interface StoredUserCiphertext {
+  userId: string;
+  encryptedRefreshToken: string;
+}
+
+/** The key floors in `schema_meta` (0 when not recorded). */
+export interface KeyFloors {
+  /** `v1` and key ids below it are refused. */
+  retired: number;
+  /** Key ids below it are being retired: replicas whose current id is below it must not write. */
+  retiring: number;
+}
+
+/** What {@link CiphertextStore.recordEncryptionKeyCheck} found. */
+export type KeyCheckOutcome = 'recorded' | 'matches' | 'differs';
+
+export interface CiphertextStore {
+  /**
+   * Up to `limit` users, by user id and after `afterUserId` when given, whose
+   * `encrypted_refresh_token` does not start with `currentPrefix` (the
+   * keyring's `v2.<kid>.`). A page shorter than `limit` is the last.
+   */
+  listUserCiphertextsNotIn(
+    currentPrefix: string,
+    afterUserId: string | undefined,
+    limit: number
+  ): Promise<StoredUserCiphertext[]>;
+  /**
+   * Compare-and-set a user's refresh-token ciphertext to the same token under
+   * another key: written only while the stored value is still
+   * `oldCiphertext`. Unlike {@link Storage.updateUserRefreshToken} it stamps
+   * nothing else (`updated_at` is the YNAB token's, which hasn't changed).
+   * Returns whether it wrote.
+   */
+  rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean>;
+  /**
+   * The refresh-token ciphertexts of the staged sign-ins (`SignIn` rows) not
+   * expired at `now` (epoch ms, storage clock). Their bytes are copied into
+   * `users` when their code is saved, so the rekey job counts them before
+   * retiring a key; it does not rewrite them.
+   */
+  listStagedSignInCiphertexts(now: number): Promise<string[]>;
+  /**
+   * The retirement floor (`schema_meta.encryption_retired_below`): the legacy
+   * `v1` format and key ids below it are refused. 0 when none is recorded;
+   * an unreadable stored value throws.
+   */
+  getRetiredKeyFloor(): Promise<number>;
+  /**
+   * Both floors: `retired` ({@link getRetiredKeyFloor}) and `retiring`
+   * (`schema_meta.encryption_retiring_below`, announced before a retirement):
+   * no replica whose current key id is below either may write a ciphertext.
+   * 0 when not recorded; an unreadable stored value throws.
+   */
+  getKeyFloors(): Promise<KeyFloors>;
+  /**
+   * Make sure both floor rows exist (`0` when absent), so writers can lock
+   * them (Postgres: FOR SHARE) against a concurrent retirement. Called at
+   * startup; idempotent.
+   *
+   * The persistence-time guard (#57b): every write that stores a YNAB
+   * refresh-token ciphertext in `users` ({@link Storage.upsertUser},
+   * {@link Storage.updateUserRefreshToken}, {@link Storage.completeAuthorization},
+   * {@link OAuthRowStore.saveAuthorizationCode}) reads the retired floor in the
+   * same transaction and throws `KeyRetiredError` (src/storage/encryption-meta.ts),
+   * writing nothing, when the ciphertext's key id is below it. A write below
+   * only the announced floor is stored: it is still readable, and holds the
+   * retirement back until the next rekey pass rewrites it.
+   */
+  ensureKeyFloorRows(): Promise<void>;
+  /**
+   * Announce that key ids below `floor` (and `v1`) are about to be retired:
+   * raise `encryption_retiring_below` to `floor` when that is higher, in one
+   * statement (concurrent announcements keep the higher), and return the
+   * value now stored.
+   */
+  announceKeyRetirement(floor: number): Promise<number>;
+  /**
+   * Raise the retirement floor to `floor`, in one statement, only when it is
+   * higher than the stored one AND no `users` row holds a `v1` ciphertext or
+   * one under a key id below `floor`, other than the exact ciphertexts in
+   * `deadCiphertexts` (rows no key opens, which a pass has already counted as
+   * unreadable). So a token written under an old key after the rekey pass
+   * read the table holds the retirement back instead of being stranded.
+   * Returns the floor now stored (lower than `floor` when it was held back).
+   */
+  raiseRetiredKeyFloor(floor: number, deadCiphertexts?: readonly string[]): Promise<number>;
+  /**
+   * Record key `keyId`'s check value (`schema_meta`,
+   * `encryption_key_check.<id>`) when none is recorded; otherwise compare it
+   * with the recorded one, in constant time.
+   */
+  recordEncryptionKeyCheck(keyId: number, check: string): Promise<KeyCheckOutcome>;
 }

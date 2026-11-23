@@ -203,8 +203,26 @@ const SECRET_ENV_VARS = [
   'YNAB_OAUTH_CLIENT_SECRET',
   'ENCRYPTION_KEY',
   'TOKEN_PEPPER',
+  'ENCRYPTION_KEY_PREVIOUS',
   'DATABASE_URL',
 ] as const;
+
+/**
+ * The parts of a secret value that must also be redacted on their own: for a
+ * list of keys (`ENCRYPTION_KEY_PREVIOUS`, `<id>:<key>,...`) each entry and
+ * each key, longest first so a key is never left behind by its entry's
+ * replacement.
+ */
+function secretParts(name: string, value: string): string[] {
+  if (name !== 'ENCRYPTION_KEY_PREVIOUS') return [value];
+  const parts = new Set<string>([value]);
+  for (const entry of value.split(',')) {
+    parts.add(entry.trim());
+    const at = entry.indexOf(':');
+    if (at >= 0) parts.add(entry.slice(at + 1).trim());
+  }
+  return [...parts].sort((a, b) => b.length - a.length);
+}
 
 /**
  * Replace the exact values of secret environment variables in a message.
@@ -221,8 +239,11 @@ export function redactSecretEnvValues(
   let out = message;
   for (const name of SECRET_ENV_VARS) {
     const value = env[name];
-    // Very short values would redact ordinary words; real secrets are longer.
-    if (value !== undefined && value.length >= 8) out = out.split(value).join(`[${name} REDACTED]`);
+    if (value === undefined) continue;
+    for (const part of secretParts(name, value)) {
+      // Very short values would redact ordinary words; real secrets are longer.
+      if (part.length >= 8) out = out.split(part).join(`[${name} REDACTED]`);
+    }
   }
   return out;
 }

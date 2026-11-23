@@ -52,7 +52,7 @@ vi.mock('../../src/storage/index.js', async () => {
 import { buildHttpApp, INFLIGHT_RETRY_AFTER_SEC, startHttpServer, type HttpApp, type HttpAppOptions } from '../../src/http.js';
 import * as ynabOauth from '../../src/auth/ynab-oauth.js';
 import * as promptsModule from '../../src/prompts/index.js';
-import { Encryptor } from '../../src/crypto.js';
+import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
 import { WRITE_TIMEOUT_MESSAGE, TOOL_TIMEOUT_MESSAGE } from '../../src/server.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
@@ -173,7 +173,7 @@ async function oauthApp(overrides: Partial<HttpConfig> = {}): Promise<{
     handle,
     storage,
     addUser: async (userId, grantedScope) => {
-      await plantUser(storage, { userId, grantedScope, encryptedRefreshToken: encryptor.encrypt(`refresh-${userId}`) });
+      await plantUser(storage, { userId, grantedScope, encryptedRefreshToken: encryptor.encrypt(`refresh-${userId}`, refreshTokenContext(userId)) });
     },
     token: async (userId, clientId, level = 'read-write') => {
       return plantAccessToken(storage, {
