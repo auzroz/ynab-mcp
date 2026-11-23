@@ -72,7 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in progress, stop working: each user signs in again once per client (for
   example, 6 sign-ins for 3 users with 2 clients each). The claude.ai
   connector shows as disconnected until it's reconnected. Tell your users to
-  expect this. Rolling back to 0.4.x also means signing in again.
+  expect this. Rolling back to 0.4.x means restoring the pre-upgrade backup.
 
 ### Added
 

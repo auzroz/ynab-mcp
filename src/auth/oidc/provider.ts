@@ -18,8 +18,12 @@
  *     `invalid_target`), and the opaque access token's audience.
  *   - PKCE always (S256 is the library's only method). Refresh tokens rotate
  *     on every use and never expire with the session.
- *   - TTLs: access tokens `MCP_ACCESS_TOKEN_TTL_SEC`; codes, interactions and
- *     sessions `authCodeTtlSec`; refresh tokens the idle window capped by the
+ *   - TTLs: access tokens `MCP_ACCESS_TOKEN_TTL_SEC`; codes `authCodeTtlSec`;
+ *     interactions and sessions `authCodeTtlSec`, but at least
+ *     {@link INTERACTION_GRACE_SEC} past `YNAB_CALLBACK_DEADLINE_MS`, so a
+ *     sign-in that runs past its deadline still ends with a `server_error`
+ *     redirect to the client rather than on an expired interaction (#47-4);
+ *     refresh tokens the idle window capped by the
  *     absolute lifetime from the family's start (`iiat`) and by the grant's
  *     own expiry; grants the absolute lifetime plus the sign-in window, so a
  *     grant outlives every token issued under it and a token-less grant still
@@ -89,7 +93,7 @@ import type { OAuthRowStore } from '../../storage/types.js';
 import type { LibraryKeyDeriver } from '../token-hash.js';
 import { canonicalResource, isSameResource } from '../resource.js';
 import { KNOWN_SCOPES } from '../authorize-validation.js';
-import { retentionPolicy, type RetentionPolicy } from '../retention-defaults.js';
+import { retentionPolicy, YNAB_CALLBACK_DEADLINE_MS, type RetentionPolicy } from '../retention-defaults.js';
 import { sanitizeErrorMessage } from '../../utils/sanitize.js';
 import { createOidcAdapter } from './adapter.js';
 import { routePath } from './route-path.js';
@@ -145,7 +149,7 @@ export interface OidcProviderOptions {
   /** `ENCRYPTION_KEY`: the cookie-signing key is derived from it. */
   encryptionKey: string;
   accessTokenTtlSec: number;
-  /** `MCP_AUTH_CODE_TTL_SEC`: codes, interactions and sessions. */
+  /** `MCP_AUTH_CODE_TTL_SEC`: codes; interactions and sessions at least this (see {@link interactionLifetimeSec}). */
   authCodeTtlSec: number;
   /** STOR-1 and #54's windows; the defaults are in retention-defaults.ts. */
   retention?: Partial<RetentionPolicy> | undefined;
@@ -159,6 +163,14 @@ export interface OidcProvider {
   issuer: string;
   /** The canonical MCP resource: the only audience. */
   resource: string;
+}
+
+/** How long an interaction outlives the YNAB callback deadline: time for `complete` to finish with a denial. */
+export const INTERACTION_GRACE_SEC = 30;
+
+/** An interaction's (and its session's) lifetime: `MCP_AUTH_CODE_TTL_SEC`, or the deadline plus the grace, whichever is longer. */
+export function interactionLifetimeSec(authCodeTtlSec: number): number {
+  return Math.max(authCodeTtlSec, Math.ceil(YNAB_CALLBACK_DEADLINE_MS / 1000) + INTERACTION_GRACE_SEC);
 }
 
 /** The scope D7 sends the library for what a client asked at `/authorize`; undefined leaves a non-string alone. */
@@ -249,7 +261,15 @@ function requestNormalizer({ resource, publicUrl }: NormalizerDeps) {
     // Discovery lists the MCP scopes, as the SDK's metadata did, not the library's OIDC scopes.
     if ((DISCOVERY_PATHS as readonly string[]).includes(path) && isRecord(ctx.body)) {
       // `response_mode` is dropped (IGNORED_AUTHORIZE_PARAMS): every answer is a query redirect.
-      ctx.body = { ...ctx.body, scopes_supported: [...KNOWN_SCOPES], response_modes_supported: ['query'] };
+      // /revoke authenticates clients as /token does (client-auth reads only the body); the library
+      // omits the revocation list, which RFC 8414 would read as client_secret_basic.
+      const tokenAuth = ctx.body['token_endpoint_auth_methods_supported'];
+      ctx.body = {
+        ...ctx.body,
+        scopes_supported: [...KNOWN_SCOPES],
+        response_modes_supported: ['query'],
+        ...(Array.isArray(tokenAuth) ? { revocation_endpoint_auth_methods_supported: [...(tokenAuth as unknown[])] } : {}),
+      };
     }
     // The DCR response doesn't point at the configuration endpoint, which isn't served.
     if (path === registration && ctx.status === 201 && isRecord(ctx.body)) {
@@ -279,6 +299,7 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
   const issuer = publicUrl.href;
   const retention = retentionPolicy(options.retention);
   const { accessTokenTtlSec, authCodeTtlSec } = options;
+  const interactionTtlSec = interactionLifetimeSec(authCodeTtlSec);
   const absoluteSec = retention.refreshTokenTtlMs / 1000;
   const idleSec = retention.refreshTokenIdleMs / 1000;
   const secure = publicUrl.protocol === 'https:';
@@ -323,8 +344,8 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
     ttl: {
       AccessToken: accessTokenTtlSec,
       AuthorizationCode: authCodeTtlSec,
-      Interaction: authCodeTtlSec,
-      Session: authCodeTtlSec,
+      Interaction: interactionTtlSec,
+      Session: interactionTtlSec,
       Grant: positive(absoluteSec + 2 * authCodeTtlSec),
       RefreshToken: (ctx, token) => {
         const now = epochSec();

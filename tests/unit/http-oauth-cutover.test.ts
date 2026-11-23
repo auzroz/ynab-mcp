@@ -41,6 +41,7 @@ vi.mock('../../src/storage/index.js', async () => {
 import express from 'express';
 import { buildHttpApp, type HttpApp } from '../../src/http.js';
 import { mountAuthorizationServer } from '../../src/auth/as-router.js';
+import { INTERACTION_GRACE_SEC, interactionLifetimeSec } from '../../src/auth/oidc/provider.js';
 import { MemoryStorage } from '../../src/storage/memory.js';
 import type { OAuthRowRecord } from '../../src/storage/types.js';
 import type { HttpConfig } from '../../src/config/environment.js';
@@ -186,8 +187,7 @@ describe('the YNAB legs, as McpOAuthProvider tested them (moved from mcp-provide
       vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS + 1);
       return { accessToken: 'ynab-access', refreshToken: 'ynab-refresh', expiresAt: Date.now() + 7_200_000 };
     });
-    // An interaction that outlives the deadline (the default MCP_AUTH_CODE_TTL_SEC equals it, and
-    // an expired interaction ends on this server's own page instead of a redirect; see below).
+    // A longer MCP_AUTH_CODE_TTL_SEC: the interaction lives that long (the default case is below).
     const as = mountedAs({ authCodeTtlSec: 1800 });
     const client = await registerClient(as.app);
     const { challenge } = pkcePair();
@@ -198,7 +198,11 @@ describe('the YNAB legs, as McpOAuthProvider tested them (moved from mcp-provide
     expect(await as.storage.getUser('ynab-user-1')).toBeUndefined();
   });
 
-  it('with the default lifetimes, a sign-in past the deadline ends on this server\'s page and saves nothing', async () => {
+  it('with the default lifetimes, a sign-in just past the deadline still ends with a server_error redirect', async () => {
+    // MCP_AUTH_CODE_TTL_SEC defaults to the deadline (600 s); the interaction lives 30 s longer, so
+    // complete can still finish it with a denial instead of ending on this server's page.
+    expect(interactionLifetimeSec(600)).toBe(Math.ceil(YNAB_CALLBACK_DEADLINE_MS / 1000) + INTERACTION_GRACE_SEC);
+    expect(interactionLifetimeSec(3600)).toBe(3600);
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.mocked(ynabExchangeCode).mockImplementationOnce(async () => {
       vi.setSystemTime(Date.now() + YNAB_CALLBACK_DEADLINE_MS + 1);
@@ -206,15 +210,10 @@ describe('the YNAB legs, as McpOAuthProvider tested them (moved from mcp-provide
     });
     const client = await registerClient(app);
     const { challenge } = pkcePair();
-    const jar = new CookieJar();
-    const auth = await browse(app, jar, authorizeUrl({ clientId: client.clientId, challenge }));
-    const uid = /\/oauth\/interaction\/([A-Za-z0-9_-]{43})$/.exec(auth.headers['location'] as string)?.[1] as string;
-    const start = await browse(app, jar, `/oauth/interaction/${uid}/start?scope=read-only`);
-    const state = new URL(start.headers['location'] as string).searchParams.get('state') as string;
-    const callback = await browse(app, jar, `/oauth/ynab/callback?${new URLSearchParams({ state, code: 'c' }).toString()}`);
-    const complete = await browse(app, jar, callback.headers['location'] as string);
-    expect(complete.status).toBe(400);
-    expect(complete.headers['location']).toBeUndefined();
+    const flow = await browserFlow(app, new CookieJar(), { clientId: client.clientId, challenge });
+    expect(flow.params.get('error')).toBe('server_error');
+    expect(flow.params.has('code')).toBe(false);
+    expect(flow.params.get('state')).toBe('client-state');
     expect(await created.storage!.getUser('ynab-user-1')).toBeUndefined();
   });
 
@@ -505,6 +504,112 @@ describe('the authorize guard over the library (#55b)', () => {
   });
 });
 
+describe('client authentication methods: only what client-auth checks', () => {
+  it('discovery advertises client_secret_post and none, for /token and /revoke alike', async () => {
+    const doc = await request(app).get('/.well-known/oauth-authorization-server');
+    expect(doc.body.token_endpoint_auth_methods_supported).toEqual(['client_secret_post', 'none']);
+    expect(doc.body.revocation_endpoint_auth_methods_supported).toEqual(['client_secret_post', 'none']);
+  });
+
+  it.each(['client_secret_basic', 'client_secret_jwt', 'private_key_jwt', 'tls_client_auth'])(
+    'DCR refuses token_endpoint_auth_method=%s',
+    async (method) => {
+      const res = await request(app)
+        .post('/register')
+        .send({ redirect_uris: [REDIRECT_URI], token_endpoint_auth_method: method });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid_client_metadata');
+    }
+  );
+});
+
+describe('route spellings and unmounted library routes', () => {
+  function traced() {
+    const stages: string[] = [];
+    const as = mountedAs({}, (stage) => stages.push(stage));
+    return { as, stages };
+  }
+
+  it.each(['/REGISTER', '/register/', '/Register'])('%s still runs dcr-validator (a remote http redirect is refused)', async (path) => {
+    const { as, stages } = traced();
+    const res = await request(as.app).post(path).send({ redirect_uris: ['http://evil.example/cb'] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_redirect_uri');
+    expect(stages).toContain('dcr-validator');
+    expect(stages).not.toContain('as-library');
+  });
+
+  it.each(['/TOKEN', '/token/', '/Token'])('%s still runs client-auth', async (path) => {
+    const { as, stages } = traced();
+    const res = await request(as.app).post(path).type('form').send({ grant_type: 'refresh_token', refresh_token: 'x'.repeat(43), client_id: 'unknown' });
+    expect(res.body).toEqual({ error: 'invalid_client', error_description: 'Invalid client_id' });
+    expect(stages).toContain('client-auth');
+    expect(stages).not.toContain('as-library');
+  });
+
+  it.each([
+    ['post', '//register'],
+    ['post', '/%72egister'],
+    ['post', '/register%2f'],
+    ['post', '//token'],
+    ['post', '/%74oken'],
+  ] as const)('%s %s matches no route: 404, no stage runs', async (method, path) => {
+    const { as, stages } = traced();
+    const res = await request(as.app)[method](path).send({ redirect_uris: ['http://evil.example/cb'] });
+    expect(res.status).toBe(404);
+    expect(stages).toEqual([]);
+  });
+
+  it.each([
+    ['get', '/register/some-client-id'],
+    ['post', '/register/some-client-id'],
+    ['post', '/token/introspection'],
+    ['post', '/token/x'],
+    ['get', '/jwks/x'],
+    ['get', '/authorize/x/y'],
+    ['get', '/.well-known/openid-configuration/x'],
+    ['get', '/session/end'],
+    ['post', '/session/end/confirm'],
+    ['get', '/me'],
+    ['post', '/request'],
+    ['post', '/device/auth'],
+    ['get', '/device'],
+    ['post', '/backchannel'],
+  ] as const)('%s %s never reaches the library', async (method, path) => {
+    const { as } = traced();
+    const res = await request(as.app)[method](path);
+    // A stage's refusal (405, dcr-validator's 400) or the app's own 404; never the library's
+    // "unrecognized route" answer.
+    expect([400, 404, 405]).toContain(res.status);
+    expect(res.text).not.toMatch(/unrecognized route/);
+    if (res.status === 404) expect(res.text).toMatch(/Cannot (GET|POST)/);
+  });
+});
+
+describe('CORS on /token, /revoke and /register (D8)', () => {
+  it.each(['/token', '/revoke', '/register'])('%s answers any origin with *, never the echoed Origin or credentials', async (path) => {
+    const res = await request(app).post(path).set('Origin', 'https://evil.example').send({});
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+    expect(res.headers['access-control-allow-credentials']).toBeUndefined();
+    const pre = await request(app).options(path).set('Origin', 'https://evil.example').set('Access-Control-Request-Method', 'POST');
+    expect(pre.status).toBe(204);
+    expect(pre.headers['access-control-allow-origin']).toBe('*');
+    expect(pre.headers['access-control-allow-credentials']).toBeUndefined();
+  });
+
+  it('a successful token response from the library carries * too, not the echoed Origin', async () => {
+    const { client, verifier, code } = await signIn();
+    const res = await request(app)
+      .post('/token')
+      .set('Origin', 'https://evil.example')
+      .type('form')
+      .send({ grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: REDIRECT_URI, client_id: client.clientId });
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+    expect(res.headers['access-control-allow-credentials']).toBeUndefined();
+  });
+});
+
 describe('registration access tokens go with their client', () => {
   it('DCR leaves one; deleting the client takes it', async () => {
     const as = mountedAs();
@@ -521,7 +626,7 @@ describe('registration access tokens go with their client', () => {
 });
 
 /** The authorization server alone on an app of its own, over memory storage, to reach its library instance. */
-function mountedAs(overrides: Partial<HttpConfig> = {}) {
+function mountedAs(overrides: Partial<HttpConfig> = {}, observeStage?: (stage: string) => void) {
   const storage = new MemoryStorage();
   const app = express();
   const config = makeHttpConfig({
@@ -539,6 +644,7 @@ function mountedAs(overrides: Partial<HttpConfig> = {}) {
     encryptor: new Encryptor(config.encryptionKey as string),
     tokenHasher: TEST_TOKEN_HASHER,
     ynab: { clientId: 'ynab-client-id', clientSecret: 'ynab-client-secret' },
+    observeStage,
   });
   return { app, server, storage };
 }

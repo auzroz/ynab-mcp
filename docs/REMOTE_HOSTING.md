@@ -581,13 +581,19 @@ Clients, tokens and codes now live in one `oauth_rows` table, which the first
   reconnected. **Tell your users to expect this.**
 - **The old token tables stay, unread.** `access_tokens`, `refresh_tokens`,
   `auth_codes`, `pending_auth`, `consumed_refresh_tokens` and
-  `consumed_auth_codes` keep their rows so that 0.4.x can still start after a
-  rollback. The sweep keeps deleting expired rows from them on the usual
-  schedule, and deleting an account removes the user's rows there too. 0.6
-  drops them.
-- **Rolling back to 0.4.x** means every connection signs in again (0.4.x
-  can't read tokens 0.5.0 issued). Clients converted by 0.5.0 are still
-  registered in the old table.
+  `consumed_auth_codes` keep their rows, unread. The sweep keeps deleting
+  expired rows from them on the usual schedule, and deleting an account
+  removes the user's rows there too. 0.6 drops them.
+- **Rolling back to 0.4.x means restoring the pre-upgrade backup.** 0.4.x
+  can't read the schema or the encrypted data 0.5.0 writes, so take the
+  backup before the first 0.5.0 start.
+- **A `PUBLIC_URL` with a path** (for example `https://example.com/ynab`): the
+  YNAB legs and the consent page are linked under that path (`/ynab/oauth/...`),
+  but the authorization server's own endpoints are published at the root of
+  the host (`/authorize`, `/token`, `/register`, `/revoke`, `/jwks` and the
+  discovery documents, including the return through `/authorize/<id>`), as
+  0.4.x published them. Such a deployment must route those root paths to the
+  server as well as the prefixed ones.
 - **What clients may notice:** `POST /authorize` answers `405`;
   `prompt=none` answers `login_required`; `token_type` is `Bearer`; a
   read-write token's `scope` is `read-only read-write`; the registration

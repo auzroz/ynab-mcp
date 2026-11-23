@@ -250,7 +250,17 @@ export function mountAuthorizationServer(
     );
   const metadata = (doc: Readonly<Record<string, unknown>>): Stage => stage('metadata', ...metadataDocument(doc));
   const library = asLibraryHandler(provider);
-  const asLibrary = (): Stage => stage('as-library', library);
+  // Exactly the route (any spelling Express and the library both route: case, one trailing
+  // slash), plus the resume route under /authorize. Anything else under a mount (/token/introspection,
+  // /register/<id>, /jwks/x, ...) never reaches the library: it falls through to the app's 404.
+  const asLibrary = (subpath?: RegExp): Stage =>
+    stage('as-library', (req, res, next) => {
+      if (req.path === '/' || (subpath !== undefined && subpath.test(req.path))) {
+        library(req, res, next);
+        return;
+      }
+      next();
+    });
   const methods = (...allowed: string[]): Stage => stage('method-check', methodCheck(allowed));
   const cors = (): Stage => stage('cors-origin', corsOrigin);
 
@@ -387,7 +397,8 @@ export function mountAuthorizationServer(
         // #55b: no error redirect to an unverified client's redirect URI.
         stage('authorize-guard', authorizeGuard({ issuer, resource })),
       ],
-      router: asLibrary(),
+      // The library's resume route: /authorize/<interaction uid>.
+      router: asLibrary(/^\/[A-Za-z0-9_-]{43}\/?$/),
     },
     {
       path: OIDC_ROUTES.token,
