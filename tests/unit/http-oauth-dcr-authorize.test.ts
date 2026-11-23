@@ -1,16 +1,18 @@
 /**
- * #55 end to end over HTTP: dynamic client registration rules (dcr-validator),
- * /authorize bounds and the grandfathered-client refusal
- * (authorize-validation), the open-redirect guard over every server-legacy
- * phase-2 error path (authorize-guard), and the consent page. Only the YNAB
- * network calls are absent (nothing here reaches them).
+ * #55 end to end over HTTP, with oidc-provider mounted (#47-4): dynamic
+ * client registration rules (dcr-validator), /authorize bounds and the
+ * grandfathered-client refusal (authorize-validation), the open-redirect
+ * guard over every error the library would redirect once it has accepted the
+ * client and the redirect URI (authorize-guard's pre-validation and its
+ * redirect net), and the consent page (the library's interaction, which
+ * /authorize sends the browser to with a 303). Only the YNAB network calls
+ * are absent (nothing here reaches them).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import type { Express } from 'express';
-import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
 import type { Storage } from '../../src/storage/types.js';
 
 // Keeps a handle on the storage the app creates, to plant clients registered
@@ -28,14 +30,13 @@ vi.mock('../../src/storage/index.js', async () => {
 });
 
 import { createHttpApp } from '../../src/http.js';
-import { McpOAuthProvider } from '../../src/auth/mcp-provider.js';
-import { MemoryStorage } from '../../src/storage/memory.js';
-import { Encryptor } from '../../src/crypto.js';
 import { MAX_CLIENT_ID_LENGTH, MAX_SCOPES, MAX_STATE_LENGTH } from '../../src/auth/authorize-validation.js';
 import { PAGE_CSP } from '../../src/auth/auth-pages.js';
+import { plainRowKey } from '../../src/storage/oauth-rows.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { TEST_TOKEN_HASHER } from './helpers/token-hasher.js';
-import { plantClient, registerTestClient } from './helpers/oauth-state.js';
+import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { plantClient, registerTestClient, storedClient } from './helpers/oauth-state.js';
+import { CookieJar, browse, interactionUid } from './helpers/oidc-app.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
 const PUBLIC_URL = 'https://mcp.example.com';
@@ -53,6 +54,8 @@ function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
     oauthClientId: 'cid',
     oauthClientSecret: 'sec',
     encryptionKey: randomBytes(32).toString('base64'),
+    // The shared test pepper, so this file can find the interaction a request created.
+    tokenPepper: TEST_TOKEN_PEPPER,
     ...overrides,
   });
 }
@@ -91,7 +94,8 @@ async function register(redirectUris: string[], extra: Record<string, unknown> =
 /** A client saved straight to storage, as an older release could have registered it. */
 async function plant(client: Record<string, unknown>): Promise<string> {
   const clientId = randomUUID();
-  await plantClient(storage(), { client_id: clientId, client_id_issued_at: 1, ...client });
+  // A public client, as a 0.4.x DCR client without a secret was stored (method `none`).
+  await plantClient(storage(), { client_id: clientId, client_id_issued_at: 1, token_endpoint_auth_method: 'none', ...client });
   return clientId;
 }
 
@@ -107,8 +111,51 @@ function authorizeQuery(clientId: string, redirectUri: string, extra: Record<str
   };
 }
 
-const authorize = (clientId: string, redirectUri: string, extra: Record<string, unknown> = {}, on: Express = app) =>
-  request(on).get('/authorize').query(authorizeQuery(clientId, redirectUri, extra));
+/** The interaction a 303 from /authorize names (the consent page), or undefined for any other answer. */
+function interactionOf(res: request.Response): string | undefined {
+  const location = res.headers['location'] as string | undefined;
+  if (res.status !== 303 || location === undefined) return undefined;
+  return new URL(location, PUBLIC_URL).pathname.startsWith('/oauth/interaction/') ? location : undefined;
+}
+
+/**
+ * Follow a 303 from /authorize to the consent page, as the browser would
+ * (with the library's interaction cookie); any other answer is returned as is.
+ */
+async function follow(res: request.Response, on: Express = app): Promise<request.Response> {
+  const location = interactionOf(res);
+  if (location === undefined) return res;
+  const jar = new CookieJar();
+  jar.take(res);
+  return browse(on, jar, location);
+}
+
+/** GET /authorize, following a 303 to the consent page. */
+const authorize = async (clientId: string, redirectUri: string, extra: Record<string, unknown> = {}, on: Express = app) =>
+  follow(await request(on).get('/authorize').query(authorizeQuery(clientId, redirectUri, extra)), on);
+
+/** GET a raw /authorize path (repeated parameters), following a 303 to the consent page. */
+const authorizeRaw = async (path: string, on: Express = app) => follow(await request(on).get(path), on);
+
+/** The scope the library holds for the interaction a 303 from /authorize names (D7 has normalized it). */
+async function interactionScope(res: request.Response): Promise<unknown> {
+  const location = interactionOf(res);
+  if (location === undefined) throw new Error(`not a redirect to the consent page: ${res.status}`);
+  const key = TEST_TOKEN_HASHER.libraryStorageKey('interaction', interactionUid(location)) as string;
+  const row = await storage().findOAuthRow(key);
+  return (JSON.parse(row?.payload ?? '{}') as { params?: { scope?: unknown } }).params?.scope;
+}
+
+/** Whether `run` created an interaction (the library got past every check of the request). */
+async function interactionsDuring(run: () => Promise<unknown>): Promise<number> {
+  const upsert = vi.spyOn(storage(), 'upsertOAuthRow');
+  try {
+    await run();
+    return upsert.mock.calls.filter(([row]) => row.model === 'Interaction').length;
+  } finally {
+    upsert.mockRestore();
+  }
+}
 
 /** The error page for an unverified client: no redirect, the error shown, the strict headers. */
 function expectErrorPage(res: request.Response, error: string, status = 400): void {
@@ -169,8 +216,20 @@ describe('/register: our DCR rules (55a)', () => {
     for (const field of ['jwks', 'contacts', 'software_statement', 'logo_uri', 'client_uri', 'tos_uri', 'policy_uri', 'jwks_uri']) {
       expect(res.body[field], field).toBeUndefined();
     }
-    const stored = (await storage().getClient(res.body.client_id as string)) as unknown as Record<string, unknown>;
+    const stored = await storedClient(storage(), res.body.client_id as string);
+    expect(stored).toBeDefined();
     expect(JSON.stringify(stored)).not.toContain('attacker.example');
+  });
+
+  it('refuses sector_identifier_uri (the library would fetch it) with invalid_client_metadata, before the library', async () => {
+    const res = await request(app)
+      .post('/register')
+      .set('Origin', 'https://inspector.example')
+      .send({ redirect_uris: [CALLBACK], token_endpoint_auth_method: 'none', sector_identifier_uri: 'https://attacker.example/s.json' });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'invalid_client_metadata', error_description: 'sector_identifier_uri is not supported' });
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+    expect(res.headers['cache-control']).toBe('no-store');
   });
 
   it.each([
@@ -211,34 +270,6 @@ describe('/register: our DCR rules (55a)', () => {
     expect(res.body.application_type).toBe('native');
   });
 
-  it('the provider applies the same rules if the stage is bypassed (fail closed)', async () => {
-    const provider = new McpOAuthProvider({
-      storage: new MemoryStorage(),
-      encryptor: new Encryptor(randomBytes(32).toString('base64')),
-      tokenHasher: TEST_TOKEN_HASHER,
-      ynab: { clientId: 'cid', clientSecret: 'sec' },
-      publicUrl: PUBLIC_URL,
-      allowWrite: true,
-      globalReadOnly: false,
-      accessTokenTtlSec: 3600,
-      authCodeTtlSec: 600,
-    });
-    await expect(
-      provider.clientsStore.registerClient!({ redirect_uris: ['http://attacker.example/cb'] } as OAuthClientInformationFull)
-    ).rejects.toMatchObject({ errorCode: 'invalid_redirect_uri' });
-    await expect(
-      provider.clientsStore.registerClient!({ redirect_uris: [CALLBACK], client_name: 'a‮b' } as OAuthClientInformationFull)
-    ).rejects.toMatchObject({ errorCode: 'invalid_client_metadata' });
-    const ok = await provider.clientsStore.registerClient!({
-      redirect_uris: [CALLBACK],
-      logo_uri: 'https://attacker.example/logo.png',
-      client_secret: 'plain-secret',
-      client_secret_expires_at: 0,
-    } as OAuthClientInformationFull);
-    expect(ok.logo_uri).toBeUndefined();
-    expect(ok.client_secret).toBe('plain-secret');
-    expect(ok.client_secret_expires_at).toBe(0);
-  });
 });
 
 describe('/authorize bounds (55a)', () => {
@@ -249,7 +280,7 @@ describe('/authorize bounds (55a)', () => {
     const res = await authorize(clientId, CALLBACK, { state: long });
     expect(refused(res, 'invalid_request').has('state')).toBe(false);
     expect(res.text).not.toContain(long);
-    const twice = await request(app).get(
+    const twice = await authorizeRaw(
       `/authorize?response_type=code&client_id=${clientId}&code_challenge=${CHALLENGE}&code_challenge_method=S256&state=a&state=b`
     );
     expect(refused(twice, 'invalid_request').has('state')).toBe(false);
@@ -276,27 +307,36 @@ describe('/authorize bounds (55a)', () => {
     refused(await authorize(clientId, CALLBACK, { scope: six }), 'invalid_scope');
   });
 
-  it('unknown scopes are dropped before the handler (batch-3 default)', async () => {
-    const clientId = await register([CALLBACK]);
-    const save = vi.spyOn(storage(), 'savePendingAuth');
-    const res = await authorize(clientId, CALLBACK, { scope: 'openid read-only profile read-only' });
-    expect(res.status).toBe(200);
-    expect(save.mock.calls[0]?.[0].scopes).toEqual(['read-only']);
-    // Only read-only was asked for, so read-write isn't offered.
-    expect(res.text).not.toContain('scope=read-write');
+  it('unknown scopes are dropped before the library (batch-3 default; D7 normalizes the rest)', async () => {
+    const writable = await createHttpApp(makeConfig({ readOnly: false }));
+    const clientId = await register([CALLBACK], {}, writable);
+    const send = (scope: string) => request(writable).get('/authorize').query(authorizeQuery(clientId, CALLBACK, { scope }));
 
-    const onlyUnknown = await authorize(clientId, CALLBACK, { scope: 'openid offline_access' });
-    expect(onlyUnknown.status).toBe(200);
-    expect(save.mock.calls[1]?.[0].scopes).toEqual([]);
+    const readOnly = await send('openid read-only profile read-only');
+    expect(await interactionScope(readOnly)).toBe('read-only');
+    const page = await follow(readOnly, writable);
+    expect(page.status).toBe(200);
+    // Only read-only was asked for, so read-write isn't offered.
+    expect(page.text).not.toContain('scope=read-write');
+
+    // Nothing known asked for: D7 asks for both levels, as no scope at all does.
+    const onlyUnknown = await send('openid offline_access');
+    expect(await interactionScope(onlyUnknown)).toBe('read-only read-write');
+    expect((await follow(onlyUnknown, writable)).text).toContain('scope=read-write');
   });
 
-  it('applies the same bounds to POST /authorize', async () => {
+  it('POST /authorize is not served: 405 from method-check, before any bound or lookup', async () => {
     const clientId = await register([CALLBACK]);
+    const lookup = vi.spyOn(storage(), 'findOAuthRow');
     const res = await request(app)
       .post('/authorize')
       .type('form')
       .send(authorizeQuery(clientId, CALLBACK, { state: 'x'.repeat(MAX_STATE_LENGTH + 1) }));
-    refused(res, 'invalid_request');
+    expect(res.status).toBe(405);
+    expect(res.headers['allow']).toBe('GET');
+    expect(res.headers['location']).toBeUndefined();
+    expect(res.body.error).toBe('method_not_allowed');
+    expect(lookup).not.toHaveBeenCalled();
   });
 
   it('a verified client gets the bounds errors as RFC 6749 redirects with iss', async () => {
@@ -313,7 +353,7 @@ describe('/authorize bounds (55a)', () => {
     expectErrorRedirect(await authorize(clientId, CALLBACK, { scope: 'a b c d e f' }, verified), CALLBACK, 'invalid_scope');
   });
 
-  describe('client_id: an invalid one never reaches the client store (GET and POST)', () => {
+  describe('client_id: an invalid one never reaches the client store', () => {
     const overlong = 'a'.repeat(MAX_CLIENT_ID_LENGTH + 1);
     // The rest of a valid authorization request, so only client_id is wrong.
     const rest = { response_type: 'code', redirect_uri: CALLBACK, code_challenge: CHALLENGE, code_challenge_method: 'S256' };
@@ -323,52 +363,51 @@ describe('/authorize bounds (55a)', () => {
       { name: 'GET empty', error: 'invalid_client', send: () => request(app).get(`/authorize?${qs}&client_id=`) },
       { name: 'GET overlong', error: 'invalid_client', send: () => request(app).get(`/authorize?${qs}&client_id=${overlong}`) },
       { name: 'GET repeated', error: 'invalid_request', send: () => request(app).get(`/authorize?${qs}&client_id=a&client_id=b`) },
-      { name: 'POST missing', error: 'invalid_request', send: () => request(app).post('/authorize').type('form').send(rest) },
-      { name: 'POST empty', error: 'invalid_client', send: () => request(app).post('/authorize').type('form').send({ ...rest, client_id: '' }) },
-      {
-        name: 'POST overlong',
-        error: 'invalid_client',
-        send: () => request(app).post('/authorize').type('form').send({ ...rest, client_id: overlong }),
-      },
-      {
-        name: 'POST repeated',
-        error: 'invalid_request',
-        send: () => request(app).post('/authorize').type('form').send(`${qs}&client_id=a&client_id=b`),
-      },
     ];
 
-    it.each(SHAPES)('$name: the handler-shaped 400, with no getClient call', async ({ error, send }) => {
-      const lookup = vi.spyOn(storage(), 'getClient');
-      const res = await send();
-      expect(res.status).toBe(400);
-      expect(res.headers['cache-control']).toBe('no-store');
-      expect(res.headers['location']).toBeUndefined();
-      expect(res.body.error).toBe(error);
-      if (error === 'invalid_client') expect(res.body.error_description).toBe('Invalid client_id');
-      expect(lookup).not.toHaveBeenCalled();
+    /** The client lookups `run` makes (reads of a `Client` row). */
+    async function clientLookups(run: () => Promise<unknown>): Promise<string[]> {
+      const find = vi.spyOn(storage(), 'findOAuthRow');
+      try {
+        await run();
+        return find.mock.calls.map(([key]) => key).filter((key) => key.startsWith(plainRowKey('Client', '')));
+      } finally {
+        find.mockRestore();
+      }
+    }
+
+    it.each(SHAPES)('$name: the SDK-handler-shaped 400, with no client lookup', async ({ error, send }) => {
+      let res: request.Response | undefined;
+      const lookups = await clientLookups(async () => {
+        res = await send();
+      });
+      expect(res?.status).toBe(400);
+      expect(res?.headers['cache-control']).toBe('no-store');
+      expect(res?.headers['location']).toBeUndefined();
+      expect(res?.body.error).toBe(error);
+      if (error === 'invalid_client') expect(res?.body.error_description).toBe('Invalid client_id');
+      expect(lookups).toEqual([]);
     });
 
-    it('a valid client_id is still looked up as before: once by the stage, once by the handler', async () => {
+    it('a valid client_id is looked up by the stage and by the library; an unknown one gets the library 400', async () => {
       const clientId = await register([CALLBACK]);
-      const lookup = vi.spyOn(storage(), 'getClient');
-      expect((await authorize(clientId, CALLBACK)).status).toBe(200);
-      expect(lookup.mock.calls).toEqual([[clientId], [clientId]]);
-      lookup.mockClear();
-      const post = await request(app).post('/authorize').type('form').send(authorizeQuery(clientId, CALLBACK));
-      expect(post.status).toBe(200);
-      expect(lookup.mock.calls).toEqual([[clientId], [clientId]]);
-      lookup.mockClear();
+      const key = plainRowKey('Client', clientId);
+      let res: request.Response | undefined;
+      expect(await clientLookups(async () => (res = await request(app).get('/authorize').query(authorizeQuery(clientId, CALLBACK))))).toEqual([key, key]);
+      expect(interactionOf(res as request.Response)).toBeDefined();
+
       const id = 'b'.repeat(MAX_CLIENT_ID_LENGTH);
-      const unknown = await authorize(id, CALLBACK);
-      expect(unknown.status).toBe(400);
-      expect(unknown.body).toEqual({ error: 'invalid_client', error_description: 'Invalid client_id' });
-      expect(lookup.mock.calls).toEqual([[id], [id]]);
+      const lookups = await clientLookups(async () => (res = await authorize(id, CALLBACK)));
+      expect(res?.status).toBe(400);
+      expect(res?.headers['location']).toBeUndefined();
+      expect(res?.body.error).toBe('invalid_client');
+      expect(new Set(lookups)).toEqual(new Set([plainRowKey('Client', id)]));
     });
   });
 
   it('a storage failure looking up the client is a generic 500, never a redirect', async () => {
     const clientId = await register([CALLBACK]);
-    vi.spyOn(storage(), 'getClient').mockRejectedValueOnce(new Error('connect ECONNREFUSED db.internal:5432'));
+    vi.spyOn(storage(), 'findOAuthRow').mockRejectedValueOnce(new Error('connect ECONNREFUSED db.internal:5432'));
     const res = await authorize(clientId, CALLBACK);
     expect(res.status).toBe(500);
     expect(res.headers['location']).toBeUndefined();
@@ -391,14 +430,13 @@ describe('/authorize bounds (55a)', () => {
       ['a percent-encoded path', 'http://127.0.0.1:5555/c%62'],
       ['another case in the path', 'http://127.0.0.1:1234/CB'],
       ['an IPv4 shorthand for the host', 'http://127.1:5555/cb'],
-    ])('refuses %s with a direct 400 before the handler', async (_name, requested) => {
+    ])('refuses %s with a direct 400 before the library', async (_name, requested) => {
       const clientId = await register([REG]);
-      const save = vi.spyOn(storage(), 'savePendingAuth');
-      const res = await authorize(clientId, requested);
-      expect(res.status).toBe(400);
-      expect(res.headers['location']).toBeUndefined();
-      expect(res.body).toEqual({ error: 'invalid_request', error_description: 'Unregistered redirect_uri' });
-      expect(save).not.toHaveBeenCalled();
+      let res: request.Response | undefined;
+      expect(await interactionsDuring(async () => (res = await authorize(clientId, requested)))).toBe(0);
+      expect(res?.status).toBe(400);
+      expect(res?.headers['location']).toBeUndefined();
+      expect(res?.body).toEqual({ error: 'invalid_request', error_description: 'Unregistered redirect_uri' });
     });
 
     it('refuses an https loopback redirect URI on another port', async () => {
@@ -427,19 +465,21 @@ describe('/authorize bounds (55a)', () => {
       return rest;
     };
 
+    // A stored redirect URI with a fragment fails the library's client schema
+    // (M4 drops such 0.4.x clients): our stages read it as unknown, and the
+    // library refuses it with its own 400 `invalid_redirect_uri`, never a
+    // redirect.
     it.each([
       ['an https URI', 'https://client.example/cb#frag'],
       ['a loopback URI', 'http://127.0.0.1:1234/cb#frag'],
       ['an empty fragment', 'https://client.example/cb#'],
     ])('refuses a stored redirect URI with a fragment (%s) when the request names it, with a direct 400', async (_name, uri) => {
-      // Stored under older rules: the fragment is only logged at lookup.
       const clientId = await plant({ redirect_uris: [uri] });
-      const save = vi.spyOn(storage(), 'savePendingAuth');
-      const res = await authorize(clientId, uri);
-      expect(res.status).toBe(400);
-      expect(res.headers['location']).toBeUndefined();
-      expect(res.body).toEqual({ error: 'invalid_request', error_description: 'Unregistered redirect_uri' });
-      expect(save).not.toHaveBeenCalled();
+      let res: request.Response | undefined;
+      expect(await interactionsDuring(async () => (res = await authorize(clientId, uri)))).toBe(0);
+      expect(res?.status).toBe(400);
+      expect(res?.headers['location']).toBeUndefined();
+      expect(res?.body).toEqual({ error: 'invalid_redirect_uri', error_description: 'redirect_uris must not contain fragments' });
     });
 
     it.each([
@@ -447,28 +487,25 @@ describe('/authorize bounds (55a)', () => {
       ['a loopback URI', 'http://127.0.0.1:1234/cb#frag'],
     ])('refuses the only stored redirect URI when it has a fragment (%s) and none is requested, with a direct 400', async (_name, uri) => {
       const clientId = await plant({ redirect_uris: [uri] });
-      const save = vi.spyOn(storage(), 'savePendingAuth');
-      for (const res of [
-        await request(app).get('/authorize').query(implicitQuery(clientId)),
-        await request(app).post('/authorize').type('form').send(implicitQuery(clientId)),
-      ]) {
-        expect(res.status).toBe(400);
-        expect(res.headers['location']).toBeUndefined();
-        expect(res.headers['cache-control']).toBe('no-store');
-        expect(res.body).toEqual({ error: 'invalid_request', error_description: 'Unregistered redirect_uri' });
-      }
-      expect(save).not.toHaveBeenCalled();
+      let res: request.Response | undefined;
+      expect(
+        await interactionsDuring(async () => (res = await request(app).get('/authorize').query(implicitQuery(clientId))))
+      ).toBe(0);
+      expect(res?.status).toBe(400);
+      expect(res?.headers['location']).toBeUndefined();
+      expect(res?.headers['cache-control']).toBe('no-store');
+      expect(res?.body).toEqual({ error: 'invalid_redirect_uri', error_description: 'redirect_uris must not contain fragments' });
     });
 
     it('still uses the only registered redirect URI when none is requested', async () => {
       const clientId = await register([CALLBACK]);
-      const res = await request(app).get('/authorize').query(implicitQuery(clientId));
+      const res = await follow(await request(app).get('/authorize').query(implicitQuery(clientId)));
       expect(res.status).toBe(200);
       expect(res.text).toContain('returned to <strong>client.example</strong>');
     });
   });
 
-  it('leaves the handler 400 JSON for an unknown client and an unregistered redirect URI', async () => {
+  it('answers an unknown client and an unregistered redirect URI with a 400 JSON, never a redirect', async () => {
     const unknown = await authorize('no-such-client', CALLBACK);
     expect(unknown.status).toBe(400);
     expect(unknown.body.error).toBe('invalid_client');
@@ -510,65 +547,87 @@ describe('grandfathered clients (55a, batch-3 default)', () => {
     expect((await authorize(clientId, CALLBACK)).status).toBe(200);
     const logged = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes(clientId));
     expect(logged).toHaveLength(1);
-    expect(logged[0]).toContain('redirect_uris count; client_name; unsupported fields: logo_uri');
+    // Only the stored client's own failures: not the fields the library fills in by default.
+    expect(logged[0]).toContain('redirect_uris count; client_name; unsupported fields: logo_uri.');
     expect(logged[0]).not.toContain('client.example');
   });
 
-  it('accepts a stored loopback-http client', async () => {
-    const clientId = await plant({ redirect_uris: ['http://127.0.0.1/cb'] });
+  it('logs nothing for a client registered today (the library-default fields are not "older rules")', async () => {
+    const clientId = await register([CALLBACK]);
+    expect((await authorize(clientId, CALLBACK)).status).toBe(200);
+    expect(warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes(clientId))).toEqual([]);
+  });
+
+  it('accepts a stored loopback-http client (native, as M4 converts one)', async () => {
+    const clientId = await plant({ redirect_uris: ['http://127.0.0.1/cb'], application_type: 'native' });
     expect((await authorize(clientId, 'http://127.0.0.1:5000/cb')).status).toBe(200);
   });
 });
 
 /**
- * Every server-legacy 2.4.0 /authorize error after the client and redirect URI
- * are accepted (authorize-guard-legacy.ts lists them). For an unverified
- * client each one becomes our page; for a verified one it stays a redirect.
+ * Every error oidc-provider would redirect to the client once it has accepted
+ * the client and the redirect URI (its /authorize stack, see
+ * authorize-guard.ts). authorize-guard answers each one before the library
+ * runs: for an unverified client our page, for a verified one a redirect.
  */
-const PHASE2: ReadonlyArray<{ name: string; error: string; status?: number; send: (on: Express, clientId: string, uri: string) => request.Test; arrange?: () => void }> = [
+const PHASE2: ReadonlyArray<{ name: string; error: string; send: (on: Express, clientId: string, uri: string) => request.Test }> = [
   {
-    name: 'response_type other than code (schema)',
-    error: 'invalid_request',
+    name: 'response_type other than code',
+    error: 'unsupported_response_type',
     send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri, { response_type: 'token' })),
   },
   {
-    name: 'code_challenge_method plain (schema)',
+    name: 'response_type missing',
+    error: 'invalid_request',
+    send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri, { response_type: undefined })),
+  },
+  {
+    name: 'code_challenge_method plain',
     error: 'invalid_request',
     send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri, { code_challenge_method: 'plain' })),
   },
   {
-    name: 'resource that is not a URL (schema)',
+    name: 'a repeated parameter',
     error: 'invalid_request',
+    send: (on, id, uri) =>
+      request(on).get(`/authorize?${new URLSearchParams(authorizeQuery(id, uri) as Record<string, string>).toString()}&response_type=code`),
+  },
+  {
+    name: 'a request object (request_uri)',
+    error: 'request_uri_not_supported',
+    send: (on, id, uri) =>
+      request(on).get('/authorize').query(authorizeQuery(id, uri, { request_uri: 'https://attacker.example/req' })),
+  },
+  {
+    name: 'prompt=none (every authorization needs the consent page and YNAB)',
+    error: 'login_required',
+    send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri, { prompt: 'none' })),
+  },
+  {
+    name: 'an unsupported prompt value',
+    error: 'invalid_request',
+    send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri, { prompt: 'select_account' })),
+  },
+  {
+    name: 'a resource that is not a URL',
+    error: 'invalid_target',
     send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri, { resource: 'not a url' })),
   },
   {
-    name: 'POST with a schema error',
-    error: 'invalid_request',
-    send: (on, id, uri) => request(on).post('/authorize').type('form').send(authorizeQuery(id, uri, { response_type: 'token' })),
-  },
-  {
-    name: 'provider OAuth error (invalid_target for a foreign resource)',
+    name: 'a foreign resource (invalid_target)',
     error: 'invalid_target',
     send: (on, id, uri) =>
       request(on).get('/authorize').query(authorizeQuery(id, uri, { resource: 'https://evil.example/mcp' })),
   },
-  {
-    name: 'provider failure (storage error, server_error)',
-    error: 'server_error',
-    status: 500,
-    arrange: () => {
-      vi.spyOn(storage(), 'savePendingAuth').mockRejectedValueOnce(new Error('connect ECONNREFUSED db.internal:5432'));
-    },
-    send: (on, id, uri) => request(on).get('/authorize').query(authorizeQuery(id, uri)),
-  },
 ];
 
-describe('authorize-guard: every phase-2 error path (55b)', () => {
-  it.each(PHASE2)('unverified client, $name: our page, not a redirect', async ({ error, status, send, arrange }) => {
+describe('authorize-guard: every error the library would redirect (55b)', () => {
+  it.each(PHASE2)('unverified client, $name: our page, not a redirect, and the library never runs', async ({ error, send }) => {
     const clientId = await register([CALLBACK]);
-    arrange?.();
-    const res = await send(app, clientId, CALLBACK);
-    expectErrorPage(res, error, status);
+    let res: request.Response | undefined;
+    expect(await interactionsDuring(async () => (res = await send(app, clientId, CALLBACK)))).toBe(0);
+    expectErrorPage(res as request.Response, error);
+    res = res as request.Response;
     expect(res.text).not.toContain('db.internal');
     // The user may go back on their own: the link is the error response the client would have got.
     const link = returnLink(res);
@@ -578,11 +637,37 @@ describe('authorize-guard: every phase-2 error path (55b)', () => {
     expect(res.text).toContain('return to client.example');
   });
 
-  it.each(PHASE2)('verified client, $name: an RFC 6749 redirect with iss', async ({ error, send, arrange }) => {
+  it.each(PHASE2)('verified client, $name: an RFC 6749 redirect with iss and state', async ({ error, send }) => {
     const verified = await createHttpApp(makeConfig({ verifiedRedirectUris: [CALLBACK] }));
     const clientId = await register([CALLBACK], {}, verified);
-    arrange?.();
-    expectErrorRedirect(await send(verified, clientId, CALLBACK), CALLBACK, error);
+    const loc = expectErrorRedirect(await send(verified, clientId, CALLBACK), CALLBACK, error);
+    expect(loc.searchParams.get('state')).toBe('client-state');
+  });
+
+  it('a storage failure while the library starts the interaction is a generic 500, never a redirect (verified or not)', async () => {
+    for (const make of [async () => app, () => createHttpApp(makeConfig({ verifiedRedirectUris: [CALLBACK] }))]) {
+      // storage() is the newest app's: the verified one is built just before its turn.
+      const on = await make();
+      const clientId = await register([CALLBACK], {}, on);
+      vi.spyOn(storage(), 'upsertOAuthRow').mockRejectedValueOnce(new Error('connect ECONNREFUSED db.internal:5432'));
+      const res = await request(on).get('/authorize').query(authorizeQuery(clientId, CALLBACK));
+      expect(res.status).toBe(500);
+      expect(res.headers['location']).toBeUndefined();
+      expect(res.body.error).toBe('server_error');
+      expect(res.text).not.toContain('db.internal');
+    }
+  });
+
+  it('response_mode is ignored (as the SDK did): the answer is never a page that posts to the client', async () => {
+    const clientId = await register([CALLBACK]);
+    // An error, with form_post asked for: still our page, never an auto-submitting form.
+    const error = await request(app).get('/authorize').query(authorizeQuery(clientId, CALLBACK, { response_mode: 'form_post', prompt: 'none' }));
+    expectErrorPage(error, 'login_required');
+    expect(error.text).not.toContain('<form');
+    // A good request with form_post asked for: the consent page as usual.
+    const good = await authorize(clientId, CALLBACK, { response_mode: 'form_post' });
+    expect(good.status).toBe(200);
+    expect(good.text).toContain('scope=read-only');
   });
 
   it("the open-redirect case: a link built from an attacker's own registration never bounces off this server", async () => {
@@ -600,21 +685,21 @@ describe('authorize-guard: every phase-2 error path (55b)', () => {
 
   it("Claude's callback is verified by default", async () => {
     const clientId = await register([CLAUDE_CALLBACK]);
-    expectErrorRedirect(await authorize(clientId, CLAUDE_CALLBACK, { response_type: 'token' }), CLAUDE_CALLBACK, 'invalid_request');
+    expectErrorRedirect(await authorize(clientId, CLAUDE_CALLBACK, { response_type: 'token' }), CLAUDE_CALLBACK, 'unsupported_response_type');
   });
 
   it('loopback is trusted for redirects by default, and not when MCP_TRUST_LOOPBACK_REDIRECTS=false', async () => {
     const clientId = await register([LOOPBACK]);
-    expectErrorRedirect(await authorize(clientId, LOOPBACK, { response_type: 'token' }), LOOPBACK, 'invalid_request');
+    expectErrorRedirect(await authorize(clientId, LOOPBACK, { response_type: 'token' }), LOOPBACK, 'unsupported_response_type');
     const strict = await createHttpApp(makeConfig({ trustLoopbackRedirects: false }));
     const strictId = await register([LOOPBACK], {}, strict);
-    expectErrorPage(await authorize(strictId, LOOPBACK, { response_type: 'token' }, strict), 'invalid_request');
+    expectErrorPage(await authorize(strictId, LOOPBACK, { response_type: 'token' }, strict), 'unsupported_response_type');
   });
 
   it('with an empty verified list nothing is redirected', async () => {
     const empty = await createHttpApp(makeConfig({ verifiedRedirectUris: [], trustLoopbackRedirects: false }));
     const clientId = await register([CLAUDE_CALLBACK], {}, empty);
-    expectErrorPage(await authorize(clientId, CLAUDE_CALLBACK, { response_type: 'token' }, empty), 'invalid_request');
+    expectErrorPage(await authorize(clientId, CLAUDE_CALLBACK, { response_type: 'token' }, empty), 'unsupported_response_type');
   });
 });
 

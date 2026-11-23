@@ -35,26 +35,39 @@ const HOST = 'mcp.example.com';
 const PUBLIC_URL = `https://${HOST}`;
 
 /** Every AS route, in mount order, and its stages in order. */
+const DISCOVERY_STAGES = ['host-validation', 'bounded-parser', 'method-check', 'as-library'] as const;
 const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
   { route: '/.well-known/oauth-protected-resource/mcp', stages: ['host-validation', 'bounded-parser', 'metadata'] },
   { route: '/.well-known/oauth-protected-resource', stages: ['host-validation', 'bounded-parser', 'metadata'] },
-  { route: '/.well-known/oauth-authorization-server', stages: ['host-validation', 'bounded-parser', 'metadata'] },
+  { route: '/.well-known/oauth-authorization-server', stages: DISCOVERY_STAGES },
+  { route: '/.well-known/openid-configuration', stages: DISCOVERY_STAGES },
+  { route: '/jwks', stages: DISCOVERY_STAGES },
   {
     route: '/authorize',
     stages: [
       'host-validation',
       'ip-limiter',
       'bounded-parser',
+      'method-check',
       'route-limiter',
       'authorize-validation',
       'authorize-guard',
-      'iss-redirect',
-      'sdk-router',
+      'as-library',
     ],
   },
   {
     route: '/token',
-    stages: ['host-validation', 'ip-limiter', 'bounded-parser', 'cors-origin', 'route-limiter', 'client-auth', 'sdk-router'],
+    stages: [
+      'host-validation',
+      'ip-limiter',
+      'bounded-parser',
+      'cors-origin',
+      'method-check',
+      'route-limiter',
+      'client-auth',
+      'grant-guard',
+      'as-library',
+    ],
   },
   {
     route: '/register',
@@ -63,25 +76,40 @@ const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
       'ip-limiter',
       'bounded-parser',
       'cors-origin',
+      'method-check',
       'dcr-validator',
       'register-host-limiter',
-      'sdk-router',
+      'as-library',
     ],
   },
   {
     route: '/revoke',
-    stages: ['host-validation', 'ip-limiter', 'bounded-parser', 'cors-origin', 'route-limiter', 'client-auth', 'sdk-router'],
+    stages: [
+      'host-validation',
+      'ip-limiter',
+      'bounded-parser',
+      'cors-origin',
+      'method-check',
+      'route-limiter',
+      'client-auth',
+      'as-library',
+    ],
   },
   { route: '/oauth', stages: ['host-validation', 'oauth-leg-limiter', 'bounded-parser', 'ynab-federation'] },
 ];
 const stagesOf = (route: string): readonly string[] => EXPECTED.find((e) => e.route === route)!.stages;
+
+/** An interaction uid of the library's shape (43 base64url characters) that names no interaction. */
+const UID = 'u'.repeat(43);
 
 /** A request per route that passes every stage and is answered by the route's last one. */
 const PROBES: ReadonlyArray<{ route: string; name: string; send: (app: Express) => request.Test }> = [
   { route: '/.well-known/oauth-protected-resource/mcp', name: 'GET PRM (path-aware)', send: (app) => request(app).get('/.well-known/oauth-protected-resource/mcp') },
   { route: '/.well-known/oauth-protected-resource', name: 'GET PRM (root alias)', send: (app) => request(app).get('/.well-known/oauth-protected-resource') },
   { route: '/.well-known/oauth-authorization-server', name: 'GET AS metadata', send: (app) => request(app).get('/.well-known/oauth-authorization-server') },
-  // A client_id the stages accept (and the store doesn't know), so the handler answers.
+  { route: '/.well-known/openid-configuration', name: 'GET OIDC discovery', send: (app) => request(app).get('/.well-known/openid-configuration') },
+  { route: '/jwks', name: 'GET /jwks', send: (app) => request(app).get('/jwks') },
+  // A client_id the stages accept (and the store doesn't know), so the library answers.
   { route: '/authorize', name: 'GET /authorize', send: (app) => request(app).get('/authorize').query({ client_id: 'unknown' }) },
   { route: '/token', name: 'POST /token', send: (app) => request(app).post('/token').type('form').send({ grant_type: 'authorization_code' }) },
   {
@@ -90,9 +118,10 @@ const PROBES: ReadonlyArray<{ route: string; name: string; send: (app: Express) 
     send: (app) => request(app).post('/register').send({ redirect_uris: ['https://client.example/cb'] }),
   },
   { route: '/revoke', name: 'POST /revoke', send: (app) => request(app).post('/revoke').type('form').send({ token: 'x' }) },
-  { route: '/oauth', name: 'GET /oauth/ynab/start', send: (app) => request(app).get('/oauth/ynab/start').query({ state: 'bogus' }) },
+  { route: '/oauth', name: 'GET /oauth/interaction/:uid', send: (app) => request(app).get(`/oauth/interaction/${UID}`) },
+  { route: '/oauth', name: 'GET /oauth/interaction/:uid/start', send: (app) => request(app).get(`/oauth/interaction/${UID}/start`).query({ scope: 'read-only' }) },
   { route: '/oauth', name: 'GET /oauth/ynab/callback', send: (app) => request(app).get('/oauth/ynab/callback').query({ state: 'bogus', code: 'c' }) },
-  { route: '/oauth', name: 'GET /oauth/cancel', send: (app) => request(app).get('/oauth/cancel').query({ state: 'bogus' }) },
+  { route: '/oauth', name: 'GET /oauth/interaction/:uid/cancel', send: (app) => request(app).get(`/oauth/interaction/${UID}/cancel`) },
 ];
 
 /** A request with a JSON body, per route. */
@@ -100,11 +129,13 @@ const BODY_PROBES: ReadonlyArray<{ route: string; method: 'get' | 'post'; path: 
   { route: '/.well-known/oauth-protected-resource/mcp', method: 'get', path: '/.well-known/oauth-protected-resource/mcp' },
   { route: '/.well-known/oauth-protected-resource', method: 'get', path: '/.well-known/oauth-protected-resource' },
   { route: '/.well-known/oauth-authorization-server', method: 'get', path: '/.well-known/oauth-authorization-server' },
+  { route: '/.well-known/openid-configuration', method: 'get', path: '/.well-known/openid-configuration' },
+  { route: '/jwks', method: 'get', path: '/jwks' },
   { route: '/authorize', method: 'get', path: '/authorize' },
   { route: '/token', method: 'post', path: '/token' },
   { route: '/register', method: 'post', path: '/register' },
   { route: '/revoke', method: 'post', path: '/revoke' },
-  { route: '/oauth', method: 'get', path: '/oauth/cancel' },
+  { route: '/oauth', method: 'get', path: `/oauth/interaction/${UID}/cancel` },
 ];
 
 /** A JSON body over AS_MAX_BODY (8kb). */
@@ -190,7 +221,11 @@ const layersOf = (app: Express): readonly Layer[] => (app as unknown as { router
 /** The paths to check per route: the route itself and the /oauth legs the probes call. */
 const PROBED_PATHS: ReadonlyArray<{ route: string; path: string }> = [
   ...EXPECTED.map((e) => ({ route: e.route, path: e.route })),
-  ...['/oauth/ynab/start', '/oauth/ynab/callback', '/oauth/cancel'].map((path) => ({ route: '/oauth', path })),
+  ...[`/oauth/interaction/${UID}`, `/oauth/interaction/${UID}/start`, '/oauth/ynab/callback', `/oauth/interaction/${UID}/complete`, `/oauth/interaction/${UID}/cancel`].map(
+    (path) => ({ route: '/oauth', path })
+  ),
+  // The library's resume route, under the /authorize mount.
+  { route: '/authorize', path: `/authorize/${UID}` },
 ];
 
 describe('G21: nothing outside a stage runs on an AS route', () => {
@@ -342,7 +377,7 @@ describe('G21: what each position does', () => {
     expect(authorize.stages.slice(0, 3)).toEqual(['host-validation', 'ip-limiter', 'bounded-parser']);
     // The metadata documents and the /oauth legs have none of these.
     expect((await request(handle.app).get('/.well-known/oauth-authorization-server').set('Host', HOST)).status).toBe(200);
-    expect((await request(handle.app).get('/oauth/cancel').set('Host', HOST)).status).toBe(400);
+    expect((await request(handle.app).get(`/oauth/interaction/${UID}/cancel`).set('Host', HOST)).status).toBe(400);
   });
 
   it('dcr-validator answers an invalid registration before register-host-limiter counts it', async () => {
@@ -352,15 +387,66 @@ describe('G21: what each position does', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_redirect_uri');
     expect(res.headers['access-control-allow-origin']).toBe('*');
-    expect(stages).toEqual(['host-validation', 'ip-limiter', 'bounded-parser', 'cors-origin', 'dcr-validator']);
+    expect(stages).toEqual(['host-validation', 'ip-limiter', 'bounded-parser', 'cors-origin', 'method-check', 'dcr-validator']);
+  });
+
+  it('method-check answers POST /authorize with 405 and Allow: GET (only GET is served, D8)', async () => {
+    const { res, stages } = await traced(() =>
+      request(handle.app).post('/authorize').type('form').send({ client_id: 'unknown', response_type: 'code' })
+    );
+    expect(res.status).toBe(405);
+    expect(res.headers['allow']).toBe('GET');
+    expect(res.body.error).toBe('method_not_allowed');
+    expect(stages).toEqual(['host-validation', 'ip-limiter', 'bounded-parser', 'method-check']);
+  });
+
+  it.each(['/token', '/revoke', '/register'])('method-check answers GET %s with 405 and Allow: POST, readable cross-origin', async (path) => {
+    const { res, stages } = await traced(() => request(handle.app).get(path));
+    expect(res.status).toBe(405);
+    expect(res.headers['allow']).toBe('POST');
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+    expect(stages).toEqual(['host-validation', 'ip-limiter', 'bounded-parser', 'cors-origin', 'method-check']);
+  });
+
+  it.each(['/.well-known/oauth-authorization-server', '/.well-known/openid-configuration', '/jwks'])(
+    'method-check answers POST %s with 405 (the library alone would 404)',
+    async (path) => {
+      const { res, stages } = await traced(() => request(handle.app).post(path));
+      expect(res.status).toBe(405);
+      expect(res.headers['allow']).toBe('GET, OPTIONS');
+      expect(stages).toEqual(['host-validation', 'bounded-parser', 'method-check']);
+    }
+  );
+
+  it.each(['/token', '/revoke', '/register'])('cors-origin answers the OPTIONS preflight on %s with 204; method-check never sees it', async (path) => {
+    const { res, stages } = await traced(() =>
+      request(handle.app)
+        .options(path)
+        .set('Origin', 'https://inspector.example')
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'content-type')
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+    expect(res.headers['access-control-allow-methods']).toBe('POST');
+    expect(res.headers['access-control-allow-headers']).toBe('content-type');
+    expect(stages).toEqual(['host-validation', 'ip-limiter', 'bounded-parser', 'cors-origin']);
+  });
+
+  it('the resume route (/authorize/:uid) passes authorize-validation and authorize-guard to the library', async () => {
+    const { res, stages } = await traced(() => request(handle.app).get(`/authorize/${UID}`));
+    expect(stages).toEqual(stagesOf('/authorize'));
+    // No resume cookie: the library refuses it itself (JSON, never a redirect).
+    expect(res.status).toBe(400);
+    expect(res.headers['location']).toBeUndefined();
   });
 
   it('oauth-leg-limiter answers /oauth/* past the limit before the parser reads the body', async () => {
     for (let i = 0; i < OAUTH_LEG_RATE_LIMIT; i++) {
-      await request(handle.app).get('/oauth/cancel').set('Host', HOST);
+      await request(handle.app).get(`/oauth/interaction/${UID}/cancel`).set('Host', HOST);
     }
     const { res, stages } = await traced(() =>
-      request(handle.app).get('/oauth/cancel').set('Content-Type', 'application/json').send('{not json')
+      request(handle.app).get(`/oauth/interaction/${UID}/cancel`).set('Content-Type', 'application/json').send('{not json')
     );
     expect(res.status).toBe(429);
     expect(stages).toEqual(['host-validation', 'oauth-leg-limiter']);

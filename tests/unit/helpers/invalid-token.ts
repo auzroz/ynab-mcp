@@ -1,10 +1,10 @@
 /**
- * How `McpOAuthProvider.verifyAccessToken` refuses a token (WS7.3): v2's
- * `OAuthError` with the `invalid_token` code and the one message every refusal
- * carries. That is the class `@modelcontextprotocol/express`'s bearer
- * middleware answers 401 for; server-legacy's `InvalidTokenError` (or any other
- * error) would be a 500 there (ADR-0001 D14), so a rejection with anything else
- * fails the check.
+ * How the `/mcp` verifier (`createAccessTokenVerifier`, src/auth/oidc/verifier.ts,
+ * ADR-0002 D10) refuses a token, as WS7.3 specified: v2's `OAuthError` with the
+ * `invalid_token` code and the one message every refusal carries. That is the
+ * class `@modelcontextprotocol/express`'s bearer middleware answers 401 for;
+ * any other error would be a 500 there (ADR-0001 D14), so a rejection with
+ * anything else fails the check.
  */
 
 import { expect } from 'vitest';

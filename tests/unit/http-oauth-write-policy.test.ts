@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { Storage } from '../../src/storage/types.js';
@@ -38,11 +38,18 @@ import { buildHttpApp, type HttpApp } from '../../src/http.js';
 import { exchangeCode, getYnabUserId, refreshAccessToken } from '../../src/auth/ynab-oauth.js';
 import { tools } from '../../src/tools/index.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { cookieHeaderFrom } from './helpers/consent-cookie.js';
+import {
+  CookieJar,
+  authorizeUrl,
+  browse,
+  browserFlow,
+  exchangeCode as exchangeAuthorizationCode,
+  pkcePair,
+  registerClient,
+} from './helpers/oidc-app.js';
 
 const PUBLIC_URL = 'https://mcp.example.com';
 const RESOURCE = `${PUBLIC_URL}/mcp`;
-const CALLBACK = 'https://client.example/cb';
 const ACCEPT = 'application/json, text/event-stream';
 const READ_TOOLS = tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name);
 const ALL_TOOLS = tools.map((t) => t.name);
@@ -101,48 +108,22 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-/** Registers, consents (read-write), and exchanges the code against `app`; returns the access token. */
+/** Registers, consents (read-write) in one browser, and exchanges the code against `app`; returns the access token. */
 async function connectReadWrite(app: Express): Promise<string> {
-  const reg = await request(app)
-    .post('/register')
-    .send({ redirect_uris: [CALLBACK], client_name: 'write-policy', token_endpoint_auth_method: 'none' });
-  expect(reg.status).toBe(201);
-  const clientId = reg.body.client_id as string;
-  const verifier = randomBytes(32).toString('base64url');
-  const challenge = createHash('sha256').update(verifier).digest('base64url');
-
-  const consent = await request(app).get('/authorize').query({
-    response_type: 'code',
-    client_id: clientId,
-    redirect_uri: CALLBACK,
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
+  const { clientId } = await registerClient(app, { client_name: 'write-policy' });
+  const { verifier, challenge } = pkcePair();
+  const flow = await browserFlow(app, new CookieJar(), {
+    clientId,
+    challenge,
     scope: 'read-only read-write',
+    resource: RESOURCE,
     state: 's',
-    resource: RESOURCE,
+    choice: 'read-write',
   });
-  expect(consent.status).toBe(200);
-  const cookie = cookieHeaderFrom(consent);
-  let start: string | undefined;
-  for (const m of consent.text.matchAll(/<a class="btn" href="([^"]+)"/g)) {
-    const url = new URL((m[1] as string).replaceAll('&amp;', '&'));
-    if (url.searchParams.get('scope') === 'read-write') start = url.pathname + url.search;
-  }
-  if (start === undefined) throw new Error('consent page does not offer read-write');
-
-  const toYnab = await request(app).get(start).set('Cookie', cookie);
-  const state = new URL(toYnab.headers['location'] as string).searchParams.get('state') as string;
-  const back = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
-  const code = new URL(back.headers['location'] as string).searchParams.get('code') as string;
-
-  const token = await request(app).post('/token').type('form').send({
-    grant_type: 'authorization_code',
-    client_id: clientId,
-    code,
-    code_verifier: verifier,
-    redirect_uri: CALLBACK,
-    resource: RESOURCE,
-  });
+  // browserFlow's `start` would go through even if read-write weren't offered: check the page did offer it.
+  expect(flow.consentHtml).toMatch(/scope=read-write/);
+  const code = flow.params.get('code') as string;
+  const token = await exchangeAuthorizationCode(app, { clientId, code, verifier, resource: RESOURCE });
   expect(token.status).toBe(200);
   expect(token.body.scope).toBe('read-only read-write');
   return token.body.access_token as string;
@@ -239,20 +220,17 @@ describe('YNAB_OAUTH_ALLOW_WRITE is enforced on every request', () => {
 
   it('with allowWrite false the consent page offers only read-only', async () => {
     const off = await startApp({ allowWrite: false });
-    const reg = await request(off)
-      .post('/register')
-      .send({ redirect_uris: [CALLBACK], client_name: 'ro', token_endpoint_auth_method: 'none' });
-    const consent = await request(off).get('/authorize').query({
-      response_type: 'code',
-      client_id: reg.body.client_id,
-      redirect_uri: CALLBACK,
-      code_challenge: createHash('sha256').update('v'.repeat(43)).digest('base64url'),
-      code_challenge_method: 'S256',
-      scope: 'read-only read-write',
-      state: 's',
-      resource: RESOURCE,
-    });
+    const { clientId } = await registerClient(off, { client_name: 'ro' });
+    const jar = new CookieJar();
+    const auth = await browse(
+      off,
+      jar,
+      authorizeUrl({ clientId, challenge: pkcePair().challenge, scope: 'read-only read-write', state: 's', resource: RESOURCE })
+    );
+    expect(auth.status).toBe(303);
+    const consent = await browse(off, jar, auth.headers['location'] as string);
     expect(consent.status).toBe(200);
+    expect(consent.text).toMatch(/scope=read-only/);
     expect(consent.text).not.toMatch(/scope=read-write/);
   });
 });

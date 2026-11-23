@@ -1,6 +1,7 @@
 /**
  * The whole remote flow end to end in oauth mode, through the real Express app,
- * the SDK's auth handlers, the provider, stateless /mcp and the real tool
+ * the authorization server (oidc-provider behind the AS stages, #47-4), the
+ * YNAB sign-in as its interaction, stateless /mcp and the real tool
  * handlers: discovery, dynamic registration, authorization with PKCE and a
  * resource indicator, the YNAB federation legs, token exchange, MCP requests
  * (initialize, tools/list, tools/call), a YNAB token refresh between requests,
@@ -51,7 +52,7 @@ import { buildHttpApp, type HttpApp } from '../../src/http.js';
 import { exchangeCode, getYnabUserId, refreshAccessToken } from '../../src/auth/ynab-oauth.js';
 import { tools } from '../../src/tools/index.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { cookieHeaderFrom } from './helpers/consent-cookie.js';
+import { CookieJar, browse, interactionUid } from './helpers/oidc-app.js';
 import { TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
 import { plantAccessToken } from './helpers/oauth-state.js';
 
@@ -163,31 +164,42 @@ interface Authorized {
 }
 
 /**
- * /authorize through the consent page and the YNAB legs to the MCP code,
- * asserting each hop. `choose` is the access level picked on the consent page.
+ * /authorize through the consent page (the library's interaction) and the
+ * YNAB legs to the MCP code, asserting each hop, in one browser (the
+ * library's interaction cookies are Secure, so a CookieJar carries them).
+ * `choose` is the access level picked on the consent page.
  */
 async function authorize(choose: 'read-only' | 'read-write', scope: string): Promise<Authorized> {
   const clientId = await register();
   const { verifier, challenge } = pkce();
+  const jar = new CookieJar();
 
-  const consent = await request(app).get('/authorize').query({
-    response_type: 'code',
-    client_id: clientId,
-    redirect_uri: CALLBACK,
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-    scope,
-    state: 'client-state',
-    resource: RESOURCE,
-  });
+  const auth = await browse(
+    app,
+    jar,
+    `/authorize?${new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: CALLBACK,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      scope,
+      state: 'client-state',
+      resource: RESOURCE,
+    }).toString()}`
+  );
+  // The library sends the browser to its interaction: our consent page.
+  expect(auth.status).toBe(303);
+  const uid = interactionUid(auth.headers['location'] as string);
+  const consent = await browse(app, jar, auth.headers['location'] as string);
   expect(consent.status).toBe(200);
-  const cookie = cookieHeaderFrom(consent);
   const links = consentLinks(consent.text);
   const start = links.get(choose);
   if (start === undefined) throw new Error(`consent page does not offer ${choose}`);
+  expect(start).toBe(`/oauth/interaction/${uid}/start?scope=${choose}`);
 
-  // The consent link sends the browser to YNAB, carrying our pending-auth state.
-  const toYnab = await request(app).get(start).set('Cookie', cookie);
+  // The consent link sends the browser to YNAB, carrying our state.
+  const toYnab = await browse(app, jar, start);
   expect(toYnab.status).toBe(302);
   const ynabUrl = new URL(toYnab.headers['location'] as string);
   expect(ynabUrl.origin + ynabUrl.pathname).toBe('https://app.ynab.com/oauth/authorize');
@@ -197,31 +209,39 @@ async function authorize(choose: 'read-only' | 'read-write', scope: string): Pro
   expect(ynabUrl.searchParams.get('scope')).toBe(choose === 'read-only' ? 'read-only' : null);
   const state = ynabUrl.searchParams.get('state');
   expect(state).toBeTruthy();
-  expect(new URL(start, PUBLIC_URL).searchParams.get('state')).toBe(state);
 
-  // YNAB redirects the browser back with its code.
-  const callback = await request(app)
-    .get('/oauth/ynab/callback')
-    .set('Cookie', cookie)
-    .query({ code: 'ynab-code', state: state as string });
+  // YNAB redirects the browser back with its code; the callback routes it to the interaction.
+  const callback = await browse(
+    app,
+    jar,
+    `/oauth/ynab/callback?${new URLSearchParams({ code: 'ynab-code', state: state as string }).toString()}`
+  );
   expect(callback.status).toBe(302);
+  const complete = await browse(app, jar, callback.headers['location'] as string);
+  expect(complete.status).toBe(303);
   expect(vi.mocked(exchangeCode).mock.calls.at(-1)?.[1]).toEqual({
     code: 'ynab-code',
     redirectUri: YNAB_CALLBACK,
   });
+  // The library's resume issues the code.
+  const resume = await browse(app, jar, complete.headers['location'] as string);
+  expect(resume.status).toBe(303);
 
   // Back to the MCP client: code, its own state, and the issuer (RFC 9207).
-  const back = new URL(callback.headers['location'] as string);
+  const back = new URL(resume.headers['location'] as string);
   expect(back.origin + back.pathname).toBe(CALLBACK);
   expect(back.searchParams.get('state')).toBe('client-state');
   expect(back.searchParams.get('iss')).toBe(`${PUBLIC_URL}/`);
   const code = back.searchParams.get('code');
   if (!code) throw new Error('no authorization code');
-  // The cookie was for this one authorization; the callback clears it.
-  expect(String(callback.headers['set-cookie'])).toMatch(/Max-Age=0|Expires=Thu, 01 Jan 1970/);
+  // The interaction was for this one authorization: it is spent, so the same
+  // browser can't use its consent page again, and the resume cookie is gone.
+  expect((await browse(app, jar, `/oauth/interaction/${uid}`)).status).toBe(400);
+  expect(jar.names()).not.toContain('_interaction_resume');
 
   return { clientId, verifier, code };
 }
+
 
 function tokenRequest(form: Record<string, string>): request.Test {
   return request(app).post('/token').type('form').send(form);

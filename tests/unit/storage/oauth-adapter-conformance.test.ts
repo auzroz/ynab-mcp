@@ -815,7 +815,12 @@ const CASES: Case[] = [
       await ctx.store.upsertUser({ userId: c.accountId, grantedScope: 'read-only', encryptedRefreshToken: 'x', updatedAt: Date.now() }); // newer: code + token
       const rat = libId();
       await ctx.adapter('RegistrationAccessToken').upsert(rat, { kind: 'RegistrationAccessToken', jti: rat, clientId: a.clientId });
-      await ctx.store.destroyOAuthRow(plainRowKey('Client', a.clientId));
+      // #47-4: a client's deletion takes its registration access tokens with it.
+      expect(await ctx.store.destroyOAuthRow(plainRowKey('Client', a.clientId))).toBe(true);
+      expect(await ctx.adapter('RegistrationAccessToken').find(rat)).toBeUndefined();
+      // One left behind by an earlier release's deletion: the sweep takes it.
+      const stray = libId();
+      await ctx.adapter('RegistrationAccessToken').upsert(stray, { kind: 'RegistrationAccessToken', jti: stray, clientId: a.clientId });
       const kept = await signedIn(ctx);
       const keptToken = await saveToken(ctx, 'AccessToken', kept);
       const swept = await ctx.store.sweepExpired();

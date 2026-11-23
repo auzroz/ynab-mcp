@@ -128,11 +128,22 @@ describe('OAuth protected-resource metadata (RFC 9728) and 401 challenges', () =
       '/.well-known/oauth-protected-resource/mcp',
       '/.well-known/oauth-protected-resource',
       '/.well-known/oauth-authorization-server',
+      '/.well-known/openid-configuration',
+      '/jwks',
     ]) {
+      // Any origin may read them: our PRM documents send `*`, the library's
+      // discovery and JWKS echo the request's Origin (ADR-0002 D8).
       const get = await request(app).get(path).set('Origin', 'https://client.example');
-      expect(get.headers['access-control-allow-origin']).toBe('*');
+      expect(get.status, path).toBe(200);
+      expect(get.headers['access-control-allow-origin'], path).toBe(
+        path.startsWith('/.well-known/oauth-protected-resource') ? '*' : 'https://client.example'
+      );
+      const anonymous = await request(app).get(path);
+      expect(anonymous.headers['access-control-allow-origin'], path).toBe('*');
+      // GET only (and the preflight); method-check keeps 405 where the library alone would 404.
       const post = await request(app).post(path).send({});
-      expect(post.status).toBe(405);
+      expect(post.status, path).toBe(405);
+      expect(post.headers['allow'], path).toBe('GET, OPTIONS');
     }
   });
 

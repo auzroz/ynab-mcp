@@ -3,6 +3,12 @@
  * authorization flow back to the client's redirect URI carries `iss` equal to
  * the AS metadata `issuer`, and nothing else gets it. Only the YNAB network
  * calls are mocked.
+ *
+ * Since #47-4 the authorization server is oidc-provider: the consent page is
+ * its interaction (/oauth/interaction/:uid, reached by a 303 from /authorize),
+ * the browser is bound by its interaction cookies (Secure, so a CookieJar
+ * carries them), and every authorization response, code or error, leaves
+ * through its resume route (/authorize/:uid), which sends `iss`.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -26,18 +32,19 @@ vi.mock('../../src/auth/ynab-oauth.js', async () => {
 import { createHttpApp } from '../../src/http.js';
 import * as ynabOauth from '../../src/auth/ynab-oauth.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { cookieHeaderFrom } from './helpers/consent-cookie.js';
+import { CookieJar, browse, interactionUid } from './helpers/oidc-app.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
 const exchangeCodeMock = vi.mocked(ynabOauth.exchangeCode);
 
+const ORIGIN = 'https://mcp.example.com';
 const CALLBACK = 'https://client.example/cb';
 const ISSUER = 'https://mcp.example.com/';
 
 function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
   return makeHttpConfig({
-    publicUrl: 'https://mcp.example.com',
-    resourceUrl: 'https://mcp.example.com/mcp',
+    publicUrl: ORIGIN,
+    resourceUrl: `${ORIGIN}/mcp`,
     readOnly: false,
     authMode: 'oauth',
     oauthClientId: 'cid',
@@ -77,21 +84,57 @@ function authorizeQuery(
   };
 }
 
-/**
- * GET /authorize and return our pending-auth state from the consent page, and
- * the consent cookie (as a Cookie header) the later legs require.
- */
-async function consentState(
+const authorizePath = (query: Record<string, string>): string => `/authorize?${new URLSearchParams(query).toString()}`;
+
+/** /authorize in `jar`'s browser up to the consent page: the interaction's uid and the page. */
+async function consentPage(
   app: Express,
-  clientId: string,
-  extra: Record<string, string> = {},
-  redirectUri = CALLBACK
-): Promise<{ state: string; html: string; cookie: string }> {
-  const res = await request(app).get('/authorize').query(authorizeQuery(clientId, extra, redirectUri));
-  expect(res.status).toBe(200);
-  const m = /state=([^&"]+)&amp;scope=read-only/.exec(res.text);
-  if (!m?.[1]) throw new Error('no consent link');
-  return { state: decodeURIComponent(m[1]), html: res.text, cookie: cookieHeaderFrom(res) };
+  jar: CookieJar,
+  query: Record<string, string>
+): Promise<{ uid: string; html: string }> {
+  const auth = await browse(app, jar, authorizePath(query));
+  expect(auth.status).toBe(303);
+  const uid = interactionUid(auth.headers['location'] as string);
+  const page = await browse(app, jar, auth.headers['location'] as string);
+  expect(page.status).toBe(200);
+  return { uid, html: page.text };
+}
+
+/** The consent page's read-only choice: the redirect to YNAB and the state it carries. */
+async function toYnab(app: Express, jar: CookieJar, uid: string): Promise<{ res: request.Response; state: string }> {
+  const res = await browse(app, jar, `/oauth/interaction/${uid}/start?scope=read-only`);
+  expect(res.status).toBe(302);
+  return { res, state: new URL(res.headers['location'] as string).searchParams.get('state') as string };
+}
+
+/**
+ * Follow redirects on this server (callback, complete, the library's resume)
+ * from `path`, in `jar`'s browser; returns the first answer that isn't a
+ * redirect to this server: the authorization response to the client, or a refusal.
+ */
+async function follow(app: Express, jar: CookieJar, path: string, proxyPrefix = ''): Promise<request.Response> {
+  let res = await browse(app, jar, path);
+  for (let hops = 0; hops < 5; hops++) {
+    const loc = res.headers['location'] as string | undefined;
+    if (res.status < 300 || res.status >= 400 || loc === undefined || new URL(loc, ORIGIN).origin !== ORIGIN) return res;
+    // A reverse proxy serving the app under PUBLIC_URL's path strips that prefix.
+    const target = new URL(loc, ORIGIN);
+    if (proxyPrefix !== '' && target.pathname.startsWith(`${proxyPrefix}/`)) {
+      target.pathname = target.pathname.slice(proxyPrefix.length);
+    }
+    res = await browse(app, jar, target.href);
+  }
+  throw new Error('too many redirects');
+}
+
+/** YNAB's redirect back to the callback with `query`, followed to the client. */
+function ynabReturns(
+  app: Express,
+  jar: CookieJar,
+  query: Record<string, string>,
+  proxyPrefix = ''
+): Promise<request.Response> {
+  return follow(app, jar, `/oauth/ynab/callback?${new URLSearchParams(query).toString()}`, proxyPrefix);
 }
 
 async function metadataIssuer(app: Express): Promise<string> {
@@ -100,8 +143,9 @@ async function metadataIssuer(app: Express): Promise<string> {
   return res.body.issuer as string;
 }
 
+/** The authorization response to the client: a redirect off this server. */
 function location(res: request.Response): URL {
-  expect(res.status).toBe(302);
+  expect([302, 303]).toContain(res.status);
   return new URL(res.headers['location'] as string);
 }
 
@@ -135,17 +179,17 @@ describe('successful authorization response', () => {
     const app = await createHttpApp(makeConfig());
     const issuer = await metadataIssuer(app);
     const clientId = await register(app);
-    const { state, cookie } = await consentState(app, clientId);
+    const jar = new CookieJar();
+    const { uid } = await consentPage(app, jar, authorizeQuery(clientId));
 
-    const start = await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-only' });
-    const cb = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
-    const loc = location(cb);
+    const { state } = await toYnab(app, jar, uid);
+    const back = await ynabReturns(app, jar, { code: 'ynab-code', state });
+    const loc = location(back);
     expect(loc.origin + loc.pathname).toBe(CALLBACK);
     expect(loc.searchParams.get('iss')).toBe(issuer);
     expect(loc.searchParams.get('state')).toBe('client-state');
     const code = loc.searchParams.get('code');
     expect(code).toBeTruthy();
-    expect(start.status).toBe(302);
 
     const tok = await request(app).post('/token').type('form').send({
       grant_type: 'authorization_code',
@@ -160,17 +204,15 @@ describe('successful authorization response', () => {
 
   it('keeps a query in the registered redirect URI and omits state when the client sent none', async () => {
     const redirectUri = 'https://client.example/cb?tenant=t%201';
-    const app = await createHttpApp(makeConfig());
+    const app = await createHttpApp(makeConfig({ verifiedRedirectUris: [redirectUri] }));
     const clientId = await register(app, redirectUri);
     const query = authorizeQuery(clientId, {}, redirectUri);
     delete query['state'];
-    const consent = await request(app).get('/authorize').query(query);
-    const m = /state=([^&"]+)&amp;scope=read-only/.exec(consent.text);
-    const state = decodeURIComponent(m?.[1] ?? '');
-    const cookie = cookieHeaderFrom(consent);
+    const jar = new CookieJar();
+    const { uid } = await consentPage(app, jar, query);
+    const { state } = await toYnab(app, jar, uid);
 
-    const cb = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
-    const loc = location(cb);
+    const loc = location(await ynabReturns(app, jar, { code: 'ynab-code', state }));
     expect(loc.searchParams.get('tenant')).toBe('t 1');
     expect(loc.searchParams.get('code')).toBeTruthy();
     expect(loc.searchParams.has('state')).toBe(false);
@@ -184,16 +226,43 @@ describe('successful authorization response', () => {
     const issuer = await metadataIssuer(app);
     expect(issuer).toBe('https://mcp.example.com/ynab');
     const clientId = await register(app);
-    const { state, cookie } = await consentState(app, clientId);
-    const cb = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
-    expect(location(cb).searchParams.get('iss')).toBe(issuer);
+    const jar = new CookieJar();
+    // A reverse proxy serves the app under PUBLIC_URL's path (/ynab) and strips it. The browser
+    // holds its cookies under the public path, so they are sent as for that path.
+    const viaProxy = async (url: string): Promise<request.Response> => {
+      const target = new URL(url, ORIGIN);
+      const publicPath = target.pathname;
+      if (target.pathname.startsWith('/ynab/')) target.pathname = target.pathname.slice('/ynab'.length);
+      const res = await request(app).get(`${target.pathname}${target.search}`).set('Cookie', jar.header(publicPath));
+      jar.take(res);
+      return res;
+    };
+    let res = await viaProxy(authorizePath(authorizeQuery(clientId)));
+    expect(res.status).toBe(303);
+    // The library's redirect to the consent page carries the path, like every other /oauth link.
+    expect(res.headers['location']).toMatch(/^https:\/\/mcp\.example\.com\/ynab\/oauth\/interaction\//);
+    const consent = await viaProxy(res.headers['location'] as string);
+    expect(consent.status).toBe(200);
+    const start = /href="([^"]+start\?scope=read-only)"/.exec(consent.text)?.[1]?.replaceAll('&amp;', '&');
+    expect(start).toMatch(/^https:\/\/mcp\.example\.com\/ynab\/oauth\/interaction\//);
+    res = await viaProxy(start as string);
+    expect(res.status).toBe(302);
+    const state = new URL(res.headers['location'] as string).searchParams.get('state') as string;
+    res = await viaProxy(`/ynab/oauth/ynab/callback?${new URLSearchParams({ code: 'ynab-code', state }).toString()}`);
+    for (let hops = 0; hops < 5 && res.status >= 300 && res.status < 400; hops++) {
+      const loc = new URL(res.headers['location'] as string, ORIGIN);
+      if (loc.origin !== ORIGIN) break;
+      res = await viaProxy(loc.href);
+    }
+    const back = res;
+    expect(location(back).searchParams.get('iss')).toBe(issuer);
     const err = await request(app).get('/authorize').query(authorizeQuery(clientId, { code_challenge_method: 'plain' }));
     expect(location(err).searchParams.get('iss')).toBe(issuer);
   });
 });
 
 describe('error authorization responses', () => {
-  it('SDK error redirect (invalid_request) has iss and error', async () => {
+  it('a parameter error redirect (invalid_request) has iss, error and state', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
     const res = await request(app)
@@ -202,25 +271,25 @@ describe('error authorization responses', () => {
     const loc = location(res);
     expect(loc.origin + loc.pathname).toBe(CALLBACK);
     expect(loc.searchParams.get('error')).toBe('invalid_request');
-    // (SDK 1.32 drops `state` when the request fails schema validation; the
-    // invalid_target case below shows state is kept when the SDK has parsed it.)
+    expect(loc.searchParams.get('state')).toBe('client-state');
     expect(loc.searchParams.get('iss')).toBe(ISSUER);
     expect(loc.searchParams.getAll('iss')).toHaveLength(1);
   });
 
-  it('SDK error redirect from POST /authorize has iss too', async () => {
+  it('POST /authorize is not served: 405, never a redirect (ADR-0002 D8)', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
     const res = await request(app)
       .post('/authorize')
       .type('form')
       .send(authorizeQuery(clientId, { response_type: 'token' }));
-    const loc = location(res);
-    expect(loc.searchParams.get('error')).toBe('invalid_request');
-    expect(loc.searchParams.get('iss')).toBe(ISSUER);
+    expect(res.status).toBe(405);
+    expect(res.headers['allow']).toBe('GET');
+    expect(res.headers['location']).toBeUndefined();
+    expect(res.body.error).toBe('method_not_allowed');
   });
 
-  it('provider error redirect (invalid_target for a foreign resource) has iss and state', async () => {
+  it('a resource error redirect (invalid_target for a foreign resource) has iss and state', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
     const res = await request(app)
@@ -243,10 +312,11 @@ describe('error authorization responses', () => {
   it('Cancel on the consent screen returns access_denied with iss and state, once', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state, html, cookie } = await consentState(app, clientId);
-    expect(html).toContain(`https://mcp.example.com/oauth/cancel?state=${encodeURIComponent(state)}`);
+    const jar = new CookieJar();
+    const { uid, html } = await consentPage(app, jar, authorizeQuery(clientId));
+    expect(html).toContain(`https://mcp.example.com/oauth/interaction/${uid}/cancel`);
 
-    const res = await request(app).get('/oauth/cancel').set('Cookie', cookie).query({ state });
+    const res = await follow(app, jar, `/oauth/interaction/${uid}/cancel`);
     const loc = location(res);
     expect(loc.origin + loc.pathname).toBe(CALLBACK);
     expect(loc.searchParams.get('error')).toBe('access_denied');
@@ -255,34 +325,35 @@ describe('error authorization responses', () => {
     expect(loc.searchParams.get('iss')).toBe(ISSUER);
     expect(loc.searchParams.has('code')).toBe(false);
 
-    // The pending authorization is gone: it can be neither cancelled again nor resumed.
-    const again = await request(app).get('/oauth/cancel').set('Cookie', cookie).query({ state });
+    // The interaction is gone: it can be neither cancelled again nor resumed.
+    const again = await browse(app, jar, `/oauth/interaction/${uid}/cancel`);
     expect(again.status).toBe(400);
     expect(again.headers['location']).toBeUndefined();
-    const start = await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-only' });
+    const start = await browse(app, jar, `/oauth/interaction/${uid}/start?scope=read-only`);
     expect(start.status).toBe(400);
   });
 
-  it('Cancel with an unknown or missing state is a 400 with no redirect', async () => {
+  it('Cancel for an unknown interaction, or from a browser without its cookie, is a 400 with no redirect', async () => {
     const app = await createHttpApp(makeConfig());
-    const unknown = await request(app).get('/oauth/cancel').query({ state: 'never-issued' });
+    const unknown = await browse(app, new CookieJar(), `/oauth/interaction/${'A'.repeat(43)}/cancel`);
     expect(unknown.status).toBe(400);
     expect(unknown.headers['location']).toBeUndefined();
-    const missing = await request(app).get('/oauth/cancel');
-    expect(missing.status).toBe(400);
-    expect(missing.headers['location']).toBeUndefined();
+
+    const clientId = await register(app);
+    const { uid } = await consentPage(app, new CookieJar(), authorizeQuery(clientId));
+    const otherBrowser = await browse(app, new CookieJar(), `/oauth/interaction/${uid}/cancel`);
+    expect(otherBrowser.status).toBe(400);
+    expect(otherBrowser.headers['location']).toBeUndefined();
   });
 
   it('YNAB denial (error=access_denied) becomes access_denied to the client with iss', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state, cookie } = await consentState(app, clientId);
-    await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-only' });
+    const jar = new CookieJar();
+    const { uid } = await consentPage(app, jar, authorizeQuery(clientId));
+    const { state } = await toYnab(app, jar, uid);
 
-    const res = await request(app)
-      .get('/oauth/ynab/callback')
-      .set('Cookie', cookie)
-      .query({ error: 'access_denied', error_description: 'User said no', state });
+    const res = await ynabReturns(app, jar, { error: 'access_denied', error_description: 'User said no', state });
     const loc = location(res);
     expect(loc.searchParams.get('error')).toBe('access_denied');
     expect(loc.searchParams.get('state')).toBe('client-state');
@@ -294,11 +365,14 @@ describe('error authorization responses', () => {
   it('other YNAB errors map to server_error and never forward YNAB text', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state, cookie } = await consentState(app, clientId);
-    const res = await request(app)
-      .get('/oauth/ynab/callback')
-      .set('Cookie', cookie)
-      .query({ error: 'temporarily_unavailable', error_description: 'internal-host-42 down', state });
+    const jar = new CookieJar();
+    const { uid } = await consentPage(app, jar, authorizeQuery(clientId));
+    const { state } = await toYnab(app, jar, uid);
+    const res = await ynabReturns(app, jar, {
+      error: 'temporarily_unavailable',
+      error_description: 'internal-host-42 down',
+      state,
+    });
     const loc = location(res);
     expect(loc.searchParams.get('error')).toBe('server_error');
     expect(loc.searchParams.get('iss')).toBe(ISSUER);
@@ -317,9 +391,11 @@ describe('error authorization responses', () => {
     exchangeCodeMock.mockRejectedValueOnce(new Error('YNAB token request failed with status 500'));
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state, cookie } = await consentState(app, clientId);
+    const jar = new CookieJar();
+    const { uid } = await consentPage(app, jar, authorizeQuery(clientId));
+    const { state } = await toYnab(app, jar, uid);
 
-    const res = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
+    const res = await ynabReturns(app, jar, { code: 'ynab-code', state });
     const loc = location(res);
     expect(loc.origin + loc.pathname).toBe(CALLBACK);
     expect(loc.searchParams.get('error')).toBe('server_error');
@@ -335,8 +411,9 @@ describe('error authorization responses', () => {
     errorSpy.mockRestore();
 
     // One-time: the same state cannot be replayed.
-    const replay = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
+    const replay = await ynabReturns(app, jar, { code: 'ynab-code', state });
     expect(replay.status).toBe(400);
+    expect(replay.headers['location']).toBeUndefined();
   });
 });
 
@@ -344,14 +421,24 @@ describe('redirects that are not authorization responses', () => {
   it('the redirect to YNAB carries no iss and keeps its own parameters', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state, cookie } = await consentState(app, clientId);
-    const res = await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-only' });
-    const loc = location(res);
+    const jar = new CookieJar();
+    const { uid } = await consentPage(app, jar, authorizeQuery(clientId));
+    const { res, state } = await toYnab(app, jar, uid);
+    const loc = new URL(res.headers['location'] as string);
     expect(loc.origin + loc.pathname).toBe('https://app.ynab.com/oauth/authorize');
     expect(loc.searchParams.has('iss')).toBe(false);
     expect([...loc.searchParams.keys()].sort()).toEqual(
       ['client_id', 'redirect_uri', 'response_type', 'scope', 'state'].sort()
     );
-    expect(loc.searchParams.get('state')).toBe(state);
+    // The interaction's uid and a one-time value (src/auth/oidc/interaction.ts).
+    expect(state.startsWith(`${uid}.`)).toBe(true);
+  });
+
+  it('the redirect from /authorize to the consent page carries no iss', async () => {
+    const app = await createHttpApp(makeConfig());
+    const clientId = await register(app);
+    const auth = await browse(app, new CookieJar(), authorizePath(authorizeQuery(clientId)));
+    expect(auth.status).toBe(303);
+    expect(new URL(auth.headers['location'] as string, ORIGIN).searchParams.has('iss')).toBe(false);
   });
 });
