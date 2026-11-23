@@ -592,8 +592,8 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     return 'replayed';
   }
 
-  async destroyOAuthRow(key: string): Promise<void> {
-    this.oauthRows.delete(key);
+  async destroyOAuthRow(key: string): Promise<boolean> {
+    return this.oauthRows.delete(key);
   }
 
   async revokeOAuthGrant(grantId: string): Promise<number> {

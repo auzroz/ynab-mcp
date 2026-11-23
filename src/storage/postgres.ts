@@ -916,8 +916,9 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     });
   }
 
-  async destroyOAuthRow(key: string): Promise<void> {
-    await this.db.query('DELETE FROM oauth_rows WHERE key = $1', [key]);
+  async destroyOAuthRow(key: string): Promise<boolean> {
+    const res = await this.db.query('DELETE FROM oauth_rows WHERE key = $1', [key]);
+    return (res.rowCount ?? 0) > 0;
   }
 
   async revokeOAuthGrant(grantId: string): Promise<number> {

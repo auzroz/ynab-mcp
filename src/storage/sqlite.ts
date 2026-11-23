@@ -739,11 +739,9 @@ export class SqliteStorage implements Storage, OAuthRowStore {
       .immediate();
   }
 
-  async destroyOAuthRow(key: string): Promise<void> {
-    this.database
-      .transaction((): void => {
-        this.database.prepare('DELETE FROM oauth_rows WHERE key = ?').run(key);
-      })
+  async destroyOAuthRow(key: string): Promise<boolean> {
+    return this.database
+      .transaction((): boolean => this.database.prepare('DELETE FROM oauth_rows WHERE key = ?').run(key).changes > 0)
       .immediate();
   }
 

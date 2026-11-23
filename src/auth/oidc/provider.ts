@@ -190,10 +190,14 @@ function requestNormalizer({ resource, publicUrl }: NormalizerDeps) {
   const host = publicUrl.host;
   return async (ctx: KoaContextWithOIDC, next: () => Promise<void>): Promise<void> => {
     const req = ctx.req as IncomingMessage & { ip?: unknown; body?: unknown };
-    // The library's URLs (discovery, redirects, the resume URL, cookie paths) use PUBLIC_URL's origin.
+    // The library's URLs (discovery, redirects, the resume URL, cookie paths) use PUBLIC_URL's origin,
+    // and its client address is Express's (TRUST_PROXY). Each header is replaced, never appended to,
+    // so nothing a client sends in them reaches the library.
+    const ip = typeof req.ip === 'string' ? req.ip : (req.socket.remoteAddress ?? '');
     req.headers['x-forwarded-proto'] = protocol;
     req.headers['x-forwarded-host'] = host;
-    ctx.request.ip = typeof req.ip === 'string' ? req.ip : (req.socket.remoteAddress ?? '');
+    req.headers['x-forwarded-for'] = ip;
+    ctx.request.ip = ip;
 
     const path = ctx.path;
     const { authorization, token, registration } = OIDC_ROUTES;

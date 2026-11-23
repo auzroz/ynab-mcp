@@ -46,11 +46,13 @@ export interface OidcTestAppOptions {
   authCodeTtlSec?: number;
   encryptor?: BrokerEncryptor;
   /** Replace the store the interaction stages sign-ins in (the provider keeps `storage`). */
-  interactionStore?: Pick<Storage, 'stageSignIn'>;
+  interactionStore?: Pick<Storage, 'stageSignIn' | 'upsertOAuthRow' | 'destroyOAuthRow'>;
   /** Replace the store the provider's adapter uses (a wrapper around `storage`, for races). */
   providerStore?: Storage;
   /** Mount the library once per route, as D8 will (Express strips each mount path), instead of at the root. */
   mountPerRoute?: boolean;
+  /** Express's `trust proxy` (TRUST_PROXY): hops trusted for `req.ip`; off by default, as in http.ts. */
+  trustProxy?: number;
 }
 
 /** The paths D8 mounts the library on (`as-library`). */
@@ -76,6 +78,7 @@ export function buildOidcTestApp(storage: Storage, options: OidcTestAppOptions =
   });
   const encryptor = options.encryptor ?? new Encryptor(encryptionKey);
   const app = express();
+  app.set('trust proxy', options.trustProxy ?? 0);
   // Stand-ins for D8's bounded-parser stage.
   app.use(express.urlencoded({ extended: false, limit: '8kb' }), express.json({ limit: '8kb' }));
   app.use(

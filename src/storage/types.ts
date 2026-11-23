@@ -619,8 +619,13 @@ export interface OAuthRowStore {
    * of another model.
    */
   consumeOAuthRow(key: string): Promise<ConsumeOutcome>;
-  /** Delete one row (not a grant's: use {@link revokeOAuthGrant}). */
-  destroyOAuthRow(key: string): Promise<void>;
+  /**
+   * Delete one row (not a grant's: use {@link revokeOAuthGrant}). Returns
+   * whether this call deleted it: of two concurrent deletes of one row, exactly
+   * one gets true, so a delete can spend a one-time row (the interaction's
+   * YNAB state, src/auth/oidc/interaction.ts).
+   */
+  destroyOAuthRow(key: string): Promise<boolean>;
   /**
    * Delete every row of a grant, live or consumed, its `Grant` row included,
    * so a token save racing the revocation is refused. The adapter uses it for

@@ -17,12 +17,16 @@
  * cookie (D3). The interaction must also be the one the path names.
  *
  * **State.** `start` sends YNAB `state = <uid>.<value>`, where `value` is a
- * fresh `ymcp1_` value of kind `state` (#52) and only its `h1.` key is kept,
- * in the interaction's own result (`interactionResult`, public API). The
- * callback, which has no interaction cookie (another path), only reads the
- * uid out of the state and redirects to that interaction's `complete`, which
- * checks the cookie and then the state's key in constant time, and spends it,
- * before the YNAB code is exchanged. A state is never stored in the 0.4.x
+ * fresh `ymcp1_` value of kind `state` (#52). Only its `h1.` key is kept: as
+ * a one-time `oauth_rows` row (model `Interaction`, expiring with the
+ * interaction), and in the interaction's own result (`interactionResult`,
+ * public API), so only the latest choice counts. The callback, which has no
+ * interaction cookie (another path), only reads the uid out of the state and
+ * redirects to that interaction's `complete`. `complete` checks the cookie,
+ * then the state's key in constant time against the interaction's, then
+ * spends the row with a delete that only one caller can win
+ * (`destroyOAuthRow`), all before the YNAB code is exchanged: two concurrent
+ * completes of one state exchange it once (#94's class of race). A state is never stored in the 0.4.x
  * `pending_auth` table: D12 has nothing read the old tables after the
  * cut-over, and 0.6 drops them. Knowing a uid gives nothing: the cookie is
  * signed, and the state's value is needed too.
@@ -97,8 +101,8 @@ const ROUTER_INTERACTION_PATH = INTERACTION_BASE_PATH.replace(/^\/oauth/, '');
 
 export interface InteractionRouterOptions {
   provider: Provider;
-  /** The store the provider's adapter uses (a `Storage`): the sign-in is staged in it. */
-  store: Pick<OAuthRowStore, 'stageSignIn'>;
+  /** The store the provider's adapter uses (a `Storage`): the state row and the staged sign-in. */
+  store: Pick<OAuthRowStore, 'stageSignIn' | 'upsertOAuthRow' | 'destroyOAuthRow'>;
   encryptor: BrokerEncryptor;
   /** Issues the YNAB `state` and derives its key (#52). */
   tokenHasher: Pick<TokenHasher, 'issue' | 'keyFor'>;
@@ -265,7 +269,19 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
         ? 'read-write'
         : 'read-only';
     const { value, key } = tokenHasher.issue('state');
+    const clientId = interaction.params['client_id'];
     try {
+      // The one-time row complete spends; it keeps the interaction's client from the sweep, like the interaction.
+      await store.upsertOAuthRow({
+        key,
+        model: 'Interaction',
+        payload: JSON.stringify({ ynabState: interaction.uid }),
+        grantId: undefined,
+        accountId: undefined,
+        clientId: typeof clientId === 'string' ? clientId : undefined,
+        uid: undefined,
+        expiresAt: typeof interaction.exp === 'number' ? interaction.exp * 1000 : now(),
+      });
       const pending: PendingYnab = { stateKey: key, grantedScope };
       await provider.interactionResult(req, res, { ynab: pending }, { mergeWithLastSubmission: false });
     } catch (err) {
@@ -322,12 +338,17 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
       return;
     }
 
+    // Spend the state before anything else, atomically: of two completes (or a replay) only one deletes the row.
+    let spent: boolean;
     try {
-      // Spend the state before anything else: a replayed callback finds none.
-      await provider.interactionResult(req, res, {}, { mergeWithLastSubmission: false });
+      spent = await store.destroyOAuthRow(pending.stateKey);
     } catch (err) {
       console.error('[OAuth] Could not spend the YNAB state:', sanitizeErrorMessage(err));
       refuse(res, COULD_NOT_COMPLETE);
+      return;
+    }
+    if (!spent) {
+      refuse(res, EXPIRED_OR_INVALID);
       return;
     }
 

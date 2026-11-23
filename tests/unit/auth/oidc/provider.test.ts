@@ -395,6 +395,67 @@ for (const driver of testDrivers) {
       await expect(t.verifier.verifyAccessToken(res.body.access_token as string)).rejects.toMatchObject({ code: 'invalid_token' });
     });
 
+    describe('forwarded headers: the library sees PUBLIC_URL and the address Express resolved (D2, TRUST_PROXY)', () => {
+      const SPOOF = { 'X-Forwarded-For': '203.0.113.9', 'X-Forwarded-Host': 'evil.example', 'X-Forwarded-Proto': 'http' };
+
+      /** What the library's context holds, captured by a middleware after the provider's own. */
+      const capture = (): Array<{ path: string; ip: string; ips: string[]; origin: string; secure: boolean; xff: string }> => {
+        const seen: Array<{ path: string; ip: string; ips: string[]; origin: string; secure: boolean; xff: string }> = [];
+        t.oidc.provider.use(async (ctx, next) => {
+          // The origin the library builds its URLs from (ctx.origin is only the Origin header).
+          seen.push({ path: ctx.path, ip: ctx.ip, ips: ctx.ips, origin: new URL(ctx.href).origin, secure: ctx.secure, xff: ctx.get('x-forwarded-for') });
+          await next();
+        });
+        return seen;
+      };
+
+      /** One /authorize (with a foreign resource, so the error redirect shows the issuer) and one /token, spoofed. */
+      const spoofed = async (): Promise<{ authorize: request.Response; token: request.Response }> => {
+        const authorize = await request(t.app)
+          .get(authorizeUrl({ clientId, challenge: pkcePair().challenge, resource: 'https://other.example/mcp' }))
+          .set(SPOOF);
+        const token = await request(t.app)
+          .post('/token')
+          .set(SPOOF)
+          .type('form')
+          .send({ grant_type: 'refresh_token', refresh_token: 'R'.repeat(43), client_id: clientId });
+        return { authorize, token };
+      };
+
+      it('TRUST_PROXY off: the spoofed X-Forwarded-* are replaced; the socket address and PUBLIC_URL\'s origin', async () => {
+        const seen = capture();
+        const { authorize, token } = await spoofed();
+        expect(new URL(authorize.headers['location'] as string).searchParams.get('iss')).toBe(ISSUER);
+        expect(token.body.error).toBe('invalid_grant');
+        // A fresh authorization goes to the interaction on PUBLIC_URL's origin, with Secure cookies.
+        const fresh = await request(t.app).get(authorizeUrl({ clientId, challenge: pkcePair().challenge })).set(SPOOF);
+        expect(new URL(fresh.headers['location'] as string, PUBLIC_URL).origin).toBe(PUBLIC_URL);
+        expect((fresh.headers['set-cookie'] as unknown as string[]).every((c) => /; secure/i.test(c))).toBe(true);
+        expect(seen.map((s) => s.path)).toEqual(['/authorize', '/token', '/authorize']);
+        for (const s of seen) {
+          expect(s.ip).toMatch(/127\.0\.0\.1$|^::1$/);
+          expect(s.ips).toEqual([s.ip]);
+          expect(s.xff).toBe(s.ip);
+          expect(s.xff).not.toContain('203.0.113.9');
+          expect(s.origin).toBe(PUBLIC_URL);
+          expect(s.secure).toBe(true);
+        }
+      });
+
+      it('TRUST_PROXY=1: the one trusted hop\'s client address; the origin is still PUBLIC_URL\'s', async () => {
+        await setup({ trustProxy: 1 });
+        const seen = capture();
+        const { authorize } = await spoofed();
+        expect(new URL(authorize.headers['location'] as string).searchParams.get('iss')).toBe(ISSUER);
+        expect(seen).toHaveLength(2);
+        for (const s of seen) {
+          expect(s.ip).toBe('203.0.113.9');
+          expect(s.ips).toEqual(['203.0.113.9']);
+          expect(s.origin).toBe(PUBLIC_URL);
+        }
+      });
+    });
+
     it('#113 note 2: two concurrent refreshes of one token never both succeed (spike 29)', async () => {
       const { tokens } = await signIn(t, clientId);
       const results = await Promise.all([

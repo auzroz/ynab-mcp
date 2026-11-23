@@ -7,14 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- The authorization server on `oidc-provider` 9.15 (ADR-0002, #47), part 2 of
-  4: the provider configuration, the YNAB sign-in as the library's
-  interaction (`/oauth/interaction/:uid`), and the `/mcp` token verifier. It
-  isn't mounted yet, so nothing changes for clients or operators until the
-  cut-over (#47-4), whose notes list the client-visible changes.
-
 ### Fixed
 
 - Per-budget caches are keyed by the budget's UUID, never by the `last-used`

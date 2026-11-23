@@ -313,6 +313,20 @@ const CASES: Case[] = [
     },
   },
   {
+    name: 'destroyOAuthRow reports whether it deleted the row: of two concurrent deletes exactly one wins',
+    async run(ctx) {
+      const s = await signedIn(ctx);
+      const key = plainRowKey('Client', s.clientId);
+      expect(await ctx.store.destroyOAuthRow('h1.nothing-here')).toBe(false);
+      const handle = ctx.handle;
+      const other = handle.kind === 'memory' ? ctx.store : await handle.reopen();
+      const results = await Promise.all([ctx.store.destroyOAuthRow(key), other.destroyOAuthRow(key)]);
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(await rowFor(ctx, key)).toBeUndefined();
+      expect(await ctx.store.destroyOAuthRow(key)).toBe(false);
+    },
+  },
+  {
     name: 'D4: find puts jti back, returns consumed from the column, and hands a client its secret hash as client_secret',
     async run(ctx) {
       const s = await signedIn(ctx);

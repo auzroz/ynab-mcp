@@ -306,6 +306,34 @@ for (const driver of testDrivers) {
       expect(vi.mocked(ynabExchangeCode)).not.toHaveBeenCalled();
     });
 
+    it('two concurrent completes with one cookie and state exchange the YNAB code once (atomic spend)', async () => {
+      // Both requests pass every check and reach the spend before either deletes the state row.
+      const waiting: Array<() => void> = [];
+      await setup({
+        interactionStore: {
+          stageSignIn: (signIn) => handle.storage.stageSignIn(signIn),
+          upsertOAuthRow: (row) => handle.storage.upsertOAuthRow(row),
+          destroyOAuthRow: async (key) => {
+            await new Promise<void>((resolve) => {
+              waiting.push(resolve);
+              if (waiting.length >= 2) for (const release of waiting.splice(0)) release();
+            });
+            return handle.storage.destroyOAuthRow(key);
+          },
+        },
+      });
+      const jar = new CookieJar();
+      const { uid, state } = await toYnab(t, jar, clientId);
+      const url = `/oauth/interaction/${uid}/complete?code=ynab-code&state=${encodeURIComponent(state)}`;
+      const cookie = jar.header(`/oauth/interaction/${uid}/complete`);
+      const results = await Promise.all([
+        request(t.app).get(url).set('Cookie', cookie),
+        request(t.app).get(url).set('Cookie', cookie),
+      ]);
+      expect(results.map((r) => r.status).sort()).toEqual([303, 400]);
+      expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+    });
+
     it('a state presented twice in flight is spent by the first (only one exchange)', async () => {
       const jar = new CookieJar();
       const { uid, state } = await toYnab(t, jar, clientId);
@@ -365,7 +393,13 @@ for (const driver of testDrivers) {
     });
 
     it('a grant revoked before its sign-in is staged: server_error, and the grant is gone', async () => {
-      await setup({ interactionStore: { stageSignIn: async () => false } });
+      await setup({
+        interactionStore: {
+          stageSignIn: async () => false,
+          upsertOAuthRow: (row) => handle.storage.upsertOAuthRow(row),
+          destroyOAuthRow: (key) => handle.storage.destroyOAuthRow(key),
+        },
+      });
       const flow = await browserFlow(t.app, new CookieJar(), { clientId, challenge: pkcePair().challenge });
       expect(flow.params.get('error')).toBe('server_error');
       expect((await oauthRowsOf(handle)).map((r) => r.model)).not.toContain('Grant');
