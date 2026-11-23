@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- Writes are capped at 20 write requests per user per hour (#61c). Before,
+  writes were unlimited, so an automation that makes more than 20 write calls
+  an hour (stdio included) is now refused with `write_limit_exceeded` until the
+  window frees up. Set `YNAB_WRITE_LIMIT_PER_HOUR` (0 to 1000) to change it;
+  `0` turns the cap off.
+
+### Added
+
+- `YNAB_WRITE_LIMIT_PER_HOUR`: a per-user write cap on every transport (#61c).
+  One write tool call is one write request, so a bulk call such as
+  `ynab_create_transactions` counts as 1. It is checked once, before the tool
+  runs, so a refused write takes no YNAB request and changes nothing. The error
+  names the limit and when the next write is allowed. A call that fails input
+  validation gives its slot back; one YNAB rejects keeps it. The first refusal of
+  each episode is recorded in the audit log as `write_limit_refused`. It is separate
+  from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests.
+
 ### Fixed
 
 - Per-budget caches are keyed by the budget's UUID, never by the `last-used`

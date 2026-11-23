@@ -2,6 +2,7 @@
 
 import { parseBoolean, parseBoundedInteger } from '../parse.js';
 import { parseRateLimitMaxWaitMs, RATE_LIMIT_MAX_WAIT_DEFAULT_MS } from '../rate-limit.js';
+import { parseWriteLimitPerHour, WRITE_LIMIT_DEFAULT_PER_HOUR } from '../write-limit.js';
 import type { HttpLoader } from './types.js';
 
 export interface YnabSettings {
@@ -15,6 +16,8 @@ export interface YnabSettings {
   rateLimitPerHour: number;
   /** `RATE_LIMIT_MAX_WAIT_MS`: longest a request waits for a rate-limit token (0-60000; 0 = never wait). */
   rateLimitMaxWaitMs: number;
+  /** `YNAB_WRITE_LIMIT_PER_HOUR`: write requests per user per hour (0-1000, default 20; 0 = no cap). */
+  writeLimitPerHour: number;
 }
 
 export const loadYnabSettings: HttpLoader<YnabSettings> = ({ env, problems }) => ({
@@ -27,4 +30,6 @@ export const loadYnabSettings: HttpLoader<YnabSettings> = ({ env, problems }) =>
     'RATE_LIMIT_PER_HOUR', () => parseBoundedInteger(env['RATE_LIMIT_PER_HOUR'], 180, 'RATE_LIMIT_PER_HOUR', 1, 195), 180),
   rateLimitMaxWaitMs: problems.capture(
     'RATE_LIMIT_MAX_WAIT_MS', () => parseRateLimitMaxWaitMs(env['RATE_LIMIT_MAX_WAIT_MS']), RATE_LIMIT_MAX_WAIT_DEFAULT_MS),
+  writeLimitPerHour: problems.capture(
+    'YNAB_WRITE_LIMIT_PER_HOUR', () => parseWriteLimitPerHour(env['YNAB_WRITE_LIMIT_PER_HOUR']), WRITE_LIMIT_DEFAULT_PER_HOUR),
 });
