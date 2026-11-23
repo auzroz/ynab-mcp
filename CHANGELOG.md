@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **HTTP mode's OAuth authorization server is now
+  [oidc-provider](https://github.com/panva/node-oidc-provider)** (#47,
+  ADR-0002). It replaces the MCP SDK's frozen `server-legacy` handlers. Every
+  connection signs in again once after the upgrade; registered clients carry
+  over. What clients can see:
+  - `POST /authorize` answers `405 method_not_allowed` (`Allow: GET`). Only
+    `GET` is served.
+  - `prompt=none` returns `login_required`, since every authorization goes
+    through the consent page and YNAB. `response_mode` is ignored, as before:
+    the answer is always a query redirect.
+  - The token response's `token_type` is `Bearer`, and a read-write token's
+    `scope` is `read-only read-write` (read-write access is unchanged).
+    Token values are 43 characters, with no `ymcp1_` prefix.
+  - The registration (DCR) response has more fields: `application_type`,
+    `subject_type`, `id_token_signed_response_alg` and `require_auth_time`,
+    with the defaults filled in. `client_secret_expires_at` is `0`: new client
+    secrets no longer expire after 30 days, though a client unused for 90 days
+    is still removed. `sector_identifier_uri` is refused.
+  - The discovery document lists OIDC fields and a `jwks_uri`, and is also
+    served at `/.well-known/openid-configuration`. Error descriptions read
+    differently, and an `invalid_client` that comes from the library itself
+    is 401 (this server's own client check still answers 400). Client
+    credentials are read only from the form body, as before: an
+    `Authorization` header on `/token` or `/revoke` is ignored. The JSON error
+    shapes and the 405 for a wrong method are unchanged.
+
+### Changed
+
+- **What operators see after the authorization server move** (#47):
+  - The consent page is now at `/oauth/interaction/<id>`, reached by a
+    redirect from `/authorize`. Its choices go to `.../start`, and Cancel to
+    `.../cancel`. After YNAB, `/oauth/ynab/callback` (the redirect URI
+    registered at YNAB, unchanged) sends the browser to `.../complete`, then
+    back through `/authorize/<id>` to the client. `/oauth/ynab/start` and
+    `/oauth/cancel` are gone. Every leg stays under `/oauth` and its rate
+    limit. The `/authorize` rate limit counts both the request and the return
+    from the consent page.
+  - The consent-page cookie is replaced by the library's signed cookies
+    (`_interaction`, `_interaction_resume`, `_session`, each with a `.sig`).
+    They are signed with a key derived from `ENCRYPTION_KEY` (no new setting)
+    and are `Secure` when `PUBLIC_URL` is https. The browser still has to be
+    the one that saw the consent page.
+  - New routes: `/.well-known/openid-configuration` and `/jwks` (the library
+    requires a signing key; it is generated at startup and signs nothing).
+  - Registered clients, tokens and codes live in one `oauth_rows` table. The
+    0.4.x token tables are no longer read; their rows are swept on the usual
+    schedule, removed with an account, and dropped in 0.6.
+- **Upgrading from 0.4.x:** registered clients are converted at the first
+  start (a client that fails the new rules is dropped and logged, and must
+  register again). 0.4.x access tokens, refresh tokens and codes, and sign-ins
+  in progress, stop working: each user signs in again once per client (for
+  example, 6 sign-ins for 3 users with 2 clients each). The claude.ai
+  connector shows as disconnected until it's reconnected. Tell your users to
+  expect this. Rolling back to 0.4.x also means signing in again.
+
 ### Fixed
 
 - Per-budget caches are keyed by the budget's UUID, never by the `last-used`
