@@ -442,8 +442,9 @@ export class SqliteStorage implements Storage, OAuthRowStore {
   }
 
   /**
-   * The persistence-time key floor guard (#57b): read both floors and throw
-   * KeyRetiredError when `ciphertext` is under a key id below either. Call it
+   * The persistence-time key floor guard (#57b): throw KeyRetiredError when
+   * `ciphertext` is under a key id below the retired floor (not the announced
+   * one: see assertFloorAllows). Call it
    * inside the write's IMMEDIATE transaction, before its first write, so a
    * retirement (one statement, under the same write lock) lands entirely
    * before or after it.

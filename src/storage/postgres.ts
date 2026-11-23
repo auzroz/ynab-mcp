@@ -324,8 +324,9 @@ async function applyStagedUser(client: PoolClient, user: UserRecord, now: number
 
 /**
  * The persistence-time key floor guard (#57b), inside the write's
- * transaction: read both floors FOR SHARE and throw KeyRetiredError when
- * `ciphertext` is under a key id below either. The retirement takes the
+ * transaction: read the retired floor FOR SHARE and throw KeyRetiredError
+ * when `ciphertext` is under a key id below it (not the announced floor: see
+ * assertFloorAllows). The retirement takes the
  * retired floor's row FOR UPDATE before its compare-and-set, so either it
  * waits for this transaction (and then sees its users row, and holds back),
  * or this lock waits for the retirement (and then reads the new floor, and
@@ -333,8 +334,8 @@ async function applyStagedUser(client: PoolClient, user: UserRecord, now: number
  */
 async function guardCiphertext(client: PoolClient, ciphertext: string): Promise<void> {
   const res = await client.query<{ key: string; value: string }>(
-    'SELECT key, value FROM schema_meta WHERE key = $1 OR key = $2 FOR SHARE',
-    [RETIRED_FLOOR_KEY, RETIRING_FLOOR_KEY]
+    'SELECT key, value FROM schema_meta WHERE key = $1 FOR SHARE',
+    [RETIRED_FLOOR_KEY]
   );
   assertFloorAllows(floorsFromRows(res.rows), ciphertext);
 }

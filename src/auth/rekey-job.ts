@@ -137,9 +137,9 @@ export function longestKeyedWriteMs(requestTimeoutMs: number): number {
  * retirement grace. Why: the retirement is raised only after the announcement
  * has stood for the grace, so every write that passed its check before the
  * announcement must have landed by then (and so holds the raise back). The
- * storage guard (`assertFloorAllows`, src/storage/encryption-meta.ts) refuses a write that lands after
- * the raise anyway; this keeps that refusal for the pathological case, not
- * for an ordinary slow request.
+ * storage guard (`assertFloorAllows`, src/storage/encryption-meta.ts)
+ * refuses a write that lands after the raise anyway; this keeps that refusal
+ * for the pathological case, not for an ordinary slow request.
  */
 export function assertGraceOutlastsWrites(graceMs: number, requestTimeoutMs: number): void {
   const longest = longestKeyedWriteMs(requestTimeoutMs);

@@ -399,6 +399,20 @@ describe('McpOAuthProvider issuer identification (RFC 9207)', () => {
     errorSpy.mockRestore();
   });
 
+  it('a sign-in in flight when a retirement is only announced completes; its token holds the retirement back (#57b)', async () => {
+    const { provider, storage, encryptor } = makeProvider(); // keyring on key 1
+    const { state, nonce } = await pendingState(provider);
+    exchangeCodeMock.mockImplementationOnce(async () => {
+      await storage.announceKeyRetirement(2);
+      return { accessToken: 'ya', refreshToken: 'yr', expiresAt: Date.now() + 3_600_000 };
+    });
+    const url = new URL(await provider.handleYnabCallback('ynabcode', state, nonce));
+    expect(url.searchParams.has('code')).toBe(true);
+    const user = await storage.getUser('ynab-user-1');
+    expect(encryptor.decrypt(user?.encryptedRefreshToken ?? '', refreshTokenContext('ynab-user-1'))).toBe('yr');
+    expect(await storage.raiseRetiredKeyFloor(2)).toBe(0);
+  });
+
   it('denyAuthorization throws for an unknown state', async () => {
     const { provider } = makeProvider();
     await expect(provider.denyAuthorization('bogus', 'access_denied', 'nonce')).rejects.toBeInstanceOf(InvalidGrantError);

@@ -439,11 +439,37 @@ for (const driver of testDrivers) {
         expect(refreshMock).toHaveBeenCalledExactlyOnceWith(YNAB, 'rt0');
       });
 
-      it('a write-back the storage guard refuses (a retirement announced during the YNAB call) takes the same 503 path', async () => {
+      it('a retirement announced during the YNAB call: the write-back is accepted, and the rotated token kept', async () => {
         const h = await driver.open();
         const other = await h.reopen();
         await seedUnder(h.storage, onKey1);
-        const stored = (await h.storage.getUser('u1'))?.encryptedRefreshToken;
+        const gate = deferred<void>();
+        refreshMock.mockImplementationOnce(async () => {
+          await gate.promise;
+          return { accessToken: 'access-new', refreshToken: 'rt-rotated', expiresAt: Date.now() + 2 * HOUR };
+        });
+        const old = new YnabTokenResolver(h.storage, onKey1, YNAB, Date.now, fast);
+
+        // assertKeyWritable passes (nothing announced yet); the call is in flight.
+        const inFlight = old.resolve('u1');
+        await calls(1);
+        await other.announceKeyRetirement(2);
+        gate.resolve();
+
+        await expect(inFlight).resolves.toMatchObject({ accessToken: 'access-new' });
+        const row = await other.getUser('u1');
+        expect(onKey1.decrypt(row?.encryptedRefreshToken ?? '', refreshTokenContext('u1'))).toBe('rt-rotated');
+        expect(onKey1.decrypt(row?.encryptedAccessToken ?? '', accessTokenContext('u1'))).toBe('access-new');
+        expect(row?.refreshLeaseUntil).toBeUndefined();
+        // Still under key 1, so it holds the retirement back until the rekey job moves it.
+        expect(await other.raiseRetiredKeyFloor(2)).toBeLessThan(2);
+        expect(refreshMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('a retirement raised during the YNAB call: the storage guard refuses the write-back with 503, nothing lost or remembered', async () => {
+        const h = await driver.open();
+        const other = await h.reopen();
+        await seedUnder(h.storage, onKey1);
         const gate = deferred<void>();
         refreshMock.mockImplementationOnce(async () => {
           await gate.promise;
@@ -456,20 +482,26 @@ for (const driver of testDrivers) {
         const inFlight = old.resolve('u1').catch((e: unknown) => e);
         await calls(1);
         expect((await other.getUser('u1'))?.refreshLeaseUntil).toBeDefined();
+        // Meanwhile a replica on key 2 rekeys the row, announces, and retires key 1.
+        const before = (await other.getUser('u1'))?.encryptedRefreshToken ?? '';
+        const rekeyed = onKey2.encrypt(onKey2.decrypt(before, refreshTokenContext('u1')), refreshTokenContext('u1'));
+        expect(await other.rekeyUserRefreshToken('u1', before, rekeyed)).toBe(true);
         await other.announceKeyRetirement(2);
+        expect(await other.raiseRetiredKeyFloor(2)).toBe(2);
         gate.resolve();
 
         const refused = await inFlight;
         expect(refused).toBeInstanceOf(YnabTokenUnavailableError);
         expect((refused as YnabTokenUnavailableError).retryAfterSeconds).toBe(30);
         const row = await other.getUser('u1');
-        expect(row?.encryptedRefreshToken).toBe(stored);
+        expect(row?.encryptedRefreshToken).toBe(rekeyed);
         expect(row?.encryptedAccessToken).toBeUndefined();
         expect(row?.refreshLeaseUntil).toBeUndefined();
         expect(errorSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write with ENCRYPTION_KEY_ID 1/);
-        // Not remembered as failed: the next attempt is refused by the write-path check, before YNAB.
+        // Not remembered as failed: the next attempt is refused by the write-path check (503 again), before YNAB.
         const again = await old.accessTokenFor('u1')().catch((e: unknown) => e);
         expect(again).toBeInstanceOf(YnabAuthUnavailableError);
+        await expect(old.resolve('u1')).rejects.not.toThrow(/failed recently/);
         expect(refreshMock).toHaveBeenCalledTimes(1);
       });
 

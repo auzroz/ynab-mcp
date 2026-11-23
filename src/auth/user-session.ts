@@ -440,10 +440,11 @@ export class YnabTokenResolver {
       expiresAt: set.expiresAt,
       now: this.now(),
     };
-    // Storage refuses the write itself (KeyRetiredError, #57b) when a
-    // retirement landed during the YNAB call: the lease is freed, nothing is
-    // stored or remembered, and the request gets the same 503 as a refusal
-    // before the call.
+    // Storage refuses the write itself (KeyRetiredError, #57b) when the key
+    // was retired during the YNAB call (an announcement alone doesn't: that
+    // write is stored, and the rekey job moves it): the lease is freed,
+    // nothing is stored or remembered, and the request gets the same 503 as
+    // a refusal before the call.
     const writeBack = async (oldCiphertext: string): Promise<UserRecord | undefined> => {
       try {
         return await this.storage.updateUserRefreshToken(userId, oldCiphertext, newCiphertext, refreshed);

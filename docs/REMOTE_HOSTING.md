@@ -653,8 +653,9 @@ Retirement takes two steps:
    under older keys: the v1 format and the older key ids are retired in
    about an hour, and a replica still on an older ENCRYPTION_KEY_ID now
    refuses to write`. From then on, a replica whose `ENCRYPTION_KEY_ID` is
-   older refuses every refresh and sign-in before it calls YNAB, so it never
-   spends a user's token or writes one the others are about to stop reading.
+   older refuses every new refresh and sign-in before it calls YNAB, so it
+   doesn't spend a user's token on a write the others are about to stop
+   reading. (One already past that check finishes and is stored; see below.)
    Its log says `Refusing to write with ENCRYPTION_KEY_ID …`. Until it is
    restarted with the current key, a request it would have to refresh a
    token for gets `503` with `Retry-After: 30` (a tool call an
@@ -677,12 +678,20 @@ Retirement takes two steps:
 Two guards keep a token from being stored where no replica can read it:
 
 - **At the write.** Every write of a YNAB token (a sign-in, a refresh) reads
-  the announced and retired key ids in the same database transaction as the
-  write (on Postgres, holding them `FOR SHARE`; the retirement takes the
-  retired row `FOR UPDATE` first, so one waits for the other). A write under
-  an older key is refused and nothing is stored. The user gets the same
-  authorization error as for any failed refresh or sign-in, and connects
-  again. This covers a request that passed its key check and then stalled.
+  the retired key id in the same database transaction as the write (on
+  Postgres, holding it `FOR SHARE`; the retirement takes the same row `FOR
+  UPDATE` first, so one waits for the other). A write under a retired key is
+  refused and nothing is stored. A sign-in fails with the usual authorization
+  error. A refresh gets `503` with `Retry-After: 30`, like the key check, but
+  the token YNAB rotated during the call is lost with it, so the user
+  connects again once. This covers a request that passed its key check and
+  then stalled past the retirement.
+
+  A write that lands after the announcement but before the retirement (a
+  refresh already in flight when the announcement came) is stored as usual.
+  The old key is still configured everywhere, so the token is readable, and
+  it holds the retirement back until the next pass moves it to the current
+  key. Refusing it would only throw away the token YNAB has just rotated.
 - **The grace outlasts every request.** The hour between the announcement
   and the retirement is longer than the longest request that writes a token:
   the YNAB callback's 10-minute deadline, plus the request ceiling

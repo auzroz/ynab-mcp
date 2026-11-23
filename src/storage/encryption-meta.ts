@@ -87,11 +87,11 @@ export function parseRetiredFloor(value: string | undefined, key: string = RETIR
 }
 
 /**
- * A ciphertext write refused because its key id is below the retired or the
- * announced floor. Thrown by {@link assertFloorAllows} (the storage write
- * itself) and by the write-path check before a YNAB call
- * (src/auth/rekey-job.ts). Never carries a value; callers map it to their
- * fixed client message.
+ * A ciphertext write refused because its key id is being retired: below the
+ * retired floor at the storage write ({@link assertFloorAllows}), or below
+ * the retired or the announced floor at the write-path check before a YNAB
+ * call (src/auth/rekey-job.ts). Never carries a value; callers map it to
+ * their fixed client message.
  */
 export class KeyRetiredError extends Error {
   constructor(keyId: number, floor: number) {
@@ -111,16 +111,24 @@ export function writeKeyId(ciphertext: string): number {
 
 /**
  * The persistence-time guard (#57b): throw {@link KeyRetiredError} when
- * `ciphertext` is under a key id below either floor, so a write that passed
- * the write-path check and then waited past a retirement is refused instead
- * of storing a token no replica reads. Drivers call it with floors read in
- * the same transaction as the write (Postgres: locked FOR SHARE, which the
- * retirement's FOR UPDATE waits for; SQLite: under the write lock).
+ * `ciphertext` is under a key id below the RETIRED floor, so a write that
+ * passed the write-path check and then waited past a retirement is refused
+ * instead of storing a token no replica reads. Drivers call it with the floor
+ * read in the same transaction as the write (Postgres: locked FOR SHARE,
+ * which the retirement's FOR UPDATE waits for; SQLite: under the write lock).
+ *
+ * The announced floor is deliberately not checked here. A write that lands
+ * after the announcement but before the retirement (a refresh already in
+ * flight when the announcement came, whose YNAB token has just rotated) is
+ * still readable: the old key is still configured everywhere. It holds the
+ * retirement's compare-and-set back, and the next rekey pass rewrites it.
+ * Refusing it would only throw the rotated token away. New operations are
+ * stopped below the announced floor before they reach YNAB, by the
+ * write-path check.
  */
 export function assertFloorAllows(floors: KeyFloors, ciphertext: string): void {
-  const floor = Math.max(floors.retired, floors.retiring);
   const kid = writeKeyId(ciphertext);
-  if (kid < floor) throw new KeyRetiredError(kid, floor);
+  if (kid < floors.retired) throw new KeyRetiredError(kid, floors.retired);
 }
 
 /** Both floors from `schema_meta` rows (`key`, `value`). */
