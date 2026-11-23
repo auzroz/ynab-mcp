@@ -45,15 +45,33 @@ if [ -s "$tmp/find.err" ] || [ "$found" != "release-gate-probe" ]; then
 fi
 
 # Every entry must allow the "git" namespace, or verify-tag refuses its tags
-# with "key is not permitted for use in signature namespace".
+# with "key is not permitted for use in signature namespace". The namespaces
+# option is a comma-separated pattern list, read as OpenSSH reads it: * and ?
+# are wildcards, and a matching !pattern excludes the namespace whatever else
+# matches.
+allows_git() {
+  local item allowed=1
+  local -a items
+  IFS=',' read -r -a items <<< "$1"
+  for item in "${items[@]}"; do
+    if [[ "$item" == '!'* ]]; then
+      # shellcheck disable=SC2053 # the right-hand side is a pattern on purpose
+      [[ git == ${item#!} ]] && return 1
+    else
+      # shellcheck disable=SC2053
+      [[ git == $item ]] && allowed=0
+    fi
+  done
+  return "$allowed"
+}
 entries=0
 while IFS= read -r line || [ -n "$line" ]; do
   line="${line%$'\r'}"
   trimmed="${line#"${line%%[![:space:]]*}"}"
   case "$trimmed" in '' | '#'*) continue ;; esac
   entries=$((entries + 1))
-  if [[ "$trimmed" == *'namespaces="'* ]] && ! [[ "$trimmed" =~ namespaces=\"([^\"]*,)?git(,[^\"]*)?\" ]]; then
-    fail "$signers: entry ${entries} has a namespaces option without \"git\", so it can't verify a tag."
+  if [[ "$trimmed" =~ namespaces=\"([^\"]*)\" ]] && ! allows_git "${BASH_REMATCH[1]}"; then
+    fail "$signers: entry ${entries}'s namespaces option doesn't allow \"git\", so it can't verify a tag."
   fi
 done < "$signers"
 
@@ -84,7 +102,10 @@ if [ "$name" != "$tag" ]; then
   fail "the tag object at $ref is named '$name', not '$tag'."
 fi
 
-if ! git cat-file tag "$ref" | grep -qx -- '-----BEGIN SSH SIGNATURE-----'; then
+# Read the object first: grep -q exits on the first match, and a writer still
+# writing would then fail the pipeline under pipefail.
+object="$(git cat-file tag "$ref")"
+if ! grep -qx -- '-----BEGIN SSH SIGNATURE-----' <<< "$object"; then
   fail "$tag has no SSH signature. Release tags are signed with an SSH key (git config gpg.format ssh) listed in $signers."
 fi
 

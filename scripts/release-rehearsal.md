@@ -233,11 +233,10 @@ bash scripts/verify-tag-signature.sh v0.0.0-signing-check
 git tag -d v0.0.0-signing-check
 ```
 
-`main` gets the file when `release/0.5.0` merges into it. Until then, a 0.4.x
-patch tagged on `main` runs `main`'s `release.yml`, which has no signature
-check and still pushes the image with `GITHUB_TOKEN`: after step 6 that push
-fails. Cut such a patch from a branch that has 62b, or set the package's role
-back to Write for that release only.
+`main` gets the file, and the rest of 62b, when `release/0.5.0` merges into
+it. Until then, a 0.4.x patch tagged on `main` runs `main`'s `release.yml`,
+which has no signature check and pushes the image with `GITHUB_TOKEN`. After
+step 6, that push fails.
 
 ### 9. Optional: the scratch repository
 
@@ -435,8 +434,9 @@ error.
 LAST=0
 for kind in lightweight unsigned unlisted; do
   case "$kind" in
-    lightweight) git tag "v$V" rehearsal-main ;;
-    unsigned)    git tag -a "v$V" -m "rehearsal: unsigned" rehearsal-main ;;
+    # --no-sign: with tag.gpgSign=true, git would sign these two anyway.
+    lightweight) git tag --no-sign "v$V" rehearsal-main ;;
+    unsigned)    git tag --no-sign -a "v$V" -m "rehearsal: unsigned" rehearsal-main ;;
     unlisted)    git -c user.signingkey="$WORK/unlisted.pub" tag -s "v$V" -m "rehearsal: unlisted key" rehearsal-main ;;
   esac
   git push scratch "refs/tags/v$V"
@@ -538,7 +538,7 @@ git add .github/workflows/token-probe.yml
 git commit -m "rehearsal: GITHUB_TOKEN push probe"
 PROBE_SHA="$(git rev-parse HEAD)"
 git push scratch probe/token-push:refs/heads/probe/token-push
-PROBE="$(gh run list -R "$SCRATCH" --workflow token-probe.yml --commit "$PROBE_SHA" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+PROBE="$(gh run list -R "$SCRATCH" --event push --commit "$PROBE_SHA" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
 # empty right after the push: run the line above again after a few seconds
 gh run watch "$PROBE" -R "$SCRATCH" > /dev/null || true   # ends in failure; that is the pass condition
 gh run view "$PROBE" -R "$SCRATCH" --log-failed | grep -iE "denied|forbidden|unauthorized"
