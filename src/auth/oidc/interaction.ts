@@ -16,7 +16,7 @@
  * before anything else happens, so the library's cookie replaces our consent
  * cookie (D3). The interaction must also be the one the path names.
  *
- * **State: at most one live choice per interaction.** Each interaction has
+ * **State: at most one live choice, and one ending, per interaction.** Each interaction has
  * one state row in `oauth_rows` (model `Interaction`, keyed by the `h1.` key
  * of its uid, expiring with the interaction), changed only by compare-and-set
  * (`compareAndSetOAuthRow`):
@@ -32,7 +32,15 @@
  *     exactly one wins (#94's class of race), so the grant, the staged sign-in
  *     and `interactionFinished`'s result all carry the level of the one state
  *     that was spent.
- *   - `start` is refused while the marker is there (it stays until the
+ *   - `cancel` swaps the row (pending, or none yet) for a `cancelled` marker
+ *     the same way. Every ending of the interaction therefore claims the row
+ *     first: `complete`'s `completing` covers its success, a YNAB denial, a
+ *     failed exchange and the deadline; `cancelled` covers Cancel. Whichever
+ *     claims first wins, and only the claimer calls `interactionFinished`, so
+ *     it runs at most once, with the winner's result. A cancel after the
+ *     `completing` marker is refused (the user already approved at YNAB),
+ *     and a `complete` after a cancel is refused before any exchange or grant.
+ *   - `start` is refused while either marker is there (they stay until the
  *     interaction expires) and once the interaction has an outcome. A failed
  *     `complete` leaves the interaction unusable: the user starts again from
  *     the client.
@@ -141,7 +149,8 @@ const NO_REDIRECT_TRUST: RedirectPolicy = {
 /** The interaction's state row: a live choice, or the marker of a completion in flight. */
 type StateRow =
   | { uid: string; phase: 'pending'; stateKey: string; grantedScope: GrantedScope }
-  | { uid: string; phase: 'completing' };
+  | { uid: string; phase: 'completing' }
+  | { uid: string; phase: 'cancelled' };
 
 /** Whether an interaction already has its outcome (a sign-in or a denial): nothing may change it. */
 function isFinished(interaction: Interaction): boolean {
@@ -162,6 +171,7 @@ function stateRowFor(payload: string, uid: string): StateRow | undefined {
   const p = parsed as Record<string, unknown>;
   if (p['uid'] !== uid) return undefined;
   if (p['phase'] === 'completing') return { uid, phase: 'completing' };
+  if (p['phase'] === 'cancelled') return { uid, phase: 'cancelled' };
   if (p['phase'] !== 'pending' || typeof p['stateKey'] !== 'string') return undefined;
   return { uid, phase: 'pending', stateKey: p['stateKey'], grantedScope: p['grantedScope'] === 'read-write' ? 'read-write' : 'read-only' };
 }
@@ -473,7 +483,27 @@ export function interactionRouter(options: InteractionRouterOptions): Router {
 
   router.get(`${ROUTER_INTERACTION_PATH}/:uid/cancel`, async (req: Request, res: Response) => {
     const interaction = await details(req, res);
-    if (!interaction) {
+    if (!interaction || isFinished(interaction)) {
+      refuse(res, EXPIRED_OR_INVALID);
+      return;
+    }
+    // Claim the ending first, over the exact row read: a pending choice (whose state then dies) or none
+    // yet. A complete that claimed it first (the user approved at YNAB) wins, and this cancel is refused.
+    let claimed = false;
+    try {
+      const current = await store.findOAuthRow(slotKey(interaction));
+      const read = current?.model === 'Interaction' ? stateRowFor(current.payload, interaction.uid) : undefined;
+      const claimable = current === undefined || read?.phase === 'pending';
+      claimed =
+        claimable &&
+        (await store.compareAndSetOAuthRow(
+          current?.payload,
+          stateRowWrite(interaction, { uid: interaction.uid, phase: 'cancelled' })
+        ));
+    } catch (err) {
+      console.error('[OAuth] Could not cancel the authorization:', sanitizeErrorMessage(err));
+    }
+    if (!claimed) {
       refuse(res, EXPIRED_OR_INVALID);
       return;
     }
