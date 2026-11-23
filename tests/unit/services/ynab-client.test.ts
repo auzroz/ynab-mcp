@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { YnabClient, BUDGET_ALIAS_TTL_MS } from '../../../src/services/ynab-client.js';
+import { YnabClient, BUDGET_ALIAS_TTL_MS, CURRENCY_FORMAT_RETRY_MS, CURRENCY_FORMAT_TTL_MS } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
 import { handleGetBudget } from '../../../src/tools/budgets/get-budget.js';
 import { Cache } from '../../../src/services/cache.js';
@@ -346,6 +346,164 @@ describe('read methods', () => {
     await client.getBudgetSettingsById(BUDGET);
 
     expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+  });
+
+  describe('getCurrencyFormat (#49)', () => {
+    const eur = {
+      iso_code: 'EUR',
+      example_format: '123.456,78',
+      decimal_digits: 2,
+      decimal_separator: ',',
+      symbol_first: false,
+      group_separator: '.',
+      currency_symbol: '€',
+      display_symbol: true,
+    };
+    const UUID = '11111111-1111-1111-1111-111111111111';
+
+    it('reads the format from the cached settings: one request however many calls', async () => {
+      setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: eur } } });
+      const client = makeClient(true);
+
+      await expect(client.getCurrencyFormat(UUID)).resolves.toEqual(eur);
+      await expect(client.getCurrencyFormat(UUID)).resolves.toEqual(eur);
+      await client.getBudgetSettingsById(UUID);
+
+      expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+      expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledWith(UUID);
+    });
+
+    it('keeps the format for an hour, past the 5 minute settings cache', async () => {
+      vi.useFakeTimers();
+      try {
+        setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: eur } } });
+        const client = makeClient(true);
+
+        await client.getCurrencyFormat(UUID);
+        vi.advanceTimersByTime(CURRENCY_FORMAT_TTL_MS - 1000);
+        await expect(client.getCurrencyFormat(UUID)).resolves.toEqual(eur);
+        expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+
+        vi.advanceTimersByTime(2000);
+        await client.getCurrencyFormat(UUID);
+        expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a refreshed settings response updates the memo', async () => {
+      const client = makeClient(true);
+      setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: eur } } });
+      await client.getCurrencyFormat(UUID);
+
+      const gbp = { ...eur, iso_code: 'GBP', currency_symbol: '£' };
+      setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: gbp } } });
+      // Force a real refresh of the 5 minute settings cache.
+      (client as unknown as { cache: Cache }).cache.delete(`budget-settings:${UUID}`);
+      await client.getBudgetSettingsById(UUID);
+
+      await expect(client.getCurrencyFormat(UUID)).resolves.toEqual(gbp);
+    });
+
+    it('concurrent lookups for one budget make one request and take one token', async () => {
+      let release: (v: unknown) => void = () => undefined;
+      asMock(mockApi.plans.getPlanSettingsById).mockImplementation(
+        () => new Promise((resolve) => (release = resolve))
+      );
+      const limiter = new RateLimiter(180);
+      const acquire = vi.spyOn(limiter, 'acquire');
+      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+
+      const calls = [client.getCurrencyFormat(UUID), client.getCurrencyFormat(UUID), client.getCurrencyFormat(UUID)];
+      await Promise.resolve();
+      release({ data: { settings: { currency_format: eur } } });
+
+      await expect(Promise.all(calls)).resolves.toEqual([eur, eur, eur]);
+      expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+      expect(acquire).toHaveBeenCalledTimes(1);
+    });
+
+    it('an overlapping direct getBudgetSettingsById and getCurrencyFormat make one request and take one token', async () => {
+      let release: (v: unknown) => void = () => undefined;
+      asMock(mockApi.plans.getPlanSettingsById).mockImplementation(
+        () => new Promise((resolve) => (release = resolve))
+      );
+      const limiter = new RateLimiter(180);
+      const acquire = vi.spyOn(limiter, 'acquire');
+      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+
+      const direct = client.getBudgetSettingsById(UUID);
+      const format = client.getCurrencyFormat(UUID);
+      await Promise.resolve();
+      release({ data: { settings: { currency_format: eur } } });
+
+      expect((await direct).data.settings.currency_format).toEqual(eur);
+      await expect(format).resolves.toEqual(eur);
+      expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+      expect(acquire).toHaveBeenCalledTimes(1);
+    });
+
+    it('callers that join a failing lookup all get undefined, and the pending entry is cleared', async () => {
+      let fail: (e: unknown) => void = () => undefined;
+      asMock(mockApi.plans.getPlanSettingsById).mockImplementationOnce(
+        () => new Promise((_, reject) => (fail = reject))
+      );
+      const client = makeClient(true);
+
+      const calls = [client.getCurrencyFormat(UUID), client.getCurrencyFormat(UUID)];
+      await Promise.resolve();
+      fail(new Error('down'));
+
+      await expect(Promise.all(calls)).resolves.toEqual([undefined, undefined]);
+      expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps one format per budget', async () => {
+      const other = '22222222-2222-2222-2222-222222222222';
+      asMock(mockApi.plans.getPlanSettingsById).mockImplementation(async (id: string) => ({
+        data: { settings: { currency_format: id === UUID ? eur : { ...eur, iso_code: 'GBP' } } },
+      }));
+      const client = makeClient(true);
+
+      expect((await client.getCurrencyFormat(UUID))?.iso_code).toBe('EUR');
+      expect((await client.getCurrencyFormat(other))?.iso_code).toBe('GBP');
+    });
+
+    it('takes a token from the rate limiter for the one request it makes', async () => {
+      setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: eur } } });
+      const limiter = new RateLimiter(180);
+      const acquire = vi.spyOn(limiter, 'acquire');
+      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+
+      await client.getCurrencyFormat(UUID);
+      await client.getCurrencyFormat(UUID);
+
+      expect(acquire).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns undefined when the settings carry no currency format', async () => {
+      setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: null } } });
+      await expect(makeClient(true).getCurrencyFormat(UUID)).resolves.toBeUndefined();
+    });
+
+    it('returns undefined instead of throwing when the settings cannot be read, and does not retry for a minute', async () => {
+      vi.useFakeTimers();
+      try {
+        setReject(mockApi.plans.getPlanSettingsById, new Error('upstream down'));
+        const client = makeClient(true);
+
+        await expect(client.getCurrencyFormat(UUID)).resolves.toBeUndefined();
+        await expect(client.getCurrencyFormat(UUID)).resolves.toBeUndefined();
+        expect(asMock(mockApi.plans.getPlanSettingsById)).toHaveBeenCalledTimes(1);
+
+        vi.advanceTimersByTime(CURRENCY_FORMAT_RETRY_MS + 1);
+        setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: eur } } });
+        await expect(client.getCurrencyFormat(UUID)).resolves.toEqual(eur);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('getAccounts caches and maps to accounts.getAccounts', async () => {

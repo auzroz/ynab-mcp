@@ -4,7 +4,7 @@
  */
 
 import { z } from 'zod';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { usdFallbackFormatter, type MoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeMemo, sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 
 /** YNAB's transaction type filter, shared by every transaction list tool. */
@@ -74,11 +74,11 @@ interface SubtransactionLike {
 }
 
 /** A split line with its ids, for transaction list/get output. */
-export function formatSubtransaction(sub: SubtransactionLike) {
+export function formatSubtransaction(sub: SubtransactionLike, money: MoneyFormatter = usdFallbackFormatter) {
   return {
     id: sub.id,
     transaction_id: sub.transaction_id,
-    amount: formatCurrency(sub.amount),
+    amount: money(sub.amount),
     memo: sanitizeMemo(sub.memo),
     payee_id: sub.payee_id ?? null,
     payee_name: sanitizeName(sub.payee_name),

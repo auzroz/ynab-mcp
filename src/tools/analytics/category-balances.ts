@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
@@ -94,6 +94,7 @@ export async function handleCategoryBalances(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
   const filter = validated.filter ?? 'all';
   const currentMonth = getCurrentMonth();
 
@@ -180,13 +181,13 @@ export async function handleCategoryBalances(
     return {
       group,
       category_count: cats.length,
-      total_balance: formatCurrency(totalBalanceRaw),
+      total_balance: money(totalBalanceRaw),
       _rawBalance: totalBalanceRaw,
       categories: cats.map((c) => ({
         name: c.category_name,
-        balance: formatCurrency(c.balance),
-        budgeted: formatCurrency(c.budgeted),
-        activity: formatCurrency(c.activity),
+        balance: money(c.balance),
+        budgeted: money(c.budgeted),
+        activity: money(c.activity),
       })),
     };
   });
@@ -206,23 +207,23 @@ export async function handleCategoryBalances(
       filter: filterDesc.length > 0 ? filterDesc.join(', ') : 'none',
       summary: {
         categories_shown: categories.length,
-        total_balance: formatCurrency(totalBalance),
-        total_budgeted: formatCurrency(totalBudgeted),
-        total_activity: formatCurrency(totalActivity),
+        total_balance: money(totalBalance),
+        total_budgeted: money(totalBudgeted),
+        total_activity: money(totalActivity),
       },
       by_group: groupSummaries.map(({ _rawBalance, ...rest }) => rest),
       top_balances: categories.slice(0, 10).map((c) => ({
         category: c.category_name,
         group: c.group_name,
-        balance: formatCurrency(c.balance),
-        budgeted: formatCurrency(c.budgeted),
+        balance: money(c.balance),
+        budgeted: money(c.budgeted),
       })),
       negative_balances: categories
         .filter((c) => c.balance < 0)
         .map((c) => ({
           category: c.category_name,
           group: c.group_name,
-          balance: formatCurrency(c.balance),
+          balance: money(c.balance),
         })),
     },
     null,

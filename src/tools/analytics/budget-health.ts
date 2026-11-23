@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
@@ -76,6 +76,7 @@ export async function handleBudgetHealth(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   // Get current month (UTC-based for YNAB API consistency)
   const currentMonth = getCurrentMonth();
@@ -102,15 +103,15 @@ export async function handleBudgetHealth(
     alerts.push({
       severity: 'info',
       type: 'unbudgeted_funds',
-      message: `You have ${formatCurrency(toBeBudgeted)} to be budgeted`,
-      amount: formatCurrency(toBeBudgeted),
+      message: `You have ${money(toBeBudgeted)} to be budgeted`,
+      amount: money(toBeBudgeted),
     });
   } else if (toBeBudgeted < 0) {
     alerts.push({
       severity: 'critical',
       type: 'overbudgeted',
-      message: `You've budgeted ${formatCurrency(Math.abs(toBeBudgeted))} more than you have available`,
-      amount: formatCurrency(Math.abs(toBeBudgeted)),
+      message: `You've budgeted ${money(Math.abs(toBeBudgeted))} more than you have available`,
+      amount: money(Math.abs(toBeBudgeted)),
     });
   }
 
@@ -145,9 +146,9 @@ export async function handleBudgetHealth(
         alerts.push({
           severity: 'warning',
           type: 'overspent_category',
-          message: `${safeCatName} is overspent by ${formatCurrency(Math.abs(balance))}`,
+          message: `${safeCatName} is overspent by ${money(Math.abs(balance))}`,
           category: safeCatName,
-          amount: formatCurrency(Math.abs(balance)),
+          amount: money(Math.abs(balance)),
         });
       } else if (cat.goal_under_funded != null && cat.goal_under_funded > 0) {
         status = 'underfunded';
@@ -158,9 +159,9 @@ export async function handleBudgetHealth(
         alerts.push({
           severity: 'info',
           type: 'underfunded_goal',
-          message: `${safeGoalName} needs ${formatCurrency(underFunded)} more to meet goal`,
+          message: `${safeGoalName} needs ${money(underFunded)} more to meet goal`,
           category: safeGoalName,
-          amount: formatCurrency(underFunded),
+          amount: money(underFunded),
         });
       } else if (percentUsed > 80 && balance > 0) {
         status = 'warning';
@@ -170,11 +171,11 @@ export async function handleBudgetHealth(
       if (budgeted > 0 || Math.abs(activity) > 0) {
         categoryHealth.push({
           name: sanitizeName(cat.name),
-          budgeted: formatCurrency(budgeted),
+          budgeted: money(budgeted),
           budgeted_milliunits: budgeted,
-          spent: formatCurrency(Math.abs(activity)),
+          spent: money(Math.abs(activity)),
           spent_milliunits: Math.abs(activity),
-          available: formatCurrency(balance),
+          available: money(balance),
           available_milliunits: balance,
           status,
           percent_used: percentUsed,
@@ -226,11 +227,11 @@ export async function handleBudgetHealth(
       month: currentMonth,
       alerts: alerts.slice(0, 10), // Top 10 alerts
       key_metrics: {
-        to_be_budgeted: formatCurrency(toBeBudgeted),
-        total_budgeted: formatCurrency(totalBudgeted),
-        total_spent: formatCurrency(Math.abs(totalActivity)),
-        total_income: formatCurrency(totalIncome),
-        total_overspent: formatCurrency(totalOverspent),
+        to_be_budgeted: money(toBeBudgeted),
+        total_budgeted: money(totalBudgeted),
+        total_spent: money(Math.abs(totalActivity)),
+        total_income: money(totalIncome),
+        total_overspent: money(totalOverspent),
         overspent_category_count: overspentCount,
         underfunded_goals_count: underfundedGoals,
       },
@@ -239,8 +240,8 @@ export async function handleBudgetHealth(
         percent_complete: percentMonthComplete,
         daily_budget_remaining:
           daysRemaining > 0
-            ? formatCurrency(Math.round((totalBudgeted + totalActivity) / daysRemaining))
-            : formatCurrency(totalBudgeted + totalActivity), // Last day: show remaining budget
+            ? money(Math.round((totalBudgeted + totalActivity) / daysRemaining))
+            : money(totalBudgeted + totalActivity), // Last day: show remaining budget
         daily_budget_remaining_milliunits:
           daysRemaining > 0
             ? Math.round((totalBudgeted + totalActivity) / daysRemaining)

@@ -10,7 +10,7 @@ import { IMPORT_ID_MAX_LENGTH, MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, budge
 import type { Tool } from '@modelcontextprotocol/server';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { formatCurrency, toMilliunits, sumMilliunits } from '../../utils/milliunits.js';
+import { moneyFormatterFor, toMilliunits, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import {
   checkSplitRules,
@@ -156,6 +156,7 @@ export async function handleCreateTransactions(
     transactions: ynabTransactions,
   });
 
+  const money = await moneyFormatterFor(client, budgetId);
   const created = response.data.transactions ?? [];
   const duplicates = response.data.duplicate_import_ids ?? [];
 
@@ -170,15 +171,15 @@ export async function handleCreateTransactions(
       summary: {
         created_count: created.length,
         duplicate_count: duplicates.length,
-        total_amount: formatCurrency(totalAmount),
+        total_amount: money(totalAmount),
       },
       transactions: created.map((t) => ({
         id: t.id,
         date: t.date,
-        amount: formatCurrency(t.amount),
+        amount: money(t.amount),
         payee_name: sanitizeName(t.payee_name),
         category_name: sanitizeName(t.category_name),
-        subtransactions: formatSubtransactions(t.subtransactions),
+        subtransactions: formatSubtransactions(t.subtransactions, money),
       })),
       duplicate_import_ids:
         duplicates.length > 0

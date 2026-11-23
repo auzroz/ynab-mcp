@@ -10,7 +10,7 @@ import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { buildGoalDetail } from '../../utils/goals.js';
-import { formatCurrency } from '../../utils/milliunits.js';
+import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
 
@@ -66,6 +66,7 @@ export async function handleGetCategory(
 ): Promise<string> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
+  const money = await moneyFormatterFor(client, budgetId);
 
   const response = await client.getCategoryById(budgetId, validated.category_id);
   const category = response.data.category;
@@ -78,10 +79,10 @@ export async function handleGetCategory(
         name: sanitizeName(category.name),
         hidden: category.hidden,
         note: sanitizeMemo(category.note),
-        budgeted: formatCurrency(category.budgeted),
-        activity: formatCurrency(category.activity),
-        balance: formatCurrency(category.balance),
-        goal: buildGoalDetail(category),
+        budgeted: money(category.budgeted),
+        activity: money(category.activity),
+        balance: money(category.balance),
+        goal: buildGoalDetail(category, money),
         ...omitNull({ original_category_group_id: category.original_category_group_id }),
         deleted: category.deleted,
       },
