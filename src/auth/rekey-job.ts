@@ -82,13 +82,17 @@ export async function prepareEncryptionKeys(storage: CiphertextStore, encryptor:
 export interface RekeyResult {
   /** Rows rewritten under the current key. */
   rekeyed: number;
-  /** Rows not yet current that hold retirement back (the sum of the next four). */
+  /** Rows not yet current that clear by themselves (`changed` + `newer` + `staged`); they hold retirement back. */
   remaining: number;
   /** Rows whose compare-and-set lost (changed meanwhile); the next pass looks again. */
   changed: number;
   /** Rows under a key id newer than this replica's current one. */
   newer: number;
-  /** Rows whose key id (or `v1`'s id 1) is not configured here. */
+  /**
+   * Rows whose key id (or `v1`'s id 1) is not configured here. They hold
+   * retirement back too, and don't clear by themselves: the key is added to
+   * `ENCRYPTION_KEY_PREVIOUS`, or (if it is lost) the users reconnect or are erased.
+   */
   noKey: number;
   /** Staged sign-ins not in the current form. */
   staged: number;
@@ -179,9 +183,9 @@ export async function rekeyPass(
     if (!encryptor.isCurrent(stored)) result.staged++;
   }
   // A staged sign-in under a newer key is counted as staged; either way it waits.
-  result.remaining = result.changed + result.newer + result.noKey + result.staged;
+  result.remaining = result.changed + result.newer + result.staged;
 
-  if (result.remaining > 0) {
+  if (result.remaining > 0 || result.noKey > 0) {
     state.clearSince = undefined;
   } else if (encryptor.retiredBelow < current) {
     const at = now();
@@ -213,8 +217,11 @@ export function rekeyLogLine(r: RekeyResult): string | undefined {
   if (r.changed > 0) detail.push(`${r.changed} changed during the pass`);
   if (r.staged > 0) detail.push(`${r.staged} staged sign-ins`);
   if (r.newer > 0) detail.push(`${r.newer} under a newer key id`);
-  if (r.noKey > 0) detail.push(`${r.noKey} under a key id that is not configured`);
   if (detail.length > 0) parts.push(` (${detail.join(', ')})`);
+  // Its own number: these don't clear by themselves, and they hold retirement back.
+  if (r.noKey > 0) {
+    parts.push(`; ${r.noKey} under a key id that is not configured (retirement waits for them: add the key to ENCRYPTION_KEY_PREVIOUS)`);
+  }
   if (r.unreadable > 0) parts.push(`; ${r.unreadable} unreadable (those users must connect again)`);
   return parts.join('');
 }

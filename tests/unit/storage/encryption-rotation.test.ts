@@ -261,7 +261,7 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       const opts = { now: c.now, log: (m: string) => lines.push(m), graceMs: MINUTE };
       // 'x' is in neither format: unreadable. 'lost' is under id 1 but another key: unreadable.
       const r = await rekeyPass(store, keyring, state, opts);
-      expect(r).toMatchObject({ rekeyed: 0, staged: 1, newer: 1, noKey: 1, unreadable: 2, remaining: 3 });
+      expect(r).toMatchObject({ rekeyed: 0, staged: 1, newer: 1, noKey: 1, unreadable: 2, remaining: 2 });
       expect((await store.getUser('newer'))?.encryptedRefreshToken.startsWith('v2.6.')).toBe(true);
       c.advance(2 * MINUTE);
       expect((await rekeyPass(store, keyring, state, opts)).retiredNow).toBe(false);
@@ -270,8 +270,29 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       expect(await store.getRetiredKeyFloor()).toBe(0);
       // The unchanged state is logged once.
       expect(lines).toEqual([
-        '[Rekey] re-encrypted 0, 3 remaining (1 staged sign-ins, 1 under a newer key id, 1 under a key id that is not configured); 2 unreadable (those users must connect again)',
+        '[Rekey] re-encrypted 0, 2 remaining (1 staged sign-ins, 1 under a newer key id); 1 under a key id that is not configured (retirement waits for them: add the key to ENCRYPTION_KEY_PREVIOUS); 2 unreadable (those users must connect again)',
       ]);
+    });
+
+    it('a row under a lost key holds retirement back until its user reconnects or is erased', async () => {
+      const { store } = await open();
+      const keyring = new Encryptor(newKey(), { keyId: '2' }); // key 1 is lost
+      const lostKey = new Encryptor(newKey());
+      await addUser(store, 'reconnects', lostKey.encrypt('rt', refreshTokenContext('reconnects')));
+      await addUser(store, 'erased', lostKey.encrypt('rt', refreshTokenContext('erased')));
+      const c = clock();
+      const state: RekeyState = {};
+      const opts = { now: c.now, log: () => undefined, graceMs: MINUTE };
+      expect(await rekeyPass(store, keyring, state, opts)).toMatchObject({ noKey: 2, remaining: 0 });
+      c.advance(2 * MINUTE);
+      expect((await rekeyPass(store, keyring, state, opts)).retiredNow).toBe(false);
+      // One user signs in again (the row is replaced under the current key); the other is erased.
+      await addUser(store, 'reconnects', keyring.encrypt('rt-new', refreshTokenContext('reconnects')));
+      await store.deleteUserData('erased');
+      expect(await rekeyPass(store, keyring, state, opts)).toMatchObject({ noKey: 0, remaining: 0, retiredNow: false });
+      c.advance(2 * MINUTE);
+      expect((await rekeyPass(store, keyring, state, opts)).retiredNow).toBe(true);
+      expect(await store.getRetiredKeyFloor()).toBe(2);
     });
 
     it('a replica that has the next key only to read it leaves rows under it alone (two-phase rollout)', async () => {

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- Replacing `ENCRYPTION_KEY` now needs a new `ENCRYPTION_KEY_ID` (#57). A
+  different key under an id the database has already recorded refuses to
+  start, so swapping the key in place and letting every user reconnect no
+  longer works. To rotate without logging anyone out, follow "Rotating
+  ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md. If the old key is lost, give the
+  new key a new id: every user then reconnects once.
+
 ### Security
 
 - Stored YNAB refresh tokens are bound to their user and column, and carry a
@@ -26,9 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - the key under an id differs from the one the database recorded for that id;
   - `ENCRYPTION_KEY_ID` is below a retired id;
   - `ENCRYPTION_KEY_PREVIOUS` is set without `TOKEN_PEPPER`.
-- Upgrading needs no action. Once the rekey job has run, a rollback to 0.4.x
-  can't read the stored YNAB tokens and every user reconnects. Back up before
-  upgrading.
+- Upgrading needs no configuration change. Back up the database first:
+  rolling back means restoring that backup. 0.4.x has no schema-version check,
+  so it does start on a 0.5.0 database, but it can't read the tokens 0.5.0
+  stores. Don't run 0.4.x and 0.5.0 replicas against the same database, not
+  even during a rolling deploy.
+- The binding protects tokens from the upgrade on. A `v1` token carries none,
+  so one copied into another user's row before the upgrade is re-encrypted as
+  that row's.
 
 ### Fixed
 

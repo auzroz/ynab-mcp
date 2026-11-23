@@ -61,10 +61,14 @@ describe('crypto', () => {
       expect(() => enc.decrypt(token, other)).toThrow(/column/);
     });
 
-    it('needs a context to encrypt, and to decrypt v2', () => {
-      const enc = new Encryptor(keyB64);
-      expect(() => enc.encrypt('secret')).toThrow(/context/);
-      expect(() => enc.decrypt(enc.encrypt('secret', ctx))).toThrow(/context/);
+    it('needs a context to encrypt, and to decrypt v2, even from a caller past the types', () => {
+      // The context is required in the signatures; a cast (or plain JS) still throws at runtime.
+      const untyped = new Encryptor(keyB64) as unknown as {
+        encrypt(plaintext: string, context?: CipherContext): string;
+        decrypt(token: string, context?: CipherContext): string;
+      };
+      expect(() => untyped.encrypt('secret')).toThrow(/context/);
+      expect(() => untyped.decrypt(untyped.encrypt('secret', ctx))).toThrow(/context/);
     });
 
     it.each(['', 'a|b', 'line\nbreak', 'x'.repeat(257)])('refuses the subject %j', (subject) => {
@@ -97,7 +101,8 @@ describe('crypto', () => {
 
       const after = new Encryptor(k2, { keyId: '2', previousKeys: `1:${k1}` });
       expect(after.decrypt(legacy, ctx)).toBe('legacy');
-      expect(after.decrypt(legacy)).toBe('legacy');
+      // v1 has no binding: the context is accepted and ignored.
+      expect(after.decrypt(legacy, refreshTokenContext('someone-else'))).toBe('legacy');
       expect(after.decrypt(underOne, ctx)).toBe('one');
       const underTwo = after.encrypt('two', ctx);
       expect(underTwo.startsWith('v2.2.')).toBe(true);
@@ -111,7 +116,7 @@ describe('crypto', () => {
       const underOne = new Encryptor(k1).encrypt('one', ctx);
       const enc = new Encryptor(k2, { keyId: '2', previousKeys: `1:${k1}` });
       enc.retireBelow(1);
-      expect(() => enc.decrypt(legacy)).toThrow(/retired/);
+      expect(() => enc.decrypt(legacy, ctx)).toThrow(/retired/);
       expect(enc.decrypt(underOne, ctx)).toBe('one');
       enc.retireBelow(2);
       expect(() => enc.decrypt(underOne, ctx)).toThrow(/retired/);
@@ -129,7 +134,7 @@ describe('crypto', () => {
       expect(() => new Encryptor(k1).decrypt(underTwo, ctx)).toThrow(/No configured key/);
       // v1 needs key id 1.
       const legacy = encrypt('legacy', parseEncryptionKey(k1));
-      expect(() => new Encryptor(k2, { keyId: '2' }).decrypt(legacy)).toThrow(/No configured key/);
+      expect(() => new Encryptor(k2, { keyId: '2' }).decrypt(legacy, ctx)).toThrow(/No configured key/);
     });
 
     it('parses ENCRYPTION_KEY_PREVIOUS', () => {

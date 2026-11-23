@@ -563,18 +563,26 @@ records that in the database and logs:
 ```
 
 From then on every replica refuses `v1` and those key ids, so an old
-ciphertext restored from a backup can't get round the binding. Nothing needs
-doing on upgrade.
+ciphertext restored from a backup can't get round the binding. The binding
+protects from the upgrade on: a `v1` ciphertext carries none, so one copied
+into another user's row before the upgrade is rewritten as that row's. Nothing
+needs doing on upgrade.
 
-- **Rolling back to 0.4.x after the job has run** means every user reconnects
-  (0.4.x can't read `v2`). Back up first, as for the token hashing above.
-  Users who sign in on 0.4.x during a rollback reconnect again once 0.5.0 has
-  retired `v1`.
+- **Rolling back means restoring the backup** you took before upgrading. 0.4.x
+  has no schema-version check, so it does start on a 0.5.0 database, but it
+  can't read the tokens 0.5.0 stores (`v2` YNAB tokens, hashed MCP tokens), so
+  every user would reconnect and the rows would be left half converted.
+- **Don't run 0.4.x and 0.5.0 replicas against the same database**, not even
+  briefly during a rolling deploy: each writes rows the other can't read, and
+  `v1` rows a 0.4.x replica writes after 0.5.0 has retired `v1` are refused.
 - A line ending `… unreadable (those users must connect again)` counts rows
   no configured key opens. Those users reconnect, which replaces the row.
-- A line with rows `under a key id that is not configured` means a key is
-  missing from `ENCRYPTION_KEY_PREVIOUS`. Those rows hold retirement back
-  until the key is added or the users reconnect.
+- A line with `N under a key id that is not configured` counts rows whose key
+  is missing from `ENCRYPTION_KEY_PREVIOUS`. They hold retirement back. Add
+  the key back as `<id>:<key>`; if that key is lost, those users can't be
+  read in any case: each one's row is replaced when they connect again, or
+  goes when the account is erased (deleting the account, or #54's
+  inactive-user erase). Once none are left, retirement proceeds.
 
 ### Rotating ENCRYPTION_KEY
 
@@ -628,7 +636,9 @@ wrong key given as `1:<old key>` later is refused instead of recorded.
 The server refuses to start, naming no value, when the key under an id is not
 the one the database recorded for that id (a new key needs a new id), when
 `ENCRYPTION_KEY_ID` is below an id that has been retired, or when
-`ENCRYPTION_KEY_PREVIOUS` is set without `TOKEN_PEPPER`.
+`ENCRYPTION_KEY_PREVIOUS` is set without `TOKEN_PEPPER`. Before 0.5.0 a new
+`ENCRYPTION_KEY` could be swapped in place, with every user reconnecting; from
+0.5.0 on, a new key always needs a new `ENCRYPTION_KEY_ID`.
 
 If the old key is lost, set the new key under a new id without
 `ENCRYPTION_KEY_PREVIOUS`: every user reconnects once. If `TOKEN_PEPPER` was

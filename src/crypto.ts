@@ -307,23 +307,24 @@ export class Encryptor {
   }
 
   /**
-   * Encrypt a UTF-8 string with the current key, bound to `context`. The
-   * context is optional in the signature only so callers written before
-   * #57b keep compiling; a call without one throws, so no unbound ciphertext
-   * is ever written.
+   * Encrypt a UTF-8 string with the current key, bound to `context` (#57b).
+   * The context is required, so a caller that has none fails to compile; a
+   * caller that gets past the types without one (a cast, plain JS) throws, so
+   * no unbound ciphertext is ever written.
    */
-  encrypt(plaintext: string, context?: CipherContext): string {
+  encrypt(plaintext: string, context: CipherContext): string {
     if (context === undefined) throw new Error('Encryptor.encrypt needs the ciphertext context (#57b)');
     return encryptV2(plaintext, this.current.key, this.current.id, context);
   }
 
   /**
-   * Decrypt a stored token. A `v2` token needs the context it was written
-   * with (a call without one throws) and a configured, unretired key id; a
-   * `v1` token is read with key id 1, until `v1` is retired. Throws on any
-   * mismatch, tampering or format error, naming no value.
+   * Decrypt a stored token, given the context it is stored under. A `v2`
+   * token must have been written with that context, under a configured,
+   * unretired key id; a `v1` token (no binding) ignores the context and is
+   * read with key id 1, until `v1` is retired. Throws on any mismatch,
+   * tampering or format error, naming no value.
    */
-  decrypt(token: string, context?: CipherContext): string {
+  decrypt(token: string, context: CipherContext): string {
     const version = ciphertextVersion(token);
     if (version === undefined) throw new Error('Invalid encrypted token format');
     if (version.format === 'v1') {
