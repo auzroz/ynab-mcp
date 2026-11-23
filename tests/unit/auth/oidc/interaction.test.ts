@@ -40,6 +40,7 @@ import {
   ISSUER,
   PUBLIC_URL,
   REDIRECT_URI,
+  RESOURCE,
   CookieJar,
   authorizeUrl,
   browse,
@@ -313,6 +314,7 @@ for (const driver of testDrivers) {
         interactionStore: {
           stageSignIn: (signIn) => handle.storage.stageSignIn(signIn),
           upsertOAuthRow: (row) => handle.storage.upsertOAuthRow(row),
+          findOAuthRow: (key) => handle.storage.findOAuthRow(key),
           destroyOAuthRow: async (key) => {
             await new Promise<void>((resolve) => {
               waiting.push(resolve);
@@ -331,6 +333,63 @@ for (const driver of testDrivers) {
         request(t.app).get(url).set('Cookie', cookie),
       ]);
       expect(results.map((r) => r.status).sort()).toEqual([303, 400]);
+      expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+    });
+
+    it("a /start racing a complete can't change its choice: the grant and the result are the spent state's", async () => {
+      const fresh = new CookieJar();
+      const pkce = pkcePair();
+      const auth = await browse(t.app, fresh, authorizeUrl({ clientId, challenge: pkce.challenge, scope: 'read-write' }));
+      const uid2 = interactionUid(auth.headers['location'] as string);
+      await browse(t.app, fresh, `/oauth/interaction/${uid2}`);
+      const start = await browse(t.app, fresh, `/oauth/interaction/${uid2}/start?scope=read-write`);
+      const state2 = new URL(start.headers['location'] as string).searchParams.get('state') as string;
+
+      // The YNAB exchange waits until the racing /start has landed.
+      let entered!: () => void;
+      const inExchange = new Promise<void>((resolve) => (entered = resolve));
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      vi.mocked(ynabExchangeCode).mockImplementation(async () => {
+        entered();
+        await gate;
+        return { accessToken: 'ynab-access', refreshToken: 'ynab-refresh-race', expiresAt: Date.now() + 7_200_000 };
+      });
+      const completing = browse(t.app, fresh, `/oauth/interaction/${uid2}/complete?code=ynab-code&state=${encodeURIComponent(state2)}`);
+      await inExchange;
+      const late = await browse(t.app, fresh, `/oauth/interaction/${uid2}/start?scope=read-only`);
+      expect(late.status).toBe(400);
+      release();
+      const complete = await completing;
+      expect(complete.status).toBe(303);
+      // A /start after the outcome is recorded is refused too.
+      expect((await browse(t.app, fresh, `/oauth/interaction/${uid2}/start?scope=read-only`)).status).toBe(400);
+
+      const resume = await browse(t.app, fresh, complete.headers['location'] as string);
+      const code = new URL(resume.headers['location'] as string).searchParams.get('code') as string;
+      const tokens = await exchangeCode(t.app, { clientId, code, verifier: pkce.verifier });
+      expect(tokens.body.scope).toBe('read-only read-write');
+      const authInfo = await t.verifier.verifyAccessToken(tokens.body.access_token as string);
+      expect(authInfo.extra?.['grantedScope']).toBe('read-write');
+      const grant = await t.oidc.provider.Grant.find(authInfo.extra?.['grantId'] as string);
+      expect(grant?.getResourceScopeFiltered(RESOURCE, ['read-only', 'read-write'])).toBe('read-only read-write');
+      expect((await handle.storage.getUser('ynab-user-1'))?.grantedScope).toBe('read-write');
+      expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
+    });
+
+    it('a new choice spends the previous state: only the latest state completes, with its own level', async () => {
+      const jar = new CookieJar();
+      const pkce = pkcePair();
+      const auth = await browse(t.app, jar, authorizeUrl({ clientId, challenge: pkce.challenge, scope: 'read-write' }));
+      const uid = interactionUid(auth.headers['location'] as string);
+      const first = await browse(t.app, jar, `/oauth/interaction/${uid}/start?scope=read-write`);
+      const second = await browse(t.app, jar, `/oauth/interaction/${uid}/start?scope=read-only`);
+      const stateOf = (res: request.Response): string => new URL(res.headers['location'] as string).searchParams.get('state') as string;
+      const stale = await browse(t.app, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(stateOf(first))}`);
+      expect(stale.status).toBe(400);
+      const params = await finish(t, jar, `/oauth/interaction/${uid}/complete?code=c&state=${encodeURIComponent(stateOf(second))}`);
+      const tokens = await exchangeCode(t.app, { clientId, code: params.get('code') as string, verifier: pkce.verifier });
+      expect(tokens.body.scope).toBe('read-only');
       expect(vi.mocked(ynabExchangeCode)).toHaveBeenCalledTimes(1);
     });
 
@@ -397,6 +456,7 @@ for (const driver of testDrivers) {
         interactionStore: {
           stageSignIn: async () => false,
           upsertOAuthRow: (row) => handle.storage.upsertOAuthRow(row),
+          findOAuthRow: (key) => handle.storage.findOAuthRow(key),
           destroyOAuthRow: (key) => handle.storage.destroyOAuthRow(key),
         },
       });

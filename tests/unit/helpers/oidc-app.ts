@@ -46,7 +46,7 @@ export interface OidcTestAppOptions {
   authCodeTtlSec?: number;
   encryptor?: BrokerEncryptor;
   /** Replace the store the interaction stages sign-ins in (the provider keeps `storage`). */
-  interactionStore?: Pick<Storage, 'stageSignIn' | 'upsertOAuthRow' | 'destroyOAuthRow'>;
+  interactionStore?: Pick<Storage, 'stageSignIn' | 'upsertOAuthRow' | 'findOAuthRow' | 'destroyOAuthRow'>;
   /** Replace the store the provider's adapter uses (a wrapper around `storage`, for races). */
   providerStore?: Storage;
   /** Mount the library once per route, as D8 will (Express strips each mount path), instead of at the root. */
