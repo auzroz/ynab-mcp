@@ -17,6 +17,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a write invalidates exactly the entries a read created. The budget-settings cache now has the same generation guard as the
   other caches.
 
+## [0.4.3] - 2026-11-23
+
+Dependency security fixes for the 0.4 line. The server's code and tools are
+unchanged from 0.4.2, so there are no breaking changes.
+
+### Security
+
+- `hono` 4.13.14 → 4.13.21 and `@hono/node-server` 2.1.5 → 2.1.11. Both come
+  in through `@modelcontextprotocol/sdk`, whose HTTP transport uses
+  `@hono/node-server` to turn Node requests into web requests. The updates fix
+  GHSA-jpvv-r467-5p4w and GHSA-qv5m-9pm6-hqp3 in `@hono/node-server`, and
+  GHSA-46wx-v44x-9hh2, GHSA-4m76-xfj5-7975, GHSA-3gg2-335m-rxc6,
+  GHSA-4h7h-rv7c-7m2v and GHSA-h7mg-cq63-vhpq in `hono`. As far as we can
+  tell, ynab-mcp 0.4.2 doesn't reach any of them: the SDK doesn't route or
+  authorize by request path, and nothing uses hono's `csrf()`, `mount()`,
+  `validator('form')`, `css` helper, RegExpRouter or WebSocket upgrades.
+- The Docker image is the artifact that carried the old versions, because it
+  installs from the lockfile. npm installs (`npx ynab-mcp`) already resolved
+  the fixed versions, since the SDK's version ranges allow them.
+- The Docker image's `node:24-alpine3.24` base is updated to the current
+  digest.
+
 ## [0.4.2] - 2026-11-04
 
 A documentation site and dependency updates. The server's code and tools are
