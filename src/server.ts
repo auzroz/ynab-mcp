@@ -243,10 +243,10 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
   // How a refused or failed write is audited (#60a): the tool's operation and
   // resource type, no resource id (the arguments are not trusted for one).
   const auditLog = ynabClient.getAuditLog();
-  const recordWrite = async (name: string, outcome: AuditOutcome): Promise<void> => {
+  const recordWrite = async (name: string, outcome: AuditOutcome, suppressed = false): Promise<void> => {
     const target = WRITE_TOOL_AUDIT_TARGETS[name];
     if (target === undefined) return;
-    await auditLog.record({ ...target, tool: name, outcome });
+    await auditLog.record({ ...target, ...(suppressed ? { operation: 'audit_suppressed' as const } : {}), tool: name, outcome });
   };
 
   const callTool = async (name: string, args: Record<string, unknown>) => {
@@ -261,9 +261,10 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
       // Recorded while the user's hourly budget of audited refusals lasts (a
       // refusal costs no write slot, so a looping client is bounded here).
       if (ynabClient.isReadOnly() && isWrite) {
-        if (ynabClient.admitDeniedAudit()) {
-          await recordWrite(name, ynabClient.getReadOnlyReason() === 'scope' ? 'denied_scope' : 'denied_read_only');
-        }
+        const outcome = ynabClient.getReadOnlyReason() === 'scope' ? 'denied_scope' : 'denied_read_only';
+        const audit = ynabClient.admitDeniedAudit();
+        // Past the budget: one marker row says later refusals this hour are not recorded.
+        if (audit !== 'skip') await recordWrite(name, outcome, audit === 'mark');
         throw new ReadOnlyModeError(name);
       }
       // The per-user write cap (#61c, D-8): checked here, once per write tool

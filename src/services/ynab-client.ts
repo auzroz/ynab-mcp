@@ -566,19 +566,20 @@ export class YnabClient {
   }
 
   /**
-   * Whether the audit log records this refused write (#60a): while the user's
-   * hourly budget of audited refusals lasts. The first one past it logs one
-   * stderr line, so the gap in the log is visible to the operator.
+   * How the audit log treats this refused write (#60a): `record` it while the
+   * user's hourly budget of audited refusals lasts; for the first one past it,
+   * `mark` (record one `audit_suppressed` row instead, and log one stderr
+   * line), so a reader of the log and the operator can both see the gap;
+   * `skip` the rest until the budget frees up.
    */
-  admitDeniedAudit(): boolean {
+  admitDeniedAudit(): 'record' | 'mark' | 'skip' {
     const admission = this.auditedDenials?.tryAcquire();
-    if (admission === undefined || admission.allowed) return true;
-    if (admission.firstRefusal) {
-      console.error(
-        `[AUDIT] more than ${admission.limit} refused writes this hour for one user; further ones are not recorded until ${new Date(admission.resetsAt).toISOString()}`
-      );
-    }
-    return false;
+    if (admission === undefined || admission.allowed) return 'record';
+    if (!admission.firstRefusal) return 'skip';
+    console.error(
+      `[AUDIT] more than ${admission.limit} refused writes this hour for one user; further ones are not recorded until ${new Date(admission.resetsAt).toISOString()}`
+    );
+    return 'mark';
   }
 
   /** Why writes are refused when read-only (see YnabClientOptions.readOnlyReason). */

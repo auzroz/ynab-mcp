@@ -290,8 +290,8 @@ start.
 All requests of one user share one rate limit, one cache (including the
 delta-sync snapshots, see README "Caching") and one audit log, so several
 clients can't exceed the per-user YNAB budget (`RATE_LIMIT_PER_HOUR`), a
-snapshot one request built saves the next a full fetch, and `ynab_audit_log`
-shows the user's writes from every client (see "The audit log"). Users never
+snapshot one request built saves the next a full fetch, and the audit log
+holds the user's writes from every client (see "The audit log"). Users never
 share any of it. `ynab_rate_limit_status` shows the user's usage and, under
 `client_usage`, the calling client's share of it (requests sent and refused in
 the last hour).
@@ -405,8 +405,8 @@ Each entry holds:
   mode) or `local` (stdio).
 - `client_id`, `family_id`: the MCP client and its grant (OAuth mode).
 - `request_id`: the HTTP request (on stdio, one per tool call).
-- `tool`, `operation` (`create`, `update`, `delete`, `move`, `import`),
-  `resource_type`, `resource_id` and `budget_id`.
+- `tool`, `operation` (`create`, `update`, `delete`, `move`, `import`, or
+  `audit_suppressed`, below), `resource_type`, `resource_id` and `budget_id`.
 - `outcome`: `success`; `denied_read_only` (`YNAB_READ_ONLY`, or
   `YNAB_OAUTH_ALLOW_WRITE` off); `denied_scope` (a read-only grant, on the
   token or the user's YNAB connection); `denied_write_limit` (the write cap,
@@ -420,7 +420,16 @@ and neither is a successful call of the deprecated `ynab_import_transactions`,
 which does nothing. Refused writes are bounded so a looping client can't fill
 the table: the write cap records only the first refusal of each episode, and
 read-only and scope refusals are recorded up to 20 per user per hour (per
-process), after which they are refused unrecorded and one stderr line says so.
+process). The first refusal past that is recorded as one `audit_suppressed`
+entry (with the refusal's outcome, tool and client), and the server logs one
+stderr line; the refusals after it in that hour are refused but not recorded.
+So an `audit_suppressed` entry tells a reader of the log that entries are
+missing after it.
+
+Recording an entry never fails the write. If the store can't be written (the
+database is unreachable, say), the write's own result stands, the entry is
+lost, and the server logs `[AUDIT] could not record an entry` (sanitized). A
+write can therefore succeed with no audit entry; watch for that log line.
 
 Entries hold ids only. There is no column for an amount or other financial
 value, a payee, account, category or memo text, or an error message: those
@@ -435,10 +444,12 @@ user row of the request's account generation, and on Postgres holds it, so an
 erase in flight either waits for the insert and deletes the entry or finds
 nothing to delete.
 
-`ynab_audit_log` shows all of the user's entries, from every client, newest
-first, filtered by operation, resource type, outcome or success. Entries are
-kept until the account is erased; a retention window and a per-client default
-view come in a later release (#60b).
+`ynab_audit_log` shows the calling client's own entries in OAuth mode (another
+client of the same user can't read them), and the user's entries on stdio and
+in header mode, where there is one caller. It lists them newest first, filtered
+by operation, resource type, outcome or success. Entries are kept until the
+account is erased; a retention window and an option to see every client's
+entries come in a later release (#60b).
 
 The table comes with schema 7 (0.5.0): `audit_log` and two indexes,
 `(user_id, ts)` and `(ts)`, created on startup. Older releases ignore it.

@@ -45,7 +45,7 @@ Use when the user asks:
 - "Were there any failed or refused operations?"
 - "Which client made this change?"
 
-Shows every create, update, delete and move attempt, newest first, with the tool, the resource id, the calling client and request, and how it ended: success, denied_read_only (the server is read-only), denied_scope (this connection or the YNAB grant is read-only), denied_write_limit (the hourly write cap, first refusal of each episode) or error. Entries hold ids only, never amounts, names or memos. In HTTP mode with durable storage the log survives restarts; on stdio it is kept in memory (newest 1000 entries).`,
+Shows every create, update, delete and move attempt, newest first, with the tool, the resource id, the calling client and request, and how it ended: success, denied_read_only (the server is read-only), denied_scope (this connection or the YNAB grant is read-only), denied_write_limit (the hourly write cap, first refusal of each episode) or error. An audit_suppressed entry means more refused writes came in that hour than the log records (20 per user); the ones after it are missing. Entries hold ids only, never amounts, names or memos. On a server with OAuth, only this connection's (MCP client's) entries are shown. In HTTP mode with durable storage the log survives restarts; on stdio it is kept in memory (newest 1000 entries).`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -125,7 +125,10 @@ export async function handleAuditLog(args: Record<string, unknown>, client: Ynab
   const validated = inputSchema.parse(args);
   const auditLog = client.getAuditLog();
 
-  const query: AuditQuery = {};
+  // The calling client's entries only (oauth mode; #60). Without a client id
+  // (stdio, header mode) the user is the only caller.
+  const scope: AuditQuery = auditLog.clientId === undefined ? {} : { clientId: auditLog.clientId };
+  const query: AuditQuery = { ...scope };
   if (validated.operation !== undefined) query.operation = validated.operation;
   if (validated.resource_type !== undefined) query.resourceType = validated.resource_type;
   let outcomes: readonly string[] | undefined;
@@ -160,8 +163,8 @@ export async function handleAuditLog(args: Record<string, unknown>, client: Ynab
   }
 
   const entries = (await auditLog.list(query, validated.limit ?? 20)).map(present);
-  // The whole log's totals for context (unfiltered).
-  const summary = summarize(await auditLog.counts({}));
+  // The caller's whole log's totals for context (unfiltered).
+  const summary = summarize(await auditLog.counts(scope));
 
   return JSON.stringify(
     {

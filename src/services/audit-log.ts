@@ -136,6 +136,14 @@ export class AuditLog {
     console.error(`[AUDIT] ${entry.outcome}: ${entry.operation} on ${entry.resourceType}${resource} via ${entry.tool}`);
   }
 
+  /**
+   * The MCP client this log records for (oauth mode); undefined on stdio and
+   * in header mode, where the user is the only caller.
+   */
+  get clientId(): string | undefined {
+    return id(this.context.clientId);
+  }
+
   /** This user's entries matching `query`, newest first. */
   list(query: AuditQuery, limit: number): Promise<AuditRecord[]> {
     return this.store.listAuditEntries(this.context.userId, query, limit);

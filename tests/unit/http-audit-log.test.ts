@@ -244,6 +244,27 @@ describe('the audit log over HTTP (#60a)', () => {
   });
 });
 
+describe("ynab_audit_log shows each client its own entries (#60)", () => {
+  it("client A does not see client B's rows of the same user; storage holds both", async () => {
+    const app = await startApp();
+    const a = await connect(app, 'read-write');
+    const b = await connect(app, 'read-write');
+    const sessionA = await openSession(app, a.access);
+    const sessionB = await openSession(app, b.access);
+    await callTool(app, a.access, sessionA, 'ynab_create_category_group', createGroup);
+    await callTool(app, b.access, sessionB, 'ynab_create_category_group', createGroup);
+    await callTool(app, b.access, sessionB, 'ynab_create_category_group', createGroup);
+
+    expect(await shared.storage!.listAuditEntries(USER, {}, 10)).toHaveLength(3);
+    const seenByA = (await callTool(app, a.access, sessionA, 'ynab_audit_log', {})).body;
+    expect(seenByA['count']).toBe(1);
+    expect(seenByA['entries'][0]['client_id']).toBe(a.clientId);
+    expect(seenByA['summary']['total_operations']).toBe(1);
+    const seenByB = (await callTool(app, b.access, sessionB, 'ynab_audit_log', {})).body;
+    expect(seenByB['entries'].map((e: { client_id: string }) => e.client_id)).toEqual([b.clientId, b.clientId]);
+  });
+});
+
 describe("ynab_rate_limit_status reports the calling client's usage (#58)", () => {
   it("shows each client its own share beside the user's total", async () => {
     const app = await startApp();

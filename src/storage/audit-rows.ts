@@ -30,8 +30,13 @@ export const AUDIT_OUTCOMES = [
 ] as const;
 export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
 
-/** What a write did. `move` is ynab_move_money; `import` the deprecated no-op import. */
-export const AUDIT_OPERATIONS = ['create', 'update', 'delete', 'move', 'import'] as const;
+/**
+ * What a write did. `move` is ynab_move_money; `import` the deprecated no-op
+ * import. `audit_suppressed` is not a write: it marks where the user's hourly
+ * budget of recorded refusals ran out, so later refusals in that hour are
+ * missing from the log (its outcome is the refusal's, its tool the call's).
+ */
+export const AUDIT_OPERATIONS = ['create', 'update', 'delete', 'move', 'import', 'audit_suppressed'] as const;
 export type AuditOperation = (typeof AUDIT_OPERATIONS)[number];
 
 /** What a write acted on. */

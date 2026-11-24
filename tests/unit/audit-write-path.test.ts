@@ -182,7 +182,7 @@ for (const driver of testDrivers) {
       for (const sentinel of SENTINELS) expect(stored, sentinel).not.toContain(sentinel);
     });
 
-    it('records at most 20 read-only or scope refusals per user per hour, and says so once', async () => {
+    it('records at most 20 read-only or scope refusals per user per hour, then one marker row, and says so once', async () => {
       const h = await driver.open();
       vi.stubGlobal('fetch', vi.fn(async () => ynabEcho()));
       const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -190,9 +190,22 @@ for (const driver of testDrivers) {
       for (let i = 0; i < 50; i++) {
         expect(JSON.parse(textOf(await client.callTool(SENTINEL_CALLS[2]!)))).toMatchObject({ type: 'read_only_mode' });
       }
-      expect(await h.storage.listAuditEntries('u1', {}, 100)).toHaveLength(AUDITED_DENIALS_PER_HOUR);
+      const rows = await h.storage.listAuditEntries('u1', {}, 100);
+      expect(rows).toHaveLength(AUDITED_DENIALS_PER_HOUR + 1);
+      // The newest row marks where recording stopped; the refusals after it are missing.
+      expect(rows[0]).toMatchObject({
+        operation: 'audit_suppressed',
+        outcome: 'denied_scope',
+        tool: 'ynab_create_payee',
+        resourceType: 'payee',
+        clientId: 'client-a',
+      });
+      expect(rows.slice(1).every((r) => r.operation === 'create' && r.outcome === 'denied_scope')).toBe(true);
       const notices = errors.mock.calls.filter((c) => String(c[0]).includes('further ones are not recorded'));
       expect(notices).toHaveLength(1);
+      // The reader of the log sees the marker.
+      const listed = JSON.parse(textOf(await client.callTool({ name: 'ynab_audit_log', arguments: { operation: 'audit_suppressed' } })));
+      expect(listed.count).toBe(1);
     });
 
     it('records a write that fails before YNAB (rate limited) once, and none for invalid input', async () => {

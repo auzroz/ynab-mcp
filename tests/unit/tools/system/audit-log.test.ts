@@ -139,6 +139,23 @@ describe('handleAuditLog', () => {
     expect(parsed.message).toBe('No write operations have been attempted yet');
   });
 
+  it("shows the calling client only its own entries, not another client's of the same user (#60)", async () => {
+    const store = new MemoryAuditStore();
+    const asA = new AuditLog(store, { userId: 'u1', clientId: 'client-a' });
+    const asB = new AuditLog(store, { userId: 'u1', clientId: 'client-b' });
+    await asA.record({ operation: 'create', tool: 'ynab_create_payee', resourceType: 'payee', outcome: 'success' });
+    await asB.record({ operation: 'delete', tool: 'ynab_delete_transaction', resourceType: 'transaction', outcome: 'success' });
+    await asB.record({ operation: 'update', tool: 'ynab_update_payee', resourceType: 'payee', outcome: 'error' });
+    const clientA = new YnabClient('t', 'b', new RateLimiter(180), new Cache(300000), true, asA);
+    const listed = JSON.parse(await handleAuditLog({}, clientA));
+    expect(listed.entries.map((e: { client_id: string }) => e.client_id)).toEqual(['client-a']);
+    expect(listed.summary.total_operations).toBe(1);
+    expect(JSON.parse(await handleAuditLog({ summary_only: true }, clientA)).summary.total_operations).toBe(1);
+    // Without a client id (stdio, header mode) the user's whole log is shown.
+    const local = new YnabClient('t', 'b', new RateLimiter(180), new Cache(300000), true, new AuditLog(store, { userId: 'u1' }));
+    expect(JSON.parse(await handleAuditLog({}, local)).count).toBe(3);
+  });
+
   it('rejects unexpected properties (strict schema)', async () => {
     await expect(handleAuditLog({ bogus: 1 }, client)).rejects.toThrow();
   });
