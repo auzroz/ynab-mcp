@@ -27,6 +27,10 @@
  *      (which writes the current key anyway) or another replica's pass wins
  *      and this one skips the row. A row under a NEWER key id (a replica
  *      with a newer config) is left alone, so two configs never flip-flop.
+ *      The shared YNAB access token (#48, `users.encrypted_access_token`, its
+ *      own AAD context) is rewritten the same way; one that has expired or no
+ *      configured key opens is cleared instead (the next request refreshes),
+ *      so it never holds retirement back.
  *   3. Counts what is left: rows it could not write (a compare-and-set lost),
  *      rows under a newer key, rows whose key is not configured, and staged
  *      sign-ins not in the current form (they are copied into `users`
@@ -55,6 +59,7 @@
  */
 
 import {
+  accessTokenContext,
   ciphertextVersion,
   refreshTokenContext,
   type Encryptor,
@@ -204,6 +209,10 @@ export interface RekeyResult {
   staged: number;
   /** Rows no configured key opens: their users have to connect again. */
   unreadable: number;
+  /** Shared YNAB access tokens (#48) rewritten under the current key. */
+  accessRekeyed: number;
+  /** Shared access tokens cleared: expired, or no configured key opens them (the next request refreshes). */
+  accessDropped: number;
   /** The floor in force after the pass (0: nothing retired). */
   retiredBelow: number;
   /** Whether this pass raised the floor. */
@@ -254,6 +263,8 @@ export async function rekeyPass(
     noKey: 0,
     staged: 0,
     unreadable: 0,
+    accessRekeyed: 0,
+    accessDropped: 0,
     retiredBelow: encryptor.retiredBelow,
     retiredNow: false,
     announcedNow: false,
@@ -265,31 +276,12 @@ export async function rekeyPass(
   let after: string | undefined;
   for (;;) {
     const page = await storage.listUserCiphertextsNotIn(encryptor.currentPrefix, after, pageSize);
-    for (const { userId, encryptedRefreshToken: stored } of page) {
-      const version = ciphertextVersion(stored);
-      if (version?.format === 'v2' && version.kid > current) {
-        result.newer++;
-        continue;
+    for (const row of page) {
+      if (!encryptor.isCurrent(row.encryptedRefreshToken)) {
+        await rekeyRefreshToken(storage, encryptor, configured, row.userId, row.encryptedRefreshToken, result, dead);
       }
-      const kid = version?.format === 'v2' ? version.kid : 1;
-      const retired = version !== undefined && (version.format === 'v1' ? encryptor.retiredBelow > 0 : kid < encryptor.retiredBelow);
-      if (version !== undefined && !retired && !configured.has(kid)) {
-        result.noKey++;
-        continue;
-      }
-      const context = refreshTokenContext(userId);
-      let plaintext: string;
-      try {
-        plaintext = encryptor.decrypt(stored, context);
-      } catch {
-        result.unreadable++;
-        dead.push(stored);
-        continue;
-      }
-      if (await storage.rekeyUserRefreshToken(userId, stored, encryptor.encrypt(plaintext, context))) {
-        result.rekeyed++;
-      } else {
-        result.changed++;
+      if (row.encryptedAccessToken !== undefined && !encryptor.isCurrent(row.encryptedAccessToken)) {
+        await rekeyAccessToken(storage, encryptor, row.userId, row.encryptedAccessToken, row.accessTokenExpiresAt, now(), result);
       }
     }
     if (page.length < pageSize) break;
@@ -331,26 +323,113 @@ export async function rekeyPass(
   result.retiredBelow = encryptor.retiredBelow;
 
   const line = rekeyLogLine(result);
-  const event = result.rekeyed > 0 || result.retiredNow || result.announcedNow || result.heldBack;
+  const event =
+    result.rekeyed + result.accessRekeyed + result.accessDropped > 0 ||
+    result.retiredNow ||
+    result.announcedNow ||
+    result.heldBack;
   if (line !== undefined && (event || line !== state.lastLine)) log(line);
   state.lastLine = line;
   return result;
 }
 
+/** One user's refresh-token ciphertext, not in the current form: rewrite it, or count why not. */
+async function rekeyRefreshToken(
+  storage: CiphertextStore,
+  encryptor: Encryptor,
+  configured: ReadonlySet<number>,
+  userId: string,
+  stored: string,
+  result: RekeyResult,
+  dead: string[]
+): Promise<void> {
+  const version = ciphertextVersion(stored);
+  if (version?.format === 'v2' && version.kid > encryptor.currentKeyId) {
+    result.newer++;
+    return;
+  }
+  const kid = version?.format === 'v2' ? version.kid : 1;
+  const retired = version !== undefined && (version.format === 'v1' ? encryptor.retiredBelow > 0 : kid < encryptor.retiredBelow);
+  if (version !== undefined && !retired && !configured.has(kid)) {
+    result.noKey++;
+    return;
+  }
+  const context = refreshTokenContext(userId);
+  let plaintext: string;
+  try {
+    plaintext = encryptor.decrypt(stored, context);
+  } catch {
+    result.unreadable++;
+    // The conditional raise may pass over exactly these.
+    dead.push(stored);
+    return;
+  }
+  if (await storage.rekeyUserRefreshToken(userId, stored, encryptor.encrypt(plaintext, context))) {
+    result.rekeyed++;
+  } else {
+    result.changed++;
+  }
+}
+
+/**
+ * One user's shared access token (#48), not in the current form. Under a
+ * newer key it is left alone (counted as newer); otherwise it is rewritten
+ * under the current key while it is unexpired and opens under its own context
+ * (only `v2`: the column is newer than `v1`), and cleared when not. Either
+ * write is a compare-and-set on the stored value; a lost one counts as changed.
+ */
+async function rekeyAccessToken(
+  storage: CiphertextStore,
+  encryptor: Encryptor,
+  userId: string,
+  stored: string,
+  expiresAt: number | undefined,
+  now: number,
+  result: RekeyResult
+): Promise<void> {
+  const version = ciphertextVersion(stored);
+  if (version?.format === 'v2' && version.kid > encryptor.currentKeyId) {
+    result.newer++;
+    return;
+  }
+  let next: string | undefined;
+  if (version?.format === 'v2' && expiresAt !== undefined && expiresAt > now) {
+    const context = accessTokenContext(userId);
+    try {
+      next = encryptor.encrypt(encryptor.decrypt(stored, context), context);
+    } catch {
+      next = undefined;
+    }
+  }
+  if (!(await storage.rekeyUserAccessToken(userId, stored, next))) {
+    result.changed++;
+  } else if (next === undefined) {
+    result.accessDropped++;
+  } else {
+    result.accessRekeyed++;
+  }
+}
+
 /** The pass's log line (counts only), or undefined when there is nothing to say. */
 export function rekeyLogLine(r: RekeyResult): string | undefined {
   const unreadable = r.unreadable > 0 ? `; ${r.unreadable} unreadable (those users must connect again)` : '';
+  const access =
+    r.accessRekeyed > 0 || r.accessDropped > 0
+      ? `; shared access tokens: ${r.accessRekeyed} re-encrypted, ${r.accessDropped} dropped`
+      : '';
   if (r.retiredNow) {
-    return `[Rekey] no rows are left under older keys: the v1 format and key ids below ${r.retiredBelow} are now refused${unreadable}`;
+    return `[Rekey] no rows are left under older keys: the v1 format and key ids below ${r.retiredBelow} are now refused${unreadable}${access}`;
   }
   if (r.heldBack) {
-    return `[Rekey] a token was written under an older key since the pass began: retirement waits for the next pass${unreadable}`;
+    return `[Rekey] a token was written under an older key since the pass began: retirement waits for the next pass${unreadable}${access}`;
   }
   const announced = r.announcedNow
     ? '; nothing is left under older keys: the v1 format and the older key ids are retired in about an hour, ' +
       'and a replica still on an older ENCRYPTION_KEY_ID now refuses to write'
     : '';
-  if (r.rekeyed === 0 && r.remaining === 0 && r.noKey === 0 && r.unreadable === 0 && !r.announcedNow) return undefined;
+  if (r.rekeyed === 0 && r.remaining === 0 && r.noKey === 0 && r.unreadable === 0 && !r.announcedNow && access === '') {
+    return undefined;
+  }
   const parts = [`[Rekey] re-encrypted ${r.rekeyed}, ${r.remaining} remaining${announced}`];
   const detail: string[] = [];
   if (r.changed > 0) detail.push(`${r.changed} changed during the pass`);
@@ -362,6 +441,7 @@ export function rekeyLogLine(r: RekeyResult): string | undefined {
     parts.push(`; ${r.noKey} under a key id that is not configured (retirement waits for them: add the key to ENCRYPTION_KEY_PREVIOUS)`);
   }
   if (r.unreadable > 0) parts.push(`; ${r.unreadable} unreadable (those users must connect again)`);
+  parts.push(access);
   return parts.join('');
 }
 

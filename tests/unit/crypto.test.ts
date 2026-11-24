@@ -14,6 +14,8 @@ import {
   parseKeyring,
   parsePreviousKeys,
   refreshTokenContext,
+  accessTokenContext,
+  CIPHERTEXT_COLUMNS,
   type CipherContext,
 } from '../../src/crypto.js';
 
@@ -46,6 +48,15 @@ describe('crypto', () => {
   describe('AAD binding (#57b)', () => {
     it('is ynab-mcp|<column>|v2|<subject>', () => {
       expect(aadFor(ctx).toString('utf8')).toBe('ynab-mcp|users.encrypted_refresh_token|v2|user-a');
+    });
+
+    it("pins every column label: they are part of every stored ciphertext (#48's shared access token too)", () => {
+      expect(CIPHERTEXT_COLUMNS).toEqual(['users.encrypted_refresh_token', 'users.encrypted_access_token']);
+      expect(aadFor(accessTokenContext('user-a')).toString('utf8')).toBe('ynab-mcp|users.encrypted_access_token|v2|user-a');
+      // A refresh-token ciphertext does not open as the same user's access token, nor the reverse.
+      const enc = new Encryptor(keyB64);
+      expect(() => enc.decrypt(enc.encrypt('x', ctx), accessTokenContext('user-a'))).toThrow();
+      expect(() => enc.decrypt(enc.encrypt('x', accessTokenContext('user-a')), ctx)).toThrow();
     });
 
     it("refuses another user's ciphertext (a swapped row)", () => {

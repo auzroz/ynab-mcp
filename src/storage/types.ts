@@ -36,6 +36,44 @@ export interface UserRecord {
    * account and are never valid (see {@link Storage.getAccessToken}).
    */
   createdAt?: number | undefined;
+  // The fields below are read-only too: every upsert (a sign-in or
+  // re-consent) clears the shared token and the lease and stamps
+  // `last_seen_at`, whatever the record says.
+  /**
+   * #48: the YNAB access token the last refresh got, shared by every replica:
+   * encrypted under `accessTokenContext(userId)` (src/crypto.ts). Written only
+   * with the refresh token it came with ({@link Storage.updateUserRefreshToken}).
+   */
+  encryptedAccessToken?: string | undefined;
+  /** #48: when {@link encryptedAccessToken} expires (epoch ms, YNAB's `expires_in`). */
+  accessTokenExpiresAt?: number | undefined;
+  /** #48: until when a replica's refresh lease holds (epoch ms); undefined when no refresh is claimed. */
+  refreshLeaseUntil?: number | undefined;
+  /**
+   * #54e: the user's last activity (epoch ms): a sign-in or re-consent, or a
+   * YNAB refresh (about every two hours while the user makes requests).
+   * Started at the upgrade for users from before it; undefined only for a row
+   * a 0.4.x replica wrote since the last startup (never erased).
+   */
+  lastSeenAt?: number | undefined;
+}
+
+/** What a refresh got besides the rotated refresh token (#48), for {@link Storage.updateUserRefreshToken}. */
+export interface RefreshedAccessToken {
+  /** The new YNAB access token, encrypted under `accessTokenContext(userId)`. */
+  encryptedAccessToken: string;
+  /** Its expiry (epoch ms). */
+  expiresAt: number;
+  /** The refresher's clock: stamps `updated_at` and `last_seen_at`. */
+  now: number;
+}
+
+/** #54e: the condition under which {@link Storage.deleteUserData} erases an inactive user. */
+export interface InactiveUserCondition {
+  /** Erase only when `last_seen_at` is set and before this (epoch ms). */
+  seenBefore: number;
+  /** The clock the live-grant check uses (epoch ms). */
+  now: number;
 }
 
 export interface AuthCodeRecord {
@@ -320,8 +358,24 @@ export interface Storage extends OAuthRowStore, CiphertextStore {
   updateUserRefreshToken(
     userId: string,
     oldCiphertext: string,
-    newCiphertext: string
+    newCiphertext: string,
+    refreshed?: RefreshedAccessToken
   ): Promise<UserRecord | undefined>;
+  /**
+   * #48: claim the user's refresh lease, so one replica refreshes against YNAB
+   * and the others wait for the access token it shares. One statement, a
+   * compare-and-set on the lease: it is taken (as `holder`, until `until`)
+   * only while no unexpired lease is held at `now`. Returns the row as it
+   * stands after the claim, or undefined (nothing written) when the row is gone
+   * or another lease holds. The caller acts on the returned row, never on an
+   * older read: its refresh token is the one to spend, and a fresh shared
+   * access token in it means another replica has just refreshed. No
+   * connection is held after it returns, so the YNAB call runs outside any
+   * transaction. A lease whose holder crashed expires by itself.
+   */
+  claimRefreshLease(userId: string, holder: string, now: number, until: number): Promise<UserRecord | undefined>;
+  /** #48: release the lease, only while `holder` holds it (a failed refresh; a later claimer's lease stays). */
+  releaseRefreshLease(userId: string, holder: string): Promise<void>;
   /** Deletes the `users` row only. To erase an account, use {@link deleteUserData}. */
   deleteUser(userId: string): Promise<void>;
   /**
@@ -336,8 +390,21 @@ export interface Storage extends OAuthRowStore, CiphertextStore {
    * `oauth_rows` row with the user's `account_id`, and every row of the user's
    * grants. The 0.4.x token tables above are cleared too, although nothing
    * reads them after the cut-over. (SQLite and Postgres: #47-1's driver step.)
+   *
+   * With `onlyIf` (#54e, the inactive-user erase), the same erase runs only
+   * when, checked inside its transaction (on Postgres after the account and
+   * family locks, with the user row locked FOR UPDATE): the user row exists,
+   * its `last_seen_at` is set and before `onlyIf.seenBefore`, and the user
+   * has no live grant at `onlyIf.now` (the rule is in src/storage/user-data.ts).
+   * Returns whether it erased; without `onlyIf` it always returns true.
    */
-  deleteUserData(userId: string): Promise<void>;
+  deleteUserData(userId: string, onlyIf?: InactiveUserCondition): Promise<boolean>;
+  /**
+   * #54e: up to `limit` user ids, in order and after `afterUserId` when given,
+   * whose `last_seen_at` is set and before `seenBefore`. Candidates only: the
+   * erase re-checks everything ({@link deleteUserData} with `onlyIf`).
+   */
+  listInactiveUsers(seenBefore: number, afterUserId: string | undefined, limit: number): Promise<string[]>;
 
   // Account self-service (#53b), reached by tools only through AccountStore.
   // Both generations until the cut-over (#47-4): a 0.4.x token family and an
@@ -647,13 +714,18 @@ export interface OAuthRowStore {
 // ---------------------------------------------------------------------------
 // At-rest key rotation (#57b): what the rekey job (src/auth/rekey-job.ts) and
 // the startup key check read and write. Runtime writes to existing tables
-// only (`users`, `oauth_rows`, `schema_meta`); no schema step.
+// only (`users`, `oauth_rows`, `schema_meta`); #57b needed no schema step
+// (#48's shared access token column, which it also rewrites, is schema 6).
 // ---------------------------------------------------------------------------
 
-/** A user's stored YNAB refresh-token ciphertext. */
+/** A user's stored YNAB token ciphertexts. */
 export interface StoredUserCiphertext {
   userId: string;
   encryptedRefreshToken: string;
+  /** The shared access token (#48), when one is stored. */
+  encryptedAccessToken?: string | undefined;
+  /** Its expiry (epoch ms). */
+  accessTokenExpiresAt?: number | undefined;
 }
 
 /** The key floors in `schema_meta` (0 when not recorded). */
@@ -670,8 +742,9 @@ export type KeyCheckOutcome = 'recorded' | 'matches' | 'differs';
 export interface CiphertextStore {
   /**
    * Up to `limit` users, by user id and after `afterUserId` when given, whose
-   * `encrypted_refresh_token` does not start with `currentPrefix` (the
-   * keyring's `v2.<kid>.`). A page shorter than `limit` is the last.
+   * `encrypted_refresh_token`, or whose `encrypted_access_token` when set
+   * (#48), does not start with `currentPrefix` (the keyring's `v2.<kid>.`).
+   * A page shorter than `limit` is the last.
    */
   listUserCiphertextsNotIn(
     currentPrefix: string,
@@ -686,6 +759,14 @@ export interface CiphertextStore {
    * Returns whether it wrote.
    */
   rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean>;
+  /**
+   * The same for the shared access token (#48): written only while
+   * `encrypted_access_token` is still `oldCiphertext`. `undefined` clears it
+   * and its expiry (an expired or unreadable one, or one YNAB rejected, which
+   * `YnabTokenResolver.invalidate` clears: the next request refreshes).
+   * Returns whether it wrote.
+   */
+  rekeyUserAccessToken(userId: string, oldCiphertext: string, newCiphertext: string | undefined): Promise<boolean>;
   /**
    * The refresh-token ciphertexts of the staged sign-ins (`SignIn` rows) not
    * expired at `now` (epoch ms, storage clock). Their bytes are copied into

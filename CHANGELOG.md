@@ -75,9 +75,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation gives its slot back; one YNAB rejects keeps it. The first refusal of
   each episode is recorded in the audit log as `write_limit_refused`. It is separate
   from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests.
+- Optional erase of inactive users (#54): `MCP_INACTIVE_USER_DAYS` (30 to
+  3650, off by default). A background job erases each user who has had no
+  sign-in and no YNAB token refresh for that many days and has no live
+  connection. It re-checks both inside the erase's transaction and logs a
+  count only. For existing users the clock starts at the upgrade.
 
 ### Changed
 
+- Temporary YNAB token failures (a timeout, YNAB unavailable, or another
+  replica's refresh in progress) now return `503` with `Retry-After` instead
+  of forcing the client to reconnect; only a rejected (`invalid_grant`)
+  refresh token does (#48). A tool call gets `upstream_unavailable` with
+  `retry_after_seconds`. The stored grant is kept, and the failure is not
+  remembered. A replica below the key floor (still on a key that is being
+  retired) answers `503` the same way until it is restarted with the current
+  key.
 - Amounts are formatted with the budget's `currency_format` instead of a
   hard-coded `$` (#49): symbol, symbol position, decimal places (0 for JPY, 3
   for BHD), decimal and group separators, and `display_symbol`. This changes
@@ -101,6 +114,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Replicas sharing one database no longer race to refresh a user's YNAB token
+  (#48). Before, both could spend the same refresh token, and the user had to
+  reconnect. One replica now claims a lease on the user row and refreshes
+  without holding a database connection during the YNAB call. It stores the
+  new YNAB access token, encrypted and bound to its own column, so the others
+  use it instead of calling YNAB. A replica that loses the claim waits up to 15
+  seconds, then fails the request instead of refreshing. A lease whose holder
+  crashed expires after 45 seconds. When YNAB answers 401 to a call (a token
+  revoked early), the stored access token is dropped for every replica and
+  the next call refreshes; the call itself is not retried. The rekey job also
+  re-encrypts the stored access token, and its log line counts it. This needs
+  schema 6: five nullable columns on `users`, added on startup. Rolling back
+  after schema 6 means restoring the backup taken before the upgrade.
 - Per-budget caches are keyed by the budget's UUID, never by the `last-used`
   or `default` alias (#66). A `budget_id` of `last-used` (or the default when
   `YNAB_BUDGET_ID` is unset) is resolved to the budget's UUID with one request
