@@ -241,7 +241,11 @@ export interface ConnectionRecord {
   clientId: string;
   /** The client's self-declared `client_name`, unsanitized; undefined if none or the client is gone. */
   clientName: string | undefined;
-  /** The access level of the grant; read-only for grants written before 0.4.0. */
+  /**
+   * The access level of the grant; read-only for grants written before 0.4.0.
+   * Each grant's own, never the user's shared YNAB token's (#64b): #53c
+   * exposes it in `ynab_list_connections`.
+   */
   grantedScope: GrantedScope;
   /**
    * When the grant's code was exchanged (epoch ms); the upgrade instant for

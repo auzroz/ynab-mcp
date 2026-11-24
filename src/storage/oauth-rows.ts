@@ -123,6 +123,59 @@ export function grantedScopeOfGrant(payload: string): GrantedScope {
 }
 
 /**
+ * #64b: the payloads of the user's other grants that still hold a live
+ * credential, read inside a sign-in's code save to decide whether its YNAB
+ * token may replace the stored one ({@link signInKeepsStoredToken}). Live is:
+ * an unexpired AccessToken; an unconsumed, unexpired RefreshToken; or an
+ * unexpired AuthorizationCode, consumed or not. A consumed code still counts
+ * because the library consumes it before it saves the exchange's tokens, so a
+ * read-write client in the middle of its exchange has only its code; a code
+ * that was replayed or revoked is gone with its grant, so a consumed code
+ * still on file belongs to a live grant. Other models (RefreshGrace, SignIn)
+ * never count.
+ *
+ * Parameters, each `$n` once and in order (SQLite's positional form): the
+ * account, the grant to leave out (the sign-in's own), then `now` three times.
+ */
+export const OTHER_LIVE_GRANTS_SQL = `SELECT g.payload FROM oauth_rows g
+  WHERE g.model = 'Grant' AND g.account_id = $1 AND g.grant_id <> $2
+    AND EXISTS (SELECT 1 FROM oauth_rows t WHERE t.grant_id = g.grant_id AND (
+      (t.model = 'AccessToken' AND t.expires_at >= $3)
+      OR (t.model = 'RefreshToken' AND t.consumed_at IS NULL AND (t.expires_at IS NULL OR t.expires_at >= $4))
+      OR (t.model = 'AuthorizationCode' AND t.expires_at >= $5)))`;
+
+/** The parameters of {@link OTHER_LIVE_GRANTS_SQL}. */
+export function otherLiveGrantsParams(accountId: string, grantId: string, now: number): unknown[] {
+  return [accountId, grantId, now, now, now];
+}
+
+/**
+ * #64b (the D-9 result: a second, read-only YNAB authorization doesn't
+ * invalidate the first, read-write one). A completed sign-in keeps the stored
+ * YNAB token, and discards its own, when it brings a read-only token, the
+ * stored one is read-write, and another of the user's grants is read-write
+ * and live (its payloads from {@link OTHER_LIVE_GRANTS_SQL}). Otherwise the
+ * sign-in's token replaces the stored one, as before: read-only after
+ * read-only, any read-write, or read-only once no read-write grant is left.
+ *
+ * Keeping the read-write token widens nothing: each request's level is its
+ * own token's scope AND the user's YNAB level (http.ts), so the new client's
+ * read-only grant stays read-only. The discarded read-only authorization
+ * stays valid at YNAB, unreferenced (YNAB has no revocation endpoint).
+ */
+export function signInKeepsStoredToken(
+  stored: Pick<UserRecord, 'grantedScope'> | undefined,
+  incoming: Pick<UserRecord, 'grantedScope'>,
+  otherLiveGrantPayloads: readonly string[]
+): boolean {
+  return (
+    incoming.grantedScope === 'read-only' &&
+    stored?.grantedScope === 'read-write' &&
+    otherLiveGrantPayloads.some((payload) => grantedScopeOfGrant(payload) === 'read-write')
+  );
+}
+
+/**
  * One live access or refresh token of one of the user's grants, joined to the
  * grant and its client, as a driver reads it for {@link connectionsFromGrantRows}
  * (already filtered: the user's `Grant` rows, tokens unconsumed, unexpired and

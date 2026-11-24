@@ -62,7 +62,10 @@ import {
   CONSUMABLE_MODELS,
   GRANT_TOKEN_MODELS,
   connectionsFromGrantRows,
+  OTHER_LIVE_GRANTS_SQL,
+  otherLiveGrantsParams,
   plainRowKey,
+  signInKeepsStoredToken,
   signInPayload,
   sortConnections,
   userFromSignIn,
@@ -475,6 +478,29 @@ export class SqliteStorage implements Storage, OAuthRowStore {
    */
   private applyStagedUser(user: UserRecord, now: number): void {
     this.putUser(user, now);
+  }
+
+  /**
+   * A completed sign-in's users-row write (#64b), inside saveAuthorizationCode's
+   * IMMEDIATE transaction: its YNAB token replaces the stored one, unless
+   * signInKeepsStoredToken says to keep a read-write one, when only
+   * `last_seen_at` is stamped (a sign-in is activity, #54e).
+   */
+  private applySignIn(user: UserRecord, grantId: string, now: number): void {
+    const db = this.database;
+    const stored = db.prepare('SELECT granted_scope FROM users WHERE user_id = ?').get(user.userId) as
+      | { granted_scope: string | null }
+      | undefined;
+    const others = (
+      db.prepare(toPositional(OTHER_LIVE_GRANTS_SQL)).all(...otherLiveGrantsParams(user.userId, grantId, now)) as Array<{
+        payload: string;
+      }>
+    ).map((r) => r.payload);
+    if (stored && signInKeepsStoredToken({ grantedScope: parseGrantedScope(stored.granted_scope) }, user, others)) {
+      db.prepare('UPDATE users SET last_seen_at = ? WHERE user_id = ?').run(now, user.userId);
+      return;
+    }
+    this.applyStagedUser(user, now);
   }
 
   /**
@@ -929,7 +955,7 @@ export class SqliteStorage implements Storage, OAuthRowStore {
         if (!user) return 'no-sign-in';
         this.guardCiphertext(user.encryptedRefreshToken);
         db.prepare('UPDATE oauth_rows SET authorized_at = ? WHERE key = ?').run(now, clientKey);
-        this.applyStagedUser(user, now);
+        this.applySignIn(user, row.grantId, now);
         db.prepare('DELETE FROM oauth_rows WHERE key = ?').run(signInKey);
         db.prepare(UPSERT_OAUTH_ROW).run(...this.oauthRowParams(row, now));
         return 'saved';

@@ -53,6 +53,7 @@ import {
   GRANT_TOKEN_MODELS,
   connectionsFromGrantRows,
   plainRowKey,
+  signInKeepsStoredToken,
   signInPayload,
   sortConnections,
   userFromSignIn,
@@ -727,7 +728,7 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     this.guardCiphertext(user.encryptedRefreshToken);
     // Synchronous from the client check to the last write, so nothing interleaves.
     client.authorizedAt = now;
-    this.applyStagedUser(user, now);
+    this.applySignIn(user, row.grantId, now);
     this.oauthRows.delete(signInKey);
     this.putOAuthRow(row, now);
     return 'saved';
@@ -815,6 +816,40 @@ export class MemoryStorage implements Storage, OAuthRowStore {
       }
     }
     return n;
+  }
+
+  /**
+   * A completed sign-in's users-row write (#64b): its YNAB token replaces the
+   * stored one, unless signInKeepsStoredToken says to keep a read-write one,
+   * when only `last_seen_at` is stamped (a sign-in is activity, #54e).
+   * Synchronous, as OTHER_LIVE_GRANTS_SQL's rule is applied on the SQL drivers.
+   */
+  private applySignIn(user: UserRecord, grantId: string, now: number): void {
+    const stored = this.users.get(user.userId);
+    if (stored && signInKeepsStoredToken(stored, user, this.otherLiveGrantPayloads(user.userId, grantId, now))) {
+      stored.lastSeenAt = now;
+      return;
+    }
+    this.applyStagedUser(user, now);
+  }
+
+  /** OTHER_LIVE_GRANTS_SQL over the map. */
+  private otherLiveGrantPayloads(accountId: string, grantId: string, now: number): string[] {
+    const live = new Set<string>();
+    for (const t of this.oauthRows.values()) {
+      if (t.grantId === undefined || t.grantId === grantId) continue;
+      const alive =
+        (t.model === 'AccessToken' && t.expiresAt !== undefined && t.expiresAt >= now) ||
+        (t.model === 'RefreshToken' && t.consumedAt === undefined && (t.expiresAt === undefined || t.expiresAt >= now)) ||
+        (t.model === 'AuthorizationCode' && t.expiresAt !== undefined && t.expiresAt >= now);
+      if (alive) live.add(t.grantId);
+    }
+    const payloads: string[] = [];
+    for (const id of live) {
+      const grant = this.oauthRows.get(plainRowKey('Grant', id));
+      if (grant?.model === 'Grant' && grant.accountId === accountId) payloads.push(grant.payload);
+    }
+    return payloads;
   }
 
   /** The grant row a grant-bound row names, when it exists for the same account and client. */

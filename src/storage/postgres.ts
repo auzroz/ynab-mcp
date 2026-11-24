@@ -62,7 +62,10 @@ import {
   CONSUMABLE_MODELS,
   GRANT_TOKEN_MODELS,
   connectionsFromGrantRows,
+  OTHER_LIVE_GRANTS_SQL,
+  otherLiveGrantsParams,
   plainRowKey,
+  signInKeepsStoredToken,
   signInPayload,
   sortConnections,
   userFromSignIn,
@@ -320,6 +323,34 @@ const upsertUserParams = (rec: UserRecord, now: number = Date.now()): unknown[] 
 async function applyStagedUser(client: PoolClient, user: UserRecord, now: number): Promise<void> {
   await guardCiphertext(client, user.encryptedRefreshToken);
   await client.query(UPSERT_USER_SQL, upsertUserParams(user, now));
+}
+
+/**
+ * A completed sign-in's users-row write (#64b), inside saveAuthorizationCode's
+ * transaction and after its LOCK_ACCOUNT, so concurrent sign-ins of one user
+ * decide one after the other: its YNAB token replaces the stored one, unless
+ * signInKeepsStoredToken says to keep a read-write one, when only
+ * `last_seen_at` is stamped (a sign-in is activity, #54e). No new row lock:
+ * LOCK_ACCOUNT already orders this against every other sign-in of the user.
+ */
+async function applySignIn(client: PoolClient, user: UserRecord, grantId: string, now: number): Promise<void> {
+  const stored = await client.query<{ granted_scope: string | null }>(
+    'SELECT granted_scope FROM users WHERE user_id = $1',
+    [user.userId]
+  );
+  const row = stored.rows[0];
+  if (row) {
+    const others = await client.query<{ payload: string }>(
+      OTHER_LIVE_GRANTS_SQL,
+      otherLiveGrantsParams(user.userId, grantId, now)
+    );
+    const payloads = others.rows.map((r) => r.payload);
+    if (signInKeepsStoredToken({ grantedScope: parseGrantedScope(row.granted_scope) }, user, payloads)) {
+      await client.query('UPDATE users SET last_seen_at = $2 WHERE user_id = $1', [user.userId, now]);
+      return;
+    }
+  }
+  await applyStagedUser(client, user, now);
 }
 
 /**
@@ -1093,7 +1124,7 @@ export class PostgresStorage implements Storage, OAuthRowStore {
       const staged = signIn.rows[0];
       const user = staged && userFromSignIn(accountId, staged.payload);
       if (!user) throw new Refusal<CodeSaveOutcome>('no-sign-in');
-      await applyStagedUser(client, user, now);
+      await applySignIn(client, user, grantId, now);
       await client.query('DELETE FROM oauth_rows WHERE key = $1', [signInKey]);
       await client.query(UPSERT_OAUTH_ROW, oauthRowParams(row, now));
       return 'saved';

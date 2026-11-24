@@ -232,6 +232,19 @@ user's current YNAB connection is read-write. A client that asks for the
 If a read-only grant was requested with `read-write`, the issued `scope` says
 `read-only`.
 
+**One YNAB token per user, the widest one kept (0.5.0).** The server stores
+one YNAB token per user, shared by all of that user's connections. When a
+user who has a live read-write connection connects another client read-only,
+the stored read-write YNAB token is kept and the new read-only one is
+discarded (YNAB keeps both authorizations valid, so nothing breaks). The new
+client is still read-only: its own grant decides that. Connecting read-write
+always stores the new token, and so does a read-only sign-in when the user
+has no live read-write connection left. Before 0.5.0, the latest sign-in's
+YNAB token replaced the stored one, so connecting a second client read-only
+made every connection of that user read-only. The discarded read-only
+authorization stays valid at YNAB, unused (YNAB offers no way for the server
+to revoke it).
+
 **Upgrade note:** tokens issued by 0.3.x carry no recorded access level and are
 treated as **read-only**. Users who had read-write access must reconnect once
 (remove and re-add the connector, or re-run `mcp-remote`) to get write access
