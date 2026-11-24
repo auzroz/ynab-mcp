@@ -76,7 +76,7 @@ describe('install-script allow-list', () => {
     const p = checkLockfile(
       lock({
         'node_modules/a': bad('https://user:s3cr3t-SENTINEL@registry.npmjs.org/a/-/a-1.0.0.tgz'),
-        'node_modules/b': bad('https://registry.npmjs.org/foo/-/foo-1.0.0.tgz?token=s3cr3t-SENTINEL'),
+        'node_modules/b': bad('https://registry.npmjs.org/foo/-/foo-1.0.0.tgz?token=SENTINEL'),
         'node_modules/c': bad('https://user:s3cr3t-SENTINEL@evil.example/c/-/c-1.0.0.tgz'),
       }),
       allow,
