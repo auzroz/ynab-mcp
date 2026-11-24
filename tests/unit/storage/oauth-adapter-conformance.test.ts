@@ -313,6 +313,53 @@ const CASES: Case[] = [
     },
   },
   {
+    name: 'destroyOAuthRow reports whether it deleted the row: of two concurrent deletes exactly one wins',
+    async run(ctx) {
+      const s = await signedIn(ctx);
+      const key = plainRowKey('Client', s.clientId);
+      expect(await ctx.store.destroyOAuthRow('h1.nothing-here')).toBe(false);
+      const handle = ctx.handle;
+      const other = handle.kind === 'memory' ? ctx.store : await handle.reopen();
+      const results = await Promise.all([ctx.store.destroyOAuthRow(key), other.destroyOAuthRow(key)]);
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(await rowFor(ctx, key)).toBeUndefined();
+      expect(await ctx.store.destroyOAuthRow(key)).toBe(false);
+    },
+  },
+  {
+    name: 'compareAndSetOAuthRow: insert only while absent, replace only the exact payload, one winner of two (any connection)',
+    async run(ctx) {
+      const key = TEST_TOKEN_HASHER.libraryStorageKey('state', libId()) as string;
+      const write = (payload: string) => ({
+        key,
+        model: 'Interaction' as const,
+        payload,
+        grantId: undefined,
+        accountId: undefined,
+        clientId: undefined,
+        uid: undefined,
+        expiresAt: Date.now() + 600_000,
+      });
+      const other = ctx.handle.kind === 'memory' ? ctx.store : await ctx.handle.reopen();
+      // Two inserts while absent: one wins.
+      const inserted = await Promise.all([ctx.store.compareAndSetOAuthRow(undefined, write('a')), other.compareAndSetOAuthRow(undefined, write('b'))]);
+      expect(inserted.filter(Boolean)).toHaveLength(1);
+      const first = (await rowFor(ctx, key))!.payload;
+      expect(['a', 'b']).toContain(first);
+      expect(await ctx.store.compareAndSetOAuthRow(undefined, write('c'))).toBe(false);
+      // Replace only over the exact payload; of two replacements of it, one wins.
+      expect(await ctx.store.compareAndSetOAuthRow('nope', write('c'))).toBe(false);
+      const replaced = await Promise.all([ctx.store.compareAndSetOAuthRow(first, write('c')), other.compareAndSetOAuthRow(first, write('d'))]);
+      expect(replaced.filter(Boolean)).toHaveLength(1);
+      expect(['c', 'd']).toContain((await rowFor(ctx, key))!.payload);
+      // Another model over the same payload is not a match; grant-bound and staged models are refused.
+      const now = (await rowFor(ctx, key))!.payload;
+      expect(await ctx.store.compareAndSetOAuthRow(now, { ...write('e'), model: 'Session' })).toBe(false);
+      await expect(ctx.store.compareAndSetOAuthRow(undefined, { ...write('f'), model: 'AccessToken' })).rejects.toThrow();
+      await expect(ctx.store.compareAndSetOAuthRow(undefined, { ...write('g'), model: 'SignIn' })).rejects.toThrow();
+    },
+  },
+  {
     name: 'D4: find puts jti back, returns consumed from the column, and hands a client its secret hash as client_secret',
     async run(ctx) {
       const s = await signedIn(ctx);

@@ -397,6 +397,19 @@ const UPSERT_OAUTH_ROW = `INSERT INTO oauth_rows (key, model, payload, grant_id,
     grant_id = EXCLUDED.grant_id, account_id = EXCLUDED.account_id, client_id = EXCLUDED.client_id,
     uid = EXCLUDED.uid, expires_at = EXCLUDED.expires_at`;
 
+/** compareAndSetOAuthRow: insert while no row has the key (a concurrent insert of the key loses). */
+const INSERT_OAUTH_ROW_IF_ABSENT = `INSERT INTO oauth_rows (key, model, payload, grant_id, account_id, client_id, uid, expires_at, created_at)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+  ON CONFLICT (key) DO NOTHING`;
+
+/**
+ * compareAndSetOAuthRow: replace while the row has the model and exactly the
+ * expected payload. A concurrent UPDATE of the row waits for the row lock and
+ * re-checks the WHERE on the version it finds, so only one replaces.
+ */
+const REPLACE_OAUTH_ROW_IF = `UPDATE oauth_rows SET payload = $3, grant_id = $4, account_id = $5, client_id = $6, uid = $7, expires_at = $8
+  WHERE key = $1 AND model = $2 AND payload = $9`;
+
 const oauthRowParams = (row: OAuthRowWrite, createdAt: number): unknown[] => [
   row.key,
   row.model,
@@ -900,6 +913,18 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     await this.db.query(UPSERT_OAUTH_ROW, oauthRowParams(row, Date.now()));
   }
 
+  async compareAndSetOAuthRow(expected: string | undefined, row: OAuthRowWrite): Promise<boolean> {
+    if (GRANT_TOKEN_MODELS.has(row.model) || row.model === 'SignIn') {
+      throw new Error(`compareAndSetOAuthRow cannot write a ${row.model} row`);
+    }
+    const params = oauthRowParams(row, Date.now());
+    const res =
+      expected === undefined
+        ? await this.db.query(INSERT_OAUTH_ROW_IF_ABSENT, params)
+        : await this.db.query(REPLACE_OAUTH_ROW_IF, [...params.slice(0, 8), expected]);
+    return (res.rowCount ?? 0) > 0;
+  }
+
   /** Whether the grant row a grant-bound row names exists for its account and client (held FOR KEY SHARE). */
   private async liveGrantFor(client: PoolClient, row: OAuthRowWrite): Promise<boolean> {
     if (row.grantId === undefined || row.accountId === undefined || row.clientId === undefined) return false;
@@ -1047,8 +1072,9 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     });
   }
 
-  async destroyOAuthRow(key: string): Promise<void> {
-    await this.db.query('DELETE FROM oauth_rows WHERE key = $1', [key]);
+  async destroyOAuthRow(key: string): Promise<boolean> {
+    const res = await this.db.query('DELETE FROM oauth_rows WHERE key = $1', [key]);
+    return (res.rowCount ?? 0) > 0;
   }
 
   async revokeOAuthGrant(grantId: string): Promise<number> {

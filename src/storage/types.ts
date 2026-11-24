@@ -574,6 +574,15 @@ export interface OAuthRowStore {
    */
   upsertOAuthRow(row: OAuthRowWrite): Promise<void>;
   /**
+   * Compare-and-set one row of the models {@link upsertOAuthRow} writes: with
+   * `expected` undefined, insert `row` only while no row has its key; otherwise
+   * replace the row only while it has `row.model` and exactly the payload
+   * `expected`. Returns whether it wrote; of two concurrent calls expecting
+   * the same thing, exactly one does. The interaction's YNAB state uses it
+   * (src/auth/oidc/interaction.ts).
+   */
+  compareAndSetOAuthRow(expected: string | undefined, row: OAuthRowWrite): Promise<boolean>;
+  /**
    * Save an AccessToken or RefreshToken, only while its grant row exists for
    * the same account and client and the account's user row exists, checked
    * and written in one transaction (on Postgres under the grant's lock, with
@@ -619,8 +628,13 @@ export interface OAuthRowStore {
    * of another model.
    */
   consumeOAuthRow(key: string): Promise<ConsumeOutcome>;
-  /** Delete one row (not a grant's: use {@link revokeOAuthGrant}). */
-  destroyOAuthRow(key: string): Promise<void>;
+  /**
+   * Delete one row (not a grant's: use {@link revokeOAuthGrant}). Returns
+   * whether this call deleted it: of two concurrent deletes of one row, exactly
+   * one gets true, so a delete can spend a one-time row (the interaction's
+   * YNAB state, src/auth/oidc/interaction.ts).
+   */
+  destroyOAuthRow(key: string): Promise<boolean>;
   /**
    * Delete every row of a grant, live or consumed, its `Grant` row included,
    * so a token save racing the revocation is refused. The adapter uses it for
