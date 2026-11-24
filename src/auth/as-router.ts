@@ -20,7 +20,8 @@
  *                      the open-redirect guard (authorize-guard); on /token
  *                      and /revoke the route limiter and client
  *                      authentication (#52, D5), and on /token grant-guard
- *                      (D6); on /register the DCR validator and then the
+ *                      (D6) and resource-required (#64a); on /register the
+ *                      DCR validator and then the
  *                      per-redirect-host limit
  *   router             what answers: the library (as-library, D1), the
  *                      protected-resource metadata (metadata), or the YNAB
@@ -58,6 +59,7 @@ import { dcrValidator } from './dcr-validator.js';
 import { authorizeValidation } from './authorize-validation.js';
 import { authorizeGuard, authorizeRedirectGuard } from './authorize-guard.js';
 import { grantGuard } from './grant-guard.js';
+import { resourceRequired } from './resource-required.js';
 import { methodCheck } from './method-check.js';
 import { answerPreflight, metadataDocument } from './metadata-document.js';
 import { protectedResourceMetadataUrl } from './resource.js';
@@ -419,7 +421,10 @@ export function mountAuthorizationServer(
         methods('GET'),
         authorizeLimiter,
         // #55a: bounds, and the refusal of grandfathered plain-http clients.
-        stage('authorize-validation', authorizeValidation({ clients, policy: redirectPolicy, issuer })),
+        stage(
+          'authorize-validation',
+          authorizeValidation({ clients, policy: redirectPolicy, issuer, requireResource: config.requireResource })
+        ),
         // #55b: no error redirect to an unverified client's redirect URI.
         stage('authorize-guard', authorizeGuard({ issuer, resource })),
       ],
@@ -437,6 +442,8 @@ export function mountAuthorizationServer(
         routeLimiter('token'),
         clientAuth(),
         stage('grant-guard', grantGuard({ provider, store: storage })),
+        // #64a: clients registered on 0.5.0 or later name the resource (after grant-guard, so a replay still revokes).
+        stage('resource-required', resourceRequired({ requireResource: config.requireResource })),
       ],
       router: asLibrary(),
     },

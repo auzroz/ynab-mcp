@@ -146,7 +146,7 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
   - `registration`, with no initial access token;
   - `revocation`;
   - `resourceIndicators`:
-    - `defaultResource` is the MCP resource, so an omitted `resource` keeps working as today;
+    - `defaultResource` is the MCP resource, so an omitted `resource` keeps working as today (since #64a only for a client registered before 0.5.0, or with `MCP_REQUIRE_RESOURCE=false`: `authorize-validation` and `resource-required` refuse it from any other client first);
     - `getResourceServerInfo` accepts only the canonical resource from `resource.ts` and throws `InvalidTarget` for anything else;
     - `useGrantedResource` is on;
     - access tokens are opaque, bound to the resource as their audience, with a TTL of `MCP_ACCESS_TOKEN_TTL_SEC`.
@@ -252,12 +252,12 @@ Both grant handlers load the credential with `ignoreExpiration: true` (`refresh_
   - `cors-origin` runs **before** `method-check` on `/token`, `/revoke` and `/register`, so a browser's `OPTIONS` preflight gets 204 with the CORS headers and never 405. On a preflight it answers itself (204; `Access-Control-Allow-Origin: *`; `Access-Control-Allow-Methods: POST`; `Access-Control-Allow-Headers` echoing the request's `Access-Control-Request-Headers`) and ends the request, so `method-check` never sees `OPTIONS` on those routes. On any other method it sets `Access-Control-Allow-Origin: *` and continues, so a 405, 429 or `invalid_client` is readable by a browser client. This matches server-legacy 2.4.0, whose token, revocation and registration handlers each apply `cors()` ahead of `allowedMethods(["POST"])`. `/authorize` has no `cors-origin`: a browser navigates there, and the SDK's authorization handler applies no `cors()`. The discovery and JWKS routes use the library's open CORS (`GET`; it echoes the request's `Origin`, or sends `*` without one), the same any-origin behaviour as server-legacy's metadata handler.
   - `route-limiter` stages on `/authorize` (100 per 15 min) and `/register` (20 per hour) replace the SDK handlers' internal limiters. #59's keys apply to them.
   - `iss-redirect` goes: the library sets `iss` on every authorization response, errors included (the spike checked this).
-- **The final stage lists**, once the re-scoped #64a has merged (with #55's and #59's stages as the plan has them). #47-4 mounts every stage except `refresh-guard` (added by #64a). #64a adds its stage to `EXPECTED` itself. The table uses the stage names as built (corrected by #47-4: the IP-only limiters are `ip-limiter`, and `/register`'s order is cors-origin → method-check → dcr-validator → register-host-limiter). `host-validation` is present when DNS-rebinding protection is on (the default).
+- **The final stage lists**, once the re-scoped #64a has merged (with #55's and #59's stages as the plan has them). #47-4 mounts every stage except `refresh-guard` and `resource-required` (both added by #64a). #64a adds its stages to `EXPECTED` itself. `resource-required` (#64a) refuses a `/token` request without `resource` from a client registered on 0.5.0 or later (`invalid_target`); it runs after `grant-guard`, so a replayed credential still revokes its grant whatever else the request lacks. The table uses the stage names as built (corrected by #47-4: the IP-only limiters are `ip-limiter`, and `/register`'s order is cors-origin → method-check → dcr-validator → register-host-limiter). `host-validation` is present when DNS-rebinding protection is on (the default).
 
 | Route | Stages |
 |---|---|
 | `/authorize` (and the library's resume route, `/authorize/:uid`) | host-validation → ip-limiter → bounded-parser → method-check → route-limiter → authorize-validation → authorize-guard → as-library |
-| `/token` | host-validation → ip-limiter → bounded-parser → cors-origin → method-check → route-limiter → client-auth → refresh-guard → grant-guard → as-library |
+| `/token` | host-validation → ip-limiter → bounded-parser → cors-origin → method-check → route-limiter → client-auth → refresh-guard → grant-guard → resource-required → as-library |
 | `/revoke` | host-validation → ip-limiter → bounded-parser → cors-origin → method-check → route-limiter → client-auth → as-library |
 | `/register` | host-validation → ip-limiter → bounded-parser → cors-origin → method-check → dcr-validator → register-host-limiter → as-library |
 | `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`, `/jwks` | host-validation → bounded-parser → method-check → as-library |

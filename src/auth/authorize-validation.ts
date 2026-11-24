@@ -30,6 +30,9 @@
  *   5. `scope`: at most MAX_SCOPES space-separated values. Unknown values are
  *      dropped (UNKNOWN_SCOPE_POLICY) by the provider's D7 normalizer
  *      (provider.ts), so the library sees only KNOWN_SCOPES.
+ *   6. `resource` (#64a): required for a client registered on 0.5.0 or later
+ *      while `MCP_REQUIRE_RESOURCE` is on (resource-required.ts), refused as
+ *      `invalid_target`. Its value is authorize-guard's to check.
  *
  * A failed bound is an authorization error, sent the way authorize-guard.ts
  * sends every error: redirected to a verified client, shown here otherwise.
@@ -40,6 +43,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { z } from 'zod';
 import { checkStoredClient, errorsMayRedirect, redirectUriMatches, type RedirectPolicy } from './client-metadata.js';
+import { clientMustSendResource, hasResource, RESOURCE_REQUIRED_DESCRIPTION } from './resource-required.js';
 import {
   sendAuthorizationError,
   sendErrorPage,
@@ -110,6 +114,8 @@ export interface AuthorizeValidationOptions {
   policy: RedirectPolicy;
   /** The issuer, sent as `iss` on error redirects (RFC 9207). */
   issuer: string;
+  /** `MCP_REQUIRE_RESOURCE` (#64a): clients registered on 0.5.0 or later must send `resource`. */
+  requireResource: boolean;
 }
 
 /** The request's parameters (the query: only GET reaches the checks). */
@@ -153,7 +159,7 @@ const PLAIN_HTTP_REFUSED =
 
 /** The authorize-validation stage. */
 export function authorizeValidation(options: AuthorizeValidationOptions): RequestHandler {
-  const { clients, policy, issuer } = options;
+  const { clients, policy, issuer, requireResource } = options;
   const logged = new Set<string>();
   const logOnce = (clientId: string, message: string): void => {
     if (logged.has(clientId)) return;
@@ -267,6 +273,12 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
         fail({ error: 'invalid_scope', error_description: `Supported scopes: ${KNOWN_SCOPES.join(', ')}` });
         return;
       }
+    }
+
+    // 6. resource (#64a).
+    if (clientMustSendResource(clientId, requireResource) && !hasResource(params['resource'])) {
+      fail({ error: 'invalid_target', error_description: RESOURCE_REQUIRED_DESCRIPTION });
+      return;
     }
     next();
   };

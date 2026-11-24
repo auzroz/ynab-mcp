@@ -206,17 +206,29 @@ export async function registerClient(
   return { clientId: body['client_id'] as string, clientSecret: body['client_secret'] as string | undefined, body };
 }
 
+/**
+ * The `resource` a helper request sends: {@link RESOURCE} when the caller
+ * names none (clients registered on 0.5.0 must send it, #64a), the caller's
+ * value when given, and nothing when the caller passes the key as `undefined`
+ * or `null` (a request without `resource`).
+ */
+function resourceOf(p: { resource?: string | null | undefined }): string | undefined {
+  return 'resource' in p ? (p.resource ?? undefined) : RESOURCE;
+}
+
 export interface AuthorizeParams {
   clientId: string;
   challenge: string;
   scope?: string | undefined;
-  resource?: string | undefined;
+  /** Default {@link RESOURCE}; `undefined` or `null`, given explicitly, sends none (see resourceOf). */
+  resource?: string | null | undefined;
   state?: string;
   redirectUri?: string;
   extra?: Record<string, string>;
 }
 
 export function authorizeUrl(p: AuthorizeParams): string {
+  const resource = resourceOf(p);
   const q = new URLSearchParams({
     response_type: 'code',
     client_id: p.clientId,
@@ -225,7 +237,7 @@ export function authorizeUrl(p: AuthorizeParams): string {
     code_challenge_method: 'S256',
     state: p.state ?? 'client-state',
     ...(p.scope !== undefined ? { scope: p.scope } : {}),
-    ...(p.resource !== undefined ? { resource: p.resource } : {}),
+    ...(resource !== undefined ? { resource } : {}),
     ...(p.extra ?? {}),
   });
   return `/authorize?${q.toString()}`;
@@ -282,8 +294,9 @@ export async function browserFlow(
 
 export async function exchangeCode(
   app: Express,
-  p: { clientId: string; code: string; verifier: string; resource?: string; clientSecret?: string }
+  p: { clientId: string; code: string; verifier: string; resource?: string | null | undefined; clientSecret?: string }
 ): Promise<Response> {
+  const resource = resourceOf(p);
   return request(app)
     .post('/token')
     .type('form')
@@ -294,14 +307,15 @@ export async function exchangeCode(
       redirect_uri: REDIRECT_URI,
       client_id: p.clientId,
       ...(p.clientSecret !== undefined ? { client_secret: p.clientSecret } : {}),
-      ...(p.resource !== undefined ? { resource: p.resource } : {}),
+      ...(resource !== undefined ? { resource } : {}),
     });
 }
 
 export async function refresh(
   app: Express,
-  p: { clientId: string; refreshToken: string; scope?: string; resource?: string }
+  p: { clientId: string; refreshToken: string; scope?: string; resource?: string | null | undefined }
 ): Promise<Response> {
+  const resource = resourceOf(p);
   return request(app)
     .post('/token')
     .type('form')
@@ -310,6 +324,6 @@ export async function refresh(
       refresh_token: p.refreshToken,
       client_id: p.clientId,
       ...(p.scope !== undefined ? { scope: p.scope } : {}),
-      ...(p.resource !== undefined ? { resource: p.resource } : {}),
+      ...(resource !== undefined ? { resource } : {}),
     });
 }

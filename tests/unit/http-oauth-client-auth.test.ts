@@ -137,6 +137,7 @@ function codeGrant(clientId: string, code: string, secret?: string): Record<stri
     code,
     code_verifier: VERIFIER,
     client_id: clientId,
+    resource: RESOURCE,
     ...(secret !== undefined ? { client_secret: secret } : {}),
   };
 }
@@ -181,7 +182,7 @@ describe('/token client authentication', () => {
     const res = await token(codeGrant(client.client_id, await plantCode(client.client_id), client.client_secret));
     expect(res.status).toBe(200);
     expect(res.body.access_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(trace.slice(-3)).toEqual(['client-auth', 'grant-guard', 'as-library']);
+    expect(trace.slice(-4)).toEqual(['client-auth', 'grant-guard', 'resource-required', 'as-library']);
   });
 
   it.each([

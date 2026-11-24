@@ -107,6 +107,8 @@ function authorizeQuery(clientId: string, redirectUri: string, extra: Record<str
     code_challenge: CHALLENGE,
     code_challenge_method: 'S256',
     state: 'client-state',
+    // Clients registered on 0.5.0 must name the resource (#64a).
+    resource: `${PUBLIC_URL}/mcp`,
     ...extra,
   };
 }

@@ -107,6 +107,8 @@ function authorizeQuery(clientId: string, extra: Record<string, string> = {}): R
     code_challenge: challenge,
     code_challenge_method: 'S256',
     state: 'client-state',
+    // Clients registered on 0.5.0 must name the resource (#64a).
+    resource: RESOURCE,
     ...extra,
   };
 }
@@ -121,7 +123,7 @@ async function authorizeToCode(
   clientId: string,
   extra: Record<string, string> = {}
 ): Promise<string> {
-  const { scope, resource, ...rest } = extra;
+  const { scope, resource = RESOURCE, ...rest } = extra;
   const flow = await browserFlow(app, new CookieJar(), {
     clientId,
     challenge,
@@ -135,8 +137,9 @@ async function authorizeToCode(
   return code;
 }
 
+/** POST /token, naming the resource unless `form` names another (#64a: clients registered on 0.5.0 must). */
 async function token(app: Express, form: Record<string, string>): Promise<request.Response> {
-  return request(app).post('/token').type('form').send(form);
+  return request(app).post('/token').type('form').send({ resource: RESOURCE, ...form });
 }
 
 async function issueTokens(

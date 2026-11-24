@@ -25,7 +25,7 @@ function appWith(getClient: (id: string) => object | undefined) {
   });
   const app = express();
   app.use(express.urlencoded({ extended: false }), express.json());
-  app.use('/authorize', authorizeValidation({ clients: { getClient: lookup }, policy: POLICY, issuer: 'https://as.example/' }), handler);
+  app.use('/authorize', authorizeValidation({ clients: { getClient: lookup }, policy: POLICY, issuer: 'https://as.example/', requireResource: false }), handler);
   return { app, lookup, handler };
 }
 

@@ -50,6 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an hour (stdio included) is now refused with `write_limit_exceeded` until the
   window frees up. Set `YNAB_WRITE_LIMIT_PER_HOUR` (0 to 1000) to change it;
   `0` turns the cap off.
+- **OAuth clients registered on 0.5.0 or later must send `resource`** (RFC
+  8707) at `/authorize` and on every `/token` request, the code exchange and
+  each refresh (#64). Without it `/authorize` answers `invalid_target` and
+  `/token` answers `400 invalid_target`, without spending the code or refresh
+  token. Clients registered before 0.5.0, which the upgrade converts, keep
+  working without it, and so do their refreshes. Current MCP clients,
+  including the claude.ai connector, already send it. **Clients:** send
+  `resource` (this server's MCP endpoint URL) on every authorization and token
+  request. **Operators:** if a newly registered client can't send it yet, set
+  `MCP_REQUIRE_RESOURCE=false` until it can. That setting is deprecated and is
+  removed in 0.6.
 
 ### Changed
 

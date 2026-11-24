@@ -51,6 +51,8 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     verifiedRedirectUris: DEFAULT_VERIFIED_REDIRECT_URIS,
     privateUseSchemes: [],
     trustLoopbackRedirects: true,
+    // The loader's default (#64a).
+    requireResource: true,
     ...overrides,
   };
 }

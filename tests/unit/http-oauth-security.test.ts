@@ -152,6 +152,7 @@ async function refresh(
       grant_type: 'refresh_token',
       client_id: clientId,
       refresh_token: refreshToken,
+      resource: 'https://mcp.example.com/mcp',
       ...(scope !== undefined ? { scope } : {}),
     });
   expect(tok.status).toBe(200);

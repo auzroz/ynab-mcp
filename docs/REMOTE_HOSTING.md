@@ -68,6 +68,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_VERIFIED_REDIRECT_URIS` | no | Comma-separated redirect URIs of trusted clients. Default: Claude's connector callbacks, `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`. An authorization error at `/authorize` is redirected back only to these (and to loopback, see below); for any other client it is shown on this server's own page with a "Return to" link, so the server can't be used as an open redirector. The consent page names a verified client plainly and any other as "calls itself". `none` empties the list. Each entry must be https (http only for loopback), at most 512 characters, with no userinfo or fragment |
 | `MCP_DCR_PRIVATE_USE_SCHEMES` | no | Comma-separated private-use URI schemes (RFC 8252, e.g. `com.example.app`) a registering native app may use for its redirect URI. Default: none, so registrations need `https://` or `http://` to `localhost`, `127.0.0.1` or `[::1]` |
 | `MCP_TRUST_LOOPBACK_REDIRECTS` | no | Redirect authorization errors back to loopback redirect URIs (default `true`). The consent page labels a loopback address either way |
+| `MCP_REQUIRE_RESOURCE` | no | Clients registered on 0.5.0 or later must send the RFC 8707 `resource` parameter at `/authorize` and on every `/token` request (default `true`). Clients registered before 0.5.0 never need it. `false` turns the requirement off for every client. **Deprecated: removed in 0.6.** See "Token audience (RFC 8707)" |
 | `MCP_INACTIVE_USER_DAYS` | no | Erase users inactive for this many days who have no live connection (integer 30-3650). Default: off. See "Erasing inactive users" |
 
 OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
@@ -403,17 +404,29 @@ No new environment variables.
 ### Token audience (RFC 8707)
 
 Every authorization code, access token and refresh token is bound to the MCP
-resource (`MCP_RESOURCE_URL`). Clients may send a `resource` parameter to
-`/authorize` and `/token`. If they do, it must name this server's resource. The
-comparison ignores the case of the scheme and host, a default port, a fragment
-and one trailing slash. Any other value is refused with `invalid_target`. A
-refresh may ask for a narrower scope than the original grant but never a wider
-one (`invalid_scope`). `/mcp` returns `401 invalid_token` for a token bound to a
-different resource.
+resource (`MCP_RESOURCE_URL`). The `resource` parameter at `/authorize` and
+`/token` must name this server's resource. The comparison ignores the case of
+the scheme and host, a default port, a fragment and one trailing slash. Any
+other value is refused with `invalid_target`. A refresh may ask for a narrower
+scope than the original grant but never a wider one (`invalid_scope`). `/mcp`
+returns `401 invalid_token` for a token bound to a different resource.
 
-Clients that send no `resource` still work. If you change `MCP_RESOURCE_URL` (or `PUBLIC_URL`
-when it supplies the default), tokens issued for the old URL stop working and
-users must reconnect.
+**`resource` is required (0.5.0).** As the MCP authorization spec asks, a
+client registered on 0.5.0 or later must send `resource` at `/authorize` and
+on every `/token` request (the code exchange and each refresh). Without it,
+`/authorize` answers `invalid_target` (redirected to a verified client, shown
+on this server's page for any other) and `/token` answers
+`400 invalid_target`; the code or refresh token is not spent, so the client
+can retry with the parameter. Current MCP clients, including the claude.ai
+connector, send it. Clients registered before 0.5.0 (those the upgrade
+converted) keep working without it. If a newly registered client can't send
+it yet, set `MCP_REQUIRE_RESOURCE=false` until it can; that turns the
+requirement off for every client. The setting is deprecated and goes away in
+0.6. A client identified by a Client ID Metadata Document (a URL `client_id`,
+#46) counts as registered on 0.5.0.
+
+If you change `MCP_RESOURCE_URL` (or `PUBLIC_URL` when it supplies the
+default), tokens issued for the old URL stop working and users must reconnect.
 
 ### Refresh-token rotation and reuse detection (RFC 9700)
 
@@ -676,6 +689,9 @@ Clients, tokens and codes now live in one `oauth_rows` table, which the first
   discovery documents, including the return through `/authorize/<id>`), as
   0.4.x published them. Such a deployment must route those root paths to the
   server as well as the prefixed ones.
+- **`resource` is required for clients registered from now on** (see
+  "Token audience (RFC 8707)"). Converted clients don't need it.
+  `MCP_REQUIRE_RESOURCE=false` turns the requirement off until 0.6.
 - **What clients may notice:** `POST /authorize` answers `405`;
   `prompt=none` answers `login_required`; `token_type` is `Bearer`; a
   read-write token's `scope` is `read-only read-write`; the registration

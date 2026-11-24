@@ -243,8 +243,9 @@ async function authorize(choose: 'read-only' | 'read-write', scope: string): Pro
 }
 
 
+/** POST /token; every request names the resource, as clients registered on 0.5.0 must (#64a). */
 function tokenRequest(form: Record<string, string>): request.Test {
-  return request(app).post('/token').type('form').send(form);
+  return request(app).post('/token').type('form').send({ resource: RESOURCE, ...form });
 }
 
 interface Tokens {
