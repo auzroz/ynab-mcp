@@ -4,3 +4,7 @@
 efe9f30d4de449bf23d6ef00bf291da0895cdc01:tests/unit/config/environment.test.ts:generic-api-key:149
 efe9f30d4de449bf23d6ef00bf291da0895cdc01:tests/unit/utils/redact-secret-env.test.ts:generic-api-key:6
 efe9f30d4de449bf23d6ef00bf291da0895cdc01:tests/unit/utils/redact-secret-env.test.ts:generic-api-key:8
+
+# A made-up sentinel query-string token in a check-lockfile test fixture
+# (commit f8b656d, PR #132), since replaced with a plain SENTINEL value.
+f8b656d797efe4b01dd8389163cda295078c667c:tests/unit/scripts/check-lockfile.test.ts:generic-api-key:79
