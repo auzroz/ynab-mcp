@@ -398,6 +398,57 @@ describe('the verifier\'s grace reads', () => {
     expect(graceReads()).toEqual([]);
   });
 
+  it('a storage error while recording the first use never fails the /mcp request', async () => {
+    const memory = testDrivers.find((d) => d.kind === 'memory');
+    const h = await (memory as NonNullable<typeof memory>).open();
+    let storage: Storage | undefined;
+    factory.open = async () => {
+      storage = await h.reopen();
+      return storage;
+    };
+    const handle = await buildHttpApp(
+      makeHttpConfig({
+        publicUrl: PUBLIC_URL,
+        resourceUrl: RESOURCE,
+        readOnly: false,
+        authMode: 'oauth',
+        oauthClientId: 'ynab-client-id',
+        oauthClientSecret: 'ynab-client-secret',
+        encryptionKey: randomBytes(32).toString('base64'),
+        tokenPepper: TEST_TOKEN_PEPPER,
+      })
+    );
+    handles.push(handle);
+    const app = handle.app;
+    const client = await registerClient(app);
+    const { verifier, challenge } = pkcePair();
+    const flow = await browserFlow(app, new CookieJar(), { clientId: client.clientId, challenge });
+    const first = await exchangeCode(app, { clientId: client.clientId, code: flow.params.get('code') as string, verifier });
+    const rotatedPair = await refresh(app, { clientId: client.clientId, refreshToken: first.body.refresh_token as string });
+    const access = rotatedPair.body.access_token as string;
+    const s = storage as Storage;
+    const find = s.findOAuthRow.bind(s);
+    const cas = s.compareAndSetOAuthRow.bind(s);
+    // The grace read fails once, then the first-use write fails once.
+    const reads = vi.spyOn(s, 'findOAuthRow').mockImplementation(async (key) => {
+      if (String(key).startsWith('RefreshGrace:') && reads.mock.calls.filter(([k]) => String(k).startsWith('RefreshGrace:')).length === 1) {
+        throw new Error('storage down');
+      }
+      return find(key);
+    });
+    const writes = vi.spyOn(s, 'compareAndSetOAuthRow').mockImplementation(async (expected, row) => {
+      if (row.model === 'RefreshGrace') throw new Error('storage down');
+      return cas(expected, row);
+    });
+    expect((await mcpInitialize(app, bearer(access))).status).toBe(200);
+    expect((await mcpInitialize(app, bearer(access))).status).toBe(200);
+    expect(writes.mock.calls.some(([, row]) => row.model === 'RefreshGrace')).toBe(true);
+    // Logged, sanitized: no token in the log line.
+    const logged = vi.mocked(console.error).mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(logged).toContain("Could not record a successor token's first use");
+    expect(logged).not.toContain(access);
+  });
+
   it('a token from a code exchange (not a refresh) costs no grace read, even in its first 60 s', async () => {
     const memory = testDrivers.find((d) => d.kind === 'memory');
     const h = await (memory as NonNullable<typeof memory>).open();
