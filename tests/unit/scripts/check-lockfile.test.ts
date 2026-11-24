@@ -24,6 +24,37 @@ function good(name: string, version = '1.0.0') {
 
 const check = (l: unknown): string[] => checkLockfile(l);
 
+describe('install-script allow-list', () => {
+  const allow = { 'node_modules/esbuild': '0.28.2' };
+  const withScript = (name: string, version: string) => ({ ...good(name, version), hasInstallScript: true });
+
+  it('fails a new install-script package, naming it', () => {
+    const p = checkLockfile(lock({ 'node_modules/evil': withScript('evil', '1.0.0') }), allow);
+    expect(p).toHaveLength(1);
+    expect(p[0]).toContain('node_modules/evil');
+    expect(p[0]).toContain('install-script-allowlist.json');
+  });
+
+  it('passes an allowed install-script package at its pinned version', () => {
+    expect(checkLockfile(lock({ 'node_modules/esbuild': withScript('esbuild', '0.28.2') }), allow)).toEqual([]);
+  });
+
+  it('fails an allowed package whose version changed', () => {
+    const p = checkLockfile(lock({ 'node_modules/esbuild': withScript('esbuild', '0.29.0') }), allow);
+    expect(p).toHaveLength(1);
+    expect(p[0]).toMatch(/node_modules\/esbuild.*0\.28\.2.*0\.29\.0/);
+  });
+
+  it('passes a lockfile with no install scripts', () => {
+    expect(checkLockfile(lock({ 'node_modules/foo': good('foo') }), allow)).toEqual([]);
+  });
+
+  it('does not treat inherited object keys as allowed', () => {
+    const p = checkLockfile(lock({ 'node_modules/constructor': withScript('constructor', '1.0.0') }), allow);
+    expect(p).toHaveLength(1);
+  });
+});
+
 describe('checkLockfile', () => {
   it('accepts registry entries, scoped names and nested paths', () => {
     expect(

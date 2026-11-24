@@ -12,11 +12,16 @@
 //   - inBundle is set on a top-level entry, or on an entry that has a resolved URL
 //     (the latter is checked like any other entry).
 //
+// It also fails when an entry has hasInstallScript: true and is not in
+// scripts/install-script-allowlist.json, or when an allow-listed entry's version
+// differs from the one pinned there. Update the allow-list in the same change.
+//
 // Usage: node scripts/check-lockfile.mjs [path/to/package-lock.json]
 
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+const ALLOWLIST_FILE = fileURLToPath(new URL('./install-script-allowlist.json', import.meta.url));
 const REGISTRY_HOST = 'registry.npmjs.org';
 const SUPPORTED_LOCKFILE_VERSIONS = new Set([2, 3]);
 
@@ -26,11 +31,17 @@ function packageNameFromKey(key) {
   return idx === -1 ? null : key.slice(idx + 'node_modules/'.length);
 }
 
+/** Allow-list from the committed JSON file: package path -> pinned version. */
+function loadAllowList() {
+  return JSON.parse(readFileSync(ALLOWLIST_FILE, 'utf8')).packages ?? {};
+}
+
 /**
  * @param {unknown} lock parsed package-lock.json
+ * @param {Record<string, string>} [allowList] package path -> pinned version; defaults to the committed file
  * @returns {string[]} one message per violation; empty when the lockfile is clean
  */
-export function checkLockfile(lock) {
+export function checkLockfile(lock, allowList = loadAllowList()) {
   const problems = [];
   if (lock === null || typeof lock !== 'object' || Array.isArray(lock)) {
     return ['lockfile is not a JSON object'];
@@ -49,6 +60,18 @@ export function checkLockfile(lock) {
     if (entry === null || typeof entry !== 'object') {
       problems.push(`${key}: entry is not an object`);
       continue;
+    }
+    if (entry.hasInstallScript === true) {
+      const pinned = Object.hasOwn(allowList, key) ? allowList[key] : undefined;
+      if (pinned === undefined) {
+        problems.push(
+          `${key}: new package with hasInstallScript: true (${String(entry.version)}); review it, then add it to scripts/install-script-allowlist.json`,
+        );
+      } else if (pinned !== entry.version) {
+        problems.push(
+          `${key}: install-script package changed version (allow-list ${pinned}, lockfile ${String(entry.version)}); review it, then update scripts/install-script-allowlist.json`,
+        );
+      }
     }
     if (entry.link === true) {
       // A symlink to a workspace or local path: the target has its own entry.
