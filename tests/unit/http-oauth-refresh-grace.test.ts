@@ -18,7 +18,6 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import request from 'supertest';
 import type { Express } from 'express';
 import type { OAuthRowRecord, Storage } from '../../src/storage/types.js';
 
@@ -43,7 +42,7 @@ vi.mock('../../src/storage/index.js', async () => {
 });
 
 import { buildHttpApp, type HttpApp } from '../../src/http.js';
-import { REFRESH_GRACE_WINDOW_MS, refreshGraceKey } from '../../src/auth/refresh-grace.js';
+import { REFRESH_GRACE_WINDOW_MS, graceRowKey } from '../../src/auth/refresh-grace.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_PEPPER, testKey } from './helpers/token-hasher.js';
 import { testDrivers, cleanupDrivers, type DriverHandle } from './helpers/storage-drivers.js';
@@ -314,7 +313,7 @@ for (const driver of testDrivers) {
       const rows = await rowsOf(h);
       const grace = rows.filter((r) => r.model === 'RefreshGrace');
       expect(grace).toHaveLength(1);
-      expect(grace[0]?.key).toBe(refreshGraceKey(grace[0]?.grantId as string));
+      expect(grace[0]?.key).toBe(graceRowKey(grace[0]?.grantId as string));
       const dump = JSON.stringify(rows);
       expectNoTokens(dump, spent, firstAccess, successor.access_token, successor.refresh_token);
 
@@ -354,8 +353,8 @@ for (const driver of testDrivers) {
   });
 }
 
-describe('the verifier makes no grace read past the window', () => {
-  it('a successor access token older than 60 s costs one storage read at /mcp', async () => {
+describe('the verifier\'s grace reads', () => {
+  it('a successor access token reads its grace row only in its first 60 s', async () => {
     const memory = testDrivers.find((d) => d.kind === 'memory');
     const h = await (memory as NonNullable<typeof memory>).open();
     let storage: Storage | undefined;
@@ -382,10 +381,51 @@ describe('the verifier makes no grace read past the window', () => {
     const flow = await browserFlow(app, new CookieJar(), { clientId: client.clientId, challenge });
     const first = await exchangeCode(app, { clientId: client.clientId, code: flow.params.get('code') as string, verifier });
     const rotatedPair = await refresh(app, { clientId: client.clientId, refreshToken: first.body.refresh_token as string });
-    advance(REFRESH_GRACE_WINDOW_MS + 1_000);
+    const access = rotatedPair.body.access_token as string;
     const reads = vi.spyOn(storage as Storage, 'findOAuthRow');
-    // The YNAB token refresh is mocked; only the bearer check reads oauth_rows.
-    await request(app).post('/mcp').set('Authorization', `Bearer ${rotatedPair.body.access_token as string}`).send({});
+    const graceReads = (): unknown[] => reads.mock.calls.filter(([key]) => String(key).startsWith('RefreshGrace:'));
+
+    // The control: inside its first 60 s, the successor's use reads its grace row.
+    expect((await mcpInitialize(app, bearer(access))).status).toBe(200);
+    expect(reads.mock.calls.some(([key]) => key === testKey('access', access))).toBe(true);
+    expect(graceReads()).toHaveLength(1);
+
+    // Past the window: the bearer check still reads the token, and nothing else for the window.
+    reads.mockClear();
+    advance(REFRESH_GRACE_WINDOW_MS + 1_000);
+    expect((await mcpInitialize(app, bearer(access))).status).toBe(200);
+    expect(reads.mock.calls.some(([key]) => key === testKey('access', access))).toBe(true);
+    expect(graceReads()).toEqual([]);
+  });
+
+  it('a token from a code exchange (not a refresh) costs no grace read, even in its first 60 s', async () => {
+    const memory = testDrivers.find((d) => d.kind === 'memory');
+    const h = await (memory as NonNullable<typeof memory>).open();
+    let storage: Storage | undefined;
+    factory.open = async () => {
+      storage = await h.reopen();
+      return storage;
+    };
+    const handle = await buildHttpApp(
+      makeHttpConfig({
+        publicUrl: PUBLIC_URL,
+        resourceUrl: RESOURCE,
+        readOnly: false,
+        authMode: 'oauth',
+        oauthClientId: 'ynab-client-id',
+        oauthClientSecret: 'ynab-client-secret',
+        encryptionKey: randomBytes(32).toString('base64'),
+        tokenPepper: TEST_TOKEN_PEPPER,
+      })
+    );
+    handles.push(handle);
+    const app = handle.app;
+    const client = await registerClient(app);
+    const { verifier, challenge } = pkcePair();
+    const flow = await browserFlow(app, new CookieJar(), { clientId: client.clientId, challenge });
+    const first = await exchangeCode(app, { clientId: client.clientId, code: flow.params.get('code') as string, verifier });
+    const reads = vi.spyOn(storage as Storage, 'findOAuthRow');
+    expect((await mcpInitialize(app, bearer(first.body.access_token as string))).status).toBe(200);
     expect(reads.mock.calls.filter(([key]) => String(key).startsWith('RefreshGrace:'))).toEqual([]);
   });
 });

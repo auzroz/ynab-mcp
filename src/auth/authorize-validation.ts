@@ -201,6 +201,10 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
       return;
     }
     if (client === undefined) {
+      // An unknown client goes to the library's invalid_client. #46: a client identified by a
+      // Client ID Metadata Document (a URL client_id) must resolve through this same
+      // `clients.getClient`, so it gets the checks below, step 6 included: a URL id is never
+      // pre-0.5.0 (resource-required.ts), so it must send `resource` (lead decision).
       next();
       return;
     }

@@ -220,7 +220,7 @@ function rewrite(row: OAuthRowRecord, payload: string): OAuthRowWrite {
 }
 
 /** The grace row's key for a grant. */
-export function refreshGraceKey(grantId: string): string {
+export function graceRowKey(grantId: string): string {
   return plainRowKey('RefreshGrace', grantId);
 }
 
@@ -272,7 +272,7 @@ export function refreshGraceRecorder(options: RefreshGraceOptions) {
       ) {
         return;
       }
-      const key = refreshGraceKey(grantId);
+      const key = graceRowKey(grantId);
       const issuedAt = now();
       const record: GraceRecord = {
         v: 1,
@@ -326,7 +326,7 @@ async function graceAnswer(
   const age = now - spent.consumedAt;
   if (age < 0 || age > REFRESH_GRACE_WINDOW_MS) return undefined;
 
-  const key = refreshGraceKey(grantId);
+  const key = graceRowKey(grantId);
   const graceRow = await store.findOAuthRow(key);
   const record = parseRecord(graceRow);
   if (
@@ -434,7 +434,7 @@ export function successorFirstUse(options: Omit<RefreshGraceOptions, 'resource'>
     if (!gty.split(' ').includes('refresh_token')) return;
     const now = clock();
     if (now - iat * 1000 > REFRESH_GRACE_WINDOW_MS) return;
-    const row = await store.findOAuthRow(refreshGraceKey(grantId));
+    const row = await store.findOAuthRow(graceRowKey(grantId));
     const record = parseRecord(row);
     if (row === undefined || record === undefined || record.firstUsedAt !== null) return;
     if (record.successorAccess !== keys.libraryStorageKey('access', accessToken)) return;

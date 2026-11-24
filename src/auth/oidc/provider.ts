@@ -67,7 +67,11 @@
  * only one consumes it and the other revokes the whole grant in the same
  * step; and a token is saved only while its grant row exists, so the winner's
  * successors are refused (or deleted with the grant if they were saved
- * first). Two refreshes can therefore never both leave a live token. A crash
+ * first). Two refreshes can therefore never both leave a live token. (Since
+ * #64a, a second request that arrives after the first's response was recorded
+ * is an identical retry: refresh-guard answers it with the same pair, before
+ * the library, so there is still one chain; one that arrives earlier still
+ * revokes, as here. See ../refresh-grace.ts.) A crash
  * between the consume and the saves leaves the client without a refresh
  * token: it signs in again, nothing is reusable. Wrapping the three calls in
  * one storage transaction would need a hook the library doesn't have.
