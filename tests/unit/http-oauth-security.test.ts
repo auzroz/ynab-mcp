@@ -370,7 +370,7 @@ describe('each request is served as the client and user of its own token', () =>
     const bobCtx = lastContext();
     expect(bobCtx.userKey).toBe('ynab-user-2');
     expect(aliceCtx.userKey).toBe('ynab-user-1');
-    expect(bobCtx.components.auditLog).not.toBe(aliceCtx.components.auditLog);
+    expect(bobCtx.components.auditStore).not.toBe(aliceCtx.components.auditStore);
     expect(bobCtx.components.rateLimiter).not.toBe(aliceCtx.components.rateLimiter);
 
     // There is no session to stream from or delete.
@@ -459,10 +459,10 @@ describe('per-user state is keyed by YNAB user', () => {
 
     expect(a?.rateLimiter).toBeDefined();
     expect(b?.rateLimiter).toBe(a?.rateLimiter);
-    expect(b?.auditLog).toBe(a?.auditLog);
+    expect(b?.auditStore).toBe(a?.auditStore);
     expect(c?.rateLimiter).not.toBe(a?.rateLimiter);
     expect(c?.cache).not.toBe(a?.cache);
-    expect(c?.auditLog).not.toBe(a?.auditLog);
+    expect(c?.auditStore).not.toBe(a?.auditStore);
   });
 });
 

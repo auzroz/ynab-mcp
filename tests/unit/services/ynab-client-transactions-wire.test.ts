@@ -27,6 +27,8 @@ function json(body: unknown): Response {
 }
 
 let auditLog: AuditLog;
+/** The audit rows, oldest first. */
+const entries = async () => (await auditLog.list({}, 100)).reverse();
 
 function makeClient(): YnabClient {
   auditLog = new AuditLog();
@@ -140,9 +142,11 @@ describe('split transactions on the wire', () => {
       makeClient()
     );
 
-    const entry = auditLog.getAll().at(-1)!;
-    expect(entry.details['split_count']).toBe(2);
+    // The row has ids only (#60a): no split memos, payees or amounts.
+    const entry = (await entries()).at(-1)!;
+    expect(entry).toMatchObject({ operation: 'create', resourceType: 'transaction', outcome: 'success' });
     expect(JSON.stringify(entry)).not.toMatch(/secret/i);
+    expect(JSON.stringify(entry)).not.toMatch(/-60000|-40000|-100000/);
   });
 });
 
@@ -192,10 +196,10 @@ describe('clearing fields with null on the wire', () => {
     ]);
   });
 
-  it('audit log names the cleared fields without values', async () => {
+  it('audit log records the update by id, without field values', async () => {
     fetchMock.mockImplementation(async () => json({ data: { transaction: savedTxn, server_knowledge: 1 } }));
     await handleUpdateTransaction({ transaction_id: ACCOUNT, category_id: null, memo: null }, makeClient());
-    expect(auditLog.getAll().at(-1)!.details['cleared_fields']).toEqual(['category_id', 'memo']);
+    expect((await entries()).at(-1)).toMatchObject({ operation: 'update', resourceId: ACCOUNT, outcome: 'success' });
   });
 });
 
@@ -220,7 +224,7 @@ describe('import_id on the wire', () => {
     expect(body.transactions[0].import_id).toBe('YNAB:-1000:2024-02-01:1');
     expect(out.success).toBe(true);
     expect(out.transaction.id).toBe('t1');
-    expect(auditLog.getAll().some((e) => e.resourceId === 't1')).toBe(true);
+    expect((await entries()).some((e) => e.resourceId === 't1')).toBe(true);
   });
 
   it('ynab_create_transaction reports a duplicate import_id (skip-duplicates response) as a result', async () => {
@@ -266,6 +270,6 @@ describe('import_id on the wire', () => {
     expect(body.transactions[0]).not.toHaveProperty('id');
     expect(body.transactions[1]).toEqual({ id: CAT_A, approved: true });
     expect(body.transactions[1]).not.toHaveProperty('import_id');
-    expect(auditLog.getAll().at(-1)!.details['addressed_by_import_id_count']).toBe(1);
+    expect((await entries()).at(-1)).toMatchObject({ operation: 'update', tool: 'ynab_update_transactions', outcome: 'success' });
   });
 });

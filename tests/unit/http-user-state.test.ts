@@ -53,7 +53,7 @@ describe('per-user state in header mode', () => {
     const b = (await served(app, 'token-a')).components;
     expect(b.rateLimiter).toBe(a.rateLimiter);
     expect(b.cache).toBe(a.cache);
-    expect(b.auditLog).toBe(a.auditLog);
+    expect(b.auditStore).toBe(a.auditStore);
     expect(b.feedState).toBe(a.feedState);
   });
 
@@ -63,7 +63,7 @@ describe('per-user state in header mode', () => {
     const b = (await served(app, 'token-b')).components;
     expect(b.rateLimiter).not.toBe(a.rateLimiter);
     expect(b.cache).not.toBe(a.cache);
-    expect(b.auditLog).not.toBe(a.auditLog);
+    expect(b.auditStore).not.toBe(a.auditStore);
   });
 
   it('keeps the rate limiter between requests (a finished request does not reset it)', async () => {
@@ -125,7 +125,7 @@ describe('header-mode requests are served as the YNAB token they carry', () => {
     const a = await served(app, 'token-a');
     const b = await served(app, 'token-b', 'a-session-id-from-token-a');
     expect(b.userKey).not.toBe(a.userKey);
-    expect(b.components.auditLog).not.toBe(a.components.auditLog);
+    expect(b.components.auditStore).not.toBe(a.components.auditStore);
     expect(b.user.accessToken).toBe('token-b');
 
     // No token at all is refused, session id or not.

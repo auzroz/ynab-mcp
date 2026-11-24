@@ -317,12 +317,14 @@ describe('the write cap in the tools/call handler', () => {
     for (let i = 0; i < 4; i++) {
       await client.callTool({ name: 'ynab_create_payee', arguments: { name: 'Secret Payee' } });
     }
-    const entries = components.auditLog.getAll();
+    const entries = await components.auditStore.listAuditEntries('local', {}, 10);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      operation: 'write_limit_refused',
+      operation: 'create',
+      resourceType: 'payee',
       tool: 'ynab_create_payee',
-      success: false,
+      outcome: 'denied_write_limit',
+      resourceId: undefined,
     });
     expect(JSON.stringify(entries)).not.toContain('Secret Payee');
     await client.close();

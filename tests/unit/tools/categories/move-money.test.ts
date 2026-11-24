@@ -20,6 +20,8 @@ function category(id: string, name: string, budgeted: number, balance: number) {
 describe('handleMoveMoney', () => {
   let mockClient: MockClient;
   let auditLog: AuditLog;
+  /** The audit rows, oldest first (#60a: ids and the outcome only). */
+  const entries = async () => (await auditLog.list({}, 100)).reverse();
 
   beforeEach(() => {
     mockClient = createMockClient();
@@ -102,15 +104,20 @@ describe('handleMoveMoney', () => {
 
     await handleMoveMoney(args, mockClient as never);
 
-    const entries = auditLog.getAll();
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
+    const rows = await entries();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
       tool: 'ynab_move_money',
-      success: true,
+      operation: 'move',
+      resourceType: 'category',
       resourceId: FROM,
-      details: { month: MONTH, to_category_id: TO, amount_milliunits: 50000, outcome: 'moved' },
+      budgetId: 'test-budget-id',
+      outcome: 'success',
     });
-    expect(JSON.stringify(entries[0])).not.toContain('Dining');
+    const text = JSON.stringify(rows[0]);
+    expect(text).not.toContain('Dining');
+    expect(text).not.toContain('50000');
+    expect(text).not.toContain(TO);
   });
 
   const fromRow = (budgeted: number) => category(FROM, 'Dining Out', budgeted, 0);
@@ -142,7 +149,7 @@ describe('handleMoveMoney', () => {
     expect(parsed.rolled_back).toBe(true);
     expect(parsed.type).toBe('move_failed_rolled_back');
     expect(parsed.cause.type).toBe('ynab_api_error');
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('second_update_failed_rolled_back');
+    expect((await entries())[0]?.outcome).toBe('error'); // second_update_failed_rolled_back
   });
 
   it('reports a partially applied move when the rollback write also fails', async () => {
@@ -170,8 +177,8 @@ describe('handleMoveMoney', () => {
     expect(parsed.message).toContain('ynab_update_category');
     expect(parsed.from.original_budgeted_milliunits).toBe(200000);
     expect(parsed.cause.error).toBe(true);
-    expect(auditLog.getAll()[0]?.success).toBe(false);
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('second_update_failed_rollback_outcome_unknown');
+    expect((await entries())[0]?.outcome).toBe('error');
+    expect((await entries())[0]?.outcome).toBe('error'); // second_update_failed_rollback_outcome_unknown
   });
 
   it('skips the rollback when "from" changed since the move', async () => {
@@ -194,8 +201,8 @@ describe('handleMoveMoney', () => {
     expect(parsed.rolled_back).toBe(false);
     expect(parsed.message).toContain('changed since the move');
     expect(parsed.message).toContain('$180.00');
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('second_update_failed_rollback_skipped');
-    expect(JSON.stringify(auditLog.getAll()[0])).not.toContain('Dining');
+    expect((await entries())[0]?.outcome).toBe('error'); // second_update_failed_rollback_skipped
+    expect(JSON.stringify((await entries())[0])).not.toContain('Dining');
   });
 
   it('skips the rollback when "from" cannot be re-read', async () => {
@@ -217,7 +224,7 @@ describe('handleMoveMoney', () => {
     expect(parsed.type).toBe('move_partially_applied');
     expect(parsed.rolled_back).toBe(false);
     expect(parsed.message).toContain('could not be re-read');
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('second_update_failed_rollback_skipped');
+    expect((await entries())[0]?.outcome).toBe('error'); // second_update_failed_rollback_skipped
   });
 
   it('continues to leg 2 when leg 1 errored but the re-read shows it landed', async () => {
@@ -239,7 +246,7 @@ describe('handleMoveMoney', () => {
     expect(parsed.from.budgeted_after).toBe('$150.00');
     expect(parsed.warnings[0]).toContain('Dining Out');
     expect(parsed.warnings[0]).toContain('confirmed applied');
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('moved_confirmed_after_error');
+    expect((await entries())[0]?.outcome).toBe('success'); // moved_confirmed_after_error
   });
 
   it('rethrows and writes nothing more when leg 1 errored and the re-read shows it did not land', async () => {
@@ -253,8 +260,8 @@ describe('handleMoveMoney', () => {
 
     expect(updateCalls()).toEqual([[FROM, 150000]]);
     expect(mockClient.getMonthCategoryById).toHaveBeenCalledTimes(3);
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('first_update_failed');
-    expect(auditLog.getAll()[0]?.success).toBe(false);
+    expect((await entries())[0]?.outcome).toBe('error'); // first_update_failed
+    expect((await entries())[0]?.outcome).toBe('error');
   });
 
   it('returns an uncertain result and writes nothing more when the leg-1 re-read fails', async () => {
@@ -276,8 +283,8 @@ describe('handleMoveMoney', () => {
     expect(parsed.to_intended_budgeted_milliunits).toBe(350000);
     expect(parsed.message).toContain('ynab_get_month_category');
     expect(parsed.message).toContain('ynab_update_category');
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('first_update_outcome_unknown');
-    expect(JSON.stringify(auditLog.getAll()[0])).not.toContain('Dining');
+    expect((await entries())[0]?.outcome).toBe('error'); // first_update_outcome_unknown
+    expect(JSON.stringify((await entries())[0])).not.toContain('Dining');
   });
 
   it('returns an uncertain result and writes nothing more when the leg-1 re-read shows another value', async () => {
@@ -291,7 +298,7 @@ describe('handleMoveMoney', () => {
 
     expect(updateCalls()).toEqual([[FROM, 150000]]);
     expect(parsed.type).toBe('move_outcome_uncertain');
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('first_update_outcome_unknown');
+    expect((await entries())[0]?.outcome).toBe('error'); // first_update_outcome_unknown
   });
 
   it('rethrows ReadOnlyModeError from leg 1 without re-reading or further writes', async () => {
@@ -301,7 +308,7 @@ describe('handleMoveMoney', () => {
 
     expect(updateCalls()).toEqual([[FROM, 150000]]);
     expect(mockClient.getMonthCategoryById).toHaveBeenCalledTimes(2);
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('first_update_failed');
+    expect((await entries())[0]?.outcome).toBe('error'); // first_update_failed
   });
 
   it('rethrows token-resolution failures from leg 1 without a leg-2 write or an uncertain result', async () => {
@@ -311,7 +318,7 @@ describe('handleMoveMoney', () => {
 
     expect(updateCalls()).toEqual([[FROM, 150000]]);
     expect(mockClient.getMonthCategoryById).toHaveBeenCalledTimes(2);
-    expect(auditLog.getAll()[0]?.details['outcome']).toBe('first_update_failed');
+    expect((await entries())[0]?.outcome).toBe('error'); // first_update_failed
   });
 
   it('rethrows validation errors from leg 1 without re-reading', async () => {
@@ -373,7 +380,7 @@ describe('handleMoveMoney', () => {
       [FROM, 150000],
       [TO, 350000],
     ]);
-    expect(auditLog.getAll()[0]?.success).toBe(true);
+    expect((await entries())[0]?.outcome).toBe('success');
   });
 
   it('reports an uncertain outcome and does not roll back when the re-read fails', async () => {

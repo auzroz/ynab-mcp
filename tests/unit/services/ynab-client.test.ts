@@ -12,7 +12,8 @@ import { RateLimiter } from '../../../src/services/rate-limiter.js';
 import { handleGetBudget } from '../../../src/tools/budgets/get-budget.js';
 import { Cache } from '../../../src/services/cache.js';
 import { ReadOnlyModeError, formatErrorResponse } from '../../../src/utils/errors.js';
-import { getAuditLog, _resetAuditLogForTesting } from '../../../src/services/audit-log.js';
+import { AuditLog } from '../../../src/services/audit-log.js';
+import { MemoryAuditStore } from '../../../src/storage/audit-rows.js';
 
 // Shared mock API instance, built lazily by the mocked constructor.
 const mockApi = vi.hoisted(() => {
@@ -90,13 +91,23 @@ vi.mock('ynab', async (importOriginal) => ({
 
 const BUDGET = 'budget-123';
 
+// Each test's audit log (#60a): a memory store of its own, read back oldest first.
+let audit: AuditLog;
+let auditStore: MemoryAuditStore;
+
+async function auditEntries(): Promise<Array<Record<string, unknown>>> {
+  const rows = await audit.list({}, 1000);
+  return rows.reverse().map((e) => ({ ...e, success: e.outcome === 'success' }));
+}
+
 function makeClient(readOnly: boolean): YnabClient {
   return new YnabClient(
     'fake-token',
     'last-used',
     new RateLimiter(180),
     new Cache(300000),
-    readOnly
+    readOnly,
+    audit
   );
 }
 
@@ -115,7 +126,8 @@ function asMock(fnRef: unknown): ReturnType<typeof vi.fn> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  _resetAuditLogForTesting();
+  auditStore = new MemoryAuditStore();
+  audit = new AuditLog(auditStore);
   // Silence the [AUDIT] stderr logging from audit-log.log()
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
@@ -127,22 +139,22 @@ describe('YnabClient construction & simple accessors', () => {
   });
 
   it('defaults to read-only when flag omitted', () => {
-    const client = new YnabClient('t', undefined, new RateLimiter(180), new Cache(300000));
+    const client = new YnabClient('t', undefined, new RateLimiter(180), new Cache(300000), true, audit);
     expect(client.isReadOnly()).toBe(true);
   });
 
   it('getDefaultBudgetId returns provided id', () => {
-    const client = new YnabClient('t', BUDGET, new RateLimiter(180), new Cache(300000));
+    const client = new YnabClient('t', BUDGET, new RateLimiter(180), new Cache(300000), true, audit);
     expect(client.getDefaultBudgetId()).toBe(BUDGET);
   });
 
   it('getDefaultBudgetId falls back to "last-used" when undefined', () => {
-    const client = new YnabClient('t', undefined, new RateLimiter(180), new Cache(300000));
+    const client = new YnabClient('t', undefined, new RateLimiter(180), new Cache(300000), true, audit);
     expect(client.getDefaultBudgetId()).toBe('last-used');
   });
 
   it('resolveBudgetId returns an explicit id or an explicit default without a request', async () => {
-    const client = new YnabClient('t', BUDGET, new RateLimiter(180), new Cache(300000));
+    const client = new YnabClient('t', BUDGET, new RateLimiter(180), new Cache(300000), true, audit);
     await expect(client.resolveBudgetId('explicit')).resolves.toBe('explicit');
     await expect(client.resolveBudgetId()).resolves.toBe(BUDGET);
     expect(asMock(mockApi.plans.getPlanById)).not.toHaveBeenCalled();
@@ -413,7 +425,7 @@ describe('read methods', () => {
       );
       const limiter = new RateLimiter(180);
       const acquire = vi.spyOn(limiter, 'acquire');
-      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true, audit);
 
       const calls = [client.getCurrencyFormat(UUID), client.getCurrencyFormat(UUID), client.getCurrencyFormat(UUID)];
       await Promise.resolve();
@@ -431,7 +443,7 @@ describe('read methods', () => {
       );
       const limiter = new RateLimiter(180);
       const acquire = vi.spyOn(limiter, 'acquire');
-      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true, audit);
 
       const direct = client.getBudgetSettingsById(UUID);
       const format = client.getCurrencyFormat(UUID);
@@ -474,7 +486,7 @@ describe('read methods', () => {
       setResolve(mockApi.plans.getPlanSettingsById, { data: { settings: { currency_format: eur } } });
       const limiter = new RateLimiter(180);
       const acquire = vi.spyOn(limiter, 'acquire');
-      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+      const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true, audit);
 
       await client.getCurrencyFormat(UUID);
       await client.getCurrencyFormat(UUID);
@@ -873,7 +885,7 @@ describe('createAccount (write)', () => {
     expect(asMock(mockApi.accounts.getAccounts)).toHaveBeenCalledTimes(2);
     expect(asMock(mockApi.plans.getPlans)).toHaveBeenCalledTimes(2);
 
-    const entries = getAuditLog().getAll();
+    const entries = (await auditEntries());
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       operation: 'create',
@@ -892,13 +904,14 @@ describe('createAccount (write)', () => {
       client.createAccount(BUDGET, { account: { name: 'X', type: 'checking' } } as never)
     ).rejects.toThrow('boom');
 
-    const entries = getAuditLog().getAll();
+    const entries = (await auditEntries());
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       tool: 'ynab_create_account',
       success: false,
     });
-    expect(entries[0]?.error).toBeDefined();
+    expect(entries[0]).toMatchObject({ outcome: 'error' });
+    expect(entries[0]).not.toHaveProperty('error');
   });
 });
 
@@ -923,7 +936,7 @@ describe('updateMonthCategory (write)', () => {
     await client.getCategories(BUDGET);
     expect(asMock(mockApi.categories.getCategories)).toHaveBeenCalledTimes(2);
 
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_update_category',
       resourceId: 'cat-1',
       success: true,
@@ -938,7 +951,7 @@ describe('updateMonthCategory (write)', () => {
         category: { budgeted: 1 },
       } as never)
     ).rejects.toThrow('nope');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -961,13 +974,13 @@ describe('updateCategory (write)', () => {
     await client.getCategories(BUDGET);
     expect(asMock(mockApi.categories.getCategories)).toHaveBeenCalledTimes(2);
 
-    const entry = getAuditLog().getAll()[0];
+    const entry = (await auditEntries())[0];
     expect(entry).toMatchObject({
       tool: 'ynab_update_category_details',
       resourceId: 'cat-1',
       success: true,
-      details: { has_name: true, has_note: true, has_goal_target: true, category_group_id: 'g-2' },
     });
+    expect(entry).not.toHaveProperty('details');
     expect(JSON.stringify(entry)).not.toContain('Secret Name');
   });
 
@@ -977,7 +990,7 @@ describe('updateCategory (write)', () => {
     await expect(
       client.updateCategory(BUDGET, 'cat-1', { category: { name: 'X' } } as never)
     ).rejects.toThrow();
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_update_category_details',
       success: false,
     });
@@ -991,7 +1004,7 @@ describe('createCategory (write)', () => {
     await client.createCategory(BUDGET, {
       category: { name: 'Groceries', category_group_id: 'g-1' },
     } as never);
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_create_category',
       resourceId: 'cat-new',
       success: true,
@@ -1012,15 +1025,10 @@ describe('createCategory (write)', () => {
     };
     await client.createCategory(BUDGET, body as never);
     expect(mockApi.categories.createCategory).toHaveBeenCalledWith(BUDGET, body);
-    const entry = getAuditLog().getAll()[0];
-    expect(entry?.details).toEqual({
-      has_name: true,
-      category_group_id: 'g-1',
-      has_goal_target: true,
-      has_goal_target_date: true,
-      has_goal_needs_whole_amount: true,
-    });
+    const entry = (await auditEntries())[0];
+    expect(entry).toMatchObject({ tool: 'ynab_create_category', resourceId: 'cat-new', outcome: 'success' });
     expect(JSON.stringify(entry)).not.toContain('123450');
+    expect(JSON.stringify(entry)).not.toContain('Vacation');
   });
 
   it('logs failure and rethrows', async () => {
@@ -1029,7 +1037,7 @@ describe('createCategory (write)', () => {
     await expect(
       client.createCategory(BUDGET, { category: { name: 'X' } } as never)
     ).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1040,7 +1048,7 @@ describe('createCategoryGroup (write)', () => {
       data: { category_group: { id: 'g-new' } },
     });
     await client.createCategoryGroup(BUDGET, { category_group: { name: 'G' } } as never);
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_create_category_group',
       resourceId: 'g-new',
       success: true,
@@ -1053,7 +1061,7 @@ describe('createCategoryGroup (write)', () => {
     await expect(
       client.createCategoryGroup(BUDGET, { category_group: { name: 'G' } } as never)
     ).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1067,7 +1075,7 @@ describe('updateCategoryGroup (write)', () => {
     expect(asMock(mockApi.categories.updateCategoryGroup)).toHaveBeenCalledWith(BUDGET, 'g-1', {
       category_group: { name: 'G' },
     });
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_update_category_group',
       resourceId: 'g-1',
       success: true,
@@ -1080,7 +1088,7 @@ describe('updateCategoryGroup (write)', () => {
     await expect(
       client.updateCategoryGroup(BUDGET, 'g-1', { category_group: { name: 'G' } } as never)
     ).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1093,7 +1101,7 @@ describe('createTransaction (write)', () => {
     await client.createTransaction(BUDGET, {
       transaction: { amount: -1000, date: '2026-06-01', payee_name: 'Store', account_id: 'a' },
     } as never);
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_create_transaction',
       resourceId: 'txn-new',
       success: true,
@@ -1104,7 +1112,7 @@ describe('createTransaction (write)', () => {
     const client = makeClient(false);
     setResolve(mockApi.transactions.createTransaction, { data: {} });
     await client.createTransaction(BUDGET, { transaction: { amount: -1 } } as never);
-    const entry = getAuditLog().getAll()[0];
+    const entry = (await auditEntries())[0];
     expect(entry?.success).toBe(true);
     expect(entry?.resourceId).toBeUndefined();
   });
@@ -1115,7 +1123,7 @@ describe('createTransaction (write)', () => {
     await expect(
       client.createTransaction(BUDGET, { transaction: {} } as never)
     ).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1131,7 +1139,7 @@ describe('updateTransaction (write)', () => {
       'txn-1',
       expect.anything()
     );
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_update_transaction',
       resourceId: 'txn-1',
       success: true,
@@ -1144,7 +1152,7 @@ describe('updateTransaction (write)', () => {
     await expect(
       client.updateTransaction(BUDGET, 'txn-1', { transaction: {} } as never)
     ).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1157,9 +1165,10 @@ describe('updateTransactions (bulk write)', () => {
     await client.createTransaction(BUDGET, {
       transactions: [{ date: '2026-01-01' }, { date: '2026-01-02' }, { date: '2026-01-03' }],
     } as never);
-    const entry = getAuditLog().getAll()[0];
-    expect(entry).toMatchObject({ tool: 'ynab_create_transaction', success: true });
-    expect(entry?.details).toMatchObject({ requested_count: 3 });
+    const entry = (await auditEntries())[0];
+    // One row per call; a bulk create names no single transaction.
+    expect(entry).toMatchObject({ tool: 'ynab_create_transaction', success: true, resourceId: undefined });
+    expect(await auditEntries()).toHaveLength(1);
   });
 
   it('succeeds and logs counts', async () => {
@@ -1170,9 +1179,8 @@ describe('updateTransactions (bulk write)', () => {
     await client.updateTransactions(BUDGET, {
       transactions: [{ id: 't1' }, { id: 't2' }],
     } as never);
-    const entry = getAuditLog().getAll()[0];
-    expect(entry).toMatchObject({ tool: 'ynab_update_transactions', success: true });
-    expect(entry?.details).toMatchObject({ requested_count: 2, updated_count: 2 });
+    const entry = (await auditEntries())[0];
+    expect(entry).toMatchObject({ tool: 'ynab_update_transactions', success: true, resourceId: undefined });
   });
 
   it('logs failure and rethrows', async () => {
@@ -1181,7 +1189,7 @@ describe('updateTransactions (bulk write)', () => {
     await expect(
       client.updateTransactions(BUDGET, { transactions: [{ id: 't1' }] } as never)
     ).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1192,7 +1200,7 @@ describe('deleteTransaction (write)', () => {
       data: { transaction: { amount: -5, date: '2026-06-01' } },
     });
     await client.deleteTransaction(BUDGET, 'txn-1');
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       operation: 'delete',
       tool: 'ynab_delete_transaction',
       resourceId: 'txn-1',
@@ -1204,7 +1212,7 @@ describe('deleteTransaction (write)', () => {
     const client = makeClient(false);
     setReject(mockApi.transactions.deleteTransaction, new Error('fail'));
     await expect(client.deleteTransaction(BUDGET, 'txn-1')).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1220,7 +1228,7 @@ describe('createPayee (write)', () => {
     await client.getPayees(BUDGET);
     expect(asMock(mockApi.payees.getPayees)).toHaveBeenCalledTimes(2);
 
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_create_payee',
       resourceId: 'p-new',
       success: true,
@@ -1233,7 +1241,7 @@ describe('createPayee (write)', () => {
     await expect(
       client.createPayee(BUDGET, { payee: { name: 'P' } } as never)
     ).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1245,7 +1253,7 @@ describe('updatePayee (write)', () => {
     expect(asMock(mockApi.payees.updatePayee)).toHaveBeenCalledWith(BUDGET, 'p-1', {
       payee: { name: 'New' },
     });
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_update_payee',
       resourceId: 'p-1',
       success: true,
@@ -1258,7 +1266,7 @@ describe('updatePayee (write)', () => {
     await expect(
       client.updatePayee(BUDGET, 'p-1', { payee: { name: 'New' } } as never)
     ).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1271,7 +1279,7 @@ describe('createScheduledTransaction (write)', () => {
     await client.createScheduledTransaction(BUDGET, {
       scheduled_transaction: { amount: -100, date: '2026-06-01', frequency: 'monthly' },
     } as never);
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_create_scheduled_transaction',
       resourceId: 'sch-new',
       success: true,
@@ -1284,7 +1292,7 @@ describe('createScheduledTransaction (write)', () => {
     await expect(
       client.createScheduledTransaction(BUDGET, { scheduled_transaction: {} } as never)
     ).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1297,7 +1305,7 @@ describe('updateScheduledTransaction (write)', () => {
     await client.updateScheduledTransaction(BUDGET, 'sch-1', {
       scheduled_transaction: { amount: -100, memo: 'm', category_id: 'c' },
     } as never);
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_update_scheduled_transaction',
       resourceId: 'sch-1',
       success: true,
@@ -1310,7 +1318,7 @@ describe('updateScheduledTransaction (write)', () => {
     await expect(
       client.updateScheduledTransaction(BUDGET, 'sch-1', { scheduled_transaction: {} } as never)
     ).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1321,7 +1329,7 @@ describe('deleteScheduledTransaction (write)', () => {
       data: { scheduled_transaction: { amount: -5, date_next: '2026-07-01' } },
     });
     await client.deleteScheduledTransaction(BUDGET, 'sch-1');
-    expect(getAuditLog().getAll()[0]).toMatchObject({
+    expect((await auditEntries())[0]).toMatchObject({
       operation: 'delete',
       tool: 'ynab_delete_scheduled_transaction',
       resourceId: 'sch-1',
@@ -1333,7 +1341,7 @@ describe('deleteScheduledTransaction (write)', () => {
     const client = makeClient(false);
     setReject(mockApi.scheduledTransactions.deleteScheduledTransaction, new Error('fail'));
     await expect(client.deleteScheduledTransaction(BUDGET, 'sch-1')).rejects.toThrow('fail');
-    expect(getAuditLog().getAll()[0]).toMatchObject({ success: false });
+    expect((await auditEntries())[0]).toMatchObject({ success: false });
   });
 });
 
@@ -1348,9 +1356,10 @@ describe('YnabClient category writes with goal_frequency', () => {
     const result = await makeClient(false).createCategory(BUDGET, body);
     expect(asMock(mockApi.categories.createCategory)).toHaveBeenCalledWith(BUDGET, body);
     expect(result).toEqual(okBody);
-    const entry = JSON.stringify(getAuditLog().getAll().at(-1));
-    expect(entry).toContain('has_goal_frequency');
+    const entry = JSON.stringify((await auditEntries()).at(-1));
+    expect(entry).toContain('ynab_create_category');
     expect(entry).not.toContain('Dining Out');
+    expect(entry).not.toContain('50000');
   });
 
   it('updateCategory hands goal_frequency and a null target to the SDK', async () => {
@@ -1472,8 +1481,8 @@ describe('budget alias resolution (#66)', () => {
 
   it('shares the resolution between clients of one user through the cache', async () => {
     const cache = new Cache(300000);
-    const a = new YnabClient('t', 'last-used', new RateLimiter(180), cache, true);
-    const b = new YnabClient('t', 'last-used', new RateLimiter(180), cache, true);
+    const a = new YnabClient('t', 'last-used', new RateLimiter(180), cache, true, audit);
+    const b = new YnabClient('t', 'last-used', new RateLimiter(180), cache, true, audit);
     setResolve(mockApi.plans.getPlanById, planResponse(U1));
     await a.resolveBudgetId();
     await expect(b.resolveBudgetId()).resolves.toBe(U1);
@@ -1492,7 +1501,7 @@ describe('budget alias resolution (#66)', () => {
 
   it('takes its token outside a fan-out reservation, leaving the tool its full count', async () => {
     const limiter = new RateLimiter(180);
-    const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true);
+    const client = new YnabClient('t', 'last-used', limiter, new Cache(300000), true, audit);
     setResolve(mockApi.plans.getPlanById, planResponse(U1));
     const before = limiter.getStatus().available;
     await client.withFanOut(2, async () => {
