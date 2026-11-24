@@ -208,7 +208,7 @@ export async function registerClient(
 
 /**
  * The `resource` a helper request sends: {@link RESOURCE} when the caller
- * names none (clients registered on 0.5.0 must send it, #64a), the caller's
+ * names none (clients registered on 0.5.0 must send it at /authorize, #64a), the caller's
  * value when given, and nothing when the caller passes the key as `undefined`
  * or `null` (a request without `resource`).
  */

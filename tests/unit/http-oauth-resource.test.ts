@@ -137,7 +137,7 @@ async function authorizeToCode(
   return code;
 }
 
-/** POST /token, naming the resource unless `form` names another (#64a: clients registered on 0.5.0 must). */
+/** POST /token, naming the resource unless `form` names another, as spec-following clients do. */
 async function token(app: Express, form: Record<string, string>): Promise<request.Response> {
   return request(app).post('/token').type('form').send({ resource: RESOURCE, ...form });
 }

@@ -2,9 +2,9 @@
  * OAuth protocol settings (#64a): `MCP_REQUIRE_RESOURCE`.
  *
  * - **Resource required** (RFC 8707, the MCP authorization spec): a client
- *   registered on 0.5.0 or later must send `resource` at `/authorize` and on
- *   every `/token` request (see src/auth/resource-required.ts for which
- *   clients count as registered before 0.5.0). Default true. `false` turns the
+ *   registered on 0.5.0 or later must send `resource` at `/authorize` (see
+ *   src/auth/resource-required.ts for which clients count as registered before
+ *   0.5.0; `/token` never requires it). Default true. `false` turns the
  *   requirement off for every client, for a client that can't send it yet.
  *   **Deprecated: removed in 0.6**, when `resource` becomes required for every
  *   new client with no switch.
@@ -16,7 +16,7 @@ import { parseBoolean } from '../parse.js';
 import type { HttpLoader } from './types.js';
 
 export interface OAuthSettings {
-  /** `MCP_REQUIRE_RESOURCE`: clients registered on 0.5.0 or later must send `resource`. Removed in 0.6. */
+  /** `MCP_REQUIRE_RESOURCE`: clients registered on 0.5.0 or later must send `resource` at `/authorize`. Removed in 0.6. */
   requireResource: boolean;
 }
 

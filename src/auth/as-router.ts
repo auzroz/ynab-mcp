@@ -21,7 +21,7 @@
  *                      and /revoke the route limiter and client
  *                      authentication (#52, D5), and on /token
  *                      refresh-guard (#64a), grant-guard (D6) and
- *                      resource-required (#64a); on /register the
+ *                      resource-check (#64a); on /register the
  *                      DCR validator and then the
  *                      per-redirect-host limit
  *   router             what answers: the library (as-library, D1), the
@@ -61,7 +61,7 @@ import { dcrValidator } from './dcr-validator.js';
 import { authorizeValidation } from './authorize-validation.js';
 import { authorizeGuard, authorizeRedirectGuard } from './authorize-guard.js';
 import { grantGuard } from './grant-guard.js';
-import { resourceRequired } from './resource-required.js';
+import { resourceCheck } from './resource-required.js';
 import { refreshGraceRecorder, refreshGuard, successorFirstUse } from './refresh-grace.js';
 import { methodCheck } from './method-check.js';
 import { answerPreflight, metadataDocument } from './metadata-document.js';
@@ -449,8 +449,9 @@ export function mountAuthorizationServer(
         // #64a: an identical retry of a refresh inside 60 s gets its unused successor pair again.
         stage('refresh-guard', refreshGuard({ store: storage, keys: tokenHasher, resource })),
         stage('grant-guard', grantGuard({ provider, store: storage })),
-        // #64a: clients registered on 0.5.0 or later name the resource (after grant-guard, so a replay still revokes).
-        stage('resource-required', resourceRequired({ requireResource: config.requireResource })),
+        // #64a: a resource that is sent must be the grant's, refused before anything is spent
+        // (after grant-guard, so a replay still revokes). A missing one gets the grant's.
+        stage('resource-check', resourceCheck({ resource })),
       ],
       router: asLibrary(),
     },
