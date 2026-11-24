@@ -57,8 +57,8 @@ export const MAX_CLIENT_ID_LENGTH = 255;
 const ClientIdSchema = z.string().min(1).max(MAX_CLIENT_ID_LENGTH);
 
 /**
- * The first check the SDK's authorization handler made (server-legacy 2.4.0's
- * ClientAuthorizationParamsSchema), kept so a client_id refused here is
+ * The first check the SDK's authorization handler made (the MCP SDK's
+ * ClientAuthorizationParamsSchema, in the handlers oidc-provider replaced), kept so a client_id refused here is
  * answered as before the move: 400 `invalid_request` with the same
  * description when the parameters fail it, and otherwise (an empty or overlong
  * string the handler would have looked up and not found) 400

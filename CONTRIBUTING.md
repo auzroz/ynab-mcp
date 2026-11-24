@@ -154,7 +154,7 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `ci` and `c
 - **Breaking changes**, if any, for the CHANGELOG.
 - **A test plan:** what you ran, and how you checked behaviour against YNAB if you did.
 
-**Checks.** Every PR must pass these CI checks: Lint, Type Check, Test, Test (Node 22), Build, Docker Build, Gitleaks and Dependency Audit. Dependency Audit also runs `node scripts/check-lockfile.mjs`, which rejects lockfile entries that don't come from `registry.npmjs.org` over https with a sha512 integrity hash. Run `npm run typecheck && npm run lint && npm test` before pushing.
+**Checks.** Every PR must pass these CI checks: Lint, Type Check, Test, Test (Node 22), Build, Docker Build, Gitleaks and Dependency Audit. Dependency Audit also runs `node scripts/check-lockfile.mjs`, which rejects lockfile entries that don't come from `registry.npmjs.org` over https with a sha512 integrity hash. It also fails when a lockfile entry has `hasInstallScript: true` and isn't listed in `scripts/install-script-allowlist.json` (package path to pinned version), or when a listed entry's version changes. If the new or bumped package's install script is expected, review it and update the allow-list in the same PR so a reviewer sees it. Run `npm run typecheck && npm run lint && npm test` before pushing.
 
 **Review.**
 - **CodeRabbit** reviews PRs automatically. Address each finding, or reply on its thread explaining why you disagree. Its review allowance is limited, so push your fixes together instead of one commit per finding, and avoid re-requesting reviews.

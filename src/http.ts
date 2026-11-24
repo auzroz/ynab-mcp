@@ -5,7 +5,7 @@
  *  - `header`  — interim: YNAB token supplied per request via `X-YNAB-Token`
  *                (or the `YNAB_ACCESS_TOKEN` fallback). TLS required.
  *  - `oauth`   — multi-tenant: the server is an OAuth 2.1 Authorization Server
- *                (DCR + PKCE via the SDK) federated to YNAB. Each MCP access
+ *                (DCR + PKCE via oidc-provider, ADR-0002) federated to YNAB. Each MCP access
  *                token maps to a YNAB-identified user; per request we resolve and
  *                refresh that user's YNAB token and build an isolated server.
  *
@@ -86,7 +86,7 @@ const MCP_PATH = '/mcp';
 export const INFLIGHT_RETRY_AFTER_SEC = 1;
 
 /**
- * The provider's refusal text for a token (`verifyAccessToken`), reused for a
+ * The verifier's refusal text for a token (`verifyAccessToken`), reused for a
  * request-context failure so every 401 /mcp answers in oauth mode is the same:
  * a client can't tell a revoked YNAB grant from a bad token, and either way it
  * re-authorizes.
@@ -219,17 +219,21 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   app.set('trust proxy', config.trustProxy);
 
   // Host/Origin validation (DNS rebinding + cross-site requests), the single
-  // source of truth for these checks (the SDK's handler has none of its own).
+  // source of truth for these checks (neither oidc-provider nor the MCP SDK
+  // handler has its own).
   //  - Host is checked on every route except /health (probed by orchestrators
   //    by pod IP). That includes the OAuth endpoints and well-known metadata.
   //  - Origin is checked on /mcp only (its pipeline's origin-validation stage).
   //    The OAuth endpoints carry no ambient credentials (PKCE / client
-  //    authentication) and the SDK serves them, and the well-known metadata,
-  //    with permissive CORS on purpose so browser-based MCP clients can
-  //    discover and register; /mcp is the credentialed, state-changing
-  //    surface. The one cookie (the SameSite=Lax consent cookie the federation
-  //    legs require) only proves which browser saw the consent page; it grants
-  //    nothing by itself.
+  //    authentication) and oidc-provider serves them, with permissive CORS on
+  //    purpose so browser-based MCP clients can discover and register. The
+  //    protected-resource metadata (/.well-known/oauth-protected-resource)
+  //    comes from our `metadata` stage (src/auth/metadata-document.ts), which
+  //    sets its own any-origin CORS. /mcp is the credentialed, state-changing
+  //    surface. The cookies (oidc-provider's signed, SameSite=Lax
+  //    `_interaction`, `_interaction_resume` and `_session`, which the
+  //    federation legs require) only prove which browser saw the consent
+  //    page; they grant nothing by themselves.
   const upstreamStages: string[] = [];
   if (config.enableDnsRebindingProtection) {
     const hosts = config.allowedHosts ?? [];
@@ -583,10 +587,10 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
       ? stage(
           'bearer',
           // v2's middleware answers 401 with the challenge only for v2's
-          // OAuthError: the provider throws that for every refused token
-          // (ADR-0001 D14). expectedResource makes the SDK refuse (401
-          // invalid_token) any token whose audience is not this resource; the
-          // provider also checks it, and reports 0.3.x tokens as bound to it.
+          // OAuthError: the verifier (src/auth/oidc/verifier.ts) throws a
+          // subclass of it for every refused token (ADR-0001 D14). expectedResource makes the SDK
+          // refuse (401 invalid_token) any token whose audience is not this
+          // resource; the verifier checks the audience too.
           live(
             requireBearerAuth({
               verifier: oauth.as.provider,
