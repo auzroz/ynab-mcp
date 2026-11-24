@@ -104,20 +104,33 @@ const credentialCalls = (): string[] =>
 /** Present `value` at every entry point a client or browser reaches. */
 async function presentEverywhere(value: string): Promise<void> {
   await expectInvalidToken(t.verifier.verifyAccessToken(value));
+  const state = `${live.uid}.${value}`;
+  /** A refusal never echoes what was presented: not in its body, nor in a WWW-Authenticate challenge. */
+  const echoesNothing = (res: { text: string; headers: Record<string, unknown> }): void => {
+    const challenge = String(res.headers['www-authenticate'] ?? '');
+    for (const secret of [value, encodeURIComponent(value), state, encodeURIComponent(state)]) {
+      expect(res.text).not.toContain(secret);
+      expect(challenge).not.toContain(secret);
+    }
+  };
   const viaRefresh = await refresh(t.app, { clientId, refreshToken: value });
   expect(viaRefresh.body.error).toBe('invalid_grant');
+  echoesNothing(viaRefresh);
   const viaCode = await exchangeCode(t.app, { clientId, code: value, verifier: pkcePair().verifier });
   expect(viaCode.body.error).toBe('invalid_grant');
+  echoesNothing(viaCode);
   const revoked = await request(t.app).post('/revoke').type('form').send({ token: value, client_id: clientId });
   expect(revoked.status).toBe(200);
+  echoesNothing(revoked);
   // The callback only routes (it checks no secret): it sends the browser to the interaction's complete.
-  const state = `${live.uid}.${value}`;
   const callback = await browse(t.app, live.jar, `/oauth/ynab/callback?state=${encodeURIComponent(state)}&code=c`);
   expect([302, 400]).toContain(callback.status);
+  if (callback.status >= 400) echoesNothing(callback);
   // complete with the live interaction's own cookie: past the browser check, so the 400 is the state comparison.
   vi.mocked(ynabExchangeCode).mockClear();
   const complete = await browse(t.app, live.jar, `/oauth/interaction/${live.uid}/complete?state=${encodeURIComponent(state)}&code=c`);
   expect(complete.status).toBe(400);
+  echoesNothing(complete);
   expect(ynabExchangeCode).not.toHaveBeenCalled();
 }
 

@@ -66,15 +66,17 @@ export function stage(name: string, ...handlers: RequestHandler[]): Stage {
 }
 
 /**
- * Mount the stages in order, on `path` (prefix match, like app.use) or on
- * every request when `path` is undefined. Returns the stage names. With an
+ * Mount the stages in order, on `path` (a string is a prefix match, like
+ * app.use; a RegExp matches what it matches, and the matched text is the
+ * mount path Express strips) or on every request when `path` is undefined.
+ * Returns the stage names. With an
  * observer, each stage is preceded by a pass-through handler that reports it,
  * and every handler is recorded for stageOfHandler(); without one, only the
  * stages' own handlers are mounted.
  */
 export function mountStages(
   router: Router,
-  path: string | undefined,
+  path: string | RegExp | undefined,
   stages: readonly Stage[],
   observe?: StageObserver
 ): string[] {

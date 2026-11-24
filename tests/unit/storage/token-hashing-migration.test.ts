@@ -122,6 +122,8 @@ const TABLES = [
   'refresh_tokens',
   'consumed_refresh_tokens',
   'consumed_auth_codes',
+  // M4's table: the converted Client row (its secret stored only as the s256. hash).
+  'oauth_rows',
   'schema_meta',
 ];
 
@@ -321,7 +323,12 @@ function runM3Suite(name: string, enabled: boolean, newDb: () => Promise<TestDb>
       const after = await dump(db);
       expect(after).toBe(before);
       expect(after).toContain(testKey('access', p.accessToken));
-      for (const value of [p.accessToken, p.refreshToken, p.code, p.state]) expect(after).not.toContain(value);
+      for (const value of [p.accessToken, p.refreshToken, p.code, p.state, p.clientSecret]) expect(after).not.toContain(value);
+      // The snapshot covers M4's converted Client row: its secret is only the hash.
+      const converted = await db.rows<{ payload: string }>("SELECT payload FROM oauth_rows WHERE model = 'Client' AND client_id = $1", [p.clientId]);
+      expect(converted).toHaveLength(1);
+      expect(JSON.parse(converted[0]!.payload)).toMatchObject({ client_secret_hash: expect.stringMatching(/^s256\.[0-9a-f]{64}$/) });
+      expect((JSON.parse(after) as Record<string, string[]>)['oauth_rows']!.some((row) => row.includes(p.clientId))).toBe(true);
     });
 
     it('is idempotent: a second start writes nothing; a row written later by 0.4.x is converted at the next start', async () => {

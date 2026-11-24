@@ -60,8 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     registered at YNAB, unchanged) sends the browser to `.../complete`, then
     back through `/authorize/<id>` to the client. `/oauth/ynab/start` and
     `/oauth/cancel` are gone. Every leg stays under `/oauth` and its rate
-    limit. The `/authorize` rate limit counts both the request and the return
-    from the consent page.
+    limit, which doubles to 200 requests per 15 minutes per address: a
+    sign-in now takes four requests there, so the limit still allows 50
+    sign-ins. The `/authorize` rate limit counts both the request and the
+    return from the consent page.
   - The consent-page cookie is replaced by the library's signed cookies
     (`_interaction`, `_interaction_resume`, `_session`, each with a `.sig`).
     They are signed with a key derived from `ENCRYPTION_KEY` (no new setting)

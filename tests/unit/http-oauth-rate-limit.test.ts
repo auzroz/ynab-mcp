@@ -37,8 +37,8 @@ const config = () =>
   });
 
 describe('OAuth federation legs rate limit', () => {
-  it('matches the SDK /authorize limit', () => {
-    expect(OAUTH_LEG_RATE_LIMIT).toBe(100);
+  it('keeps 0.4.x capacity of 50 sign-ins per IP: four leg requests each, 200 per 15 minutes', () => {
+    expect(OAUTH_LEG_RATE_LIMIT).toBe(200);
   });
 
   it('answers 429 from the limiter after the limit, across every leg, without leaking input', async () => {

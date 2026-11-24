@@ -67,7 +67,8 @@ function fieldsOf(body: unknown): Record<string, unknown> {
 
 export function grantGuard({ provider, store }: GrantGuardOptions): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    if (req.method !== 'POST') {
+    // Only the token endpoint itself (the mount's root); nothing under it is a grant request.
+    if (req.method !== 'POST' || req.path !== '/') {
       next();
       return;
     }

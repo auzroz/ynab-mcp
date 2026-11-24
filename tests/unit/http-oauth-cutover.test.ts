@@ -693,14 +693,32 @@ describe('route spellings and unmounted library routes', () => {
     ['post', '/device/auth'],
     ['get', '/device'],
     ['post', '/backchannel'],
-  ] as const)('%s %s never reaches the library', async (method, path) => {
-    const { as } = traced();
+  ] as const)('%s %s matches no AS route: the app\'s 404, and no stage runs', async (method, path) => {
+    const { as, stages } = traced();
     const res = await request(as.app)[method](path);
-    // A stage's refusal (405, dcr-validator's 400) or the app's own 404; never the library's
-    // "unrecognized route" answer.
-    expect([400, 404, 405]).toContain(res.status);
-    expect(res.text).not.toMatch(/unrecognized route/);
-    if (res.status === 404) expect(res.text).toMatch(/Cannot (GET|POST)/);
+    expect(res.status).toBe(404);
+    expect(res.text).toMatch(/Cannot (GET|POST)/);
+    expect(stages).not.toContain('as-library');
+    expect(stages).toEqual([]);
+  });
+
+  it('POST /token/unused with another client\'s or a consumed credential revokes nothing', async () => {
+    const owner = await tokenPair();
+    const other = await registerClient(app);
+    // Rotate once, so the original refresh token is consumed.
+    const rotated = await refresh(app, { clientId: owner.client.clientId, refreshToken: owner.refreshToken });
+    expect(rotated.status).toBe(200);
+    for (const body of [
+      { grant_type: 'refresh_token', refresh_token: rotated.body.refresh_token, client_id: other.clientId },
+      { grant_type: 'refresh_token', refresh_token: owner.refreshToken, client_id: owner.client.clientId },
+    ]) {
+      const res = await request(app).post('/token/unused').type('form').send(body);
+      expect(res.status).toBe(404);
+      expect(res.text).toMatch(/Cannot POST/);
+    }
+    // The family is intact: the live successor still refreshes.
+    const next = await refresh(app, { clientId: owner.client.clientId, refreshToken: rotated.body.refresh_token as string });
+    expect(next.status).toBe(200);
   });
 });
 

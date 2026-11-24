@@ -82,8 +82,13 @@ import {
   type StageObserver,
 } from '../http/pipeline.js';
 
-/** Requests per client IP per 15 minutes on the YNAB OAuth legs, matching /authorize. */
-export const OAUTH_LEG_RATE_LIMIT = 100;
+/**
+ * Requests per client IP per 15 minutes on the YNAB OAuth legs. A sign-in
+ * takes four requests here (the consent page, start, YNAB's callback,
+ * complete) where 0.4.x took two (start, callback), so the budget is twice
+ * 0.4.x's 100: still 50 sign-ins per IP (#47-4).
+ */
+export const OAUTH_LEG_RATE_LIMIT = 200;
 
 /**
  * Requests per (client_id, IP) per 15 minutes on /token and on /revoke (each
@@ -98,8 +103,12 @@ export const AUTHORIZE_RATE_LIMIT = 100;
 
 /** One AS route. The positions are fixed; routePipeline() puts them in order. */
 interface AsRoute {
-  /** The path prefix it is mounted on (app.use semantics), and its name in the pipeline test. */
+  /** The route's path, and its name in the pipeline test. Mounted on exactly this path (exactRoute()). */
   readonly path: string;
+  /** A subpath pattern also served (the library's resume route under /authorize). */
+  readonly subpath?: string;
+  /** Mount on the path as a prefix instead (/oauth, whose router has routes of its own). */
+  readonly prefix?: boolean;
   /** Rate limits, in order, all ahead of the parser. */
   readonly limiters?: readonly Stage[];
   readonly parser: Stage;
@@ -133,6 +142,23 @@ function oauthShapedParseErrors(parse: express.RequestHandler): express.RequestH
       res.status(status).json({ error: 'invalid_request', error_description: 'Malformed request body' });
     });
   };
+}
+
+/** An interaction uid in the resume route (/authorize/<uid>): the library's 43-character nanoid. */
+const RESUME_UID = '[A-Za-z0-9_-]{43}';
+
+/**
+ * Exactly `path` (case-insensitive and with one optional trailing slash, as
+ * Express and the library both route it), or `path/<subpath>` when given: the
+ * pipeline runs for nothing else under the path, so `/token/introspection` or
+ * `/register/<id>` matches no AS route and gets the app's 404 without running
+ * a stage. Only `path` is the mount (stripped by Express), so a stage sees
+ * `/` for the route itself and `/<subpath>` for the subpath.
+ */
+function exactRoute(path: string, subpath?: string): RegExp {
+  const escaped = path.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
+  const rest = subpath === undefined ? '\\/?$' : `\\/?$|\\/${subpath}\\/?$`;
+  return new RegExp(`^${escaped}(?=${rest})`, 'i');
 }
 
 /** The stages of a route, in the one order every route uses. */
@@ -264,9 +290,9 @@ export function mountAuthorizationServer(
   const methods = (...allowed: string[]): Stage => stage('method-check', methodCheck(allowed));
   const cors = (): Stage => stage('cors-origin', corsOrigin);
 
-  // The YNAB legs get /authorize's limit (100 per 15 minutes), the step right
-  // before them in the same browser flow, so a login that gets past /authorize
-  // isn't then refused here. The callback and complete read storage and call
+  // The YNAB legs get room for as many sign-ins as 0.4.x allowed (50 per 15
+  // minutes, four requests each: OAUTH_LEG_RATE_LIMIT), so a login that gets
+  // past /authorize isn't then refused here. The callback and complete read storage and call
   // YNAB's token endpoint, so they must not be unlimited. Ahead of the parser
   // so a limited request costs no parsing. The client IP comes from req.ip, so
   // TRUST_PROXY must match the proxy hops, or every client behind the proxy
@@ -398,7 +424,8 @@ export function mountAuthorizationServer(
         stage('authorize-guard', authorizeGuard({ issuer, resource })),
       ],
       // The library's resume route: /authorize/<interaction uid>.
-      router: asLibrary(/^\/[A-Za-z0-9_-]{43}\/?$/),
+      subpath: RESUME_UID,
+      router: asLibrary(new RegExp(`^\\/${RESUME_UID}\\/?$`)),
     },
     {
       path: OIDC_ROUTES.token,
@@ -432,6 +459,7 @@ export function mountAuthorizationServer(
     },
     {
       path: '/oauth',
+      prefix: true,
       limiters: [oauthLegLimiter],
       parser: boundedParser(),
       router: stage(
@@ -454,7 +482,12 @@ export function mountAuthorizationServer(
 
   const mounted = routes.map((route) => ({
     route: route.path,
-    stages: mountStages(app, route.path, routePipeline(route), observeStage),
+    stages: mountStages(
+      app,
+      route.prefix === true ? route.path : exactRoute(route.path, route.subpath),
+      routePipeline(route),
+      observeStage
+    ),
   }));
 
   return {

@@ -146,7 +146,10 @@ These steps only work in the browser that saw the consent page. `/authorize`
 sets short-lived signed cookies (`_interaction` scoped to
 `/oauth/interaction/<id>`, `_interaction_resume` scoped to `/authorize/<id>`,
 and `_session`, each with a `.sig` signature; `HttpOnly`, `SameSite=Lax`,
-lifetime `MCP_AUTH_CODE_TTL_SEC`, `Secure` when `PUBLIC_URL` is https). They
+`Secure` when `PUBLIC_URL` is https). They last as long as the sign-in may:
+`MCP_AUTH_CODE_TTL_SEC` or the YNAB callback deadline plus 30 seconds,
+whichever is longer, so at least 630 seconds. A sign-in that runs past the
+deadline still ends with a `server_error` back to the client. They
 are signed with a key derived from `ENCRYPTION_KEY`, so there is no new
 setting. Without them, anyone could start an authorization for their own
 client and send a victim the `start` link, skipping this server's consent
@@ -454,7 +457,7 @@ is read, so a request past them costs no parsing.
 | `/authorize` | 100 per 15 minutes | (`client_id`, address) |
 | `/token` | 50 per 15 minutes | (`client_id`, address) |
 | `/revoke` | 50 per 15 minutes | (`client_id`, address) |
-| `/oauth/*` (YNAB login legs) | 100 per 15 minutes | address |
+| `/oauth/*` (YNAB login legs) | 200 per 15 minutes (a sign-in takes 4) | address |
 | `/register` | `REGISTER_RATE_LIMIT_PER_IP` per hour (default 100) | address |
 | `/register` | `REGISTER_RATE_LIMIT_PER_HOST` per hour (default 20) | each redirect URI host |
 

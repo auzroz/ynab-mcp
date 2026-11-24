@@ -42,6 +42,7 @@
  */
 
 import { errors } from 'oidc-provider';
+import { z } from 'zod';
 import type { Adapter, AdapterFactory, AdapterPayload } from 'oidc-provider';
 import type { LibraryKeyDeriver, TokenKind } from '../token-hash.js';
 import { isClientSecretHash, hashClientSecret } from '../token-hash.js';
@@ -77,7 +78,13 @@ export const ADAPTER_MODELS: readonly string[] = Object.keys(SPECS);
  * nanoids; any printable ASCII up to 255 characters is looked up.
  */
 const LIBRARY_ID = /^[A-Za-z0-9_-]{43}$/;
-const CLIENT_ID = /^[\x21-\x7e]{1,255}$/;
+
+/**
+ * A client id this server looks up: printable ASCII, 1 to 255 characters
+ * (0.4.x UUIDs and library nanoids both pass). Shared with the AS stages'
+ * client lookup (./clients.ts), so the two can't drift.
+ */
+export const CLIENT_ID_SCHEMA = z.string().regex(/^[\x21-\x7e]{1,255}$/);
 
 /**
  * An Interaction's `returnTo` URL carries the interaction's own id (a
@@ -131,7 +138,7 @@ export class OidcAdapter implements Adapter {
     const { kind, model } = this.spec;
     if (kind !== undefined) return this.deps.keys.libraryStorageKey(kind, id);
     if (typeof id !== 'string') return undefined;
-    if (model === 'Client') return CLIENT_ID.test(id) ? plainRowKey('Client', id) : undefined;
+    if (model === 'Client') return CLIENT_ID_SCHEMA.safeParse(id).success ? plainRowKey('Client', id) : undefined;
     return LIBRARY_ID.test(id) ? plainRowKey('Grant', id) : undefined;
   }
 

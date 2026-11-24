@@ -14,6 +14,7 @@
 import type Provider from 'oidc-provider';
 import { errors } from 'oidc-provider';
 import type { ClientLookup, ClientMetadata } from '../client-auth.js';
+import { CLIENT_ID_SCHEMA } from './adapter.js';
 
 /**
  * OIDC fields the library fills in on every client with its own defaults.
@@ -25,8 +26,11 @@ const LIBRARY_DEFAULTS = ['id_token_signed_response_alg', 'require_auth_time', '
 export function libraryClients(provider: Provider): ClientLookup {
   return {
     async getClient(clientId: string): Promise<ClientMetadata | undefined> {
+      // The adapter's own rule: an id it would never look up is unknown here too, without a read.
+      const id = CLIENT_ID_SCHEMA.safeParse(clientId);
+      if (!id.success) return undefined;
       try {
-        const client = await provider.Client.find(clientId);
+        const client = await provider.Client.find(id.data);
         if (!client) return undefined;
         const metadata: Record<string, unknown> = { ...client.metadata() };
         for (const field of LIBRARY_DEFAULTS) delete metadata[field];
