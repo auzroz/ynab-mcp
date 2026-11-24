@@ -38,6 +38,7 @@ import {
   type McpServerFactory,
 } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
+import { drainRequest, refuseOversizedBody } from './http/refuse-oversized.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
 import { createServerForRequest, type RequestContext, type UserContext } from './server.js';
 import { UserRegistry, headerUserKey } from './services/user-registry.js';
@@ -108,6 +109,10 @@ export function toolDeadlineMarginMs(requestTimeoutMs: number): number {
 }
 
 type JsonRpcId = string | number | null;
+
+function sendPayloadTooLarge(res: Response): void {
+  res.status(413).json(jsonRpcError(-32600, 'Invalid Request: payload too large'));
+}
 
 function jsonRpcError(code: number, message: string, id: JsonRpcId = null): unknown {
   return { jsonrpc: '2.0', error: { code, message }, id };
@@ -577,7 +582,8 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   mcpStages.push(
     stage('request-ceiling', requestCeiling),
     // Inside the ceiling, so a slow upload hits the deadline (D12).
-    stage('json-512kb', live(express.json({ limit: MAX_JSON_BODY }))),
+    // The size pre-check answers 413 on Content-Length and drains the upload (#137).
+    stage('json-512kb', live(refuseOversizedBody(sendPayloadTooLarge)), live(express.json({ limit: MAX_JSON_BODY }))),
     stage('reject-batch', live(rejectBatch)),
     oauth
       ? stage(
@@ -642,7 +648,9 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     }
     const type = (err as { type?: string } | null)?.type;
     if (type === 'entity.too.large') {
-      res.status(413).json(jsonRpcError(-32600, 'Invalid Request: payload too large'));
+      sendPayloadTooLarge(res);
+      // A body the parser stopped reading: discard the rest, bounded.
+      drainRequest(_req);
     } else if (type === 'entity.parse.failed') {
       res.status(400).json(jsonRpcError(-32700, 'Parse error: invalid JSON'));
     } else if (typeof (err as { status?: unknown } | null)?.status === 'number' && (err as { status: number }).status < 500) {
