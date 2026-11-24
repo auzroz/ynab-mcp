@@ -171,7 +171,14 @@ describe('off by default', () => {
     const token = await request(app)
       .post('/token')
       .type('form')
-      .send({ grant_type: 'authorization_code', code: 'x', code_verifier: 'y', client_id: clientId, redirect_uri: CALLBACK });
+      .send({
+        grant_type: 'authorization_code',
+        code: 'x',
+        code_verifier: 'y',
+        client_id: clientId,
+        redirect_uri: CALLBACK,
+        resource: RESOURCE,
+      });
     expect(token.status).toBe(400);
     expect(token.body.error).toBe('invalid_client');
     expect(hitsOf('off')).toBe(0);
@@ -348,7 +355,15 @@ describe('MCP_CLIENT_ID_METADATA_DOCUMENTS=true', () => {
     const res = await request(app)
       .post('/token')
       .type('form')
-      .send({ grant_type: 'authorization_code', code: 'x'.repeat(43), code_verifier: 'y'.repeat(43), client_id: clientId, redirect_uri: CALLBACK });
+      .send({
+        grant_type: 'authorization_code',
+        code: 'x'.repeat(43),
+        code_verifier: 'y'.repeat(43),
+        client_id: clientId,
+        redirect_uri: CALLBACK,
+        // A metadata-document client counts as 0.5.0+ (#64a), so it sends `resource`.
+        resource: RESOURCE,
+      });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_grant');
     expect(hitsOf('tokenonly')).toBe(1);
@@ -378,7 +393,8 @@ describe('MCP_CLIENT_ID_METADATA_DOCUMENTS=true', () => {
 
     // A caller that has spent its fetch budget gets no refetch on /oauth: the charge is its own.
     for (let i = 0; i < FETCH_RATE_LIMIT; i++) {
-      expect((await from('203.0.113.50', `/authorize?client_id=${encodeURIComponent(clientIdFor(`spent${i}`))}`)).status).toBe(400);
+      const spent = authorizeUrl({ clientId: clientIdFor(`spent${i}`), challenge, redirectUri: CALLBACK, resource: RESOURCE });
+      expect((await from('203.0.113.50', spent)).status).toBe(400);
     }
     const refused = await from('203.0.113.50', consentPath, jar);
     expect(refused.status).not.toBe(200);
