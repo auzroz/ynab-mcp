@@ -256,7 +256,9 @@ fetch is our own, not the library's:
   resolves to is private, loopback, link-local (cloud metadata endpoints such
   as `169.254.169.254` included), CGNAT, multicast, unspecified or otherwise
   reserved, the fetch is refused. That covers IPv4, IPv6 and IPv4-mapped IPv6.
-  An IP-address URL is checked the same way.
+  An IP-address URL is checked the same way. NAT64 addresses (`64:ff9b::/96`)
+  are refused too, so a server that reaches IPv4 only through NAT64/DNS64
+  can't fetch metadata documents.
 - **No DNS rebinding.** The connection goes to the address that was checked,
   with the URL's host as `Host` and TLS server name, and the peer address is
   checked again once connected. A DNS answer that changes in between can't

@@ -106,12 +106,28 @@ describe('MCP_TRUST_LOOPBACK_REDIRECTS', () => {
 });
 
 describe('MCP_CLIENT_ID_METADATA_DOCUMENTS (#46)', () => {
-  it('is off by default and a strict boolean', () => {
+  it('is off when unset or empty, and reads the accepted words', () => {
     expect(loadHttpConfig(BASE).clientIdMetadataDocuments).toBe(false);
+    expect(loadHttpConfig({ ...BASE, MCP_CLIENT_ID_METADATA_DOCUMENTS: '' }).clientIdMetadataDocuments).toBe(false);
     expect(loadHttpConfig({ ...BASE, MCP_CLIENT_ID_METADATA_DOCUMENTS: 'true' }).clientIdMetadataDocuments).toBe(true);
+    expect(loadHttpConfig({ ...BASE, MCP_CLIENT_ID_METADATA_DOCUMENTS: '1' }).clientIdMetadataDocuments).toBe(true);
     expect(loadHttpConfig({ ...BASE, MCP_CLIENT_ID_METADATA_DOCUMENTS: 'no' }).clientIdMetadataDocuments).toBe(false);
-    expect(() => loadHttpConfig({ ...BASE, MCP_CLIENT_ID_METADATA_DOCUMENTS: 'ture' })).toThrow(
+  });
+
+  it.each(['ture', 'enabled', 'on', 'true ', '2'])('refuses to start on %j', (value) => {
+    expect(() => loadHttpConfig({ ...BASE, MCP_CLIENT_ID_METADATA_DOCUMENTS: value })).toThrow(
       /MCP_CLIENT_ID_METADATA_DOCUMENTS/
     );
+  });
+
+  it('names the variable, never the value', () => {
+    let message = '';
+    try {
+      loadHttpConfig({ ...BASE, MCP_CLIENT_ID_METADATA_DOCUMENTS: 'tru3-secretish' });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/MCP_CLIENT_ID_METADATA_DOCUMENTS/);
+    expect(message).not.toContain('tru3-secretish');
   });
 });

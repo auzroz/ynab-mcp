@@ -24,8 +24,17 @@ import { buildHttpApp, type HttpApp } from '../../src/http.js';
 import { exchangeCode, getYnabUserId } from '../../src/auth/ynab-oauth.js';
 import { FETCH_RATE_LIMIT, type MetadataTransport } from '../../src/auth/client-id-metadata.js';
 import { makeHttpConfig } from './helpers/http-config.js';
+import type { HttpConfig } from '../../src/config/environment.js';
 import { TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
-import { CookieJar, authorizeUrl, browserFlow, exchangeCode as exchangeMcpCode, pkcePair, refresh } from './helpers/oidc-app.js';
+import {
+  CookieJar,
+  authorizeUrl,
+  browserFlow,
+  exchangeCode as exchangeMcpCode,
+  local,
+  pkcePair,
+  refresh,
+} from './helpers/oidc-app.js';
 
 const PUBLIC_URL = 'https://mcp.example.com';
 const RESOURCE = `${PUBLIC_URL}/mcp`;
@@ -70,7 +79,11 @@ function localTransport(overrides: MetadataTransport = {}): MetadataTransport {
 
 let handle: HttpApp | undefined;
 
-async function makeApp(enabled: boolean, transport: MetadataTransport = localTransport()): Promise<Express> {
+async function makeApp(
+  enabled: boolean,
+  transport: MetadataTransport = localTransport(),
+  overrides: Partial<HttpConfig> = {}
+): Promise<Express> {
   handle = await buildHttpApp(
     makeHttpConfig({
       publicUrl: PUBLIC_URL,
@@ -81,6 +94,7 @@ async function makeApp(enabled: boolean, transport: MetadataTransport = localTra
       encryptionKey: randomBytes(32).toString('base64'),
       tokenPepper: TEST_TOKEN_PEPPER,
       clientIdMetadataDocuments: enabled,
+      ...overrides,
     }),
     { clientIdMetadataTransport: transport }
   );
@@ -338,6 +352,43 @@ describe('MCP_CLIENT_ID_METADATA_DOCUMENTS=true', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_grant');
     expect(hitsOf('tokenonly')).toBe(1);
+  });
+
+  it('/oauth: a refetch for the consent page is charged to the caller, not a shared bucket', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // One proxy hop, so X-Forwarded-For names the caller.
+    const app = await makeApp(true, localTransport(), { trustProxy: 1 });
+    const from = (ip: string, path: string, jar?: CookieJar): request.Test => {
+      const req = request(app).get(local(path)).set('X-Forwarded-For', ip);
+      return jar ? req.set('Cookie', jar.header(new URL(path, PUBLIC_URL).pathname)) : req;
+    };
+    const clientId = validDocument('evicted');
+
+    // A browser starts an authorization: the document is fetched (and charged) once.
+    const jar = new CookieJar();
+    const { challenge } = pkcePair();
+    const auth = await from('198.51.100.1', authorizeUrl({ clientId, challenge, redirectUri: CALLBACK, resource: RESOURCE }));
+    expect(auth.status).toBe(303);
+    jar.take(auth);
+    const consentPath = auth.headers['location'] as string;
+    expect(hitsOf('evicted')).toBe(1);
+
+    // The library's copy expires (5 minutes, the floor) while the interaction is still live.
+    vi.setSystemTime(Date.now() + 301_000);
+
+    // A caller that has spent its fetch budget gets no refetch on /oauth: the charge is its own.
+    for (let i = 0; i < FETCH_RATE_LIMIT; i++) {
+      expect((await from('203.0.113.50', `/authorize?client_id=${encodeURIComponent(clientIdFor(`spent${i}`))}`)).status).toBe(400);
+    }
+    const refused = await from('203.0.113.50', consentPath, jar);
+    expect(refused.status).not.toBe(200);
+    expect(hitsOf('evicted')).toBe(1);
+
+    // Another caller with budget left: the consent page refetches the document, charged to it.
+    const consent = await from('192.0.2.77', consentPath, jar);
+    expect(consent.status).toBe(200);
+    expect(consent.text).toContain('Metadata Client');
+    expect(hitsOf('evicted')).toBe(2);
   });
 
   describe('the cache', () => {

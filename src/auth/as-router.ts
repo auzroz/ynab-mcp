@@ -21,7 +21,8 @@
  *                      (authorize-guard); on /token and /revoke the route
  *                      limiter, cimd-context and client authentication (#52,
  *                      D5), and on /token grant-guard (D6); on /register the
- *                      DCR validator and then the per-redirect-host limit.
+ *                      DCR validator and then the per-redirect-host limit;
+ *                      on /oauth cimd-context alone.
  *                      cimd-context (#46) records who a client lookup is for,
  *                      so a Client ID Metadata Document fetch it causes is
  *                      charged to that IP (client-id-metadata.ts); it answers
@@ -419,6 +420,7 @@ export function mountAuthorizationServer(
   const clientAuth = (): Stage => stage('client-auth', clientAuthentication(clients));
   // Ahead of the stages that look a client up (authorize-validation, client-auth), which is where a
   // metadata document is first fetched; the library's own lookup after them runs inside it too.
+  // Also on /oauth, whose interaction router looks the client up for the consent page.
   const cimdContext = (): Stage =>
     stage('cimd-context', clientIdMetadata?.requesterContext ?? ((_req, _res, next) => next()));
 
@@ -485,6 +487,9 @@ export function mountAuthorizationServer(
       prefix: true,
       limiters: [oauthLegLimiter],
       parser: boundedParser(),
+      // The consent page and cancel look the client up again (interaction.ts): a refetch of an
+      // evicted or expired document is charged to the caller's IP, not to a shared bucket.
+      slots: [cimdContext()],
       router: stage(
         'ynab-federation',
         interactionRouter({

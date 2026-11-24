@@ -98,7 +98,7 @@ const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
       'as-library',
     ],
   },
-  { route: '/oauth', stages: ['host-validation', 'oauth-leg-limiter', 'bounded-parser', 'ynab-federation'] },
+  { route: '/oauth', stages: ['host-validation', 'oauth-leg-limiter', 'bounded-parser', 'cimd-context', 'ynab-federation'] },
 ];
 const stagesOf = (route: string): readonly string[] => EXPECTED.find((e) => e.route === route)!.stages;
 

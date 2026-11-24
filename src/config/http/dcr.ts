@@ -153,7 +153,8 @@ export const loadDcrSettings: HttpLoader<DcrSettings> = ({ env, problems }) => (
         DEFAULT_CLIENT_ID_METADATA_DOCUMENTS,
         'MCP_CLIENT_ID_METADATA_DOCUMENTS'
       ),
-    // On a bad value: off (fail closed).
+    // A bad value (`ture`) is a recorded problem, so loadHttpConfig refuses to start and names
+    // only the variable. `false` is the fallback the other settings' checks see meanwhile.
     false
   ),
 });
