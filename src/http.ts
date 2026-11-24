@@ -48,6 +48,7 @@ import { deprecatedSessionSettingsWarning } from './config/http/limits.js';
 import { Encryptor } from './crypto.js';
 import { RETIRE_GRACE_MS, assertGraceOutlastsWrites, prepareEncryptionKeys } from './auth/rekey-job.js';
 import { createStorage } from './storage/index.js';
+import { retentionPolicyFromSettings } from './config/http/retention.js';
 import { TokenHasher } from './auth/token-hash.js';
 import type { GrantedScope, Storage } from './storage/types.js';
 import { mountAuthorizationServer, type AuthorizationServer } from './auth/as-router.js';
@@ -131,15 +132,16 @@ function responseDone(res: Response): boolean {
  * tokens (#52); it must be the instance the authorization server uses.
  */
 async function buildStorage(config: HttpConfig, tokenKeys: TokenHasher): ReturnType<typeof createStorage> {
+  const retention = retentionPolicyFromSettings(config);
   switch (config.storageDriver) {
     case 'sqlite':
       if (!config.sqlitePath) throw new Error('SQLITE_PATH is required for the sqlite storage driver');
-      return createStorage({ driver: 'sqlite', path: config.sqlitePath, tokenKeys });
+      return createStorage({ driver: 'sqlite', path: config.sqlitePath, tokenKeys, retention });
     case 'postgres':
       if (!config.databaseUrl) throw new Error('DATABASE_URL is required for the postgres storage driver');
-      return createStorage({ driver: 'postgres', connectionString: config.databaseUrl, tokenKeys });
+      return createStorage({ driver: 'postgres', connectionString: config.databaseUrl, tokenKeys, retention });
     default:
-      return createStorage({ driver: 'memory' });
+      return createStorage({ driver: 'memory', retention });
   }
 }
 
