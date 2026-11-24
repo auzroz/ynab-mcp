@@ -253,6 +253,11 @@ callback type:
   A private-use callback can't go on `MCP_VERIFIED_REDIRECT_URIS` (entries
   are `https://` or loopback `http://`), so an authorization error for such a
   client is always shown on your server's page rather than redirected.
+  That covers the initial `/authorize` request only. When the user cancels
+  the consent page, or YNAB denies access, the browser is redirected back to
+  the client's registered callback with `access_denied` through the resume
+  route, for any registered callback, including private-use and unverified
+  `https://` ones. A client must handle `access_denied` there.
 
 Rules for the two lists:
 
@@ -760,7 +765,13 @@ changelog has the full list):
   them.
 - **Header mode with `YNAB_ACCESS_TOKEN`** refuses a non-loopback bind unless
   `MCP_ALLOW_ANONYMOUS_FALLBACK=true`. A Docker deployment binds every
-  interface, so it needs that setting.
+  interface (`MCP_BIND_HOST` unset), so it needs that setting or a loopback
+  `MCP_BIND_HOST`. **Warning:** with the fallback on, anyone who can reach the
+  server without an `X-YNAB-Token` header acts as the owner of
+  `YNAB_ACCESS_TOKEN`: they can read the whole budget, and write if writes are
+  enabled. Enable it only behind proxy authentication or on a private
+  network; otherwise leave `YNAB_ACCESS_TOKEN` out and have each client send
+  its own `X-YNAB-Token`.
 - **Remove sticky sessions** at your proxy: `/mcp` is stateless. The
   `MCP_MAX_SESSIONS*` settings have no effect (see "Requests, limits and
   timeouts").
@@ -1021,8 +1032,9 @@ any MCP client that supports the `prompts` capability:
 - MCP tokens, authorization codes and `state` are stored only as keyed hashes,
   and DCR client secrets only as SHA-256 hashes, so a copy of the database holds
   no usable MCP credential. A token or code that isn't 43 base64url characters
-  is refused without a database read, and so is a `state` that isn't a
-  correctly tagged `ymcp1_` value. `/token` and
+  is refused before its credential row is read (on `/token`, client
+  authentication reads the client record first), and so is a `state` that
+  isn't a correctly tagged `ymcp1_` value. `/token` and
   `/revoke` verify client secrets behind a per-(client_id, address) limit (50
   per 15 minutes per route); see "Client addresses and rate limits".
 - Access is read-only or read-write **per connection**, per the consent choice

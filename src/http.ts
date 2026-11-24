@@ -220,9 +220,11 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   //    by pod IP). That includes the OAuth endpoints and well-known metadata.
   //  - Origin is checked on /mcp only (its pipeline's origin-validation stage).
   //    The OAuth endpoints carry no ambient credentials (PKCE / client
-  //    authentication) and oidc-provider serves them, and the well-known
-  //    metadata, with permissive CORS on purpose so browser-based MCP clients
-  //    can discover and register; /mcp is the credentialed, state-changing
+  //    authentication) and oidc-provider serves them, with permissive CORS on
+  //    purpose so browser-based MCP clients can discover and register. The
+  //    protected-resource metadata (/.well-known/oauth-protected-resource)
+  //    comes from our `metadata` stage (src/auth/metadata-document.ts), which
+  //    sets its own any-origin CORS. /mcp is the credentialed, state-changing
   //    surface. The cookies (oidc-provider's signed, SameSite=Lax
   //    `_interaction`, `_interaction_resume` and `_session`, which the
   //    federation legs require) only prove which browser saw the consent
