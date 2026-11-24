@@ -1020,8 +1020,9 @@ any MCP client that supports the `prompts` capability:
   the server refuses to start because the derived pepper would change).
 - MCP tokens, authorization codes and `state` are stored only as keyed hashes,
   and DCR client secrets only as SHA-256 hashes, so a copy of the database holds
-  no usable MCP credential. A credential that isn't 43 base64url characters is
-  refused without a database read. `/token` and
+  no usable MCP credential. A token or code that isn't 43 base64url characters
+  is refused without a database read, and so is a `state` that isn't a
+  correctly tagged `ymcp1_` value. `/token` and
   `/revoke` verify client secrets behind a per-(client_id, address) limit (50
   per 15 minutes per route); see "Client addresses and rate limits".
 - Access is read-only or read-write **per connection**, per the consent choice

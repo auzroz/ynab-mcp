@@ -80,23 +80,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Numeric settings are bounds-checked: for example `RATE_LIMIT_PER_HOUR` is
     1 to 195 in HTTP mode (stdio still allows 200).
   - `/health` returns only `{"status":"ok"}`.
+  - An `MCP_TRANSPORT` other than `stdio` or `http` refuses to start (0.4.x
+    ran stdio for any other value).
 - `YNAB_OAUTH_ALLOW_WRITE` now defaults to `false` and is checked on every
   request (#56, #68). Unless it is `true`, no connection can write, including
   one granted read-write on 0.4.x (the default was `true`). To keep writes,
   set `YNAB_OAUTH_ALLOW_WRITE=true` (with `YNAB_READ_ONLY=false`).
-- Stored MCP tokens, codes and client secrets are hashed (#52, #68). Back up
-  the database first: rolling back to 0.4.x then means every user
-  reconnects. The hashes are keyed by `TOKEN_PEPPER`, or by a pepper derived
-  from `ENCRYPTION_KEY` when it is unset, and the database records the
-  pepper's fingerprint at the first 0.5.0 start. After that, a different
-  `TOKEN_PEPPER` (or a new `ENCRYPTION_KEY` with no `TOKEN_PEPPER`) refuses to
-  start. Before any key change, pin `TOKEN_PEPPER` (see "Rotating
-  ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md).
+- Stored MCP tokens, codes, `state` and client secrets are hashed (#52, #68).
+  The token, code and `state` hashes are keyed by `TOKEN_PEPPER`, or by a
+  pepper derived from `ENCRYPTION_KEY` when it is unset, and the database
+  records the pepper's fingerprint at the first 0.5.0 start. After that, a
+  different `TOKEN_PEPPER` (or a new `ENCRYPTION_KEY` with no `TOKEN_PEPPER`)
+  refuses to start. Before any key change, pin `TOKEN_PEPPER` (see "Rotating
+  ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md). Rolling back means restoring the
+  pre-upgrade backup (see Upgrading from 0.4.x).
 - MCP refresh tokens expire after 30 days without use or 90 days after the
   sign-in that issued them, whichever comes first (#54, #68). A client then
-  sends the user through sign-in again. The windows are fixed in 0.5.0 (no
-  setting), and tokens issued before the upgrade stop working at it anyway
-  (see the authorization-server note above).
+  sends the user through sign-in again. There is nothing to configure, and
+  tokens issued before the upgrade stop working at it anyway (see the
+  authorization-server note above).
 - Client registration and `/authorize` follow the server's own rules (#55).
   Before upgrading, check that your clients fit them:
   - `/register` refuses a redirect URI that is plain `http://` to a host other
@@ -123,7 +125,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `retry_after_seconds` instead of queueing (#58). A call may still wait up to
   `RATE_LIMIT_MAX_WAIT_MS` (default 2000; `0` never waits) for a token, and
   only one call waits at a time. The error `type` is now `rate_limited` (was
-  `rate_limit`). This applies to stdio too.
+  `rate_limit`): anything that matches on the old value must change. This
+  applies to stdio too.
 - The `ynab-mcp-server` command is removed (#43); use `ynab-mcp`. That name
   belongs to an unrelated npm package. `npx -y ynab-mcp` is unchanged.
 
@@ -267,13 +270,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run outside an approved release can't push an image (#62). The
   image's attestation remains its proof of origin.
 
-- MCP access tokens, refresh tokens, authorization codes, sign-in `state` and
-  client secrets are stored only as keyed hashes (#52). A copy of the database
-  holds no usable MCP credential, and a credential that isn't 43 base64url
-  characters is refused without a database read. `TOKEN_PEPPER` is optional (32
-  bytes, base64 or hex): when unset the pepper is derived from `ENCRYPTION_KEY`.
-  A change to the pepper refuses to start (see Breaking). `TOKEN_PEPPER` is
-  redacted in logs. 0.4.x rows are converted on the first start.
+- MCP access tokens, refresh tokens, authorization codes and sign-in `state`
+  are stored only as keyed hashes, and client secrets as SHA-256 hashes (#52).
+  A copy of the database holds no usable MCP credential. A token or code that
+  isn't 43 base64url characters is refused without a database read, and so is
+  a `state` that isn't a correctly tagged `ymcp1_` value. `TOKEN_PEPPER` is
+  optional (32 bytes, base64 or hex): when unset the pepper is derived from
+  `ENCRYPTION_KEY`. A change to the pepper refuses to start (see Breaking).
+  `TOKEN_PEPPER` is redacted in logs. 0.4.x rows are converted on the first
+  start.
 - Replaying an authorization code revokes the tokens issued for it and every
   refresh since (#42, RFC 9700). A replayed, an unknown and an expired code get
   the same `invalid_grant` answer. The record of spent codes is in the
@@ -290,9 +295,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Releases publish only from a `v*.*.*` tag on a commit already on `main` or a
   `release/*` branch, after the tests, the build, `npm audit` and both image
   builds pass (#62). Each publish job waits for approval on the `production`
-  environment, and only the publish jobs hold an OIDC identity. The publish
-  jobs run no install scripts, and the npm job runs no checkout and no install.
-  Releases include `SHA256SUMS`, build provenance attestations for every
+  environment, and only the publish jobs and the opt-in MCP Registry job hold
+  an OIDC identity. The release and Docker builds install with
+  `--ignore-scripts`, and the npm publish job runs no checkout and no
+  install. Releases include `SHA256SUMS`, build provenance attestations for every
   release file and the image, and SPDX SBOM attestations for the npm tarball
   and the image's npm dependencies. Verify them with `gh attestation verify`.
 

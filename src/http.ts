@@ -579,8 +579,8 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
       ? stage(
           'bearer',
           // v2's middleware answers 401 with the challenge only for v2's
-          // OAuthError: the verifier (src/auth/oidc/verifier.ts) throws that for
-          // every refused token (ADR-0001 D14). expectedResource makes the SDK
+          // OAuthError: the verifier (src/auth/oidc/verifier.ts) throws a
+          // subclass of it for every refused token (ADR-0001 D14). expectedResource makes the SDK
           // refuse (401 invalid_token) any token whose audience is not this
           // resource; the verifier checks the audience too.
           live(
