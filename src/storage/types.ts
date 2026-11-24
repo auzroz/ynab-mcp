@@ -561,7 +561,8 @@ export type OAuthModel =
   | 'Interaction'
   | 'Grant'
   | 'Client'
-  | 'SignIn';
+  | 'SignIn'
+  | 'RefreshGrace';
 
 /** One `oauth_rows` row as the adapter writes it. */
 export interface OAuthRowWrite {
@@ -569,7 +570,8 @@ export interface OAuthRowWrite {
    * The primary key: `h1.` + HMAC of the row's kind and id for every model
    * whose id is a credential (tokens, codes, sessions, interactions,
    * registration tokens), `Grant:<id>`, `Client:<id>` or `SignIn:<grant id>`
-   * for the others (src/storage/oauth-rows.ts).
+   * for the others (src/storage/oauth-rows.ts), and `RefreshGrace:<grant id>`
+   * for #64a's refresh grace record (src/auth/refresh-grace.ts).
    */
   key: string;
   model: OAuthModel;
@@ -646,7 +648,8 @@ export interface OAuthRowStore {
    * replace the row only while it has `row.model` and exactly the payload
    * `expected`. Returns whether it wrote; of two concurrent calls expecting
    * the same thing, exactly one does. The interaction's YNAB state uses it
-   * (src/auth/oidc/interaction.ts).
+   * (src/auth/oidc/interaction.ts), and so does #64a's refresh grace record
+   * (`RefreshGrace`, src/auth/refresh-grace.ts).
    */
   compareAndSetOAuthRow(expected: string | undefined, row: OAuthRowWrite): Promise<boolean>;
   /**

@@ -19,8 +19,9 @@
  *                      route-limiter, the bounds (authorize-validation) and
  *                      the open-redirect guard (authorize-guard); on /token
  *                      and /revoke the route limiter and client
- *                      authentication (#52, D5), and on /token grant-guard
- *                      (D6) and resource-required (#64a); on /register the
+ *                      authentication (#52, D5), and on /token
+ *                      refresh-guard (#64a), grant-guard (D6) and
+ *                      resource-required (#64a); on /register the
  *                      DCR validator and then the
  *                      per-redirect-host limit
  *   router             what answers: the library (as-library, D1), the
@@ -32,9 +33,10 @@
  * only. tests/unit/http-as-pipeline.test.ts asserts each route's exact stage
  * list (gate G21), so a change to a pipeline changes that test on purpose.
  *
- * Two pieces of the guard can't be stages, because they act inside the
- * library: the provider's normalizer (provider.ts: D7, the pinned origin) and
- * authorize-guard's redirect net (`provider.use`, see authorize-guard.ts).
+ * Three pieces of the guard can't be stages, because they act inside the
+ * library: the provider's normalizer (provider.ts: D7, the pinned origin),
+ * authorize-guard's redirect net (`provider.use`, see authorize-guard.ts) and
+ * #64a's refresh grace recorder (`provider.use`, see refresh-grace.ts).
  *
  * mountAuthorizationServer() runs after Host/Origin validation and before the
  * app's global JSON parser, so these stages decide what an AS request costs
@@ -60,6 +62,7 @@ import { authorizeValidation } from './authorize-validation.js';
 import { authorizeGuard, authorizeRedirectGuard } from './authorize-guard.js';
 import { grantGuard } from './grant-guard.js';
 import { resourceRequired } from './resource-required.js';
+import { refreshGraceRecorder, refreshGuard, successorFirstUse } from './refresh-grace.js';
 import { methodCheck } from './method-check.js';
 import { answerPreflight, metadataDocument } from './metadata-document.js';
 import { protectedResourceMetadataUrl } from './resource.js';
@@ -242,6 +245,8 @@ export function mountAuthorizationServer(
     authCodeTtlSec: config.authCodeTtlSec,
   });
   const { provider, issuer, resource } = oidc;
+  // #64a: every successful rotation's response is sealed and stored for refresh-guard (refresh-grace.ts).
+  provider.use(refreshGraceRecorder({ store: storage, keys: tokenHasher, resource }));
   // authorize-guard's fail-closed net, inside the library (see authorize-guard.ts).
   provider.use(
     authorizeRedirectGuard({
@@ -441,6 +446,8 @@ export function mountAuthorizationServer(
         methods('POST'),
         routeLimiter('token'),
         clientAuth(),
+        // #64a: an identical retry of a refresh inside 60 s gets its unused successor pair again.
+        stage('refresh-guard', refreshGuard({ store: storage, keys: tokenHasher, resource })),
         stage('grant-guard', grantGuard({ provider, store: storage })),
         // #64a: clients registered on 0.5.0 or later name the resource (after grant-guard, so a replay still revokes).
         stage('resource-required', resourceRequired({ requireResource: config.requireResource })),
@@ -498,7 +505,11 @@ export function mountAuthorizationServer(
   }));
 
   return {
-    provider: createAccessTokenVerifier({ provider, resource }),
+    provider: createAccessTokenVerifier({
+      provider,
+      resource,
+      firstUse: successorFirstUse({ store: storage, keys: tokenHasher }),
+    }),
     oidc: provider,
     resourceServerUrl,
     resourceMetadataUrl,

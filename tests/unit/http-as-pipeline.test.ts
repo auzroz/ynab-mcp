@@ -65,6 +65,7 @@ const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
       'method-check',
       'route-limiter',
       'client-auth',
+      'refresh-guard',
       'grant-guard',
       'resource-required',
       'as-library',

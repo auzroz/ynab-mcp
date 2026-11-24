@@ -55,8 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each refresh (#64). Without it `/authorize` answers `invalid_target` and
   `/token` answers `400 invalid_target`, without spending the code or refresh
   token. Clients registered before 0.5.0, which the upgrade converts, keep
-  working without it, and so do their refreshes. Current MCP clients,
-  including the claude.ai connector, already send it. **Clients:** send
+  working without it, and so do their refreshes. MCP clients that follow the
+  MCP authorization spec already send it. **Clients:** send
   `resource` (this server's MCP endpoint URL) on every authorization and token
   request. **Operators:** if a newly registered client can't send it yet, set
   `MCP_REQUIRE_RESOURCE=false` until it can. That setting is deprecated and is
@@ -123,6 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A refresh whose response was lost can be retried (#64, OAUTH-15). An
+  identical refresh from the same client within 60 seconds, before the new
+  pair is used, gets the same new pair back; before, it counted as refresh
+  token reuse and revoked the connection, so the user had to sign in again.
+  A retry after 60 seconds, from another client, with another `scope` or
+  `resource`, or after the new pair was used still revokes the connection.
+  The record is kept in the database, so it works across replicas, encrypted
+  under a key that needs the old refresh token (never stored), and is swept
+  after the 60 seconds. No migration and no setting.
 - Stored YNAB refresh tokens are bound to their user and column, and carry a
   key id (#57). The new format is `v2.<kid>.<iv>.<tag>.<ct>`, with AAD
   `ynab-mcp|<column>|v2|<user id>`, so a ciphertext copied into another user's

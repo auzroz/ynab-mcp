@@ -26,6 +26,7 @@ export const OAUTH_MODELS: ReadonlySet<OAuthModel> = new Set<OAuthModel>([
   'Grant',
   'Client',
   'SignIn',
+  'RefreshGrace',
 ]);
 
 /**
@@ -43,9 +44,12 @@ export const GRANT_TOKEN_MODELS: ReadonlySet<OAuthModel> = new Set<OAuthModel>([
 export const CONSUMABLE_MODELS: ReadonlySet<OAuthModel> = new Set<OAuthModel>(['RefreshToken', 'AuthorizationCode']);
 
 /** The models keyed by their plain id. */
-export type PlainKeyModel = 'Grant' | 'Client' | 'SignIn';
+export type PlainKeyModel = 'Grant' | 'Client' | 'SignIn' | 'RefreshGrace';
 
-/** The key of a grant (by its id), a client (by its client_id) or a staged sign-in (by its grant's id). */
+/**
+ * The key of a grant (by its id), a client (by its client_id), a staged
+ * sign-in or #64a's refresh grace record (each by its grant's id).
+ */
 export function plainRowKey(model: PlainKeyModel, id: string): string {
   return `${model}:${id}`;
 }

@@ -417,8 +417,8 @@ on every `/token` request (the code exchange and each refresh). Without it,
 `/authorize` answers `invalid_target` (redirected to a verified client, shown
 on this server's page for any other) and `/token` answers
 `400 invalid_target`; the code or refresh token is not spent, so the client
-can retry with the parameter. Current MCP clients, including the claude.ai
-connector, send it. Clients registered before 0.5.0 (those the upgrade
+can retry with the parameter. MCP clients that follow the MCP authorization
+spec send it. Clients registered before 0.5.0 (those the upgrade
 converted) keep working without it. If a newly registered client can't send
 it yet, set `MCP_REQUIRE_RESOURCE=false` until it can; that turns the
 requirement off for every client. The setting is deprecated and goes away in
@@ -437,12 +437,28 @@ again, the server treats it as stolen: it revokes the whole family (every access
 and refresh token of that connection, effective immediately) and answers
 `invalid_grant`, exactly as for an unknown token, so the user must reconnect
 that client. The same happens when a refresh token is presented by a client it
-wasn't issued to, or revoked at `/revoke`. A client that sends two refreshes
-with the same token at once also trips this: one request wins, the other looks
-like reuse and revokes the family, including the pair the winner just got.
-That is the intended RFC 9700 behaviour; well-behaved clients serialize their
-refreshes. Other connections of the same user are unaffected. A spent refresh
-token presented after it expired still counts as reuse while it is remembered.
+wasn't issued to, or revoked at `/revoke`. Other connections of the same user
+are unaffected. A spent refresh token presented after it expired still counts
+as reuse while it is remembered.
+
+**A lost refresh response can be retried (0.5.0).** If a client's refresh
+response is lost (a timeout, a dropped connection) and it sends the same
+refresh again within 60 seconds, it gets the same new pair back instead of a
+revoked connection. The retry must come from the same client, with the same
+`scope` and `resource`, before the new pair is used (its refresh token
+refreshed, or its access token used at `/mcp`). Anything else (a retry after
+60 seconds, from another client, with other parameters, or after the new pair
+was used) is reuse and revokes the connection as described above. The record
+of the new pair lives in the database, so this works across replicas. It is
+encrypted with a key that needs the old refresh token, which is never stored,
+goes with the connection when it is revoked, and is removed by the expiry
+sweep once the 60 seconds are over. No setting controls it. Two
+refreshes with the same token sent at the same instant can still both fail and
+revoke the connection: the second may arrive before the first has finished.
+Well-behaved clients serialize their refreshes. For a public client (no client
+secret), anyone holding the old refresh token during those 60 seconds could
+also get the new pair; the next use of its refresh token by the other holder
+then counts as reuse.
 
 Authorization codes get the same treatment (RFC 9700 section 4.2.4, RFC 6749
 section 4.1.2). A code is single-use, and a spent code is remembered for 30

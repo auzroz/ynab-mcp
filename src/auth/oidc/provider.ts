@@ -181,7 +181,7 @@ export function normalizeAuthorizeScope(raw: unknown): string | undefined {
 }
 
 /** A `resource` value with every spelling of the MCP resource replaced by its canonical form. */
-function canonicalizeResource(raw: unknown, resource: string): unknown {
+export function canonicalizeResource(raw: unknown, resource: string): unknown {
   const one = (value: unknown): unknown =>
     typeof value === 'string' && isSameResource(value, resource) ? resource : value;
   return Array.isArray(raw) ? raw.map(one) : one(raw);
