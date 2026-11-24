@@ -1,6 +1,7 @@
 /**
- * The YNAB federation legs (/oauth/ynab/start, /oauth/ynab/callback,
- * /oauth/cancel) are rate-limited like the SDK's /authorize.
+ * The YNAB sign-in legs under /oauth (the library's interaction:
+ * /oauth/interaction/:uid with /start, /complete and /cancel, and
+ * /oauth/ynab/callback) are rate-limited like /authorize.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -21,6 +22,10 @@ import { makeHttpConfig } from './helpers/http-config.js';
 
 const LIMITED_TEXT = 'Too many authorization requests. Please wait and try again.';
 
+/** An interaction uid of the library's shape that names no interaction. */
+const UID = 'u'.repeat(43);
+const CANCEL = `/oauth/interaction/${UID}/cancel`;
+
 const config = () =>
   makeHttpConfig({
     publicUrl: 'https://mcp.example.com',
@@ -32,13 +37,13 @@ const config = () =>
   });
 
 describe('OAuth federation legs rate limit', () => {
-  it('matches the SDK /authorize limit', () => {
-    expect(OAUTH_LEG_RATE_LIMIT).toBe(100);
+  it('keeps 0.4.x capacity of 50 sign-ins per IP: four leg requests each, 200 per 15 minutes', () => {
+    expect(OAUTH_LEG_RATE_LIMIT).toBe(200);
   });
 
-  it('answers 429 from the limiter after the limit, across all three legs, without leaking input', async () => {
+  it('answers 429 from the limiter after the limit, across every leg, without leaking input', async () => {
     const app = await createHttpApp(config());
-    const legs = ['/oauth/ynab/start', '/oauth/ynab/callback', '/oauth/cancel'];
+    const legs = [`/oauth/interaction/${UID}`, `/oauth/interaction/${UID}/start`, '/oauth/ynab/callback', `/oauth/interaction/${UID}/complete`, CANCEL];
     // Distinctive values, so an echo of them in a response body is detectable.
     const state = 'state-SENTINEL-7f3a';
     const code = 'code-SENTINEL-91bc';
@@ -59,10 +64,10 @@ describe('OAuth federation legs rate limit', () => {
     expect(leaks(limited.text)).toEqual([]);
   });
 
-  it('leaves /mcp, /health and the SDK-served endpoints alone once the legs are limited', async () => {
+  it('leaves /mcp, /health and the library endpoints alone once the legs are limited', async () => {
     const app = await createHttpApp(config());
-    for (let i = 0; i < OAUTH_LEG_RATE_LIMIT; i++) await request(app).get('/oauth/cancel').query({ state: 'bogus' });
-    expect((await request(app).get('/oauth/cancel').query({ state: 'bogus' })).status).toBe(429);
+    for (let i = 0; i < OAUTH_LEG_RATE_LIMIT; i++) await request(app).get(CANCEL).query({ state: 'bogus' });
+    expect((await request(app).get(CANCEL).query({ state: 'bogus' })).status).toBe(429);
 
     expect((await request(app).get('/health')).status).toBe(200);
     expect((await request(app).get('/.well-known/oauth-authorization-server')).status).toBe(200);
@@ -74,18 +79,18 @@ describe('OAuth federation legs rate limit', () => {
   it('counts a request with a JSON body against the limit before parsing it', async () => {
     const app = await createHttpApp(config());
     for (let i = 0; i < OAUTH_LEG_RATE_LIMIT; i++) {
-      await request(app).get('/oauth/cancel').set('Content-Type', 'application/json').send('{not json');
+      await request(app).get(CANCEL).set('Content-Type', 'application/json').send('{not json');
     }
     // A malformed body would be a 400 parse error if parsing ran first; the
     // limiter answers before the body is read.
-    const res = await request(app).get('/oauth/cancel').set('Content-Type', 'application/json').send('{not json');
+    const res = await request(app).get(CANCEL).set('Content-Type', 'application/json').send('{not json');
     expect(res.status).toBe(429);
     expect(res.text).toBe(LIMITED_TEXT);
   });
 
   it('is not mounted in header mode, which has no OAuth legs', async () => {
     const app = await createHttpApp(makeHttpConfig());
-    for (let i = 0; i < OAUTH_LEG_RATE_LIMIT; i++) await request(app).get('/oauth/cancel');
-    expect((await request(app).get('/oauth/cancel')).status).toBe(404);
+    for (let i = 0; i < OAUTH_LEG_RATE_LIMIT; i++) await request(app).get(CANCEL);
+    expect((await request(app).get(CANCEL)).status).toBe(404);
   });
 });

@@ -1,120 +1,63 @@
 /**
- * `McpOAuthProvider.verifyAccessToken` refusals (WS7.3, ADR-0001 D7 and D14).
+ * The `/mcp` verifier's refusals (WS7.3, ADR-0001 D7 and D14), now
+ * `createAccessTokenVerifier` over oidc-provider (ADR-0002 D10).
  *
  * Every refusal, and every failure while verifying, is v2's
  * `OAuthError(InvalidToken)` with one fixed message: the only error the /mcp
  * bearer middleware (`@modelcontextprotocol/express`) answers with 401 and the
  * `resource_metadata` challenge. Upstream text (a storage error, a timeout) is
- * logged sanitized and never reaches the error. The end-to-end check over /mcp
- * is tests/unit/http-bearer-auth.test.ts.
+ * logged sanitized and never reaches the error. The verifier's AuthInfo and
+ * its unknown, expired, foreign-audience and erased-user refusals are in
+ * tests/unit/auth/oidc/verifier.test.ts; this file keeps WS7.3's failure
+ * matrix and D7's no-cache rule. The end-to-end check over /mcp is
+ * tests/unit/http-bearer-auth.test.ts.
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { randomBytes } from 'node:crypto';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { bearerAuthChallengeResponse } from '@modelcontextprotocol/server';
 import { MemoryStorage } from '../../../src/storage/memory.js';
-import { Encryptor } from '../../../src/crypto.js';
-import { McpOAuthProvider } from '../../../src/auth/mcp-provider.js';
-import { TEST_TOKEN_HASHER } from '../helpers/token-hasher.js';
-import { INVALID_ACCESS_TOKEN_MESSAGE, expectInvalidToken } from '../helpers/invalid-token.js';
+import { expectInvalidToken } from '../helpers/invalid-token.js';
+import { plantAccessToken, plantUser } from '../helpers/oauth-state.js';
+import { RESOURCE, buildOidcTestApp, type OidcTestApp } from '../helpers/oidc-app.js';
 
-const RESOURCE = 'https://mcp.example.com/mcp';
 const RESOURCE_METADATA = 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp';
 
-function makeProvider(): { provider: McpOAuthProvider; storage: MemoryStorage } {
-  const storage = new MemoryStorage();
-  const provider = new McpOAuthProvider({
-    storage,
-    encryptor: new Encryptor(randomBytes(32).toString('base64')),
-    tokenHasher: TEST_TOKEN_HASHER,
-    ynab: { clientId: 'cid', clientSecret: 'sec' },
-    publicUrl: 'https://mcp.example.com',
-    allowWrite: true,
-    globalReadOnly: false,
-    accessTokenTtlSec: 3600,
-    authCodeTtlSec: 600,
-  });
-  return { provider, storage };
-}
+let storage: MemoryStorage;
+let t: OidcTestApp;
 
-/** A live access token for a user that holds it, stored under its hashed key. */
-async function seedAccessToken(
-  storage: MemoryStorage,
-  overrides: { expiresAt?: number; resource?: string } = {}
-): Promise<string> {
-  await storage.upsertUser({
-    userId: 'ynab-user-1',
-    grantedScope: 'read-write',
-    encryptedRefreshToken: 'x',
-    updatedAt: Date.now(),
-  });
-  const issued = TEST_TOKEN_HASHER.issue('access');
-  await storage.saveAccessToken({
-    token: issued.key,
-    clientId: 'c1',
-    userId: 'ynab-user-1',
-    scopes: ['read-only'],
-    expiresAt: overrides.expiresAt ?? Date.now() + 60_000,
-    resource: overrides.resource ?? RESOURCE,
-  });
-  return issued.value;
-}
-
-/** The status the bearer middleware answers for this rejection (the same mapping @modelcontextprotocol/express uses). */
-async function middlewareStatus(verification: Promise<unknown>): Promise<{ status: number; challenge: string | null }> {
-  const err = await verification.then(
-    () => undefined,
-    (e: unknown) => e
-  );
-  const res = bearerAuthChallengeResponse(err, { resourceMetadataUrl: RESOURCE_METADATA });
-  return { status: res.status, challenge: res.headers.get('WWW-Authenticate') };
-}
+beforeEach(async () => {
+  storage = new MemoryStorage();
+  await storage.init();
+  t = buildOidcTestApp(storage);
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('verifyAccessToken refuses with v2 OAuthError(InvalidToken)', () => {
-  it('accepts a live token bound to this resource', async () => {
-    const { provider, storage } = makeProvider();
-    const token = await seedAccessToken(storage);
-    const info = await provider.verifyAccessToken(token);
-    expect(info.clientId).toBe('c1');
-    expect(info.resource?.href).toBe(RESOURCE);
-    expect(info.extra).toEqual({ userId: 'ynab-user-1', grantedScope: 'read-only' });
+/** A live read-only access token for a connected user, planted through the library. */
+async function seedAccessToken(): Promise<string> {
+  await plantUser(storage, { userId: 'ynab-user-1', grantedScope: 'read-write', encryptedRefreshToken: 'x' });
+  return plantAccessToken(storage, {
+    clientId: 'c1',
+    userId: 'ynab-user-1',
+    scopes: ['read-only'],
+    expiresAt: Date.now() + 60_000,
+    resource: RESOURCE,
+    grantedScope: 'read-only',
   });
+}
 
-  it.each([
-    ['a malformed value', 'not-a-real-token'],
-    ['an issued shape with a forged tag', `ymcp1_${'A'.repeat(43)}_${'B'.repeat(22)}`],
-    ['an empty string', ''],
-  ])('refuses %s without reading storage', async (_name, token) => {
-    const { provider, storage } = makeProvider();
-    const read = vi.spyOn(storage, 'getAccessToken');
-    await expectInvalidToken(provider.verifyAccessToken(token));
-    expect(read).not.toHaveBeenCalled();
-  });
+/** The status the bearer middleware answers for this rejection (the same mapping @modelcontextprotocol/express uses). */
+async function middlewareStatus(verification: Promise<unknown>): Promise<number> {
+  const err = await verification.then(
+    () => undefined,
+    (e: unknown) => e
+  );
+  return bearerAuthChallengeResponse(err, { resourceMetadataUrl: RESOURCE_METADATA }).status;
+}
 
-  it('refuses an unknown token, an expired one and one bound to another resource (RFC 8707)', async () => {
-    const { provider, storage } = makeProvider();
-    await expectInvalidToken(provider.verifyAccessToken(TEST_TOKEN_HASHER.issue('access').value));
-    await expectInvalidToken(provider.verifyAccessToken(await seedAccessToken(storage, { expiresAt: Date.now() - 1_000 })));
-    await expectInvalidToken(
-      provider.verifyAccessToken(await seedAccessToken(storage, { resource: 'https://mcp.example.com/other' }))
-    );
-  });
-
-  it('is answered 401 with resource_metadata by the bearer middleware, never 500', async () => {
-    const { provider } = makeProvider();
-    const { status, challenge } = await middlewareStatus(provider.verifyAccessToken('not-a-real-token'));
-    expect(status).toBe(401);
-    expect(challenge).toBe(
-      `Bearer error="invalid_token", error_description="${INVALID_ACCESS_TOKEN_MESSAGE}", resource_metadata="${RESOURCE_METADATA}"`
-    );
-  });
-});
-
-describe('verifyAccessToken maps every other failure to the same refusal', () => {
+describe('the verifier maps every failure to the same refusal', () => {
   const failures: Array<[string, unknown]> = [
     ['a storage error with connection details', new Error('connect ECONNREFUSED 10.1.2.3:5432 (postgres://app:hunter2@db.internal/ynab)')],
     ['a Postgres statement timeout', Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })],
@@ -125,22 +68,20 @@ describe('verifyAccessToken maps every other failure to the same refusal', () =>
   ];
 
   it.each(failures)('%s: refused as invalid_token, logged sanitized, nothing upstream in the error', async (_name, failure) => {
-    const { provider, storage } = makeProvider();
-    const token = await seedAccessToken(storage);
-    vi.spyOn(storage, 'getAccessToken').mockRejectedValue(failure);
+    const token = await seedAccessToken();
+    vi.spyOn(storage, 'findOAuthRow').mockRejectedValue(failure);
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    const verification = provider.verifyAccessToken(token);
+    const verification = t.verifier.verifyAccessToken(token);
     await expectInvalidToken(verification);
     const err = await verification.catch((e: unknown) => e);
     expect(JSON.stringify({ ...(err as object), message: (err as Error).message })).not.toMatch(
       /ECONNREFUSED|hunter2|timeout|locked|not an Error/
     );
-    expect((await middlewareStatus(provider.verifyAccessToken(token))).status).toBe(401);
+    expect(await middlewareStatus(t.verifier.verifyAccessToken(token))).toBe(401);
 
     expect(logged).toHaveBeenCalled();
-    const lines = logged.mock.calls.map((call) => call.map(String).join(' '));
-    for (const line of lines) {
+    for (const line of logged.mock.calls.map((call) => call.map(String).join(' '))) {
       expect(line).toMatch(/^\[OAuth\] Access token verification failed; refused as invalid_token:/);
       expect(line).not.toContain(token);
       expect(line).not.toContain('hunter2');
@@ -148,26 +89,24 @@ describe('verifyAccessToken maps every other failure to the same refusal', () =>
   });
 
   it('refuses a stored row it cannot read (a corrupt record) the same way', async () => {
-    const { provider, storage } = makeProvider();
-    const token = await seedAccessToken(storage);
-    vi.spyOn(storage, 'getAccessToken').mockResolvedValue({
-      token: 'k',
-      clientId: 'c1',
-      userId: 'ynab-user-1',
-      scopes: null as unknown as string[],
-      expiresAt: Date.now() + 60_000,
-      resource: RESOURCE,
-    });
+    const token = await seedAccessToken();
+    const find = storage.findOAuthRow.bind(storage);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    await expectInvalidToken(provider.verifyAccessToken(token));
+    for (const corrupt of ['{', JSON.stringify({ scope: 42, accountId: 'ynab-user-1' }), '[]']) {
+      vi.spyOn(storage, 'findOAuthRow').mockImplementation(async (key) => {
+        const row = await find(key);
+        return row ? { ...row, payload: corrupt } : row;
+      });
+      await expectInvalidToken(t.verifier.verifyAccessToken(token));
+      expect(await middlewareStatus(t.verifier.verifyAccessToken(token))).toBe(401);
+    }
   });
 
   it('keeps nothing between calls (D7): each call reads storage and returns a fresh AuthInfo', async () => {
-    const { provider, storage } = makeProvider();
-    const token = await seedAccessToken(storage);
-    const read = vi.spyOn(storage, 'getAccessToken');
-    const first = await provider.verifyAccessToken(token);
-    const second = await provider.verifyAccessToken(token);
+    const token = await seedAccessToken();
+    const read = vi.spyOn(storage, 'findOAuthRow');
+    const first = await t.verifier.verifyAccessToken(token);
+    const second = await t.verifier.verifyAccessToken(token);
     expect(read).toHaveBeenCalledTimes(2);
     expect(second).not.toBe(first);
     expect(second.extra).not.toBe(first.extra);

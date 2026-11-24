@@ -23,7 +23,12 @@ const oauthRefusesStaticYnab: HttpCheck = (config, problems) => {
   }
 };
 
-/** PUBLIC_URL is the OAuth issuer, and the MCP SDK accepts an http issuer only for localhost and 127.0.0.1. */
+/**
+ * PUBLIC_URL is the OAuth issuer: http only for localhost and 127.0.0.1. The
+ * SDK-era authorization server refused an http `[::1]` issuer; oidc-provider
+ * accepts one, so this check is now our own rule, kept so a configuration
+ * valid on 0.4.x stays the only kind accepted (#47-4).
+ */
 const oauthIssuerScheme: HttpCheck = (config, problems) => {
   if (config.authMode !== 'oauth' || problems.failed('AUTH_MODE') || problems.failed('PUBLIC_URL')) return;
   if (config.publicUrl === undefined) return;

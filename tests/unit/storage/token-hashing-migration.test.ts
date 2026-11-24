@@ -1,23 +1,24 @@
 /**
  * Migration M3 (#52) on SQLite and Postgres (gates G7 and G8 at the storage
  * layer): the pepper check, the eager rehash of 0.4.x keys in every keyed
- * table, hashed DCR client secrets, idempotency, and that a token, refresh
- * token, code, state and tombstones from before the upgrade still work through
- * the provider afterwards. Memory storage has nothing from an earlier process
- * to migrate; its at-rest check is in tests/unit/auth/token-hash-provider.test.ts.
+ * table, hashed DCR client secrets and idempotency. Since the cut-over to
+ * oidc-provider (#47-4, ADR-0002 D12) M4 runs right after M3: the client M3
+ * hashed is converted and keeps its secret, and the 0.4.x token, refresh
+ * token and code M3 rehashed are kept for rollback but refused, because no
+ * code reads the 0.4.x tables any more. Memory storage has nothing from an
+ * earlier process to migrate; its at-rest check is in
+ * tests/unit/auth/token-hash-provider.test.ts.
  *
  * Each test gets its own SQLite file or Postgres schema, because the pepper
  * fingerprint is per database.
  */
 
 import { describe, it, expect, afterAll, vi } from 'vitest';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { InvalidGrantError } from '@modelcontextprotocol/server-legacy/auth';
-import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
 import type { Storage } from '../../../src/storage/types.js';
 import { SCHEMA_VERSION } from '../../../src/storage/migrations.js';
 import {
@@ -25,9 +26,8 @@ import {
   PEPPER_MISMATCH_MESSAGE,
 } from '../../../src/storage/token-hashing-migration.js';
 import { TokenHasher, verifyClientSecret, type TokenKeyDeriver } from '../../../src/auth/token-hash.js';
-import { McpOAuthProvider } from '../../../src/auth/mcp-provider.js';
-import { newConsentNonce } from '../../../src/auth/consent-cookie.js';
-import { Encryptor } from '../../../src/crypto.js';
+import { createOidcProvider } from '../../../src/auth/oidc/provider.js';
+import { createAccessTokenVerifier } from '../../../src/auth/oidc/verifier.js';
 import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER, legacyToken, testKey } from '../helpers/token-hasher.js';
 import { expectInvalidToken } from '../helpers/invalid-token.js';
 
@@ -122,6 +122,8 @@ const TABLES = [
   'refresh_tokens',
   'consumed_refresh_tokens',
   'consumed_auth_codes',
+  // M4's table: the converted Client row (its secret stored only as the s256. hash).
+  'oauth_rows',
   'schema_meta',
 ];
 
@@ -192,7 +194,9 @@ async function plantLegacyRows(db: TestDb, opts: { withCodeTombstone: boolean })
     'INSERT INTO auth_codes (code, client_id, user_id, redirect_uri, code_challenge, scopes, expires_at, granted_scope) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
     [p.code, p.clientId, 'u-legacy', 'https://client/cb', 'chal', '[]', FUTURE(), 'read-only']
   );
-  const { nonce, hash } = newConsentNonce();
+  // 0.4.x bound a pending authorization to the browser by the SHA-256 of a cookie nonce.
+  const nonce = randomBytes(32).toString('base64url');
+  const hash = createHash('sha256').update(nonce).digest('base64url');
   p.stateNonce = nonce;
   await db.exec(
     'INSERT INTO pending_auth (state, client_id, redirect_uri, code_challenge, client_state, scopes, granted_scope, expires_at, browser_binding) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
@@ -222,18 +226,17 @@ async function plantLegacyRows(db: TestDb, opts: { withCodeTombstone: boolean })
   return p;
 }
 
-function providerFor(storage: Storage): McpOAuthProvider {
-  return new McpOAuthProvider({
-    storage,
-    encryptor: new Encryptor(randomBytes(32).toString('base64')),
-    tokenHasher: TEST_TOKEN_HASHER,
-    ynab: { clientId: 'cid', clientSecret: 'sec' },
+/** The authorization server's library over `storage`, as as-router.ts builds it. */
+function libraryFor(storage: Storage) {
+  const oidc = createOidcProvider({
+    store: storage,
+    keys: TEST_TOKEN_HASHER,
     publicUrl: 'https://mcp.example.com',
-    allowWrite: true,
-    globalReadOnly: false,
+    encryptionKey: randomBytes(32).toString('base64'),
     accessTokenTtlSec: 3600,
     authCodeTtlSec: 600,
   });
+  return { provider: oidc.provider, verifier: createAccessTokenVerifier({ provider: oidc.provider, resource: oidc.resource }) };
 }
 
 /** A database as 0.4.1 left it: this schema without schema_meta rows or the M1 table. */
@@ -288,52 +291,44 @@ function runM3Suite(name: string, enabled: boolean, newDb: () => Promise<TestDb>
       expect(stored['client_secret_expires_at']).toBe(0);
     });
 
-    it('G7: tokens, codes, state and tombstones from before the upgrade still work, and only through their values', async () => {
+    it('D12: after M3 and M4 the client keeps its secret; the 0.4.x token, refresh token and code are kept but refused', async () => {
       const db = await newDb();
       await makePreM3(db);
       const p = await plantLegacyRows(db, { withCodeTombstone: true });
       const storage = await db.open(TEST_TOKEN_HASHER);
       const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const before = await dump(db);
       try {
-        const provider = providerFor(storage);
-        const client = (await provider.clientsStore.getClient(p.clientId)) as OAuthClientInformationFull;
-        // The DCR secret: the plaintext one the client holds verifies against the stored hash.
-        expect(verifyClientSecret(p.clientSecret, client.client_secret as string)).toBe(true);
+        const { provider, verifier } = libraryFor(storage);
+        // M4 converted the client M3 hashed: the plaintext secret the client holds verifies against the stored hash.
+        const client = await provider.Client.find(p.clientId);
+        expect(client).toBeDefined();
+        expect(verifyClientSecret(p.clientSecret, client?.clientSecret as string)).toBe(true);
 
-        await expect(provider.verifyAccessToken(p.accessToken)).resolves.toMatchObject({
-          clientId: p.clientId,
-          extra: { userId: 'u-legacy', grantedScope: 'read-only' },
-        });
-        const refreshed = await provider.exchangeRefreshToken(client, p.refreshToken);
-        expect(refreshed.access_token).toMatch(/^ymcp1_/);
-        await expect(provider.verifyAccessToken(refreshed.access_token)).resolves.toBeDefined();
-
-        await provider.challengeForAuthorizationCode(client, p.code);
-        const fromCode = await provider.exchangeAuthorizationCode(client, p.code);
-        await expect(provider.verifyAccessToken(fromCode.access_token)).resolves.toBeDefined();
-
-        const denied = new URL(await provider.denyAuthorization(p.state, 'access_denied', p.stateNonce));
-        expect(denied.searchParams.get('state')).toBe('cs');
-
-        // Tombstones were rehashed too: replays are still recognized and revoke their family.
-        const familyCount = async (family: string): Promise<number> =>
-          (await db.rows('SELECT token FROM access_tokens WHERE family_id = $1', [family])).length;
-        expect(await familyCount('fam-reused')).toBe(1);
-        await expect(provider.exchangeRefreshToken(client, p.replayedRefresh)).rejects.toBeInstanceOf(InvalidGrantError);
-        expect(await familyCount('fam-reused')).toBe(0);
-        expect(await familyCount('fam-code')).toBe(1);
-        await expect(provider.challengeForAuthorizationCode(client, p.replayedCode)).rejects.toBeInstanceOf(
-          InvalidGrantError
-        );
-        expect(await familyCount('fam-code')).toBe(0);
-
-        // The stored keys themselves are never credentials.
-        await expectInvalidToken(provider.verifyAccessToken(testKey('access', p.accessToken)));
+        // No code reads the 0.4.x tables: their values are unknown to the library and the verifier.
+        await expectInvalidToken(verifier.verifyAccessToken(p.accessToken));
+        for (const value of [p.refreshToken, p.replayedRefresh]) {
+          expect(await provider.RefreshToken.find(value, { ignoreExpiration: true })).toBeUndefined();
+        }
+        for (const value of [p.code, p.replayedCode]) {
+          expect(await provider.AuthorizationCode.find(value, { ignoreExpiration: true })).toBeUndefined();
+        }
+        // The stored keys themselves are never credentials either.
+        await expectInvalidToken(verifier.verifyAccessToken(testKey('access', p.accessToken)));
       } finally {
         errors.mockRestore();
         await storage.close();
       }
-      expect(await dump(db)).not.toContain(p.code);
+      // Kept as M3 left them (for a rollback), untouched by the lookups, and still hashed.
+      const after = await dump(db);
+      expect(after).toBe(before);
+      expect(after).toContain(testKey('access', p.accessToken));
+      for (const value of [p.accessToken, p.refreshToken, p.code, p.state, p.clientSecret]) expect(after).not.toContain(value);
+      // The snapshot covers M4's converted Client row: its secret is only the hash.
+      const converted = await db.rows<{ payload: string }>("SELECT payload FROM oauth_rows WHERE model = 'Client' AND client_id = $1", [p.clientId]);
+      expect(converted).toHaveLength(1);
+      expect(JSON.parse(converted[0]!.payload)).toMatchObject({ client_secret_hash: expect.stringMatching(/^s256\.[0-9a-f]{64}$/) });
+      expect((JSON.parse(after) as Record<string, string[]>)['oauth_rows']!.some((row) => row.includes(p.clientId))).toBe(true);
     });
 
     it('is idempotent: a second start writes nothing; a row written later by 0.4.x is converted at the next start', async () => {

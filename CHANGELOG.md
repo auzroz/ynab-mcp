@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **HTTP mode's OAuth authorization server is now
+  [oidc-provider](https://github.com/panva/node-oidc-provider)** (#47,
+  ADR-0002). It replaces the MCP SDK's frozen `server-legacy` handlers. Every
+  connection signs in again once after the upgrade; registered clients carry
+  over. What clients can see:
+  - `POST /authorize` answers `405 method_not_allowed` (`Allow: GET`). Only
+    `GET` is served.
+  - `prompt=none` returns `login_required`, since every authorization goes
+    through the consent page and YNAB. `response_mode` is ignored, as before:
+    the answer is always a query redirect.
+  - The token response's `token_type` is `Bearer`, and a read-write token's
+    `scope` is `read-only read-write` (read-write access is unchanged).
+    Token values are 43 characters, with no `ymcp1_` prefix.
+  - The registration (DCR) response has more fields: `application_type`,
+    `subject_type`, `id_token_signed_response_alg` and `require_auth_time`,
+    with the defaults filled in. `client_secret_expires_at` is `0`: new client
+    secrets no longer expire after 30 days, though a client unused for 90 days
+    is still removed. `sector_identifier_uri` is refused. A registered
+    `scope`, `software_id` and `software_version` are accepted but no longer
+    kept or echoed (none of them ever limited a client; scopes are asked for
+    at `/authorize`).
+  - The discovery document lists OIDC fields and a `jwks_uri`, and is also
+    served at `/.well-known/openid-configuration`. Like `/jwks`, it echoes
+    the request's `Origin` in `Access-Control-Allow-Origin` (`*` without
+    one), so any origin can still read it. Error descriptions read
+    differently, and an `invalid_client` that comes from the library itself
+    is 401 (this server's own client check still answers 400). Client
+    credentials are read only from the form body, as before: an
+    `Authorization` header on `/token` or `/revoke` is ignored. The JSON error
+    shapes and the 405 for a wrong method are unchanged.
 - Replacing `ENCRYPTION_KEY` now needs a new `ENCRYPTION_KEY_ID` (#57). A
   different key under an id the database has already recorded refuses to
   start, so swapping the key in place and letting every user reconnect no
@@ -20,6 +50,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an hour (stdio included) is now refused with `write_limit_exceeded` until the
   window frees up. Set `YNAB_WRITE_LIMIT_PER_HOUR` (0 to 1000) to change it;
   `0` turns the cap off.
+
+### Changed
+
+- **What operators see after the authorization server move** (#47):
+  - The consent page is now at `/oauth/interaction/<id>`, reached by a
+    redirect from `/authorize`. Its choices go to `.../start`, and Cancel to
+    `.../cancel`. After YNAB, `/oauth/ynab/callback` (the redirect URI
+    registered at YNAB, unchanged) sends the browser to `.../complete`, then
+    back through `/authorize/<id>` to the client. `/oauth/ynab/start` and
+    `/oauth/cancel` are gone. Every leg stays under `/oauth` and its rate
+    limit, which doubles to 200 requests per 15 minutes per address: a
+    sign-in now takes four requests there, so the limit still allows 50
+    sign-ins. The `/authorize` rate limit counts both the request and the
+    return from the consent page.
+  - The consent-page cookie is replaced by the library's signed cookies
+    (`_interaction`, `_interaction_resume`, `_session`, each with a `.sig`).
+    They are signed with a key derived from `ENCRYPTION_KEY` (no new setting)
+    and are `Secure` when `PUBLIC_URL` is https. The browser still has to be
+    the one that saw the consent page.
+  - New routes: `/.well-known/openid-configuration` and `/jwks` (the library
+    requires a signing key; it is generated at startup and signs nothing).
+  - Registered clients, tokens and codes live in one `oauth_rows` table. The
+    0.4.x token tables are no longer read; their rows are swept on the usual
+    schedule, removed with an account, and dropped in 0.6.
+- **Upgrading from 0.4.x:** registered clients are converted at the first
+  start (a client that fails the new rules is dropped and logged, and must
+  register again). 0.4.x access tokens, refresh tokens and codes, and sign-ins
+  in progress, stop working: each user signs in again once per client (for
+  example, 6 sign-ins for 3 users with 2 clients each). The claude.ai
+  connector shows as disconnected until it's reconnected. Tell your users to
+  expect this. Rolling back to 0.4.x means restoring the pre-upgrade backup.
+- Temporary YNAB token failures (a timeout, YNAB unavailable, or another
+  replica's refresh in progress) now return `503` with `Retry-After` instead
+  of forcing the client to reconnect; only a rejected (`invalid_grant`)
+  refresh token does (#48). A tool call gets `upstream_unavailable` with
+  `retry_after_seconds`. The stored grant is kept, and the failure is not
+  remembered. A replica below the key floor (still on a key that is being
+  retired) answers `503` the same way until it is restarted with the current
+  key.
+- Amounts are formatted with the budget's `currency_format` instead of a
+  hard-coded `$` (#49): symbol, symbol position, decimal places (0 for JPY, 3
+  for BHD), decimal and group separators, and `display_symbol`. This changes
+  only the human-readable strings (`balance`, `budgeted`, `summary` and
+  `*_formatted` fields, messages). Raw milliunit fields, keys and the shape of
+  every response are unchanged, and no field is added. For a USD budget,
+  amounts of 1,000 or more now carry group separators (`$3,000.00`, was
+  `$3000.00`). The format comes from the budget's cached settings, so it costs
+  at most one extra request per budget every 5 minutes; if the settings cannot
+  be read, amounts keep the previous `$1234.56` style. The format is reused for
+  an hour per budget, so it costs well under one request an hour. Symbols and
+  separators are cleaned of control and bidi characters but never trimmed, so
+  space group separators (French, Swedish, Polish, Czech, Norwegian) survive.
+  `ynab_transaction_search` now writes its `min`/`max` criteria as formatted
+  amounts (`min: $80.00`, was `min: $80`). The split-sum and `ynab_move_money`
+  minimum-amount validation messages, raised before the budget is known, no
+  longer name a currency (`... (splits total 100, transaction is 90)`, `amount
+  must be at least 0.001 (1 milliunit)`). `ynab_detect_recurring`'s
+  `estimated_monthly_total` is now summed from milliunits, so it can differ by a
+  milliunit or two.
 
 ### Security
 
@@ -80,37 +169,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sign-in and no YNAB token refresh for that many days and has no live
   connection. It re-checks both inside the erase's transaction and logs a
   count only. For existing users the clock starts at the upgrade.
-
-### Changed
-
-- Temporary YNAB token failures (a timeout, YNAB unavailable, or another
-  replica's refresh in progress) now return `503` with `Retry-After` instead
-  of forcing the client to reconnect; only a rejected (`invalid_grant`)
-  refresh token does (#48). A tool call gets `upstream_unavailable` with
-  `retry_after_seconds`. The stored grant is kept, and the failure is not
-  remembered. A replica below the key floor (still on a key that is being
-  retired) answers `503` the same way until it is restarted with the current
-  key.
-- Amounts are formatted with the budget's `currency_format` instead of a
-  hard-coded `$` (#49): symbol, symbol position, decimal places (0 for JPY, 3
-  for BHD), decimal and group separators, and `display_symbol`. This changes
-  only the human-readable strings (`balance`, `budgeted`, `summary` and
-  `*_formatted` fields, messages). Raw milliunit fields, keys and the shape of
-  every response are unchanged, and no field is added. For a USD budget,
-  amounts of 1,000 or more now carry group separators (`$3,000.00`, was
-  `$3000.00`). The format comes from the budget's cached settings, so it costs
-  at most one extra request per budget every 5 minutes; if the settings cannot
-  be read, amounts keep the previous `$1234.56` style. The format is reused for
-  an hour per budget, so it costs well under one request an hour. Symbols and
-  separators are cleaned of control and bidi characters but never trimmed, so
-  space group separators (French, Swedish, Polish, Czech, Norwegian) survive.
-  `ynab_transaction_search` now writes its `min`/`max` criteria as formatted
-  amounts (`min: $80.00`, was `min: $80`). The split-sum and `ynab_move_money`
-  minimum-amount validation messages, raised before the budget is known, no
-  longer name a currency (`... (splits total 100, transaction is 90)`, `amount
-  must be at least 0.001 (1 milliunit)`). `ynab_detect_recurring`'s
-  `estimated_monthly_total` is now summed from milliunits, so it can differ by a
-  milliunit or two.
 
 ### Fixed
 

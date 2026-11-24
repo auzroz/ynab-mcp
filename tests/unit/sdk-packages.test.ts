@@ -31,8 +31,25 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 }
 
 describe('MCP SDK v2 packages', () => {
-  it('pins server-legacy to ~2.4.0 (D14: glue depends on its internals)', () => {
-    expect(pkg.dependencies['@modelcontextprotocol/server-legacy']).toBe('~2.4.0');
+  // ADR-0002 D11: the authorization server moved to oidc-provider (#47-4), so
+  // server-legacy is gone from the manifest, the lockfile and every import.
+  const LEGACY = '@modelcontextprotocol/' + 'server-legacy';
+
+  it('has no server-legacy in package.json or the lockfile (ADR-0002 D11)', () => {
+    expect(pkg.dependencies[LEGACY]).toBeUndefined();
+    expect(pkg.devDependencies[LEGACY]).toBeUndefined();
+    expect(Object.keys(lock.packages).filter((key) => key.endsWith(`node_modules/${LEGACY}`))).toEqual([]);
+  });
+
+  it('imports server-legacy from nothing in src or tests (ADR-0002 D11)', () => {
+    const offenders = [...sourceFiles(join(root, 'src')), ...sourceFiles(join(root, 'tests'))].filter((file) =>
+      readFileSync(file, 'utf8').includes(LEGACY)
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('pins oidc-provider with a tilde (ADR-0002 D11: CIMD is experimental)', () => {
+    expect(pkg.dependencies['oidc-provider']).toMatch(/^~9\.15\.\d+$/);
   });
 
   it('declares the v2 packages and no v1 sdk', () => {

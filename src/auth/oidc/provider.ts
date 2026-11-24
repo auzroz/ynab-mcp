@@ -3,10 +3,10 @@
  * serving `/authorize`, `/token`, `/register`, `/revoke`, `/jwks` and the RFC
  * 8414 and OIDC discovery documents, over the #47-1 adapter.
  *
- * **Not mounted yet.** #47-4 mounts {@link asLibraryHandler} as the last stage
+ * src/auth/as-router.ts mounts {@link asLibraryHandler} as the last stage
  * (`as-library`) of each AS route, behind D8's stages, and the interaction
- * router (./interaction.ts) under `/oauth`. Until then the tests run it on an
- * Express app of their own, as the spike did.
+ * router (./interaction.ts) under `/oauth` (#47-4). The provider tests also
+ * run it on an Express app of their own, as the spike did.
  *
  * What D2 fixes, and where:
  *   - Features: registration (no initial access token), revocation and
@@ -18,8 +18,12 @@
  *     `invalid_target`), and the opaque access token's audience.
  *   - PKCE always (S256 is the library's only method). Refresh tokens rotate
  *     on every use and never expire with the session.
- *   - TTLs: access tokens `MCP_ACCESS_TOKEN_TTL_SEC`; codes, interactions and
- *     sessions `authCodeTtlSec`; refresh tokens the idle window capped by the
+ *   - TTLs: access tokens `MCP_ACCESS_TOKEN_TTL_SEC`; codes `authCodeTtlSec`;
+ *     interactions and sessions `authCodeTtlSec`, but at least
+ *     {@link INTERACTION_GRACE_SEC} past `YNAB_CALLBACK_DEADLINE_MS`, so a
+ *     sign-in that runs past its deadline still ends with a `server_error`
+ *     redirect to the client rather than on an expired interaction (#47-4);
+ *     refresh tokens the idle window capped by the
  *     absolute lifetime from the family's start (`iiat`) and by the grant's
  *     own expiry; grants the absolute lifetime plus the sign-in window, so a
  *     grant outlives every token issued under it and a token-less grant still
@@ -89,9 +93,10 @@ import type { OAuthRowStore } from '../../storage/types.js';
 import type { LibraryKeyDeriver } from '../token-hash.js';
 import { canonicalResource, isSameResource } from '../resource.js';
 import { KNOWN_SCOPES } from '../authorize-validation.js';
-import { retentionPolicy, type RetentionPolicy } from '../retention-defaults.js';
+import { retentionPolicy, YNAB_CALLBACK_DEADLINE_MS, type RetentionPolicy } from '../retention-defaults.js';
 import { sanitizeErrorMessage } from '../../utils/sanitize.js';
 import { createOidcAdapter } from './adapter.js';
+import { routePath } from './route-path.js';
 import { CLIENT_SCHEMA_CONFIGURATION, ephemeralSigningKeys } from './client-schema.js';
 
 /** The library's routes (D2), as today's SDK served them. */
@@ -119,6 +124,13 @@ export const FULL_SCOPE = 'read-only read-write';
  */
 const OIDC_ONLY_PARAMS = ['nonce', 'max_age', 'acr_values', 'claims', 'claims_locales', 'id_token_hint'] as const;
 
+/**
+ * `response_mode`, which the SDK ignored (it always answered with a query
+ * redirect): dropped, so the library's answer is always a query redirect the
+ * authorize guard can judge, never a page that posts to the client (#47-4).
+ */
+const IGNORED_AUTHORIZE_PARAMS = ['response_mode'] as const;
+
 /** The library's session cookie and its signature (`cookies.names.session`, default). */
 const SESSION_COOKIES = new Set(['_session', '_session.sig']);
 
@@ -137,7 +149,7 @@ export interface OidcProviderOptions {
   /** `ENCRYPTION_KEY`: the cookie-signing key is derived from it. */
   encryptionKey: string;
   accessTokenTtlSec: number;
-  /** `MCP_AUTH_CODE_TTL_SEC`: codes, interactions and sessions. */
+  /** `MCP_AUTH_CODE_TTL_SEC`: codes; interactions and sessions at least this (see {@link interactionLifetimeSec}). */
   authCodeTtlSec: number;
   /** STOR-1 and #54's windows; the defaults are in retention-defaults.ts. */
   retention?: Partial<RetentionPolicy> | undefined;
@@ -151,6 +163,14 @@ export interface OidcProvider {
   issuer: string;
   /** The canonical MCP resource: the only audience. */
   resource: string;
+}
+
+/** How long an interaction outlives the YNAB callback deadline: time for `complete` to finish with a denial. */
+export const INTERACTION_GRACE_SEC = 30;
+
+/** An interaction's (and its session's) lifetime: `MCP_AUTH_CODE_TTL_SEC`, or the deadline plus the grace, whichever is longer. */
+export function interactionLifetimeSec(authCodeTtlSec: number): number {
+  return Math.max(authCodeTtlSec, Math.ceil(YNAB_CALLBACK_DEADLINE_MS / 1000) + INTERACTION_GRACE_SEC);
 }
 
 /** The scope D7 sends the library for what a client asked at `/authorize`; undefined leaves a non-string alone. */
@@ -199,7 +219,7 @@ function requestNormalizer({ resource, publicUrl }: NormalizerDeps) {
     req.headers['x-forwarded-for'] = ip;
     ctx.request.ip = ip;
 
-    const path = ctx.path;
+    const path = routePath(ctx.path);
     const { authorization, token, registration } = OIDC_ROUTES;
     const body = isRecord(req.body) ? req.body : undefined;
 
@@ -224,7 +244,7 @@ function requestNormalizer({ resource, publicUrl }: NormalizerDeps) {
       const scope = normalizeAuthorizeScope(params['scope']);
       if (scope !== undefined) params['scope'] = scope;
       if (params['resource'] !== undefined) params['resource'] = canonicalizeResource(params['resource'], resource);
-      for (const name of OIDC_ONLY_PARAMS) delete params[name];
+      for (const name of [...OIDC_ONLY_PARAMS, ...IGNORED_AUTHORIZE_PARAMS]) delete params[name];
       ctx.query = params as typeof ctx.query;
     } else if (path === token && ctx.method === 'POST' && body && body['resource'] !== undefined) {
       body['resource'] = canonicalizeResource(body['resource'], resource);
@@ -240,7 +260,16 @@ function requestNormalizer({ resource, publicUrl }: NormalizerDeps) {
 
     // Discovery lists the MCP scopes, as the SDK's metadata did, not the library's OIDC scopes.
     if ((DISCOVERY_PATHS as readonly string[]).includes(path) && isRecord(ctx.body)) {
-      ctx.body = { ...ctx.body, scopes_supported: [...KNOWN_SCOPES] };
+      // `response_mode` is dropped (IGNORED_AUTHORIZE_PARAMS): every answer is a query redirect.
+      // /revoke authenticates clients as /token does (client-auth reads only the body); the library
+      // omits the revocation list, which RFC 8414 would read as client_secret_basic.
+      const tokenAuth = ctx.body['token_endpoint_auth_methods_supported'];
+      ctx.body = {
+        ...ctx.body,
+        scopes_supported: [...KNOWN_SCOPES],
+        response_modes_supported: ['query'],
+        ...(Array.isArray(tokenAuth) ? { revocation_endpoint_auth_methods_supported: [...(tokenAuth as unknown[])] } : {}),
+      };
     }
     // The DCR response doesn't point at the configuration endpoint, which isn't served.
     if (path === registration && ctx.status === 201 && isRecord(ctx.body)) {
@@ -270,6 +299,7 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
   const issuer = publicUrl.href;
   const retention = retentionPolicy(options.retention);
   const { accessTokenTtlSec, authCodeTtlSec } = options;
+  const interactionTtlSec = interactionLifetimeSec(authCodeTtlSec);
   const absoluteSec = retention.refreshTokenTtlMs / 1000;
   const idleSec = retention.refreshTokenIdleMs / 1000;
   const secure = publicUrl.protocol === 'https:';
@@ -314,8 +344,8 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
     ttl: {
       AccessToken: accessTokenTtlSec,
       AuthorizationCode: authCodeTtlSec,
-      Interaction: authCodeTtlSec,
-      Session: authCodeTtlSec,
+      Interaction: interactionTtlSec,
+      Session: interactionTtlSec,
       Grant: positive(absoluteSec + 2 * authCodeTtlSec),
       RefreshToken: (ctx, token) => {
         const now = epochSec();
@@ -338,7 +368,9 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
     },
     // The account is the YNAB user id. STOR-1's user join is the adapter's: a token whose user is gone is unknown.
     findAccount: (_ctx, sub) => ({ accountId: sub, claims: () => ({ sub }) }),
-    interactions: { url: (_ctx, interaction) => `${INTERACTION_BASE_PATH}/${interaction.uid}` },
+    // Absolute, under PUBLIC_URL, as the interaction's own links and the YNAB callback are
+    // (a PUBLIC_URL with a path then reaches /oauth the same way for every leg).
+    interactions: { url: (_ctx, interaction) => `${options.publicUrl}${INTERACTION_BASE_PATH}/${interaction.uid}` },
     cookies: { keys: [cookieSigningKey(options.encryptionKey)], long: cookieOptions, short: cookieOptions },
     // Our cors-origin stage answers CORS on /token, /revoke and /register (D2, D8); this is the backstop.
     clientBasedCORS: () => true,

@@ -1,7 +1,7 @@
 /**
- * RFC 8707 resource binding end to end over HTTP, through the SDK's real
- * /register, /authorize and /token handlers and the bearer middleware on /mcp.
- * Only the YNAB network calls are mocked.
+ * RFC 8707 resource binding end to end over HTTP, through the mounted
+ * authorization server (oidc-provider behind the AS stages, ADR-0002) and the
+ * bearer middleware on /mcp. Only the YNAB network calls are mocked.
  */
 
 import { describe, it, expect, vi, afterAll, afterEach } from 'vitest';
@@ -34,11 +34,26 @@ vi.mock('../../src/auth/ynab-oauth.js', async () => {
   };
 });
 
+// Keeps a handle on the storage the app creates, so a test can plant a token.
+const created = vi.hoisted(() => ({ storage: undefined as Storage | undefined }));
+vi.mock('../../src/storage/index.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/storage/index.js')>('../../src/storage/index.js');
+  return {
+    ...actual,
+    createStorage: async (...args: Parameters<typeof actual.createStorage>) => {
+      created.storage = await actual.createStorage(...args);
+      return created.storage;
+    },
+  };
+});
+
 import { createHttpApp } from '../../src/http.js';
-import { McpOAuthProvider } from '../../src/auth/mcp-provider.js';
+import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
+import type { Storage } from '../../src/storage/types.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { cookieHeaderFrom } from './helpers/consent-cookie.js';
-import { legacyToken } from './helpers/token-hasher.js';
+import { TEST_TOKEN_PEPPER, legacyToken } from './helpers/token-hasher.js';
+import { plantAccessToken, plantUser } from './helpers/oauth-state.js';
+import { CookieJar, browse, browserFlow, interactionUid } from './helpers/oidc-app.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
 const RESOURCE = 'https://mcp.example.com/mcp';
@@ -54,6 +69,8 @@ function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
     oauthClientId: 'cid',
     oauthClientSecret: 'sec',
     encryptionKey: ENCRYPTION_KEY,
+    // The shared test pepper, so a test can plant tokens the app reads.
+    tokenPepper: TEST_TOKEN_PEPPER,
     // A verified client (#55b), so /authorize errors are redirected back to it.
     verifiedRedirectUris: [CALLBACK],
     ...overrides,
@@ -94,31 +111,26 @@ function authorizeQuery(clientId: string, extra: Record<string, string> = {}): R
   };
 }
 
-/** Drive /authorize -> consent -> YNAB callback; returns the MCP authorization code. */
+/**
+ * Drive /authorize -> consent -> YNAB -> complete -> the library's resume;
+ * returns the MCP authorization code. Asking for read-write at start is capped
+ * by the server when the client requested only read-only.
+ */
 async function authorizeToCode(
   app: Express,
   clientId: string,
   extra: Record<string, string> = {}
 ): Promise<string> {
-  const consent = await request(app).get('/authorize').query(authorizeQuery(clientId, extra));
-  expect(consent.status).toBe(200);
-  // The read-only link is always offered; asking for read-write at start is
-  // capped by the server when the client requested only read-only.
-  const m = /state=([^&"]+)&amp;scope=read-only/.exec(consent.text);
-  if (!m?.[1]) throw new Error('no consent link');
-  const state = decodeURIComponent(m[1]);
-  const cookie = cookieHeaderFrom(consent);
-  const start = await request(app)
-    .get('/oauth/ynab/start')
-    .set('Cookie', cookie)
-    .query({ state, scope: 'read-write' });
-  expect(start.status).toBe(302);
-  const cb = await request(app)
-    .get('/oauth/ynab/callback')
-    .set('Cookie', cookie)
-    .query({ code: 'ynab-code', state });
-  expect(cb.status).toBe(302);
-  const code = new URL(cb.headers['location'] as string).searchParams.get('code');
+  const { scope, resource, ...rest } = extra;
+  const flow = await browserFlow(app, new CookieJar(), {
+    clientId,
+    challenge,
+    scope,
+    resource,
+    extra: rest,
+    choice: 'read-write',
+  });
+  const code = flow.params.get('code');
   if (!code) throw new Error('no code');
   return code;
 }
@@ -170,15 +182,19 @@ describe('/authorize resource indicator', () => {
     expect(loc.origin + loc.pathname).toBe(CALLBACK);
     expect(loc.searchParams.get('error')).toBe('invalid_target');
     expect(loc.searchParams.get('state')).toBe('client-state');
+    expect(loc.searchParams.get('iss')).toBe('https://mcp.example.com/');
     expect(loc.searchParams.get('code')).toBeNull();
   });
 
   it('shows the consent page for the configured resource (normalized spelling)', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const res = await request(app)
-      .get('/authorize')
-      .query(authorizeQuery(clientId, { resource: 'HTTPS://MCP.EXAMPLE.COM:443/mcp' }));
+    const jar = new CookieJar();
+    const query = new URLSearchParams(authorizeQuery(clientId, { resource: 'HTTPS://MCP.EXAMPLE.COM:443/mcp' }));
+    const auth = await browse(app, jar, `/authorize?${query.toString()}`);
+    expect(auth.status).toBe(303);
+    interactionUid(auth.headers['location'] as string);
+    const res = await browse(app, jar, auth.headers['location'] as string);
     expect(res.status).toBe(200);
     expect(res.text).toContain('Connect your YNAB budget');
   });
@@ -272,32 +288,50 @@ describe('/token resource and scope checks', () => {
 });
 
 describe('/mcp bearer audience check', () => {
-  it('rejects (401) a token the verifier reports for another resource', async () => {
+  /** An app whose storage holds a connected user, and a token planted for `audience`. */
+  async function appWithToken(audience: string): Promise<{ app: Express; storage: Storage; access: string }> {
     const app = await createHttpApp(makeConfig());
-    vi.spyOn(McpOAuthProvider.prototype, 'verifyAccessToken').mockResolvedValue({
-      token: 't',
-      clientId: 'c',
-      scopes: [],
-      expiresAt: Math.floor(Date.now() / 1000) + 3600,
-      resource: new URL('https://other.example.com/mcp'),
-      extra: { userId: 'ynab-user-1' },
+    const storage = created.storage as Storage;
+    await plantUser(storage, {
+      userId: 'ynab-user-1',
+      grantedScope: 'read-only',
+      encryptedRefreshToken: new Encryptor(ENCRYPTION_KEY).encrypt('yr', refreshTokenContext('ynab-user-1')),
     });
-    const res = await probeMcp(app, 't');
+    const access = await plantAccessToken(storage, {
+      clientId: 'c',
+      userId: 'ynab-user-1',
+      scopes: ['read-only'],
+      expiresAt: Date.now() + 3_600_000,
+      resource: audience,
+      grantedScope: 'read-only',
+    });
+    return { app, storage, access };
+  }
+
+  it('accepts a stored token whose audience is the resource (the control)', async () => {
+    const { app, access } = await appWithToken(RESOURCE);
+    expect((await probeMcp(app, access)).status).toBe(200);
+  });
+
+  it('rejects (401) a stored token whose audience is another resource', async () => {
+    const { app, access } = await appWithToken('https://other.example.com/mcp');
+    const res = await probeMcp(app, access);
     expect(res.status).toBe(401);
     expect(res.headers['www-authenticate']).toContain('error="invalid_token"');
     expect(res.headers['www-authenticate']).toContain('resource_metadata=');
   });
 
-  it('rejects (401) a token the verifier reports with no resource at all', async () => {
-    const app = await createHttpApp(makeConfig());
-    vi.spyOn(McpOAuthProvider.prototype, 'verifyAccessToken').mockResolvedValue({
-      token: 't',
-      clientId: 'c',
-      scopes: [],
-      expiresAt: Math.floor(Date.now() / 1000) + 3600,
-      extra: { userId: 'ynab-user-1' },
+  it('rejects (401) a stored token with no audience at all', async () => {
+    const { app, storage, access } = await appWithToken(RESOURCE);
+    // The same row read back without its `aud`.
+    const find = storage.findOAuthRow.bind(storage);
+    vi.spyOn(storage, 'findOAuthRow').mockImplementation(async (key) => {
+      const row = await find(key);
+      if (row?.model !== 'AccessToken') return row;
+      const { aud: _aud, ...payload } = JSON.parse(row.payload) as Record<string, unknown>;
+      return { ...row, payload: JSON.stringify(payload) };
     });
-    expect((await probeMcp(app, 't')).status).toBe(401);
+    expect((await probeMcp(app, access)).status).toBe(401);
   });
 });
 
@@ -341,12 +375,15 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('/mcp with shared SQLite st
     expect(JSON.stringify(res.body)).not.toContain(access);
   });
 
-  it('a 0.3.x access token (no stored resource) is still accepted', async () => {
+  // Until 0.5.0 a 0.3.x token (no stored resource) was accepted as bound to the
+  // configured resource. The cut-over reads only oauth_rows (ADR-0002 D12), so
+  // every token of an older release, of any shape, is refused.
+  it('a 0.3.x access token (no stored resource) is refused after the cut-over (D12)', async () => {
     const file = join(tmpdir(), `ynab-mcp-resource-${randomUUID()}.db`);
     files.push(file);
     // Create the YNAB user through the normal flow, then plant a 0.3.x row for
     // it: a 43-character plaintext key with no resource. The next start's M3
-    // rehash (#52) turns its key into the h1. form the lookup uses.
+    // rehash (#52) turns its key into its h1. form; nothing reads it.
     await issueTokens(await createHttpApp(sqliteConfig(file)));
     const legacy = legacyToken();
     const Database = createRequire(import.meta.url)('better-sqlite3') as typeof import('better-sqlite3');
@@ -365,6 +402,7 @@ describe.skipIf(!sqliteAvailable && !requireDbTests)('/mcp with shared SQLite st
       .set('Authorization', `Bearer ${legacy}`)
       .set('Accept', 'application/json, text/event-stream')
       .send(initializeBody);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
+    expect(res.headers['www-authenticate']).toContain('error="invalid_token"');
   });
 });

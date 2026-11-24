@@ -1,14 +1,15 @@
 /**
  * Authorization-code replay over HTTP (RFC 9700 section 4.2.4, RFC 6749
- * section 4.1.2, issue #42), through the SDK's real /register, /authorize and
- * /token handlers and the bearer middleware on /mcp: a second use of a code
- * revokes the tokens issued from it, and the token endpoint answers an
+ * section 4.1.2, issue #42), through the mounted authorization server
+ * (oidc-provider behind the AS stages, ADR-0002) and the bearer middleware on
+ * /mcp: a second use of a code revokes the tokens issued from it (the grant:
+ * grant-guard, D6, before the library), and the token endpoint answers an
  * unknown, a replayed and a revoked code with byte-identical responses. Only
  * the YNAB network calls are mocked.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import request from 'supertest';
 import type { Express } from 'express';
 
@@ -28,9 +29,11 @@ vi.mock('../../src/auth/ynab-oauth.js', async () => {
 import { createHttpApp } from '../../src/http.js';
 import * as ynabOauth from '../../src/auth/ynab-oauth.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { cookieHeaderFrom } from './helpers/consent-cookie.js';
+import { CookieJar, REDIRECT_URI, browserFlow, pkcePair } from './helpers/oidc-app.js';
 
-const CALLBACK = 'https://client.example/cb';
+const CALLBACK = REDIRECT_URI;
+/** The one description of every refused grant: the library's, and grant-guard's (D6). */
+const INVALID_GRANT = { error: 'invalid_grant', error_description: 'grant request is invalid' };
 
 function makeApp(): Promise<Express> {
   return createHttpApp(
@@ -63,25 +66,9 @@ async function register(app: Express): Promise<string> {
 /** Run the browser legs to an MCP authorization code, for a new client unless one is given. */
 async function authorize(app: Express, existingClientId?: string): Promise<Grant> {
   const clientId = existingClientId ?? (await register(app));
-  const verifier = randomBytes(32).toString('base64url');
-  const consent = await request(app).get('/authorize').query({
-    response_type: 'code',
-    client_id: clientId,
-    redirect_uri: CALLBACK,
-    code_challenge: createHash('sha256').update(verifier).digest('base64url'),
-    code_challenge_method: 'S256',
-    state: 'client-state',
-  });
-  expect(consent.status).toBe(200);
-  const m = /state=([^&"]+)&amp;scope=read-only/.exec(consent.text);
-  if (!m?.[1]) throw new Error('no consent link');
-  const state = decodeURIComponent(m[1]);
-  const cookie = cookieHeaderFrom(consent);
-  const start = await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-only' });
-  expect(start.status).toBe(302);
-  const cb = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
-  expect(cb.status).toBe(302);
-  const code = new URL(cb.headers['location'] as string).searchParams.get('code');
+  const { verifier, challenge } = pkcePair();
+  const flow = await browserFlow(app, new CookieJar(), { clientId, challenge, choice: 'read-only' });
+  const code = flow.params.get('code');
   if (!code) throw new Error('no code');
   return { clientId, verifier, code };
 }
@@ -159,7 +146,7 @@ describe('authorization-code replay at /token (RFC 9700)', () => {
 
     const replay = await exchange(app, grant);
     expect(replay.status).toBe(400);
-    expect(replay.body).toEqual({ error: 'invalid_grant', error_description: 'Invalid or expired authorization code' });
+    expect(replay.body).toEqual(INVALID_GRANT);
 
     expect((await initialize(app, access)).status).toBe(401);
     const refused = await refresh(app, grant.clientId, refreshToken);
@@ -204,10 +191,7 @@ describe('authorization-code replay at /token (RFC 9700)', () => {
     expect(unknown.status).toBe(400);
     expect(replayed).toEqual(unknown);
     expect(again).toEqual(unknown);
-    expect(JSON.parse(unknown.body)).toEqual({
-      error: 'invalid_grant',
-      error_description: 'Invalid or expired authorization code',
-    });
+    expect(JSON.parse(unknown.body)).toEqual(INVALID_GRANT);
   });
 
   it('the replay is logged without the code', async () => {
@@ -216,7 +200,8 @@ describe('authorization-code replay at /token (RFC 9700)', () => {
     await exchange(app, grant);
     await exchange(app, grant);
     const logged = vi.mocked(console.error).mock.calls.flat().map(String);
-    expect(logged).toContain('[OAuth] Authorization code replay detected; revoked its token family');
+    // grant-guard (D6) answers the replay and revokes the grant.
+    expect(logged).toContain('[OAuth] A consumed credential was presented at /token (authorization code); revoked its grant');
     expect(logged.join(' ')).not.toContain(grant.code);
   });
 });

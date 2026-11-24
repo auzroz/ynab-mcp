@@ -160,8 +160,10 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
   - the `ttl` functions apply STOR-1's and #54's retention: refresh tokens get the idle window, capped by the absolute lifetime from the family's start (`iiat`); codes and interactions get `authCodeTtlSec`, today's pending-authorization lifetime. `YNAB_CALLBACK_DEADLINE_MS` stays as our check in `complete`.
 - **CORS:** our `cors-origin` stage (D8) answers CORS, preflights included, on `/token`, `/revoke` and `/register`. Because it sets an `Access-Control-*` header first, the library's own CORS middleware steps aside on those routes (`lib/shared/cors.js` skips when such a header is already set), so its client-based check never runs there. The library has no CORS on registration at all. `clientBasedCORS: () => true` is still set as a backstop: the default (`lib/helpers/defaults.js:25`) refuses some origins with `invalid_request` on `/token` and `/revoke`, which would break browser clients such as the MCP Inspector if a request ever reached the library without our stage. Discovery and JWKS use the library's open CORS (D8).
 - **Errors:** `renderError` answers pre-redirect `/authorize` errors as today's JSON (`400 { error, error_description }`) instead of the library's HTML page. #55 replaces this with its own error page for unverified clients.
-- **Cookies:** the library's interaction and session cookies are signed with a key derived from `ENCRYPTION_KEY` (HKDF; no new setting). They are `Secure` whenever `PUBLIC_URL` is HTTPS. `provider.proxy` follows `TRUST_PROXY`.
-- **No silent sign-in:** `loadExistingGrant` returns only the grant our interaction just created. Every authorization therefore shows the consent page and goes through YNAB, as today.
+- **Cookies:** the library's interaction and session cookies are signed with a key derived from `ENCRYPTION_KEY` (HKDF; no new setting). They are `Secure` whenever `PUBLIC_URL` is HTTPS.
+- **Origin and proxy (as built in #47-2):** the library builds every URL from the request's origin, so the pre-middleware pins it to `PUBLIC_URL`, and `provider.proxy = true`. It **replaces** `X-Forwarded-Proto`, `-Host` and `-For` (never appends to them), the last with Express's `req.ip`, which follows `TRUST_PROXY`. Nothing a client sends in those headers reaches the library. This relies on `host-validation` running first (D8). It replaces "`provider.proxy` follows `TRUST_PROXY`" in the accepted draft.
+- **No silent sign-in:** `loadExistingGrant` returns only the grant our interaction just created, and the library's session cookie is ignored on `/authorize` and its resume route. Every authorization therefore shows the consent page and goes through YNAB, as today. A consequence: `prompt=none` is answered with `login_required` (see Consequences).
+- **No client configuration endpoint:** `GET /register/:id`, which the library serves whenever registration is on, is closed (it would return the stored `s256.` hash), and the DCR response doesn't name it. `sector_identifier_uri` is refused, so nothing fetches a URL a client named.
 - **Binds:** #47-2.
 
 ### D3. The YNAB broker runs as the library's interaction
@@ -169,8 +171,9 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
 - **What:**
   - `interactions.url` is `/oauth/interaction/:uid`. Every leg therefore stays under `/oauth` and `oauth-leg-limiter`.
   - `GET /oauth/interaction/:uid` renders today's consent page from `provider.interactionDetails`. It offers read-write only when `YNAB_OAUTH_ALLOW_WRITE`, not `YNAB_READ_ONLY`, and the requested scope allow it (`scopeCeiling`, unchanged).
-  - `…/start?scope=` records the choice in a hashed `state` row (`pending_auth`, as today) and redirects to YNAB.
+  - `…/start?scope=` records the choice and redirects to YNAB. **As built in #47-2,** the YNAB `state` is `<uid>.<value>`; only the value's `h1.` key is kept, as a one-time `oauth_rows` row (model `Interaction`, expiring with the interaction) and in the interaction's own result. It is **not** a `pending_auth` row: D12 has nothing read the 0.4.x tables after the cut-over. `complete` spends the row with a delete only one caller can win, before the YNAB code is exchanged.
   - `/oauth/ynab/callback` (the URI registered at YNAB) maps `state` to the interaction and redirects to `/oauth/interaction/:uid/complete`. The library's interaction cookie is scoped to that path.
+  - The interaction URL is absolute under `PUBLIC_URL` (#47-4), like every other link of the legs, so a `PUBLIC_URL` with a path reaches `/oauth` the same way for each.
   - `complete` first calls `interactionDetails`. Without this browser's cookie that call throws, before anything else happens, so the library's cookie replaces our consent cookie as the browser binding (the spike checked this).
   - `complete` then exchanges the YNAB code, resolves the YNAB user, stages the sign-in (D4) and saves a `Grant`:
     - a `read-only` choice adds the resource scope `read-only` and rejects `read-write`;
@@ -205,7 +208,7 @@ The oidc-provider 9.15.0 spike's 46 checks, in the order they ran. All passed on
 
 ### D5. Client authentication stays #52's fail-closed stage
 
-- **What:** `client-auth` stays where it is, behind `route-limiter`, with every check it makes today. On success it still writes the stored hash into `req.body.client_secret`, now so that the library's comparison passes.
+- **What:** `client-auth` stays where it is, behind `route-limiter`, with every check it makes today. On success it still writes the stored hash into `req.body.client_secret`, now so that the library's comparison passes. It also removes any `Authorization` header, so the body's credentials, which it checked, are the only ones the library sees (#47-4; see the addendum).
 - **Why:** it is fail-closed by construction. The library alone compares the presented secret with the stored hash and refuses (the spike checked this). The rewrite is a stage ahead of the library, not a patch of it.
 - **Changes:**
   - The library's DCR returns `client_secret_expires_at: 0`: new secrets no longer expire after the SDK's 30 days. The sweep still removes clients unused for 90 days.
@@ -235,6 +238,7 @@ Both grant handlers load the credential with `ignoreExpiration: true` (`refresh_
   - no scope means `read-only read-write`;
   - `read-write` implies `read-only`;
   - `openid` and other unknown scopes are dropped (#55 decides drop or refuse).
+  - **As built in #47-2,** the parameters that only mean something with `openid` are dropped too (`nonce`, `max_age`, `acr_values`, `claims`, `claims_locales`, `id_token_hint`): the library would refuse them, and the SDK ignored them. #47-4 also drops `response_mode`, which the SDK ignored, so the authorization response is always a query redirect the authorize guard can judge (D8).
 - **Why:**
   - The library answers `access_denied` when no requested scope is granted. Without this, a client asking only for `read-write` that the user downgrades, or a client sending no scope, would fail.
   - Narrowing a refresh to `read-only` needs `read-only` in the grant (both spikes).
@@ -248,17 +252,21 @@ Both grant handlers load the credential with `ignoreExpiration: true` (`refresh_
   - `cors-origin` runs **before** `method-check` on `/token`, `/revoke` and `/register`, so a browser's `OPTIONS` preflight gets 204 with the CORS headers and never 405. On a preflight it answers itself (204; `Access-Control-Allow-Origin: *`; `Access-Control-Allow-Methods: POST`; `Access-Control-Allow-Headers` echoing the request's `Access-Control-Request-Headers`) and ends the request, so `method-check` never sees `OPTIONS` on those routes. On any other method it sets `Access-Control-Allow-Origin: *` and continues, so a 405, 429 or `invalid_client` is readable by a browser client. This matches server-legacy 2.4.0, whose token, revocation and registration handlers each apply `cors()` ahead of `allowedMethods(["POST"])`. `/authorize` has no `cors-origin`: a browser navigates there, and the SDK's authorization handler applies no `cors()`. The discovery and JWKS routes use the library's open CORS (`GET`; it echoes the request's `Origin`, or sends `*` without one), the same any-origin behaviour as server-legacy's metadata handler.
   - `route-limiter` stages on `/authorize` (100 per 15 min) and `/register` (20 per hour) replace the SDK handlers' internal limiters. #59's keys apply to them.
   - `iss-redirect` goes: the library sets `iss` on every authorization response, errors included (the spike checked this).
-- **The final stage lists**, once the re-scoped #64a has merged (with #55's and #59's stages as the plan has them). #47-4 mounts every stage except `refresh-guard` (added by #64a). #64a adds its stage to `EXPECTED` itself.
+- **The final stage lists**, once the re-scoped #64a has merged (with #55's and #59's stages as the plan has them). #47-4 mounts every stage except `refresh-guard` (added by #64a). #64a adds its stage to `EXPECTED` itself. The table uses the stage names as built (corrected by #47-4: the IP-only limiters are `ip-limiter`, and `/register`'s order is cors-origin → method-check → dcr-validator → register-host-limiter). `host-validation` is present when DNS-rebinding protection is on (the default).
 
 | Route | Stages |
 |---|---|
-| `/authorize` | host-validation → as-limiter → bounded-parser → method-check → route-limiter → authorize-validation → authorize-guard → as-library |
-| `/token` | host-validation → as-limiter → bounded-parser → cors-origin → method-check → route-limiter → client-auth → refresh-guard → grant-guard → as-library |
-| `/revoke` | host-validation → as-limiter → bounded-parser → cors-origin → method-check → route-limiter → client-auth → as-library |
-| `/register` | host-validation → as-limiter → bounded-parser → cors-origin → method-check → route-limiter → dcr-validator → as-library |
-| `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`, `/jwks` | host-validation → bounded-parser → as-library |
-| the PRM routes | unchanged (`metadata`, ours) |
-| `/oauth` | host-validation → oauth-leg-limiter → bounded-parser → ynab-federation (now including the interaction routes) |
+| `/authorize` (and the library's resume route, `/authorize/:uid`) | host-validation → ip-limiter → bounded-parser → method-check → route-limiter → authorize-validation → authorize-guard → as-library |
+| `/token` | host-validation → ip-limiter → bounded-parser → cors-origin → method-check → route-limiter → client-auth → refresh-guard → grant-guard → as-library |
+| `/revoke` | host-validation → ip-limiter → bounded-parser → cors-origin → method-check → route-limiter → client-auth → as-library |
+| `/register` | host-validation → ip-limiter → bounded-parser → cors-origin → method-check → dcr-validator → register-host-limiter → as-library |
+| `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`, `/jwks` | host-validation → bounded-parser → method-check → as-library |
+| the PRM routes | host-validation → bounded-parser → metadata (ours; unchanged behaviour: any-origin CORS, `GET` only, 405 otherwise) |
+| `/oauth` | host-validation → oauth-leg-limiter → bounded-parser → ynab-federation (now the interaction router) |
+
+- **`method-check` on the discovery documents and `/jwks`** (#47-4): `GET` and `OPTIONS` (the library's open CORS answers the preflight). It keeps the 405 the SDK's metadata handler gave; the library alone answers 404. `/authorize` allows `GET` only, `/token`, `/revoke` and `/register` `POST` only.
+- **The resume route** runs `/authorize`'s pipeline, because it is under the same mount. `authorize-validation` and `authorize-guard` pass it through (it carries no client parameters), and it counts against the IP's `/authorize` budgets, so one sign-in costs two `/authorize` requests.
+- **The authorize guard over the library** (#47-4, replacing server-legacy's `captureRedirects`): the `authorize-guard` stage pre-validates every parameter the library would refuse with an error redirect once it has accepted the client and the redirect URI (repeated parameters, request objects, `response_type`, `code_challenge_method`, `prompt`, `resource`) and answers it the guarded way. A fail-closed net behind it, a `provider.use` middleware, replaces any answer to the initial `/authorize` that isn't the redirect to our interaction, a redirect to a verified request's own redirect URI, or a non-redirect error with this server's error page. Koa writes the response only after every middleware returns, so nothing is sent first. The resume route isn't guarded: it carries the user's decision on the consent page, which names where it returns to, as the SDK-era `/oauth/cancel` did.
 
 - **`dcr-validator`** (#55) also sets `application_type: native` on a registration whose redirect URIs are all loopback or private-use. That keeps today's RFC 8252 loopback port relaxation, which the library applies only to native clients.
 - **Binds:** #47-4, with `http-as-pipeline.test.ts`'s `EXPECTED` changed in that PR; #64a for its own stage.
@@ -368,6 +376,7 @@ What an upgrading instance holds, and what happens to it:
   - #47-1 and #47-2, both after the sign-off. #47-1 opens with B's `package.json` and lockfile hunk as its first commit, and #47-2 branches from that commit, so the two are built in parallel; #47-2 merges after #47-1. #47-3 comes after WS7.4;
   - #47-4 after #47-1, #47-2, #47-3, #55 and #59;
   - #64a and #46 after #47-4.
+- **Superseded (2026-11-23): the dates below.** The maintainer decided on 2026-11-23 to go as fast as possible, which overrides Q7's "none moves earlier". The order of the work stands; the dates and packets that follow are kept as the record of the original plan. See the addendum.
 - **New dates** (decision 7). The three new packets (P11 Sat Dec 12, P12 Wed Dec 16, P13 Sat Dec 19) and P14 (Tue Dec 22, fixes) follow the plan's Wednesday and Saturday rhythm. The maintainer approved these dates and asked that none move earlier (Q7). Dropping the token carry-over (Q3) frees its slot in P13: that slot is **buffer**, held for a slip in #47-1 to #47-4 or for fixes from WS7.9b. It doesn't pull any date forward.
   - **WS7.9b, Sat Dec 19-Sun Dec 20 (1.5 h of maintainer time):** the claude.ai connector, Desktop and the Inspector against the cut-over head on staging, so that client-visible changes show up before the freeze and the holidays (Q4). The check covers Desktop, the claude.ai connector and the Inspector.
   - **Freeze: Wed Dec 23**, moved from Dec 9.
@@ -386,21 +395,21 @@ What an upgrading instance holds, and what happens to it:
 | RFC 8707 resource binding | `resourceIndicators` with an exact `getResourceServerInfo`; the verifier's exact `aud` check | Config + ours | `http-oauth-resource`; spike 11, 20, 27 |
 | RFC 9207 `iss` | Every authorization response, errors included | Library | `http-oauth-iss`; spike 3, 9-11, 14, 37 |
 | Refresh rotation, reuse detection (RFC 9700) | `rotateRefreshToken`; the reuse revocation; the adapter's compare-and-set | Config + library + adapter | conformance suite; spike 25, 26, 28, 29, 32 |
-| Another client presenting a live refresh token revokes the family; a consumed refresh token or code replayed after it expired revokes the grant (the library checks expiry first) | `grant-guard` stage, looking the row up ignoring expiry | Ours | new stage tests: one per credential type, including the expired replay |
+| Another client presenting a live refresh token revokes the family; a consumed refresh token or code replayed after it expired revokes the grant (the library checks expiry first) | `grant-guard` stage, looking the row up ignoring expiry | Ours | `http-oauth-cutover` (#47-4): one per credential type, including the expired replay; each fails without the stage |
 | #42 code replay revocation | The library's consumed check; the adapter's compare-and-set and grant check; `grant-guard` for another client and for a replay after expiry | Library + adapter + ours | `http-oauth-code-replay`, conformance; spike 22, 35 |
 | The YNAB legs and their limit | Interaction routes under `/oauth`; `oauth-leg-limiter` | Ours (interaction hook) | `http-oauth-security`, `http-oauth-rate-limit`; spike 13, 36, 37 |
 | Consent, read-only or read-write, `YNAB_OAUTH_ALLOW_WRITE` | The interaction page and the `Grant` scopes; `scopeCeiling` | Ours | `http-oauth-write-policy`; spike 13, 18, 23, 24 |
 | #52 hashed tokens and codes | Adapter `h1.` keys; no `jti` stored; shape refusal | Adapter | conformance, `token-hashing-migration`; spike 15, 21 |
 | #52 hashed client secrets, fail-closed | Adapter `s256.`; `client-auth` stage | Adapter + ours | `http-oauth-client-auth`; spike 6, 38-40 |
 | G21 stage order | `as-router.ts`, `as-library` last | Ours | `http-as-pipeline` |
-| DCR validator, authorize guard (#55) | Stages ahead of `as-library` | Ours | #55's tests |
+| DCR validator, authorize guard (#55) | Stages ahead of `as-library`; the guard's redirect net inside the library | Ours | #55's tests (`http-oauth-dcr-authorize`), `http-oauth-cutover` (pre-validation, the net) |
 | STOR-1 issued-under-user | The adapter's user join | Adapter | conformance; spike 45, 46 |
 | STOR-1 retention, sweeps, deletion | `ttl` functions; `oauth_rows.expires_at`; `deleteUserData` | Config + storage | `retention`, `account-deletion` |
 | #94 atomic sign-in | The code `upsert` → `completeAuthorization` | Adapter + storage | #94's tests, ported |
 | Error response shapes | Library JSON; `renderError`; `method-check`; `sendOAuthError` | Config + ours | the HTTP tests |
 | The `/mcp` resource side | `verifier.ts` via `AccessToken.find` | Ours (public API) | `http-oauth-flow`, `-resource`, WS7.3's never-500 test |
 | #64a's 60 s idempotency | `refresh-guard` stage | Ours | spike 30, 31 |
-| Registered clients survive the upgrade; 0.4.x tokens don't | M4's client conversion; no code reads the old token tables; the sweep and `deleteUserData` clear them (D12) | Storage + ours | upgrade fixtures on all three drivers; rc.1's DB-copy upgrade |
+| Registered clients survive the upgrade; 0.4.x tokens don't | M4's client conversion; no code reads the old token tables; the sweep and `deleteUserData` clear them (D12) | Storage + ours | `oauth-rows-migration` (M4, SQLite and Postgres), `http-oauth-upgrade` (#47-4: the app over an upgraded database), `token-hashing-migration`; rc.1's DB-copy upgrade |
 | The path to #46 | `clientIdMetadataDocument` feature | Config (experimental) | #46's tests |
 
 "Spike N" refers to the numbered list in "Spike checks", before the decisions.
@@ -423,9 +432,11 @@ What an upgrading instance holds, and what happens to it:
   - the DCR response has more fields, and `client_secret_expires_at` is `0`;
   - discovery lists OIDC fields and `jwks_uri`;
   - error descriptions read differently;
-  - an `invalid_client` that comes from the library itself is 401.
+  - an `invalid_client` that comes from the library itself is 401;
+  - **`POST /authorize` answers 405** (`Allow: GET`): the library serves POST there only with `enableHttpPostMethods`, which needs `SameSite=None` cookies (found in #47-2);
+  - **`prompt=none` returns `login_required`**: there is no silent sign-in (D2), so every authorization needs the consent page (found in #47-2). The SDK ignored `prompt`.
 
-  The maintainer accepted these (Q4), and each is documented in the CHANGELOG. The 405 response and the JSON pre-redirect errors are kept (D2, D8).
+  The maintainer accepted these (Q4), and each is documented in the CHANGELOG. The 405 response and the JSON pre-redirect errors are kept (D2, D8). The last two were added by #47-4 from #47-2's findings, for the WS7.9b staging check.
 - **0.5.0 moves from Dec 18 to Jan 12.**
 
 **Neutral:**
@@ -470,4 +481,27 @@ The ADR's nine open questions, answered on 2026-11-13. Eight take the recommenda
 
 ## Addenda
 
-None yet.
+### 2026-11-23: #47-2 and #47-4 as built
+
+The in-place edits above (D2, D3, D7, D8, D15 and Consequences) record these; this addendum lists them in one place.
+
+1. **#47-2's decisions** (PR #127, made by the lead):
+   - **D2:** the origin is pinned to `PUBLIC_URL`, `provider.proxy = true`, and the forwarded headers are replaced (never appended to), with the client address from Express's `req.ip` (`TRUST_PROXY`). The library's session cookie is ignored on `/authorize` and its resume route. The client configuration endpoint is closed, and `sector_identifier_uri` is refused.
+   - **D3:** the YNAB `state` lives on the Interaction as a one-time `oauth_rows` row, not in `pending_auth`, and the interaction uid travels to YNAB inside it.
+   - **D7:** the OIDC-only parameters are dropped along with `openid`.
+2. **#47-4's decisions:**
+   - **D8:** `method-check` also guards the discovery documents and `/jwks` (405, as before the move). The stage table uses the names as built. The authorize guard pre-validates the library's parameters and adds a fail-closed redirect net inside the library (`provider.use`), replacing `captureRedirects`. `response_mode` is dropped by the normalizer.
+   - **D3:** the interaction URL is absolute under `PUBLIC_URL`, like the legs' other links.
+   - **D6's `grant-guard`:** a refresh token or code presented by another client (live or consumed) and a consumed one presented at any age both revoke the grant through storage. A request without a `client_id` in the body is left to the library (client authentication refuses it), so only a registered, and for a confidential client authenticated, client can trigger a revocation, as with the SDK.
+   - **D5:** `client-auth` removes any `Authorization` header on `/token` and `/revoke` before the library sees it. The library treats HTTP Basic and `client_secret_post` as interchangeable for a `client_secret_post` client and compares a Basic secret with the stored hash, so without this a hash copied out of the database was a credential (found by #47-4's tests). The SDK never read the header, so clients see no change. The stages read clients through the library's `Client.find`, without the OIDC fields the library defaults on every client.
+   - **DCR:** `dcr-validator` drops a registered `scope`, as M4 drops it from converted clients: the library's client `scope` names its own OIDC scopes and refused `read-only read-write` (`invalid_client_metadata`), while ours are resource scopes asked for at `/authorize`. The library also doesn't keep `software_id` and `software_version`. Discovery advertises `response_modes_supported: ["query"]`, matching the dropped `response_mode`.
+   - **Route spellings:** the library's router matches case-insensitively and ignores one trailing slash, and Express's mounts do too. The normalizer and the redirect net compare one canonical form of the path (`route-path.ts`), so `/AUTHORIZE` and `/authorize/` get D7 and the guard like `/authorize` (found by CodeRabbit).
+   - **grant-guard acts only for an authenticated or public client:** `client-auth` refuses a non-string `client_secret` itself instead of leaving it to the library, which runs after `grant-guard` (found by CodeRabbit).
+   - **Each AS pipeline is mounted on exactly its route** (any spelling Express and the library both route), plus the resume route under `/authorize`; `as-library` and `grant-guard` also check the path. Anything else under a route (`/token/introspection`, `/register/<id>`, `/jwks/x`) runs no stage and gets the app's 404. `/oauth` stays a prefix mount for the interaction router.
+   - **`oauth-leg-limiter` is 200 per 15 minutes per address:** a sign-in takes four requests under `/oauth` (consent page, start, callback, complete) where 0.4.x took two, so this keeps 0.4.x's 50 sign-ins.
+   - **Discovery** also lists `revocation_endpoint_auth_methods_supported` (`client_secret_post`, `none`), which the library omits and RFC 8414 would default to `client_secret_basic`.
+   - **D2's TTLs:** interactions and sessions live `MCP_AUTH_CODE_TTL_SEC`, but at least 30 s past `YNAB_CALLBACK_DEADLINE_MS`, so a sign-in that runs past its deadline still ends with a `server_error` redirect to the client (lead decision, 2026-11-23).
+   - **D4:** deleting a `Client` row deletes its RegistrationAccessToken rows in the same step, on every driver; the sweep still removes any left behind.
+   - **Errors:** `sendOAuthError` writes JSON without an ETag, as the library does, so a refusal from a stage can't be told apart from the library's (#42: a replayed code answers exactly as an unknown one).
+3. **Consequences:** `POST /authorize` answers 405, and `prompt=none` returns `login_required`.
+4. **D15's dates are superseded.** On 2026-11-23 the maintainer decided to go as fast as possible, overriding Q7's "no dates earlier". The dependency order is unchanged.

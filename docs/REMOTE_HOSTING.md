@@ -12,7 +12,8 @@ data stays isolated. This guide covers deploying it yourself.
 There are two OAuth layers:
 
 1. **MCP client ⇄ your server.** Your server is an OAuth 2.1 Authorization Server
-   (Dynamic Client Registration + PKCE, provided by the MCP SDK). MCP clients
+   (Dynamic Client Registration + PKCE; since 0.5.0 built on
+   [oidc-provider](https://github.com/panva/node-oidc-provider)). MCP clients
    (claude.ai, Claude Desktop) authenticate to it and receive an MCP access token.
 2. **Your server ⇄ YNAB.** Your server is a confidential OAuth client of YNAB. When
    a user connects, they pick **read-only** or **read-write**, are sent to YNAB to
@@ -132,21 +133,38 @@ volumes: { ynab-data: {} }
 
 ### Consent screen and browser binding
 
-When a client starts authorization, `/authorize` shows a consent page naming
-the client and the address (`redirect_uri`) the browser will be sent back to,
-and sets a short-lived cookie (`__Host-ynab_mcp_consent_…`; `HttpOnly`,
-`Secure`, `SameSite=Lax`, lifetime `MCP_AUTH_CODE_TTL_SEC`). The next steps
-(`/oauth/ynab/start`, the YNAB callback at `/oauth/ynab/callback`, and
-`/oauth/cancel`) only work in a browser that carries that cookie. Without it,
-anyone could start an authorization for their own client and send a victim the
-`/oauth/ynab/start` link, skipping this server's consent screen. A request
-without the cookie gets a generic `400`, and that authorization can't be
-resumed. Over plain http (loopback only) the cookie has no `__Host-` prefix and
-no `Secure` flag. Your reverse proxy must pass `Cookie` and `Set-Cookie`
-through, which proxies do by default. The consent page can't be framed
-(`X-Frame-Options: DENY`, `frame-ancestors 'none'`). An authorization that was
-in progress during an upgrade to 0.4.0 has no binding, so the user has to
-start it again.
+When a client starts authorization, `/authorize` redirects the browser to a
+consent page at `/oauth/interaction/<id>` naming the client and the address
+(`redirect_uri`) the browser will be sent back to. The user's choice goes to
+`/oauth/interaction/<id>/start?scope=read-only|read-write`, which sends the
+browser to YNAB, and **Cancel** to `/oauth/interaction/<id>/cancel`. YNAB
+redirects to `/oauth/ynab/callback` (the URI registered at YNAB), which sends
+the browser to `/oauth/interaction/<id>/complete`; that exchanges the YNAB code
+and hands the browser back through `/authorize/<id>` to the client with its
+code.
+
+These steps only work in the browser that saw the consent page. `/authorize`
+sets short-lived signed cookies (`_interaction` scoped to
+`/oauth/interaction/<id>`, `_interaction_resume` scoped to `/authorize/<id>`,
+and `_session`, each with a `.sig` signature; `HttpOnly`, `SameSite=Lax`,
+`Secure` when `PUBLIC_URL` is https). They last as long as the sign-in may:
+`MCP_AUTH_CODE_TTL_SEC` or the YNAB callback deadline plus 30 seconds,
+whichever is longer, so at least 630 seconds. A sign-in that runs past the
+deadline still ends with a `server_error` back to the client. They
+are signed with a key derived from `ENCRYPTION_KEY`, so there is no new
+setting. Without them, anyone could start an authorization for their own
+client and send a victim the `start` link, skipping this server's consent
+screen. A request without the cookie gets a generic `400`, before anything
+reaches YNAB, and that authorization can't be resumed. Your reverse proxy must
+pass `Cookie` and `Set-Cookie` through, which proxies do by default. The
+consent page can't be framed (`X-Frame-Options: DENY`, `frame-ancestors
+'none'`). Every authorization shows the consent page and goes through YNAB:
+there is no silent sign-in, so `prompt=none` is answered with
+`login_required`.
+
+Until 0.4.x the legs were `/oauth/ynab/start` and `/oauth/cancel`, bound by a
+`__Host-ynab_mcp_consent_…` cookie. Both are gone in 0.5.0, so an
+authorization that was in progress during the upgrade has to start again.
 
 Since 0.5.0 the consent page shows the host the browser returns to in bold.
 A client whose redirect URI isn't on `MCP_VERIFIED_REDIRECT_URIS` appears as
@@ -165,9 +183,20 @@ few short fields (`token_endpoint_auth_method`, `grant_types`,
 `response_types`, `scope`, `application_type`, `software_id`,
 `software_version`). Other fields (`jwks`, `contacts`, `logo_uri`,
 `software_statement` and so on) are dropped. A refusal is `400` with
-`invalid_redirect_uri` or `invalid_client_metadata`. Every authorization
-server route refuses a body over 8 KB (`413`). The rate limits are in "Client
-addresses and rate limits".
+`invalid_redirect_uri` or `invalid_client_metadata`; so is a
+`sector_identifier_uri`. Every authorization server route refuses a body over
+8 KB (`413`), and a method it doesn't serve with `405` (`/authorize` serves
+only `GET`; `/token`, `/register` and `/revoke` only `POST`). The rate limits
+are in "Client addresses and rate limits".
+
+Since 0.5.0 the registration response also carries the library's defaults
+(`application_type`, `subject_type`, `id_token_signed_response_alg`,
+`require_auth_time`), and `client_secret_expires_at` is `0`: a client secret
+no longer expires after 30 days. A client unused for 90 days is still removed.
+A registered `scope`, `software_id` and `software_version` are accepted but
+not kept: scopes are asked for at `/authorize`.
+The token response's `token_type` is `Bearer`, and a read-write token's
+`scope` is `read-only read-write`.
 
 `/authorize` refuses a `state` over 512 characters, a `code_challenge` that
 isn't 43 base64url characters, and more than 5 scopes; unknown scopes are
@@ -382,9 +411,7 @@ refresh may ask for a narrower scope than the original grant but never a wider
 one (`invalid_scope`). `/mcp` returns `401 invalid_token` for a token bound to a
 different resource.
 
-Clients that send no `resource` still work. Tokens issued by 0.3.x (stored
-without a resource) keep working against this server until they expire, so
-existing users stay connected. If you change `MCP_RESOURCE_URL` (or `PUBLIC_URL`
+Clients that send no `resource` still work. If you change `MCP_RESOURCE_URL` (or `PUBLIC_URL`
 when it supplies the default), tokens issued for the old URL stop working and
 users must reconnect.
 
@@ -401,20 +428,23 @@ wasn't issued to, or revoked at `/revoke`. A client that sends two refreshes
 with the same token at once also trips this: one request wins, the other looks
 like reuse and revokes the family, including the pair the winner just got.
 That is the intended RFC 9700 behaviour; well-behaved clients serialize their
-refreshes. Other connections of the same user are unaffected. 0.3.x refresh
-tokens keep working and join a family at their next refresh.
+refreshes. Other connections of the same user are unaffected. A spent refresh
+token presented after it expired still counts as reuse while it is remembered.
 
 Authorization codes get the same treatment (RFC 9700 section 4.2.4, RFC 6749
-section 4.1.2). A code is single-use, and a spent code is remembered for 10
-minutes. If it is presented again, from any client, the server treats it as
-leaked: it revokes the family the code started (the tokens issued for it and
-every refresh since) and answers `invalid_grant` with the same response as for
-an unknown code. This also covers a replay that arrives while the first
-exchange is still running: the first exchange then issues no tokens, so
-whichever request redeemed the code first, an attacker or the client, the
-connection it started is cut off and the user must reconnect. Clients that send
-each code once, as OAuth requires, are unaffected. Codes issued before the
-upgrade keep working.
+section 4.1.2). A code is single-use, and a spent code is remembered for 30
+days. If it is presented again, from any client and even after it expired, the
+server treats it as leaked: it revokes the connection the code started (the
+tokens issued for it and every refresh since) and answers `invalid_grant` with
+the same response as for an unknown code. A code presented by a client it
+wasn't issued to revokes it too. This also covers a replay that arrives while
+the first exchange is still running: whichever request redeemed the code
+first, an attacker or the client, the connection it started is cut off and the
+user must reconnect. Clients that send each code once, as OAuth requires, are
+unaffected.
+
+0.4.x tokens and codes don't carry over to 0.5.0: see "Upgrading to 0.5.0:
+the authorization server".
 
 ### Issuer identification (RFC 9207)
 
@@ -504,7 +534,7 @@ is read, so a request past them costs no parsing.
 | `/authorize` | 100 per 15 minutes | (`client_id`, address) |
 | `/token` | 50 per 15 minutes | (`client_id`, address) |
 | `/revoke` | 50 per 15 minutes | (`client_id`, address) |
-| `/oauth/*` (YNAB login legs) | 100 per 15 minutes | address |
+| `/oauth/*` (YNAB login legs) | 200 per 15 minutes (a sign-in takes 4) | address |
 | `/register` | `REGISTER_RATE_LIMIT_PER_IP` per hour (default 100) | address |
 | `/register` | `REGISTER_RATE_LIMIT_PER_HOST` per hour (default 20) | each redirect URI host |
 
@@ -521,7 +551,9 @@ alone, one caller could lock that client out for everyone.
 
 The `client_id` for `/token` and `/revoke` is the `client_id` form field (the
 one client authentication checks; an HTTP Basic user is not read). For
-`/authorize` it is the query parameter on GET and the form field on POST.
+`/authorize` it is the query parameter (only GET is served). The browser's
+return from the consent page (`/authorize/<id>`) carries no `client_id` and
+counts against the address, so one sign-in costs two `/authorize` requests.
 The address-only ceilings are 1000 per 15 minutes on `/authorize` and 500 on
 `/token` and on `/revoke`.
 
@@ -551,8 +583,9 @@ transport's own DNS-rebinding option is not used, so the two can't disagree).
   are allowed. `Origin: null` is rejected. It applies to `/mcp` only: the OAuth
   endpoints carry no ambient credentials (PKCE and client authentication) and
   are deliberately CORS-open, and the well-known metadata must stay readable
-  from any origin. The only cookie is the `SameSite=Lax` consent cookie, which
-  proves which browser saw the consent page and grants nothing by itself.
+  from any origin. The only cookies are the authorization server's signed
+  `SameSite=Lax` sign-in cookies, which prove which browser saw the consent
+  page and grant nothing by themselves.
 - With no `ALLOWED_ORIGINS` and no `PUBLIC_URL`, origins are derived from the
   allowed hosts (`https://` for each, plus `http://` for loopback hosts).
 - A malformed `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` entry (a scheme in a host, a
@@ -592,8 +625,9 @@ needed to roll back; 0.5.0's token hashing is the exception (see below).
 pending-authorization `state` only as keyed hashes (`h1.` + HMAC-SHA256), and
 DCR client secrets only as `s256.` + SHA-256. On the first start it rewrites the
 existing rows in place (the M3 migration, in the same transaction and lock as
-the rest), so connected clients keep working: the tokens they already hold are
-hashed the same way when presented. New tokens look like `ymcp1_…`.
+the rest). Since the authorization server move (see the next section), those
+0.4.x rows are no longer read, so their tokens stop working anyway; the
+pepper still keys every token and code 0.5.0 issues.
 
 - **Back up first.** The rewrite can't be undone. Rolling back to 0.4.x after
   it means every user reconnects (0.4.x can't look up hashed tokens), and
@@ -606,7 +640,53 @@ hashed the same way when presented. New tokens look like `ymcp1_…`.
   setting or removing it, or a new `ENCRYPTION_KEY` when `TOKEN_PEPPER` is
   unset) refuses to start with an error naming no value.
 - **Run one version at a time.** Rows that a 0.4.x process writes into a
-  migrated database aren't usable until the next 0.5.0 start converts them.
+  migrated database aren't usable by 0.5.0.
+
+### Upgrading to 0.5.0: the authorization server
+
+0.5.0 replaces the OAuth authorization server (the MCP SDK's frozen
+`server-legacy` handlers) with [oidc-provider](https://github.com/panva/node-oidc-provider).
+Clients, tokens and codes now live in one `oauth_rows` table, which the first
+0.5.0 start creates.
+
+- **Registered clients carry over.** The first start converts every client
+  registered under 0.4.x, so no client has to register again. A client that
+  fails the new registration rules is dropped (the log names it, without its
+  details) and has to register again. A converted client's 90-day unused
+  window starts at the conversion.
+- **Tokens don't: every user signs in again once per client.** 0.4.x access
+  tokens, refresh tokens and authorization codes, and sign-ins in progress,
+  stop working at the upgrade. A client's next request is refused, and it
+  sends the user through the consent page and YNAB's approval again. That is
+  one sign-in per user per client: 6 for a family instance with 3 users and 2
+  clients each. The claude.ai connector shows as disconnected until it is
+  reconnected. **Tell your users to expect this.**
+- **The old token tables stay, unread.** `access_tokens`, `refresh_tokens`,
+  `auth_codes`, `pending_auth`, `consumed_refresh_tokens` and
+  `consumed_auth_codes` keep their rows, unread. The sweep keeps deleting
+  expired rows from them on the usual schedule, and deleting an account
+  removes the user's rows there too. 0.6 drops them.
+- **Rolling back to 0.4.x means restoring the pre-upgrade backup.** 0.4.x
+  can't read the schema or the encrypted data 0.5.0 writes, so take the
+  backup before the first 0.5.0 start.
+- **A `PUBLIC_URL` with a path** (for example `https://example.com/ynab`): the
+  YNAB legs and the consent page are linked under that path (`/ynab/oauth/...`),
+  but the authorization server's own endpoints are published at the root of
+  the host (`/authorize`, `/token`, `/register`, `/revoke`, `/jwks` and the
+  discovery documents, including the return through `/authorize/<id>`), as
+  0.4.x published them. Such a deployment must route those root paths to the
+  server as well as the prefixed ones.
+- **What clients may notice:** `POST /authorize` answers `405`;
+  `prompt=none` answers `login_required`; `token_type` is `Bearer`; a
+  read-write token's `scope` is `read-only read-write`; the registration
+  response has more fields and `client_secret_expires_at: 0`; discovery lists
+  OIDC fields and `jwks_uri`; error descriptions read differently; and an
+  `invalid_client` from the library itself is `401`. See the changelog.
+- **New routes and cookies:** `/.well-known/openid-configuration`, `/jwks`,
+  the consent page at `/oauth/interaction/<id>` and the return through
+  `/authorize/<id>` (see "Consent screen and browser binding").
+  `/oauth/ynab/start` and `/oauth/cancel` are gone. The YNAB redirect URI
+  (`/oauth/ynab/callback`) is unchanged, so nothing changes at YNAB.
 
 ### Changing TOKEN_PEPPER
 
@@ -619,6 +699,7 @@ longer be used:
 DELETE FROM schema_meta WHERE key = 'token_pepper_fingerprint';
 DELETE FROM access_tokens; DELETE FROM refresh_tokens; DELETE FROM auth_codes;
 DELETE FROM pending_auth; DELETE FROM consumed_refresh_tokens; DELETE FROM consumed_auth_codes;
+DELETE FROM oauth_rows WHERE model <> 'Client';
 ```
 
 Users and their encrypted YNAB refresh tokens are kept; every client

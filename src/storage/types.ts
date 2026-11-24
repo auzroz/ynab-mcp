@@ -699,7 +699,9 @@ export interface OAuthRowStore {
    * Delete one row (not a grant's: use {@link revokeOAuthGrant}). Returns
    * whether this call deleted it: of two concurrent deletes of one row, exactly
    * one gets true, so a delete can spend a one-time row (the interaction's
-   * YNAB state, src/auth/oidc/interaction.ts).
+   * YNAB state, src/auth/oidc/interaction.ts). Deleting a `Client` row also
+   * deletes the client's RegistrationAccessToken rows, in the same step
+   * (nothing reads them: the client configuration endpoint isn't served).
    */
   destroyOAuthRow(key: string): Promise<boolean>;
   /**

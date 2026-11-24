@@ -1184,8 +1184,16 @@ export class PostgresStorage implements Storage, OAuthRowStore {
   }
 
   async destroyOAuthRow(key: string): Promise<boolean> {
-    const res = await this.db.query('DELETE FROM oauth_rows WHERE key = $1', [key]);
-    return (res.rowCount ?? 0) > 0;
+    // One statement: the row and, when it is a client, its registration access
+    // tokens (nothing else reads them).
+    const res = await this.db.query(
+      `WITH gone AS (DELETE FROM oauth_rows WHERE key = $1 RETURNING model, client_id),
+            tokens AS (DELETE FROM oauth_rows t USING gone
+              WHERE gone.model = 'Client' AND t.model = 'RegistrationAccessToken' AND t.client_id = gone.client_id)
+       SELECT count(*)::int AS n FROM gone`,
+      [key]
+    );
+    return Number((res.rows[0] as { n?: unknown } | undefined)?.n ?? 0) > 0;
   }
 
   async revokeOAuthGrant(grantId: string): Promise<number> {

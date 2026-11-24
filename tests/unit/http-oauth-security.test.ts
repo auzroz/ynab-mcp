@@ -1,8 +1,10 @@
 /**
- * OAuth-mode security properties over HTTP, through the SDK's real /register,
- * /authorize and /token handlers and the bearer middleware on /mcp:
- *  - the federation legs only run in the browser that saw the consent page
- *    (no consent bypass by sending a victim a /oauth/ynab/start link);
+ * OAuth-mode security properties over HTTP, through the mounted authorization
+ * server (oidc-provider behind the AS stages, ADR-0002) and the bearer
+ * middleware on /mcp:
+ *  - the sign-in legs only run in the browser that was shown the consent page
+ *    (the library's interaction cookie binds the browser, D3), so a victim sent
+ *    an interaction or YNAB link can't complete someone else's sign-in;
  *  - write access comes from the token's own grant, not the user's latest consent;
  *  - /mcp is stateless (ADR-0001): each request is served as the client and
  *    user its own token names, at its own token's access level;
@@ -12,7 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import request from 'supertest';
 import type { Express } from 'express';
 
@@ -39,7 +41,17 @@ import * as ynabOauth from '../../src/auth/ynab-oauth.js';
 import { YnabOAuthError } from '../../src/auth/ynab-oauth.js';
 import * as serverModule from '../../src/server.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { cookieHeaderFrom } from './helpers/consent-cookie.js';
+import {
+  ISSUER,
+  REDIRECT_URI,
+  CookieJar,
+  authorizeUrl,
+  browse,
+  browserFlow,
+  exchangeCode,
+  interactionUid,
+  pkcePair,
+} from './helpers/oidc-app.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
 const exchangeCodeMock = vi.mocked(ynabOauth.exchangeCode);
@@ -47,8 +59,9 @@ const getYnabUserIdMock = vi.mocked(ynabOauth.getYnabUserId);
 const refreshAccessTokenMock = vi.mocked(ynabOauth.refreshAccessToken);
 const createServerMock = vi.mocked(serverModule.createServerForRequest);
 
-const CALLBACK = 'https://client.example/cb';
+const CALLBACK = REDIRECT_URI;
 const ATTACKER_CALLBACK = 'https://attacker.example/cb';
+const EXPIRED_OR_INVALID = 'Authorization request expired or invalid. Please start over.';
 
 function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
   return makeHttpConfig({
@@ -63,8 +76,7 @@ function makeConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
   });
 }
 
-const verifier = randomBytes(32).toString('base64url');
-const challenge = createHash('sha256').update(verifier).digest('base64url');
+const { verifier, challenge } = pkcePair();
 
 const initializeBody = {
   jsonrpc: '2.0',
@@ -85,26 +97,30 @@ async function register(app: Express, redirectUri = CALLBACK): Promise<string> {
   return res.body.client_id as string;
 }
 
-/** GET /authorize: the consent page, its pending state and the consent cookie. */
+/**
+ * GET /authorize in `jar`'s browser, then the consent page it is sent to (the
+ * library's interaction): the interaction uid and both responses.
+ */
 async function consent(
   app: Express,
+  jar: CookieJar,
   clientId: string,
   redirectUri = CALLBACK,
   scope?: string
-): Promise<{ state: string; cookie: string; res: request.Response }> {
-  const res = await request(app).get('/authorize').query({
-    response_type: 'code',
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-    state: 'client-state',
-    ...(scope !== undefined ? { scope } : {}),
-  });
+): Promise<{ uid: string; authorize: request.Response; res: request.Response }> {
+  const authorize = await browse(app, jar, authorizeUrl({ clientId, challenge, redirectUri, scope }));
+  expect(authorize.status).toBe(303);
+  const uid = interactionUid(authorize.headers['location'] as string);
+  const res = await browse(app, jar, authorize.headers['location'] as string);
   expect(res.status).toBe(200);
-  const m = /state=([^&"]+)&amp;scope=read-only/.exec(res.text);
-  if (!m?.[1]) throw new Error('no consent link');
-  return { state: decodeURIComponent(m[1]), cookie: cookieHeaderFrom(res), res };
+  return { uid, authorize, res };
+}
+
+/** The `state` the interaction's start sent YNAB, after running start in `jar`'s browser. */
+async function startYnab(app: Express, jar: CookieJar, uid: string, scope = 'read-write'): Promise<string> {
+  const start = await browse(app, jar, `/oauth/interaction/${uid}/start?scope=${scope}`);
+  expect(start.status).toBe(302);
+  return new URL(start.headers['location'] as string).searchParams.get('state') as string;
 }
 
 /** Full, legitimate flow in one browser: returns the client id and its access and refresh tokens. */
@@ -114,20 +130,10 @@ async function connect(
   scope?: string
 ): Promise<{ clientId: string; access: string; refresh: string }> {
   const clientId = await register(app);
-  const { state, cookie } = await consent(app, clientId, CALLBACK, scope);
-  const start = await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: choice });
-  expect(start.status).toBe(302);
-  const cb = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'ynab-code', state });
-  expect(cb.status).toBe(302);
-  const code = new URL(cb.headers['location'] as string).searchParams.get('code');
+  const flow = await browserFlow(app, new CookieJar(), { clientId, challenge, scope, choice });
+  const code = flow.params.get('code');
   if (!code) throw new Error('no code');
-  const tok = await request(app).post('/token').type('form').send({
-    grant_type: 'authorization_code',
-    client_id: clientId,
-    code,
-    code_verifier: verifier,
-    redirect_uri: CALLBACK,
-  });
+  const tok = await exchangeCode(app, { clientId, code, verifier });
   expect(tok.status).toBe(200);
   return { clientId, access: tok.body.access_token as string, refresh: tok.body.refresh_token as string };
 }
@@ -188,16 +194,18 @@ beforeEach(() => {
 });
 
 describe('consent cannot be skipped (browser binding)', () => {
-  it('the consent page sets a __Host- cookie and shows the redirect URI; it cannot be framed', async () => {
+  it('/authorize sets the interaction cookie for the consent page, which shows the redirect URI and cannot be framed', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { res } = await consent(app, clientId);
-    const set = (res.headers['set-cookie'] as unknown as string[])[0] ?? '';
-    expect(set).toMatch(/^__Host-ynab_mcp_consent_[0-9a-f]{32}=[A-Za-z0-9_-]{43}; /);
-    expect(set).toContain('HttpOnly');
-    expect(set).toContain('Secure');
-    expect(set).toContain('SameSite=Lax');
-    expect(set).toContain('Path=/');
+    const { uid, authorize, res } = await consent(app, new CookieJar(), clientId);
+    const cookies = (authorize.headers['set-cookie'] as unknown as string[]) ?? [];
+    const binding = cookies.find((c) => c.startsWith('_interaction=')) ?? '';
+    // The library's signed interaction cookie, scoped to this interaction's path.
+    expect(binding).toMatch(new RegExp(`path=/oauth/interaction/${uid}(;|$)`, 'i'));
+    expect(binding).toMatch(/;\s*httponly/i);
+    expect(binding).toMatch(/;\s*secure/i);
+    expect(binding).toMatch(/;\s*samesite=lax/i);
+    expect(cookies.some((c) => c.startsWith('_interaction.sig='))).toBe(true);
     expect(res.text).toContain(CALLBACK);
     expect(res.headers['x-frame-options']).toBe('DENY');
     // #55: a strict CSP that still forbids framing.
@@ -207,86 +215,105 @@ describe('consent cannot be skipped (browser binding)', () => {
     expect(res.headers['cache-control']).toBe('no-store');
   });
 
-  it("a victim's browser following an attacker's /oauth/ynab/start link is refused", async () => {
+  it("a victim's browser following an attacker's consent link (start) is refused, and changes nothing", async () => {
     const app = await createHttpApp(makeConfig());
-    // Attacker: registers a client with their own redirect URI and reads the state.
+    // Attacker: registers a client with their own redirect URI and reaches the consent page.
     const attackerClient = await register(app, ATTACKER_CALLBACK);
-    const { state, cookie: attackerCookie } = await consent(app, attackerClient, ATTACKER_CALLBACK);
+    const attackerJar = new CookieJar();
+    const { uid } = await consent(app, attackerJar, attackerClient, ATTACKER_CALLBACK);
 
-    // Victim: no cookie for that state.
-    const victim = await request(app).get('/oauth/ynab/start').query({ state, scope: 'read-write' });
+    // Victim: no interaction cookie for that uid.
+    const victim = await request(app).get(`/oauth/interaction/${uid}/start`).query({ scope: 'read-write' });
     expect(victim.status).toBe(400);
     expect(victim.headers['location']).toBeUndefined();
-    expect(victim.text).toBe('Authorization request expired or invalid. Please start over.');
+    expect(victim.text).toBe(EXPIRED_OR_INVALID);
+    expect(exchangeCodeMock).not.toHaveBeenCalled();
 
-    // The state is now spent, even for the attacker's own browser.
-    const replay = await request(app)
-      .get('/oauth/ynab/start')
-      .set('Cookie', attackerCookie)
-      .query({ state, scope: 'read-write' });
-    expect(replay.status).toBe(400);
+    // The refusal recorded nothing: only the browser holding the cookie can go on.
+    await startYnab(app, attackerJar, uid);
   });
 
   it('a cookie for a different authorization does not satisfy this one', async () => {
     const app = await createHttpApp(makeConfig());
-    const attacker = await consent(app, await register(app, ATTACKER_CALLBACK), ATTACKER_CALLBACK);
-    const victim = await consent(app, await register(app));
+    const attacker = await consent(app, new CookieJar(), await register(app, ATTACKER_CALLBACK), ATTACKER_CALLBACK);
+    const victimJar = new CookieJar();
+    const victim = await consent(app, victimJar, await register(app));
+    // The victim's own interaction cookie, sent to the attacker's interaction.
     const res = await request(app)
-      .get('/oauth/ynab/start')
-      .set('Cookie', victim.cookie)
-      .query({ state: attacker.state, scope: 'read-write' });
+      .get(`/oauth/interaction/${attacker.uid}/start`)
+      .set('Cookie', victimJar.header(`/oauth/interaction/${victim.uid}/start`))
+      .query({ scope: 'read-write' });
     expect(res.status).toBe(400);
+    expect(res.headers['location']).toBeUndefined();
   });
 
   it("a victim's YNAB callback for an attacker-started authorization is refused before any exchange", async () => {
     const app = await createHttpApp(makeConfig());
     const attackerClient = await register(app, ATTACKER_CALLBACK);
-    const { state, cookie } = await consent(app, attackerClient, ATTACKER_CALLBACK);
+    const attackerJar = new CookieJar();
+    const { uid } = await consent(app, attackerJar, attackerClient, ATTACKER_CALLBACK);
     // Attacker runs start in their own browser and sends the YNAB URL to the victim.
-    const start = await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-write' });
-    expect(start.status).toBe(302);
+    const state = await startYnab(app, attackerJar, uid);
 
-    // YNAB sends the victim's browser (no consent cookie) back with a code.
+    // YNAB sends the victim's browser (no interaction cookie) back with a code:
+    // the callback only routes to the interaction, which refuses the browser.
     const cb = await request(app).get('/oauth/ynab/callback').query({ code: 'victim-ynab-code', state });
-    expect(cb.status).toBe(400);
-    expect(cb.headers['location']).toBeUndefined();
-    expect(cb.text).not.toContain('victim-ynab-code');
+    expect(cb.status).toBe(302);
+    const complete = new URL(cb.headers['location'] as string);
+    expect(complete.origin + complete.pathname).toBe(`https://mcp.example.com/oauth/interaction/${uid}/complete`);
+    const res = await request(app).get(complete.pathname + complete.search);
+    expect(res.status).toBe(400);
+    expect(res.headers['location']).toBeUndefined();
+    expect(res.text).not.toContain('victim-ynab-code');
     expect(exchangeCodeMock).not.toHaveBeenCalled();
   });
 
   it('a YNAB error callback or Cancel without the cookie is refused (no redirect)', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const a = await consent(app, clientId);
-    const err = await request(app).get('/oauth/ynab/callback').query({ error: 'access_denied', state: a.state });
-    expect(err.status).toBe(400);
-    expect(err.headers['location']).toBeUndefined();
+    const aJar = new CookieJar();
+    const a = await consent(app, aJar, clientId);
+    const state = await startYnab(app, aJar, a.uid);
+    const err = await request(app).get('/oauth/ynab/callback').query({ error: 'access_denied', state });
+    expect(err.status).toBe(302);
+    const complete = new URL(err.headers['location'] as string);
+    const refused = await request(app).get(complete.pathname + complete.search);
+    expect(refused.status).toBe(400);
+    expect(refused.headers['location']).toBeUndefined();
 
-    const b = await consent(app, clientId);
-    const cancel = await request(app).get('/oauth/cancel').query({ state: b.state });
+    const b = await consent(app, new CookieJar(), clientId);
+    const cancel = await request(app).get(`/oauth/interaction/${b.uid}/cancel`);
     expect(cancel.status).toBe(400);
     expect(cancel.headers['location']).toBeUndefined();
   });
 
-  it('the legitimate flow works and the callback clears the cookie', async () => {
+  it('the legitimate flow works and its interaction is single-use', async () => {
     const app = await createHttpApp(makeConfig());
     const clientId = await register(app);
-    const { state, cookie } = await consent(app, clientId);
-    await request(app).get('/oauth/ynab/start').set('Cookie', cookie).query({ state, scope: 'read-only' });
-    const cb = await request(app).get('/oauth/ynab/callback').set('Cookie', cookie).query({ code: 'c', state });
-    expect(cb.status).toBe(302);
-    expect(new URL(cb.headers['location'] as string).searchParams.get('code')).toBeTruthy();
-    const cleared = (cb.headers['set-cookie'] as unknown as string[])[0] ?? '';
-    expect(cleared.startsWith(`${cookie.split('=')[0]}=;`)).toBe(true);
-    expect(cleared).toContain('Max-Age=0');
+    const jar = new CookieJar();
+    const flow = await browserFlow(app, jar, { clientId, challenge, choice: 'read-only' });
+    expect(flow.params.get('code')).toBeTruthy();
+    expect(flow.params.get('iss')).toBe(ISSUER);
+    // The finished interaction is gone, even for the browser that ran it.
+    const again = await browse(app, jar, `/oauth/interaction/${flow.uid}`);
+    expect(again.status).toBe(400);
+    expect(again.text).toBe(EXPIRED_OR_INVALID);
   });
 
-  it('Cancel with the cookie clears it', async () => {
+  it('Cancel with the cookie returns access_denied to the client, with state and iss', async () => {
     const app = await createHttpApp(makeConfig());
-    const { state, cookie } = await consent(app, await register(app));
-    const res = await request(app).get('/oauth/cancel').set('Cookie', cookie).query({ state });
-    expect(res.status).toBe(302);
-    expect((res.headers['set-cookie'] as unknown as string[])[0]).toContain('Max-Age=0');
+    const jar = new CookieJar();
+    const { uid } = await consent(app, jar, await register(app));
+    const cancel = await browse(app, jar, `/oauth/interaction/${uid}/cancel`);
+    expect(cancel.status).toBe(303);
+    const resume = await browse(app, jar, cancel.headers['location'] as string);
+    expect(resume.status).toBe(303);
+    const target = new URL(resume.headers['location'] as string);
+    expect(target.origin + target.pathname).toBe(CALLBACK);
+    expect(target.searchParams.get('error')).toBe('access_denied');
+    expect(target.searchParams.get('state')).toBe('client-state');
+    expect(target.searchParams.get('iss')).toBe(ISSUER);
+    expect(target.searchParams.get('code')).toBeNull();
   });
 });
 
@@ -385,7 +412,8 @@ describe('each request has its own token\'s access level', () => {
 
     // A read-write token from a later, same-level refresh is read-write again.
     const rw2 = await refresh(app, rw.clientId, ro.refresh);
-    expect(rw2.scope).toBe('read-write');
+    // D7: a read-write token's scope is `read-only read-write`.
+    expect(rw2.scope).toBe('read-only read-write');
     const own = await mcp(app, 'post', rw2.access).send(toolsList);
     expect(own.status).toBe(200);
     expect(own.text).toContain('"name":"ynab_create_transaction"');
@@ -534,12 +562,14 @@ describe('the YNAB token is resolved per request', () => {
 });
 
 describe('PUBLIC_URL as the OAuth issuer', () => {
-  it('the SDK refuses an http [::1] issuer (why loadHttpConfig rejects it), but accepts localhost', async () => {
-    await expect(
-      createHttpApp(makeConfig({ publicUrl: 'http://[::1]:3000', resourceUrl: 'http://[::1]:3000/mcp' }))
-    ).rejects.toThrow('Issuer URL must be HTTPS');
-    await expect(
-      createHttpApp(makeConfig({ publicUrl: 'http://localhost:3000', resourceUrl: 'http://localhost:3000/mcp' }))
-    ).resolves.toBeDefined();
+  // The SDK refused an http [::1] issuer; oidc-provider doesn't, so loadHttpConfig's
+  // own check is now the only refusal of one. An http localhost issuer still works.
+  it('accepts an http localhost issuer and publishes it in discovery', async () => {
+    const app = await createHttpApp(
+      makeConfig({ publicUrl: 'http://localhost:3000', resourceUrl: 'http://localhost:3000/mcp' })
+    );
+    const doc = await request(app).get('/.well-known/oauth-authorization-server');
+    expect(doc.status).toBe(200);
+    expect(doc.body.issuer).toBe('http://localhost:3000/');
   });
 });

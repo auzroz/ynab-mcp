@@ -46,7 +46,7 @@ updates:
       - dependency-name: ynab
         # Minor and major are planned by hand; patch and security PRs still flow.
         update-types: ['version-update:semver-minor', 'version-update:semver-major']
-      # server-legacy is pinned ~2.4.0 (ADR-0001 D14) and core must resolve to one version.
+      # @modelcontextprotocol/core must resolve to one version (ADR-0001 D14's guard test).
       - dependency-name: '@modelcontextprotocol/*'
         # Minor and major are planned by hand; patch and security PRs still flow.
         update-types: ['version-update:semver-minor', 'version-update:semver-major']

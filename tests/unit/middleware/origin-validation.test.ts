@@ -195,14 +195,19 @@ describe('HTTP app wiring (oauth mode)', () => {
     '/.well-known/oauth-protected-resource/mcp',
     '/.well-known/oauth-protected-resource',
     '/.well-known/oauth-authorization-server',
+    '/.well-known/openid-configuration',
+    '/jwks',
   ];
+  /** Our PRM documents send `*`; the library's discovery and JWKS echo the request's Origin (ADR-0002 D8). */
+  const readableFrom = (path: string, origin: string): string =>
+    path.startsWith('/.well-known/oauth-protected-resource') ? '*' : origin;
 
   it('well-known metadata stays CORS-readable from any Origin', async () => {
     const app = await createHttpApp(config());
     for (const path of wellKnown) {
       const res = await request(app).get(path).set('Host', 'mcp.example.com').set('Origin', 'https://app.client.example');
       expect(res.status, path).toBe(200);
-      expect(res.headers['access-control-allow-origin'], path).toBe('*');
+      expect(res.headers['access-control-allow-origin'], path).toBe(readableFrom(path, 'https://app.client.example'));
     }
   });
 

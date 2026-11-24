@@ -1,68 +1,94 @@
 /**
- * Client authentication for /token and /revoke against hashed client secrets (#52).
+ * Client authentication for /token and /revoke against hashed client secrets
+ * (#52, ADR-0002 D5).
  *
- * DCR client secrets are stored as `s256.<hex>` and `getClient` returns that
- * hash as `client_secret`. The SDK's own client check, inside sdk-router,
- * compares the presented secret to it with `!==`, which no real secret passes.
- * So this stage, mounted ahead of sdk-router and behind the route limiter (gate
- * G21), does the real check for a confidential client:
+ * DCR client secrets are stored as `s256.<hex>` and the adapter
+ * (src/auth/oidc/adapter.ts) returns that hash as `client_secret`. The
+ * library's own client check, inside `as-library`, compares the presented
+ * secret to it, which no real secret passes. So this stage, mounted ahead of
+ * `as-library` and behind the route limiter (gate G21), does the real check
+ * for a confidential client:
  *
  *   - a presented value in the hash's format (`s256.` anything) is refused, so
  *     a hash copied out of the database is never a credential;
  *   - the presented secret's SHA-256 is compared to the stored hash with
  *     `timingSafeEqual`, and `client_secret_expires_at` is enforced;
  *   - on success the stored hash is written into `req.body.client_secret`, so
- *     the SDK's comparison passes.
+ *     the library's comparison passes.
  *
  * It fails closed: if this stage were not mounted, every confidential client
- * would get `invalid_client`. Public clients (no secret) pass through unchanged,
- * and so does a request the SDK rejects before any client lookup (no
- * `client_id`, or a non-string `client_secret`). Every refusal is the SDK's own
- * `invalid_client` response (status 400, as the SDK sends it); nothing about the
+ * would get `invalid_client`. An `Authorization` header is removed before the
+ * library sees it: the library treats HTTP Basic and `client_secret_post` as
+ * interchangeable and would compare a Basic secret with the stored hash
+ * unchecked (#47-4). Public clients (no secret) pass through unchanged, and so
+ * does a request without a `client_id` string in the body, which the library
+ * refuses itself. A non-string `client_secret` is refused here, before
+ * grant-guard can act on the request. Every refusal from this stage is 400
+ * `invalid_client`
+ * with `no-store` (the library's own is 401, ADR-0002 D5); nothing about the
  * presented or stored values is logged or returned.
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { InvalidClientError, ServerError } from '@modelcontextprotocol/server-legacy/auth';
-import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/server-legacy/auth';
+import { InvalidClientError, ServerError, sendOAuthError } from './errors.js';
 import { verifyClientSecret } from './token-hash.js';
 
-function refuse(res: Response, description: string): void {
-  res.status(400).json(new InvalidClientError(description).toResponseObject());
+/** A registered client's metadata (RFC 7591 names), as the library holds it. */
+export type ClientMetadata = Readonly<Record<string, unknown>>;
+
+/** How the stages look a client up: undefined for an unknown one. */
+export interface ClientLookup {
+  getClient(clientId: string): Promise<ClientMetadata | undefined>;
 }
 
-/** The client-auth stage for a route whose SDK handler authenticates clients. */
-export function clientAuthentication(clientsStore: OAuthRegisteredClientsStore): RequestHandler {
+function refuse(res: Response, description: string): void {
+  sendOAuthError(res, new InvalidClientError(description));
+}
+
+/** The client-auth stage for a route whose library endpoint authenticates clients. */
+export function clientAuthentication(clients: ClientLookup): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    // Preflight and wrong-method requests are the SDK's to answer (CORS, 405).
+    // method-check refuses everything else before this stage.
     if (req.method !== 'POST') {
       next();
       return;
     }
+    // Only the body's credentials are checked here, so they are the only ones the library may
+    // see: it would accept HTTP Basic for a client_secret_post client and compare the presented
+    // value with the stored hash, so a hash copied out of the database would pass. The SDK never
+    // read the header either.
+    delete req.headers.authorization;
     const body: unknown = req.body;
     const fields = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {};
     const clientId = fields['client_id'];
     const presented = fields['client_secret'];
-    // The SDK refuses these with invalid_request before it looks up a client.
-    if (typeof clientId !== 'string' || (presented !== undefined && typeof presented !== 'string')) {
+    // No client_id: the library refuses it (no credentials), and grant-guard, which needs one, does nothing.
+    if (typeof clientId !== 'string') {
       next();
       return;
     }
+    // Refused here, not left to the library: grant-guard runs before it and may revoke a grant,
+    // which only an authenticated (or public) client may cause.
+    if (presented !== undefined && typeof presented !== 'string') {
+      refuse(res, 'Invalid client_secret');
+      return;
+    }
 
-    let client: Awaited<ReturnType<OAuthRegisteredClientsStore['getClient']>>;
+    let client: ClientMetadata | undefined;
     try {
-      client = await clientsStore.getClient(clientId);
+      client = await clients.getClient(clientId);
     } catch {
       // Generic on purpose: storage errors can carry connection details.
-      res.status(500).json(new ServerError('Internal Server Error').toResponseObject());
+      sendOAuthError(res, new ServerError('Internal Server Error'));
       return;
     }
     if (!client) {
       refuse(res, 'Invalid client_id');
       return;
     }
-    // A public client: nothing to verify, and the SDK sees exactly what was sent.
-    if (!client.client_secret) {
+    const stored = client['client_secret'];
+    // A public client: nothing to verify, and the library sees exactly what was sent.
+    if (typeof stored !== 'string' || stored === '') {
       next();
       return;
     }
@@ -70,17 +96,17 @@ export function clientAuthentication(clientsStore: OAuthRegisteredClientsStore):
       refuse(res, 'Client secret is required');
       return;
     }
-    if (!verifyClientSecret(presented, client.client_secret)) {
+    if (!verifyClientSecret(presented, stored)) {
       refuse(res, 'Invalid client_secret');
       return;
     }
-    const expiresAt = client.client_secret_expires_at;
-    if (expiresAt && expiresAt < Math.floor(Date.now() / 1000)) {
+    const expiresAt = client['client_secret_expires_at'];
+    if (typeof expiresAt === 'number' && expiresAt !== 0 && expiresAt < Math.floor(Date.now() / 1000)) {
       refuse(res, 'Client secret has expired');
       return;
     }
-    // Verified: hand the SDK the one value its own comparison accepts.
-    (fields as { client_secret?: string }).client_secret = client.client_secret;
+    // Verified: hand the library the one value its own comparison accepts.
+    (fields as { client_secret?: string }).client_secret = stored;
     next();
   };
 }

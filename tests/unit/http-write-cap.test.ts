@@ -7,7 +7,8 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { TEST_TOKEN_HASHER, TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { TEST_TOKEN_PEPPER } from './helpers/token-hasher.js';
+import { plantAccessToken } from './helpers/oauth-state.js';
 import type { Storage } from '../../src/storage/types.js';
 
 vi.mock('../../src/auth/ynab-oauth.js', async () => {
@@ -128,17 +129,16 @@ describe('write cap across stateless HTTP requests', () => {
     });
     const tokens: string[] = [];
     for (const clientId of ['client-a', 'client-b']) {
-      const { value, key } = TEST_TOKEN_HASHER.issue('access');
-      await storage.saveAccessToken({
-        token: key,
-        clientId,
-        userId: 'ynab-user-1',
-        scopes: ['read-write'],
-        expiresAt: Date.now() + 3_600_000,
-        resource: RESOURCE,
-        grantedScope: 'read-write',
-      });
-      tokens.push(value);
+      tokens.push(
+        await plantAccessToken(storage, {
+          clientId,
+          userId: 'ynab-user-1',
+          scopes: ['read-write'],
+          expiresAt: Date.now() + 3_600_000,
+          resource: RESOURCE,
+          grantedScope: 'read-write',
+        })
+      );
     }
     const auths = tokens.map((t) => bearer(t));
     const types = await twentyOneWrites(() => mcpConnect(handle!.app, auths[0]!), auths);

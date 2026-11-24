@@ -790,7 +790,15 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   }
 
   async destroyOAuthRow(key: string): Promise<boolean> {
-    return this.oauthRows.delete(key);
+    const row = this.oauthRows.get(key);
+    if (!this.oauthRows.delete(key)) return false;
+    // A client goes with its registration access tokens (nothing else reads them).
+    if (row?.model === 'Client' && row.clientId !== undefined) {
+      for (const [k, r] of this.oauthRows) {
+        if (r.model === 'RegistrationAccessToken' && r.clientId === row.clientId) this.oauthRows.delete(k);
+      }
+    }
+    return true;
   }
 
   async revokeOAuthGrant(grantId: string): Promise<number> {

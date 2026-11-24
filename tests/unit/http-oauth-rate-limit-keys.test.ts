@@ -150,13 +150,15 @@ describe('/revoke and /authorize', () => {
     expect((await authorize('198.51.100.1', 'c', { Authorization: basic })).status).toBe(429);
   });
 
-  it('/authorize POST is keyed by its form body client_id', async () => {
+  it('/authorize POST is answered 405 by method-check before the (client_id, IP) budget counts it', async () => {
+    // Only GET /authorize is served since #47-4, so a POST's body client_id keys nothing.
     const app = await createHttpApp(config({ trustProxy: 1 }));
-    const post = (clientId: string) =>
-      request(app).post('/authorize').set('Host', HOST).set('X-Forwarded-For', '198.51.100.1').type('form').send({ client_id: clientId });
-    for (let i = 0; i < AUTHORIZE_RATE_LIMIT; i++) await post('c');
-    expect((await post('c')).status).toBe(429);
-    expect((await post('other')).status).not.toBe(429);
+    const xff = { 'X-Forwarded-For': '198.51.100.1' };
+    for (let i = 0; i <= AUTHORIZE_RATE_LIMIT; i++) {
+      const res = await request(app).post('/authorize').set('Host', HOST).set(xff).type('form').send({ client_id: 'c' });
+      expect(res.status, `request ${i + 1}`).toBe(405);
+    }
+    expect((await request(app).get('/authorize').set('Host', HOST).set(xff).query({ client_id: 'c' })).status).not.toBe(429);
   });
 
   it('/authorize has an IP-only guard ahead of the parser at ten times the budget', async () => {
@@ -342,7 +344,7 @@ describe('every AS limiter keys by the client address, through the injected stor
     (app) => request(app).post('/revoke').type('form').send({ token: 't', client_id: 'c' }),
     // A verified host, so register:host keys by host and address too.
     (app) => request(app).post('/register').send({ redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] }),
-    (app) => request(app).get('/oauth/cancel'),
+    (app) => request(app).get(`/oauth/interaction/${'u'.repeat(43)}/cancel`),
   ];
 
   it.each([

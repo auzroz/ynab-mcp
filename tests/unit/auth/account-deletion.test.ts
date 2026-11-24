@@ -2,14 +2,15 @@
  * Account erasure and retention end to end (#53a, #54a, G11, G12), on every
  * storage driver: the YNAB refresh write-back racing an erase or a re-consent
  * (barrier mocks around the YNAB call, never sleeps), the session's pinned
- * account generation, a code exchange in flight during an erase, and refresh
- * token expiry at the token endpoint. Only the YNAB network calls are mocked.
+ * account generation, and at the token endpoint (oidc-provider over the
+ * adapter, ADR-0002 D4): a code or tokens issued before an erase refused after
+ * it, and refresh token expiry. Only the YNAB network calls are mocked. The
+ * adapter's own deletion rules (deleteUserData over oauth_rows and the 0.4.x
+ * tables, in one step) are in tests/unit/storage/oauth-adapter-conformance.test.ts.
  */
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { InvalidGrantError } from '@modelcontextprotocol/server-legacy/auth';
-import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/server';
 
 vi.mock('../../../src/auth/ynab-oauth.js', async () => {
   const actual =
@@ -20,13 +21,22 @@ vi.mock('../../../src/auth/ynab-oauth.js', async () => {
 import type { Storage } from '../../../src/storage/types.js';
 import { Encryptor, refreshTokenContext } from '../../../src/crypto.js';
 import { YnabTokenResolver } from '../../../src/auth/user-session.js';
-import { McpOAuthProvider } from '../../../src/auth/mcp-provider.js';
 import { YnabAuthError } from '../../../src/utils/errors.js';
 import { DEFAULT_RETENTION } from '../../../src/auth/retention-defaults.js';
 import * as ynabOauth from '../../../src/auth/ynab-oauth.js';
 import { cleanupDrivers, testDrivers, type DriverHandle } from '../helpers/storage-drivers.js';
-import { TEST_TOKEN_HASHER } from '../helpers/token-hasher.js';
 import { expectInvalidToken } from '../helpers/invalid-token.js';
+import {
+  CookieJar,
+  browserFlow,
+  buildOidcTestApp,
+  exchangeCode,
+  oauthRowsOf,
+  pkcePair,
+  refresh,
+  registerClient,
+  type OidcTestApp,
+} from '../helpers/oidc-app.js';
 
 const refreshMock = vi.mocked(ynabOauth.refreshAccessToken);
 
@@ -50,12 +60,6 @@ function holdNextRefresh(refreshToken: string): { entered: Promise<void>; releas
   });
   return { entered: entered.wait, release: release.open };
 }
-
-function refreshOf(tokens: OAuthTokens): string {
-  if (tokens.refresh_token === undefined) throw new Error('no refresh token');
-  return tokens.refresh_token;
-}
-
 
 for (const driver of testDrivers) {
   describe.skipIf(!driver.enabled)(`account erasure and retention: ${driver.name}`, () => {
@@ -244,95 +248,77 @@ for (const driver of testDrivers) {
       });
     });
 
-    describe('at the token endpoint', () => {
-      let provider: McpOAuthProvider;
-      let client: OAuthClientInformationFull;
+    describe('at the token endpoint (oidc-provider, ADR-0002 D4)', () => {
+      let t: OidcTestApp;
+      let clientId: string;
 
       beforeEach(async () => {
-        provider = new McpOAuthProvider({
-          storage,
-          encryptor,
-          ynab: { clientId: 'cid', clientSecret: 'sec' },
-          publicUrl: 'https://mcp.example.com',
-          allowWrite: true,
-          globalReadOnly: false,
-          accessTokenTtlSec: 3600,
-          authCodeTtlSec: 600,
-          tokenHasher: TEST_TOKEN_HASHER,
-        });
-        client = await provider.clientsStore.registerClient!({
-          redirect_uris: ['https://client/cb'],
-          client_name: 'Test Client',
-        } as OAuthClientInformationFull);
+        vi.mocked(ynabOauth.exchangeCode).mockImplementation(async () => ({
+          accessToken: 'ya',
+          refreshToken: 'yr0',
+          expiresAt: Date.now() + 3_600_000,
+        }));
+        vi.mocked(ynabOauth.getYnabUserId).mockResolvedValue('u');
+        t = buildOidcTestApp(storage, { encryptor });
+        ({ clientId } = await registerClient(t.app));
       });
 
-      async function issueCode(userId: string): Promise<string> {
-        // Stored under its h1. key, as the provider looks it up (#52).
-        const { value, key } = TEST_TOKEN_HASHER.issue('code');
-        await storage.saveAuthCode({
-          code: key,
-          clientId: client.client_id,
-          userId,
-          redirectUri: 'https://client/cb',
-          codeChallenge: 'chal',
-          scopes: ['ynab'],
-          expiresAt: Date.now() + 600_000,
-          grantedScope: 'read-write',
-        });
-        return value;
+      /** A sign-in for user `u`: the code the client would redeem, and its PKCE verifier. */
+      async function issueCode(): Promise<{ code: string; verifier: string }> {
+        const pkce = pkcePair();
+        const flow = await browserFlow(t.app, new CookieJar(), { clientId, challenge: pkce.challenge });
+        return { code: flow.params.get('code') as string, verifier: pkce.verifier };
       }
 
-      it('a code exchange in flight during the erase leaves no usable token, even after re-consent', async () => {
+      /** No library row of `u` is left, and only the re-created users row. */
+      async function expectOnlyNewUserRow(): Promise<void> {
+        expect((await oauthRowsOf(h)).filter((r) => r.accountId === 'u')).toEqual([]);
+        expect(await storage.listConnections('u')).toEqual([]);
+        for (const [table, n] of Object.entries(await h.userRows('u'))) expect(n, table).toBe(table === 'users' ? 1 : 0);
+      }
+
+      it('a code issued before the erase is refused after it, even after re-consent', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
-        await connect('u');
-        const code = await issueCode('u');
-        await provider.challengeForAuthorizationCode(client, code); // spent; tokens not yet saved
+        const { code, verifier } = await issueCode();
         await storage.deleteUserData('u');
         vi.setSystemTime(Date.now() + 1000);
-        await connect('u', 'yr-new-account'); // re-consent
+        await connect('u', 'yr-new-account'); // re-consent (the users row only)
 
-        await expect(provider.exchangeAuthorizationCode(client, code)).rejects.toBeInstanceOf(InvalidGrantError);
-        expect(await storage.listConnections('u')).toEqual([]);
-        const rows = await h.userRows('u');
-        for (const [table, n] of Object.entries(rows)) {
-          expect(n, table).toBe(table === 'users' ? 1 : 0);
-        }
+        const res = await exchangeCode(t.app, { clientId, code, verifier });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('invalid_grant');
+        await expectOnlyNewUserRow();
       });
 
       it('tokens issued before an erase stay dead after the user connects again', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
-        await connect('u');
-        const code = await issueCode('u');
-        await provider.challengeForAuthorizationCode(client, code);
-        const tokens = await provider.exchangeAuthorizationCode(client, code);
+        const { code, verifier } = await issueCode();
+        const tokens = await exchangeCode(t.app, { clientId, code, verifier });
+        expect(tokens.status).toBe(200);
         await storage.deleteUserData('u');
         vi.setSystemTime(Date.now() + 1000);
         await connect('u');
 
-        await expectInvalidToken(provider.verifyAccessToken(tokens.access_token));
-        await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
-          InvalidGrantError
-        );
+        await expectInvalidToken(t.verifier.verifyAccessToken(tokens.body.access_token as string));
+        const res = await refresh(t.app, { clientId, refreshToken: tokens.body.refresh_token as string });
+        expect(res.body.error).toBe('invalid_grant');
+        await expectOnlyNewUserRow();
       });
 
-      it('an idle refresh token gets invalid_grant without revoking its family', async () => {
+      it('an idle refresh token gets invalid_grant without revoking its grant', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
-        await connect('u');
-        const code = await issueCode('u');
-        await provider.challengeForAuthorizationCode(client, code);
-        const tokens = await provider.exchangeAuthorizationCode(client, code);
+        const { code, verifier } = await issueCode();
+        const tokens = await exchangeCode(t.app, { clientId, code, verifier });
+        const refreshToken = tokens.body.refresh_token as string;
 
-        vi.setSystemTime(Date.now() + DEFAULT_RETENTION.refreshTokenIdleMs + 1);
-        const revoke = vi.spyOn(storage, 'deleteTokenFamily');
-        await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
-          InvalidGrantError
-        );
+        vi.setSystemTime(Date.now() + DEFAULT_RETENTION.refreshTokenIdleMs + 1000);
+        const revoke = vi.spyOn(storage, 'revokeOAuthGrant');
+        expect((await refresh(t.app, { clientId, refreshToken })).body.error).toBe('invalid_grant');
         expect(revoke).not.toHaveBeenCalled();
-        // The same answer again: the token is gone, not a reuse.
-        await expect(provider.exchangeRefreshToken(client, refreshOf(tokens))).rejects.toBeInstanceOf(
-          InvalidGrantError
-        );
+        // The same answer again: the token expired, it was not reused.
+        expect((await refresh(t.app, { clientId, refreshToken })).body.error).toBe('invalid_grant');
         expect(revoke).not.toHaveBeenCalled();
+        expect((await oauthRowsOf(h)).some((r) => r.model === 'Grant' && r.accountId === 'u')).toBe(true);
       });
     });
   });

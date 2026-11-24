@@ -44,11 +44,10 @@ vi.mock('../../src/storage/index.js', async () => {
 
 import { createHttpApp } from '../../src/http.js';
 import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
-import { MemoryStorage } from '../../src/storage/memory.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import { TEST_TOKEN_PEPPER, legacyToken } from './helpers/token-hasher.js';
 import { INVALID_ACCESS_TOKEN_MESSAGE } from './helpers/invalid-token.js';
-import { bearerHeader, plantAccessToken, plantUser, revokePlantedAccessToken, unknownAccessToken } from './helpers/oauth-state.js';
+import { bearerHeader, plantAccessToken, plantUser, revokePlantedAccessToken } from './helpers/oauth-state.js';
 import { cleanupDrivers, testDrivers } from './helpers/storage-drivers.js';
 import type { HttpConfig } from '../../src/config/environment.js';
 
@@ -143,7 +142,7 @@ describe('/mcp answers every token-verification failure with 401 and resource_me
   it.each(failures)('a verifier failure: %s', async (_name, failure, logged) => {
     const { app, storage } = await startApp();
     const token = await seedToken(storage);
-    vi.spyOn(storage, 'getAccessToken').mockRejectedValue(failure);
+    vi.spyOn(storage, 'findOAuthRow').mockRejectedValue(failure);
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     for (const method of ['post', 'get', 'delete'] as const) {
@@ -169,19 +168,21 @@ describe('/mcp answers every token-verification failure with 401 and resource_me
     expectChallenge(await mcp(app, bearerHeader(await seedToken(storage, { expiresAt: Date.now() - 1_000 }))));
   });
 
-  it("an expired token: refused by the middleware's own expiry check", async () => {
-    // A record storage still returns but that is past its expiry by the time
-    // the middleware compares (a token in its last second, read at the edge).
-    const { app } = await startApp();
-    vi.spyOn(MemoryStorage.prototype, 'getAccessToken').mockResolvedValue({
-      token: 'k',
-      clientId: 'c1',
-      userId: USER,
-      scopes: ['read-only'],
-      expiresAt: Date.now() - 5_000,
-      resource: RESOURCE,
+  it('an expired token: a row storage still returns is refused by its own expiry (the verifier)', async () => {
+    // A row whose expiry column storage hasn't caught up with, but whose
+    // token has expired (read at the edge of its last second). The verifier
+    // refuses it as invalid, so the middleware's own "Token has expired"
+    // check (which the SDK-era provider could reach) never sees it.
+    const { app, storage } = await startApp();
+    const token = await seedToken(storage);
+    const find = storage.findOAuthRow.bind(storage);
+    vi.spyOn(storage, 'findOAuthRow').mockImplementation(async (key) => {
+      const row = await find(key);
+      if (row?.model !== 'AccessToken') return row;
+      const payload = { ...(JSON.parse(row.payload) as Record<string, unknown>), exp: Math.floor(Date.now() / 1000) - 5 };
+      return { ...row, payload: JSON.stringify(payload) };
     });
-    expectChallenge(await mcp(app, bearerHeader(unknownAccessToken())), 'Token has expired');
+    expectChallenge(await mcp(app, bearerHeader(token)));
   });
 
   it('a token bound to another resource (RFC 8707)', async () => {
@@ -213,11 +214,13 @@ describe('/mcp answers every token-verification failure with 401 and resource_me
   it('reads storage on every request: no bearer-verification cache (ADR-0001 D7)', async () => {
     const { app, storage } = await startApp();
     const token = await seedToken(storage);
-    const reads = vi.spyOn(storage, 'getAccessToken');
+    const reads = vi.spyOn(storage, 'findOAuthRow');
     expect((await mcp(app, bearerHeader(token))).status).not.toBe(401);
+    expect(reads).toHaveBeenCalledTimes(1);
     await revokePlantedAccessToken(storage, token);
+    reads.mockClear();
     expectChallenge(await mcp(app, bearerHeader(token)));
-    expect(reads).toHaveBeenCalledTimes(2);
+    expect(reads).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -236,8 +239,9 @@ describe('insufficient scope is unchanged', () => {
 
 describe('the advertised resource_metadata URL keeps its derivation', () => {
   // v2's getOAuthProtectedResourceMetadataUrl keeps a query and drops a
-  // trailing slash, where server-legacy's (still used by as-router.ts) does
-  // the opposite. These pin today's URLs, so a switch (#47) is deliberate.
+  // trailing slash, where server-legacy's did the opposite. #47-4 kept the
+  // server-legacy derivation in resource.ts (protectedResourceMetadataUrl), so
+  // the advertised URLs don't change. These pin them.
   it.each([
     ['https://mcp.example.com/mcp/', 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp/'],
     ['https://mcp.example.com/mcp?tenant=a', 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp'],
@@ -279,7 +283,7 @@ describe.skipIf(!postgres?.enabled)('/mcp on Postgres: a real storage timeout is
 
       // Hold a lock that blocks the token lookup itself.
       await locker.query('BEGIN');
-      await locker.query('LOCK TABLE access_tokens IN ACCESS EXCLUSIVE MODE');
+      await locker.query('LOCK TABLE oauth_rows IN ACCESS EXCLUSIVE MODE');
       const startedAt = Date.now();
       const res = await mcp(app, bearerHeader(token));
       expect(Date.now() - startedAt).toBeLessThan(5_000);

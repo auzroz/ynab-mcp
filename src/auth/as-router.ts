@@ -1,8 +1,8 @@
 /**
- * The OAuth 2.1 authorization server (oauth mode): the provider, the
- * protected-resource and authorization-server metadata, the SDK's /authorize,
- * /token, /register and /revoke handlers, and the YNAB federation legs under
- * /oauth with their rate limit.
+ * The OAuth 2.1 authorization server (oauth mode), on oidc-provider (ADR-0002):
+ * the protected-resource metadata (ours), the library's discovery documents,
+ * `/jwks`, `/authorize`, `/token`, `/register` and `/revoke`, and the YNAB
+ * sign-in as the library's interaction under /oauth with its rate limit.
  *
  * Every route is a pipeline of named stages, always in this order:
  *
@@ -12,48 +12,59 @@
  *                      /revoke (#59, #55a), the oauth-leg-limiter on /oauth
  *   bounded-parser     the request-body parser, at AS_MAX_BODY (8kb), with
  *                      OAuth-shaped errors (413 for a body over the limit)
- *   ...slots           route-specific checks: on /authorize the (client_id,
- *                      IP) route-limiter, the bounds (authorize-validation),
- *                      the open-redirect guard (authorize-guard) and
- *                      iss-redirect; on /token and /revoke the route limiter
- *                      and then client authentication (#52); on /register the
- *                      DCR validator and then the per-redirect-host limit
- *   router             the handler that answers: the SDK's (sdk-router), the
- *                      metadata document, or the YNAB federation legs
+ *   ...slots           route-specific checks (D8): cors-origin (on /token,
+ *                      /revoke and /register, ahead of everything that can
+ *                      answer), method-check (405 for a method the route
+ *                      doesn't serve), then on /authorize the (client_id, IP)
+ *                      route-limiter, the bounds (authorize-validation) and
+ *                      the open-redirect guard (authorize-guard); on /token
+ *                      and /revoke the route limiter and client
+ *                      authentication (#52, D5), and on /token grant-guard
+ *                      (D6); on /register the DCR validator and then the
+ *                      per-redirect-host limit
+ *   router             what answers: the library (as-library, D1), the
+ *                      protected-resource metadata (metadata), or the YNAB
+ *                      sign-in (ynab-federation: the interaction router)
  *
  * The order is fixed by routePipeline() below; a change only adds a stage to
- * a position. Validators live in their own pure modules: this file holds glue
+ * a position. Validators live in their own modules: this file holds glue
  * only. tests/unit/http-as-pipeline.test.ts asserts each route's exact stage
  * list (gate G21), so a change to a pipeline changes that test on purpose.
  *
+ * Two pieces of the guard can't be stages, because they act inside the
+ * library: the provider's normalizer (provider.ts: D7, the pinned origin) and
+ * authorize-guard's redirect net (`provider.use`, see authorize-guard.ts).
+ *
  * mountAuthorizationServer() runs after Host/Origin validation and before the
  * app's global JSON parser, so these stages decide what an AS request costs
- * before anything else reads it.
+ * before anything else reads it. The library relies on that: `provider.proxy`
+ * is on (provider.ts pins the forwarded headers it reads), and on /token it
+ * reads the body `bounded-parser` parsed (its "already parsed request body"
+ * warning, logged once, is expected).
  */
 
 import express, { type Request, type Response, type Router } from 'express';
-import {
-  TooManyRequestsError,
-  createOAuthMetadata,
-  getOAuthProtectedResourceMetadataUrl,
-  authorizationHandler,
-  tokenHandler,
-  clientRegistrationHandler,
-  revocationHandler,
-  metadataHandler,
-} from '@modelcontextprotocol/server-legacy/auth';
+import type Provider from 'oidc-provider';
+import type { OAuthTokenVerifier } from '@modelcontextprotocol/server';
+import { OAuthError, OAuthErrorCode } from '@modelcontextprotocol/server';
 import type { HttpConfig } from '../config/environment.js';
 import type { Encryptor } from '../crypto.js';
 import type { Storage } from '../storage/types.js';
-import { McpOAuthProvider } from './mcp-provider.js';
 import { clientAuthentication } from './client-auth.js';
 import type { TokenHasher } from './token-hash.js';
 import type { YnabOAuthConfig } from './ynab-oauth.js';
-import { issOnAuthorizationRedirects } from '../middleware/iss-redirect.js';
 import { redirectPolicyFrom } from './client-metadata.js';
 import { dcrValidator } from './dcr-validator.js';
 import { authorizeValidation } from './authorize-validation.js';
-import { authorizeGuard } from './authorize-guard.js';
+import { authorizeGuard, authorizeRedirectGuard } from './authorize-guard.js';
+import { grantGuard } from './grant-guard.js';
+import { methodCheck } from './method-check.js';
+import { answerPreflight, metadataDocument } from './metadata-document.js';
+import { protectedResourceMetadataUrl } from './resource.js';
+import { asLibraryHandler, createOidcProvider, DISCOVERY_PATHS, INTERACTION_BASE_PATH, OIDC_ROUTES } from './oidc/provider.js';
+import { interactionRouter } from './oidc/interaction.js';
+import { createAccessTokenVerifier } from './oidc/verifier.js';
+import { libraryClients } from './oidc/clients.js';
 import {
   CEILING_FACTOR,
   keyedLimiter,
@@ -71,24 +82,33 @@ import {
   type StageObserver,
 } from '../http/pipeline.js';
 
-/** Requests per client IP per 15 minutes on the YNAB OAuth legs, matching the SDK's /authorize. */
-export const OAUTH_LEG_RATE_LIMIT = 100;
+/**
+ * Requests per client IP per 15 minutes on the YNAB OAuth legs. A sign-in
+ * takes four requests here (the consent page, start, YNAB's callback,
+ * complete) where 0.4.x took two (start, callback), so the budget is twice
+ * 0.4.x's 100: still 50 sign-ins per IP (#47-4).
+ */
+export const OAUTH_LEG_RATE_LIMIT = 200;
 
 /**
  * Requests per (client_id, IP) per 15 minutes on /token and on /revoke (each
- * its own budget): the SDK's per-route default, now applied by the
- * route-limiter stage ahead of client authentication instead of inside the SDK
- * handler. Each route's ip-limiter allows CEILING_FACTOR times this per IP.
+ * its own budget): the SDK's per-route default, applied by the route-limiter
+ * stage ahead of client authentication. Each route's ip-limiter allows
+ * CEILING_FACTOR times this per IP.
  */
 export const CLIENT_AUTH_ROUTE_RATE_LIMIT = 50;
 
-/** Requests per (client_id, IP) per 15 minutes on /authorize, the SDK's default, now applied by the limiter stage. */
+/** Requests per (client_id, IP) per 15 minutes on /authorize, the SDK's default, applied by the limiter stage. */
 export const AUTHORIZE_RATE_LIMIT = 100;
 
 /** One AS route. The positions are fixed; routePipeline() puts them in order. */
 interface AsRoute {
-  /** The path prefix it is mounted on (app.use semantics), and its name in the pipeline test. */
+  /** The route's path, and its name in the pipeline test. Mounted on exactly this path (exactRoute()). */
   readonly path: string;
+  /** A subpath pattern also served (the library's resume route under /authorize). */
+  readonly subpath?: string;
+  /** Mount on the path as a prefix instead (/oauth, whose router has routes of its own). */
+  readonly prefix?: boolean;
   /** Rate limits, in order, all ahead of the parser. */
   readonly limiters?: readonly Stage[];
   readonly parser: Stage;
@@ -124,6 +144,23 @@ function oauthShapedParseErrors(parse: express.RequestHandler): express.RequestH
   };
 }
 
+/** An interaction uid in the resume route (/authorize/<uid>): the library's 43-character nanoid. */
+const RESUME_UID = '[A-Za-z0-9_-]{43}';
+
+/**
+ * Exactly `path` (case-insensitive and with one optional trailing slash, as
+ * Express and the library both route it), or `path/<subpath>` when given: the
+ * pipeline runs for nothing else under the path, so `/token/introspection` or
+ * `/register/<id>` matches no AS route and gets the app's 404 without running
+ * a stage. Only `path` is the mount (stripped by Express), so a stage sees
+ * `/` for the route itself and `/<subpath>` for the subpath.
+ */
+function exactRoute(path: string, subpath?: string): RegExp {
+  const escaped = path.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
+  const rest = subpath === undefined ? '\\/?$' : `\\/?$|\\/${subpath}\\/?$`;
+  return new RegExp(`^${escaped}(?=${rest})`, 'i');
+}
+
 /** The stages of a route, in the one order every route uses. */
 function routePipeline(route: AsRoute): Stage[] {
   return [
@@ -132,6 +169,23 @@ function routePipeline(route: AsRoute): Stage[] {
     ...(route.slots ?? []),
     route.router,
   ];
+}
+
+/**
+ * D8's cors-origin, on /token, /revoke and /register, ahead of method-check:
+ * a browser's preflight gets 204 with the CORS headers here and never a 405;
+ * any other request gets `Access-Control-Allow-Origin: *` and goes on, so a
+ * 405, 429 or `invalid_client` from a later stage is readable by a browser
+ * client. Because the header is already set, the library's own CORS steps
+ * aside on these routes (D2).
+ */
+function corsOrigin(req: Request, res: Response, next: express.NextFunction): void {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (req.method !== 'OPTIONS') {
+    next();
+    return;
+  }
+  answerPreflight(req, res, 'POST');
 }
 
 export interface AuthorizationServerOptions {
@@ -149,74 +203,16 @@ export interface AuthorizationServerOptions {
 }
 
 export interface AuthorizationServer {
-  provider: McpOAuthProvider;
+  /** The `/mcp` token verifier (ADR-0002 D10). */
+  provider: OAuthTokenVerifier;
+  /** The library instance (ADR-0002 D1). */
+  oidc: Provider;
   /** The protected resource (RFC 8707 audience) every token is bound to. */
   resourceServerUrl: URL;
   /** RFC 9728 metadata URL, advertised in /mcp's 401 challenges. */
   resourceMetadataUrl: string;
   /** Each mounted route and its stage names, in mount order (host validation not included). */
   routes: RoutePipeline[];
-}
-
-/** The /oauth/ynab/start, /oauth/ynab/callback and /oauth/cancel handlers. */
-function ynabFederationLegs(provider: McpOAuthProvider): Router {
-  const legs = express.Router();
-  // Each leg requires the consent cookie that /authorize set for this state
-  // (provider.consentCookie), so the legs only run in the browser that was
-  // shown the consent page.
-  const consentNonce = (req: Request, state: string): string | undefined =>
-    provider.consentCookie.read(req.header('cookie'), state);
-  legs.get('/ynab/start', async (req: Request, res: Response) => {
-    try {
-      const state = String(req.query['state'] ?? '');
-      const scope = req.query['scope'] === 'read-write' ? 'read-write' : 'read-only';
-      const url = await provider.startYnabAuthorization(state, scope, consentNonce(req, state));
-      res.redirect(url);
-    } catch {
-      res.status(400).send('Authorization request expired or invalid. Please start over.');
-    }
-  });
-  legs.get('/ynab/callback', async (req: Request, res: Response) => {
-    try {
-      const code = String(req.query['code'] ?? '');
-      const state = String(req.query['state'] ?? '');
-      const error = req.query['error'];
-      if (state && error !== undefined) {
-        // YNAB refused (e.g. the user clicked Deny). Tell the MCP client, with a
-        // fixed error code; YNAB's own error text is never forwarded.
-        const denial = error === 'access_denied' ? 'access_denied' : 'server_error';
-        const redirect = await provider.denyAuthorization(state, denial, consentNonce(req, state));
-        res.append('Set-Cookie', provider.consentCookie.clear(state));
-        res.redirect(redirect);
-        return;
-      }
-      if (!code || !state) {
-        res.status(400).send('Missing code or state.');
-        return;
-      }
-      const redirect = await provider.handleYnabCallback(code, state, consentNonce(req, state));
-      res.append('Set-Cookie', provider.consentCookie.clear(state));
-      res.redirect(redirect);
-    } catch {
-      res.status(400).send('Could not complete YNAB authorization. Please start over.');
-    }
-  });
-  // "Cancel" on the consent screen: an access_denied authorization response.
-  legs.get('/cancel', async (req: Request, res: Response) => {
-    try {
-      const state = String(req.query['state'] ?? '');
-      if (!state) {
-        res.status(400).send('Missing state.');
-        return;
-      }
-      const redirect = await provider.denyAuthorization(state, 'access_denied', consentNonce(req, state));
-      res.append('Set-Cookie', provider.consentCookie.clear(state));
-      res.redirect(redirect);
-    } catch {
-      res.status(400).send('Authorization request expired or invalid. Please start over.');
-    }
-  });
-  return legs;
 }
 
 /**
@@ -231,58 +227,46 @@ export function mountAuthorizationServer(
   const publicUrl = config.publicUrl as string;
   // The protected resource (RFC 8707 audience) every token is bound to.
   const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
-  // The issuer identifier: published in AS metadata and sent as `iss` on every
-  // authorization response (RFC 9207), so both must use this exact string.
-  const issuerUrl = new URL(publicUrl);
   // #55: how registrations, authorization errors and the consent page treat redirect URIs.
   const redirectPolicy = redirectPolicyFrom(config);
-  const provider = new McpOAuthProvider({
-    storage,
-    encryptor,
-    tokenHasher,
-    ynab,
+
+  const oidc = createOidcProvider({
+    store: storage,
+    keys: tokenHasher,
     publicUrl,
-    issuer: issuerUrl.href,
-    resourceUrl: resourceServerUrl.href,
-    allowWrite: config.allowWrite,
-    globalReadOnly: config.readOnly,
+    resourceUrl: config.resourceUrl,
+    encryptionKey: config.encryptionKey as string,
     accessTokenTtlSec: config.accessTokenTtlSec,
     authCodeTtlSec: config.authCodeTtlSec,
-    redirectPolicy,
   });
+  const { provider, issuer, resource } = oidc;
+  // authorize-guard's fail-closed net, inside the library (see authorize-guard.ts).
+  provider.use(
+    authorizeRedirectGuard({
+      publicUrl,
+      authorizationPath: OIDC_ROUTES.authorization,
+      interactionPath: INTERACTION_BASE_PATH,
+    })
+  );
+  const clients = libraryClients(provider);
 
   // Protected-resource metadata (RFC 9728) describes the MCP endpoint, so it is
   // served at the path-aware well-known URL for the resource (e.g.
-  // /.well-known/oauth-protected-resource/mcp). The SDK's own PRM lacks
-  // bearer_methods_supported, so this one is served instead, with the SDK's
-  // metadataHandler (CORS: any origin, GET/OPTIONS only).
-  const scopesSupported = ['read-only', 'read-write'];
-  const resourceName = 'YNAB MCP Server';
-  // Still server-legacy's helper: v2's keeps a query and drops a trailing slash (pinned in http-bearer-auth.test.ts); #47 decides.
-  const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceServerUrl);
+  // /.well-known/oauth-protected-resource/mcp), by our own metadata stage.
+  const resourceMetadataUrl = protectedResourceMetadataUrl(resourceServerUrl);
   const protectedResourceMetadata = {
     resource: resourceServerUrl.href,
-    authorization_servers: [issuerUrl.href],
-    scopes_supported: scopesSupported,
+    authorization_servers: [issuer],
+    scopes_supported: ['read-only', 'read-write'],
     bearer_methods_supported: ['header'],
-    resource_name: resourceName,
-  };
-
-  // AS metadata (RFC 8414) is the SDK's, plus
-  // authorization_response_iss_parameter_supported (RFC 9207 section 3), which
-  // the SDK does not emit.
-  const oauthMetadata = {
-    ...createOAuthMetadata({ provider, issuerUrl, scopesSupported }),
-    authorization_response_iss_parameter_supported: true,
+    resource_name: 'YNAB MCP Server',
   };
   const pathOf = (endpoint: string): string => new URL(endpoint).pathname;
 
   // One body parser per route, at AS_MAX_BODY (8kb, #55a): no OAuth request
-  // comes near it. express.json and express.urlencoded skip a body that an
-  // earlier parser read, so neither the SDK handlers' own parsers (100kb) nor
-  // the global parser after this router parse it again. Every route takes
-  // both JSON and form bodies (/authorize, /token and /revoke read forms;
-  // /register reads JSON), so a larger SDK parser never sees an unread one.
+  // comes near it. Every route takes both JSON and form bodies (/token and
+  // /revoke read forms; /register reads JSON); the library and the global
+  // parser after this router use the body parsed here.
   const boundedParser = (): Stage =>
     stage(
       'bounded-parser',
@@ -290,20 +274,33 @@ export function mountAuthorizationServer(
         oauthShapedParseErrors
       )
     );
-  const metadata = (doc: Parameters<typeof metadataHandler>[0]): Stage => stage('metadata', metadataHandler(doc));
-  const sdkRouter = (handler: express.RequestHandler): Stage => stage('sdk-router', handler);
+  const metadata = (doc: Readonly<Record<string, unknown>>): Stage => stage('metadata', ...metadataDocument(doc));
+  const library = asLibraryHandler(provider);
+  // Exactly the route (any spelling Express and the library both route: case, one trailing
+  // slash), plus the resume route under /authorize. Anything else under a mount (/token/introspection,
+  // /register/<id>, /jwks/x, ...) never reaches the library: it falls through to the app's 404.
+  const asLibrary = (subpath?: RegExp): Stage =>
+    stage('as-library', (req, res, next) => {
+      if (req.path === '/' || (subpath !== undefined && subpath.test(req.path))) {
+        library(req, res, next);
+        return;
+      }
+      next();
+    });
+  const methods = (...allowed: string[]): Stage => stage('method-check', methodCheck(allowed));
+  const cors = (): Stage => stage('cors-origin', corsOrigin);
 
-  // The YNAB OAuth legs get the limit the SDK puts on /authorize (100 per 15
-  // minutes), the step right before them in the same browser flow, so a login
-  // that gets past /authorize isn't then refused here. The callback reads
-  // storage and can call YNAB's token endpoint, so it must not be unlimited.
-  // Ahead of the parser so a limited request costs no parsing. The client IP
-  // comes from req.ip, so TRUST_PROXY must match the proxy hops, or every
-  // client behind the proxy shares one budget. One limiter for all the legs.
+  // The YNAB legs get room for as many sign-ins as 0.4.x allowed (50 per 15
+  // minutes, four requests each: OAUTH_LEG_RATE_LIMIT), so a login that gets
+  // past /authorize isn't then refused here. The callback and complete read storage and call
+  // YNAB's token endpoint, so they must not be unlimited. Ahead of the parser
+  // so a limited request costs no parsing. The client IP comes from req.ip, so
+  // TRUST_PROXY must match the proxy hops, or every client behind the proxy
+  // shares one budget. One limiter for all the legs.
   const keyOptions = { trustCfConnectingIp: config.trustCfConnectingIp };
   const WINDOW_15_MIN = 15 * 60 * 1000;
   const tooMany = (what: string): unknown =>
-    new TooManyRequestsError(`You have exceeded the rate limit for ${what} requests`).toResponseObject();
+    new OAuthError(OAuthErrorCode.TooManyRequests, `You have exceeded the rate limit for ${what} requests`).toResponseObject();
   const oauthLegLimiter = stage(
     'oauth-leg-limiter',
     ...keyedLimiter({
@@ -316,13 +313,11 @@ export function mountAuthorizationServer(
     })
   );
 
-  // /token and /revoke: the SDK's per-route limit (50 per 15 minutes), moved
-  // ahead of client authentication so wrong-secret attempts are counted and
-  // refused with 429 past it (G21). Keyed by (client_id, IP) (#59); the
-  // IP-only ceiling is the route's ip-limiter, ahead of the parser. The SDK
-  // handler's own limiter is turned off, so each request is counted once.
-  // Only POSTs carry credentials; the SDK's own limiter ran after its CORS
-  // handler, so preflights were never counted and still aren't.
+  // /token and /revoke: the SDK's per-route limit (50 per 15 minutes), ahead
+  // of client authentication so wrong-secret attempts are counted and refused
+  // with 429 past it (G21). Keyed by (client_id, IP) (#59); the IP-only
+  // ceiling is the route's ip-limiter, ahead of the parser. Only POSTs carry
+  // credentials (cors-origin answers preflights, method-check the rest).
   const routeLimiter = (what: string): Stage =>
     stage(
       'route-limiter',
@@ -341,8 +336,8 @@ export function mountAuthorizationServer(
     );
   // /authorize: the SDK's 100 per 15 minutes. An IP-only guard ahead of the
   // parser (ten times the budget, so a limited request costs no parsing), then
-  // the (client_id, IP) budget once the form body is read, so a POST is keyed
-  // by its body's client_id as the SDK reads it; a GET by its query's.
+  // the (client_id, IP) budget, keyed by the query's client_id. The resume
+  // route (/authorize/:uid) has none and counts against the IP's.
   const authorizeIpLimiter = stage(
     'ip-limiter',
     ...keyedLimiter({
@@ -404,90 +399,102 @@ export function mountAuthorizationServer(
   };
   const registerIp = stage('ip-limiter', ...registerIpLimiter(registerLimits));
   const registerHost = stage('register-host-limiter', registerHostLimiter(registerLimits));
-  const clientAuth = (): Stage => stage('client-auth', clientAuthentication(provider.clientsStore));
-  // The SDK's handlers send `Access-Control-Allow-Origin: *` (its cors()
-  // default) from inside sdk-router. The stages after it (route-limiter,
-  // client-auth, dcr-validator, register-host-limiter) can answer a POST
-  // before that, so this sets the same header first; a browser client can
-  // then read their 429 and 400 errors.
-  // Preflights pass through to the SDK, which answers them.
-  const corsOrigin = (): Stage =>
-    stage('cors-origin', (req, res, next) => {
-      if (req.method !== 'OPTIONS') res.setHeader('Access-Control-Allow-Origin', '*');
-      next();
-    });
+  const clientAuth = (): Stage => stage('client-auth', clientAuthentication(clients));
 
-  // The SDK's handlers are mounted one per route, exactly as its mcpAuthRouter
-  // composes them (it mounts /register and /revoke only when the provider
-  // supports them), without its own metadata routes, which the ones here
-  // replace. Each SDK handler still applies its own CORS, method check and
-  // form parser inside the sdk-router stage; its own rate limit is off,
-  // replaced by the limiter stages here.
-  // The metadata documents are static and get no limiter; /oauth has its own.
+  // The documents are static and get no limiter; /oauth has its own.
   const routes: AsRoute[] = [
     { path: pathOf(resourceMetadataUrl), parser: boundedParser(), router: metadata(protectedResourceMetadata) },
     // Root alias for clients that probe the non-path-aware location.
     { path: '/.well-known/oauth-protected-resource', parser: boundedParser(), router: metadata(protectedResourceMetadata) },
-    { path: '/.well-known/oauth-authorization-server', parser: boundedParser(), router: metadata(oauthMetadata) },
+    // The library's discovery documents and JWKS: its open CORS answers the preflight.
+    ...[...DISCOVERY_PATHS, OIDC_ROUTES.jwks].map(
+      (path): AsRoute => ({ path, parser: boundedParser(), slots: [methods('GET', 'OPTIONS')], router: asLibrary() })
+    ),
     {
-      path: pathOf(oauthMetadata.authorization_endpoint),
+      path: OIDC_ROUTES.authorization,
       limiters: [authorizeIpLimiter],
       parser: boundedParser(),
       slots: [
+        // GET only: POST /authorize isn't served (provider.ts).
+        methods('GET'),
         authorizeLimiter,
         // #55a: bounds, and the refusal of grandfathered plain-http clients.
-        stage(
-          'authorize-validation',
-          authorizeValidation({ clients: provider.clientsStore, policy: redirectPolicy, issuer: oauthMetadata.issuer })
-        ),
+        stage('authorize-validation', authorizeValidation({ clients, policy: redirectPolicy, issuer })),
         // #55b: no error redirect to an unverified client's redirect URI.
-        stage('authorize-guard', authorizeGuard()),
-        // The SDK's /authorize handler redirects errors to the client without
-        // `iss`; this adds it to every redirect from the authorization endpoint.
-        stage('iss-redirect', issOnAuthorizationRedirects(oauthMetadata.issuer)),
+        stage('authorize-guard', authorizeGuard({ issuer, resource })),
       ],
-      router: sdkRouter(authorizationHandler({ provider, rateLimit: false })),
+      // The library's resume route: /authorize/<interaction uid>.
+      subpath: RESUME_UID,
+      router: asLibrary(new RegExp(`^\\/${RESUME_UID}\\/?$`)),
     },
     {
-      path: pathOf(oauthMetadata.token_endpoint),
+      path: OIDC_ROUTES.token,
       limiters: [clientAuthIpLimiter('token')],
       parser: boundedParser(),
-      slots: [corsOrigin(), routeLimiter('token'), clientAuth()],
-      router: sdkRouter(tokenHandler({ provider, rateLimit: false })),
+      slots: [
+        cors(),
+        methods('POST'),
+        routeLimiter('token'),
+        clientAuth(),
+        stage('grant-guard', grantGuard({ provider, store: storage })),
+      ],
+      router: asLibrary(),
     },
-  ];
-  if (oauthMetadata.registration_endpoint) {
-    routes.push({
-      path: pathOf(oauthMetadata.registration_endpoint),
+    {
+      path: OIDC_ROUTES.registration,
       limiters: [registerIp],
       parser: boundedParser(),
-      // cors-origin first, so a browser client can read the validator's 400;
-      // the validator before the host limit, so a refused registration spends
-      // no redirect host's budget.
-      slots: [corsOrigin(), stage('dcr-validator', dcrValidator(redirectPolicy)), registerHost],
-      router: sdkRouter(clientRegistrationHandler({ clientsStore: provider.clientsStore, rateLimit: false })),
-    });
-  }
-  if (oauthMetadata.revocation_endpoint) {
-    routes.push({
-      path: pathOf(oauthMetadata.revocation_endpoint),
+      // cors-origin first, so a browser client can read every refusal; the
+      // validator before the host limit, so a refused registration spends no
+      // redirect host's budget.
+      slots: [cors(), methods('POST'), stage('dcr-validator', dcrValidator(redirectPolicy)), registerHost],
+      router: asLibrary(),
+    },
+    {
+      path: OIDC_ROUTES.revocation,
       limiters: [clientAuthIpLimiter('token revocation')],
       parser: boundedParser(),
-      slots: [corsOrigin(), routeLimiter('token revocation'), clientAuth()],
-      router: sdkRouter(revocationHandler({ provider, rateLimit: false })),
-    });
-  }
-  routes.push({
-    path: '/oauth',
-    limiters: [oauthLegLimiter],
-    parser: boundedParser(),
-    router: stage('ynab-federation', ynabFederationLegs(provider)),
-  });
+      slots: [cors(), methods('POST'), routeLimiter('token revocation'), clientAuth()],
+      router: asLibrary(),
+    },
+    {
+      path: '/oauth',
+      prefix: true,
+      limiters: [oauthLegLimiter],
+      parser: boundedParser(),
+      router: stage(
+        'ynab-federation',
+        interactionRouter({
+          provider,
+          store: storage,
+          encryptor,
+          tokenHasher,
+          ynab,
+          publicUrl,
+          resource,
+          allowWrite: config.allowWrite,
+          globalReadOnly: config.readOnly,
+          redirectPolicy,
+        })
+      ),
+    },
+  ];
 
   const mounted = routes.map((route) => ({
     route: route.path,
-    stages: mountStages(app, route.path, routePipeline(route), observeStage),
+    stages: mountStages(
+      app,
+      route.prefix === true ? route.path : exactRoute(route.path, route.subpath),
+      routePipeline(route),
+      observeStage
+    ),
   }));
 
-  return { provider, resourceServerUrl, resourceMetadataUrl, routes: mounted };
+  return {
+    provider: createAccessTokenVerifier({ provider, resource }),
+    oidc: provider,
+    resourceServerUrl,
+    resourceMetadataUrl,
+    routes: mounted,
+  };
 }
