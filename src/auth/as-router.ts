@@ -61,6 +61,7 @@ import type { YnabOAuthConfig } from './ynab-oauth.js';
 import { redirectPolicyFrom } from './client-metadata.js';
 import { dcrValidator } from './dcr-validator.js';
 import { createClientIdMetadataDocuments, type MetadataTransport } from './client-id-metadata.js';
+import { retentionPolicyFromSettings } from '../config/http/retention.js';
 import { authorizeValidation } from './authorize-validation.js';
 import { authorizeGuard, authorizeRedirectGuard } from './authorize-guard.js';
 import { grantGuard } from './grant-guard.js';
@@ -257,6 +258,7 @@ export function mountAuthorizationServer(
     accessTokenTtlSec: config.accessTokenTtlSec,
     authCodeTtlSec: config.authCodeTtlSec,
     clientIdMetadata,
+    retention: retentionPolicyFromSettings(config),
   });
   const { provider, issuer, resource } = oidc;
   // authorize-guard's fail-closed net, inside the library (see authorize-guard.ts).

@@ -19,6 +19,7 @@ import type { Response } from 'supertest';
 import { expect } from 'vitest';
 import type { OAuthRowRecord, Storage } from '../../../src/storage/types.js';
 import type { DriverHandle } from './storage-drivers.js';
+import type { RetentionPolicy } from '../../../src/auth/retention-defaults.js';
 import { createOidcProvider, asLibraryHandler, type OidcProvider } from '../../../src/auth/oidc/provider.js';
 import { interactionRouter, type InteractionStore } from '../../../src/auth/oidc/interaction.js';
 import { createAccessTokenVerifier } from '../../../src/auth/oidc/verifier.js';
@@ -56,6 +57,8 @@ export interface OidcTestAppOptions {
   trustProxy?: number;
   /** Client ID Metadata Documents (#46): the feature's hooks; off when absent. */
   clientIdMetadata?: ClientIdMetadataDocuments;
+  /** Retention windows the provider is built with (#54b). */
+  retention?: Partial<RetentionPolicy>;
 }
 
 /** The paths D8 mounts the library on (`as-library`). */
@@ -79,6 +82,7 @@ export function buildOidcTestApp(storage: Storage, options: OidcTestAppOptions =
     accessTokenTtlSec: options.accessTokenTtlSec ?? 3600,
     authCodeTtlSec: options.authCodeTtlSec ?? 600,
     clientIdMetadata: options.clientIdMetadata,
+    retention: options.retention,
   });
   const encryptor = options.encryptor ?? new Encryptor(encryptionKey);
   const app = express();

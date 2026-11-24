@@ -52,6 +52,11 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     privateUseSchemes: [],
     trustLoopbackRedirects: true,
     clientIdMetadataDocuments: false,
+    // The loader's defaults (#54b).
+    refreshTokenIdleDays: 30,
+    refreshTokenTtlDays: 90,
+    abandonedClientHours: 24,
+    unusedClientDays: 90,
     ...overrides,
   };
 }
