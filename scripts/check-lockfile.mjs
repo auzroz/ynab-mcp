@@ -62,6 +62,14 @@ export function checkLockfile(lock, allowList = loadAllowList()) {
       continue;
     }
     if (entry.hasInstallScript === true) {
+      // An npm alias keeps the directory name but installs another package.
+      const dirName = packageNameFromKey(key);
+      if (entry.name !== undefined && entry.name !== dirName) {
+        problems.push(
+          `${key}: install-script entry is an alias (name ${String(entry.name)} differs from ${String(dirName)}); aliases are not allowed`,
+        );
+        continue;
+      }
       const pinned = Object.hasOwn(allowList, key) ? allowList[key] : undefined;
       if (pinned === undefined) {
         problems.push(
