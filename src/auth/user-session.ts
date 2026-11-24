@@ -70,6 +70,15 @@ export const REFRESH_LEASE_TTL_MS = 45_000;
  */
 export const REFRESH_LEASE_WAIT_MS = 15_000;
 
+/**
+ * #48: how much of the lease must be left when the YNAB call is sent. A
+ * holder that reaches the send later (a slow key check, a stalled event loop)
+ * gives up instead: another replica may already have claimed the expired
+ * lease and spent the same refresh token. Capped at a quarter of the lease,
+ * so a short test lease still leaves room to refresh.
+ */
+export const LEASE_SEND_MARGIN_MS = 5_000;
+
 /** #48: the first pause between polls of the row while another replica refreshes; it doubles up to {@link LEASE_POLL_MAX_MS}. */
 const LEASE_POLL_FIRST_MS = 50;
 const LEASE_POLL_MAX_MS = 500;
@@ -172,6 +181,8 @@ export interface RefreshLeaseOptions {
   pollMaxMs?: number;
   /** The pause itself (default: a timer). */
   sleep?: (ms: number) => Promise<void>;
+  /** The monotonic clock the wait bound and the lease's send deadline use (default `performance.now`). */
+  monotonic?: () => number;
 }
 
 /** The user row is gone (erased or never connected): the client must re-authorize. */
@@ -215,6 +226,7 @@ export class YnabTokenResolver {
   private readonly pollFirstMs: number;
   private readonly pollMaxMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly monotonic: () => number;
 
   constructor(
     private readonly storage: Storage,
@@ -228,6 +240,7 @@ export class YnabTokenResolver {
     this.pollFirstMs = lease.pollFirstMs ?? LEASE_POLL_FIRST_MS;
     this.pollMaxMs = lease.pollMaxMs ?? LEASE_POLL_MAX_MS;
     this.sleep = lease.sleep ?? defaultSleep;
+    this.monotonic = lease.monotonic ?? (() => performance.now());
   }
 
   /**
@@ -313,11 +326,15 @@ export class YnabTokenResolver {
   async invalidate(userId: string, rejectedAccessToken?: string): Promise<void> {
     this.forget(userId);
     if (rejectedAccessToken === undefined) return;
-    const user = await this.storage.getUser(userId);
-    const ciphertext = user?.encryptedAccessToken;
-    if (user === undefined || ciphertext === undefined) return;
-    if (this.openAccessToken(user.userId, ciphertext) !== rejectedAccessToken) return;
-    await this.storage.rekeyUserAccessToken(userId, ciphertext, undefined);
+    // A miss may be the rekey job moving the same token to a new ciphertext:
+    // re-read and try again, twice at most, while the row still holds it.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const user = await this.storage.getUser(userId);
+      const ciphertext = user?.encryptedAccessToken;
+      if (user === undefined || ciphertext === undefined) return;
+      if (this.openAccessToken(user.userId, ciphertext) !== rejectedAccessToken) return;
+      if (await this.storage.rekeyUserAccessToken(userId, ciphertext, undefined)) return;
+    }
   }
 
   /** Drop this process's cached access token and remembered failure for a user. */
@@ -336,11 +353,14 @@ export class YnabTokenResolver {
     const userId = start.userId;
     const generation = generationOf(start);
     // The wait bound counts from the first claim, not from the first sleep.
-    const deadline = performance.now() + this.leaseWaitMs;
+    const deadline = this.monotonic() + this.leaseWaitMs;
     let pause = this.pollFirstMs;
     for (;;) {
       const holder = randomUUID();
       const now = this.now();
+      // Read before the claim, so the lease as this process counts it never
+      // outlasts the lease as stored.
+      const claimedAt = this.monotonic();
       const claimed = await this.storage.claimRefreshLease(userId, holder, now, now + this.leaseTtlMs);
       if (claimed) {
         if (generationOf(claimed) !== generation) {
@@ -355,7 +375,8 @@ export class YnabTokenResolver {
           await this.release(userId, holder);
           return this.remember(claimed, shared);
         }
-        return this.refreshUnderLease(claimed, holder, retried);
+        const sendBy = claimedAt + this.leaseTtlMs - Math.min(LEASE_SEND_MARGIN_MS, Math.floor(this.leaseTtlMs / 4));
+        return this.refreshUnderLease(claimed, holder, retried, sendBy);
       }
 
       // Another replica holds the lease (or the row is gone): wait for its token.
@@ -368,7 +389,7 @@ export class YnabTokenResolver {
       if (shared) return this.remember(current, shared);
       // Never a refresh of our own while the lease holds: fail closed instead.
       // Elapsed time (storage calls included), on a monotonic clock.
-      const left = deadline - performance.now();
+      const left = deadline - this.monotonic();
       if (left <= 0) {
         // Retry once the holder's lease would have run out (it may have crashed).
         const leaseLeft = (current.refreshLeaseUntil ?? 0) - this.now();
@@ -391,7 +412,13 @@ export class YnabTokenResolver {
    * token; a re-consent is refreshed from once, or refused if the account was
    * re-created.
    */
-  private async refreshUnderLease(user: UserRecord, holder: string, retried: boolean): Promise<ResolvedUser> {
+  private async refreshUnderLease(
+    user: UserRecord,
+    holder: string,
+    retried: boolean,
+    /** Monotonic time by which the YNAB call must be sent, while the lease surely still holds. */
+    sendBy: number
+  ): Promise<ResolvedUser> {
     const userId = user.userId;
     const context = refreshTokenContext(userId);
     let set: YnabTokenSet;
@@ -405,6 +432,22 @@ export class YnabTokenResolver {
     } catch (error) {
       await this.release(userId, holder);
       throw keyRetiredAsUnavailable(error);
+    }
+    // The lease must still hold when the refresh token is spent: past the
+    // deadline another replica may have claimed it and spent the same token.
+    // Give the lease up without calling YNAB; the client retries (503). This
+    // is not fencing (YNAB takes no fencing token): a process frozen between
+    // this check and the send for longer than the margin can still spend the
+    // token twice. YNAB's answer to a reused refresh token is untested; the
+    // worst case is that the user reconnects once. The write-back needs no
+    // holder check: a former holder that won at YNAB holds the only valid
+    // token, and the compare-and-set on the refresh ciphertext fences storage.
+    if (this.monotonic() >= sendBy) {
+      await this.release(userId, holder);
+      throw new YnabTokenUnavailableError(
+        TOKEN_RETRY_AFTER_SEC,
+        'The refresh lease ran short before the YNAB call: not sending it'
+      );
     }
     try {
       refreshToken = this.encryptor.decrypt(user.encryptedRefreshToken, context);

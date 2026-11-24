@@ -9,7 +9,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { OAuthRowStore, OAuthRowWrite, Storage } from '../../../src/storage/types.js';
 import { plainRowKey } from '../../../src/storage/oauth-rows.js';
-import { eraseInactiveUsers, inactiveUserJob } from '../../../src/auth/inactive-user-job.js';
+import { eraseInactiveUsers, inactiveUserJob, startInactiveUserJob } from '../../../src/auth/inactive-user-job.js';
 import { loadInactiveUserSettings } from '../../../src/config/http/inactive-users.js';
 import { ConfigProblems } from '../../../src/config/parse.js';
 import type { ExtensionContext } from '../../../src/http/extensions.js';
@@ -219,6 +219,54 @@ describe('MCP_INACTIVE_USER_DAYS (#54e)', () => {
 
   it.each(['0', '29', '3651', '30d', ' 30', '-30', '1e3', 'off', '90.5'])('refuses %j', (value) => {
     expect(load(value)).toEqual({ days: undefined, problems: 1 });
+  });
+});
+
+describe('the inactive-user erase: error paths', () => {
+  it('an erase that fails for one user counts as failed; the other candidates are still processed; the log is count-only', async () => {
+    const h = await testDrivers[0]!.open();
+    for (const id of ['a-user', 'b-user', 'c-user']) await seedUser(h.storage, id);
+    const erase = h.storage.deleteUserData.bind(h.storage);
+    vi.spyOn(h.storage, 'deleteUserData').mockImplementation(async (userId, onlyIf) => {
+      if (userId === 'b-user') throw new Error('connect ECONNREFUSED postgres://u:hunter2@db/ynab for b-user');
+      return erase(userId, onlyIf);
+    });
+    const lines: string[] = [];
+    const later = Date.now() + 31 * DAY;
+
+    const result = await eraseInactiveUsers(h.storage, 30, { now: () => later, log: (m) => lines.push(m), pageSize: 2 });
+    expect(result).toEqual({ erased: 2, failed: 1 });
+    expect(await h.storage.getUser('a-user')).toBeUndefined();
+    expect(await h.storage.getUser('b-user')).toBeDefined();
+    expect(await h.storage.getUser('c-user')).toBeUndefined();
+    expect(lines).toEqual([
+      '[InactiveUsers] erased 2 user(s) not seen for 30 days and with no live grant; 1 could not be erased (the next pass tries again)',
+    ]);
+    for (const secret of ['b-user', 'hunter2', 'postgres://']) expect(lines.join(' ')).not.toContain(secret);
+  });
+
+  it('a pass whose listing fails logs a sanitized line, and the next pass is scheduled', async () => {
+    const h = await testDrivers[0]!.open();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const list = h.storage.listInactiveUsers.bind(h.storage);
+    const listing = vi
+      .spyOn(h.storage, 'listInactiveUsers')
+      .mockRejectedValueOnce(
+        new Error('query failed: Bearer SENTINEL-TOKEN-7f3a at /srv/ynab-mcp/dist/storage/postgres.js:1234:5')
+      )
+      .mockImplementation(list);
+
+    const job = startInactiveUserJob(h.storage, 30, { firstPassMs: 0, intervalMs: 10, log: () => undefined });
+    try {
+      await vi.waitFor(() => expect(listing.mock.calls.length).toBeGreaterThanOrEqual(2));
+    } finally {
+      await job.stop();
+    }
+    const logged = errorSpy.mock.calls.map((args) => args.map(String).join(' '));
+    const failure = logged.find((l) => l.startsWith('[InactiveUsers] pass failed:'));
+    expect(failure).toBeDefined();
+    expect(failure).not.toContain('SENTINEL-TOKEN-7f3a');
+    expect(failure).not.toContain('/srv/ynab-mcp');
   });
 });
 

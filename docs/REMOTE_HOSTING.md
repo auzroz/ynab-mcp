@@ -310,7 +310,12 @@ holding a spent token, and the user would have to reconnect. Since 0.5.0
   `Retry-After` (an `upstream_unavailable` result for a tool call), and the
   client tries again.
 - A lease whose holder crashed expires after 45 seconds, and the next request
-  refreshes. Requests in one process share one refresh as before.
+  refreshes. Requests in one process share one refresh as before. A holder
+  that reaches the YNAB call with less than 5 seconds of its lease left gives
+  the lease up instead of calling (`503`), since another replica may claim it
+  as it runs out. This is not a fence (YNAB takes no fencing token): a process
+  frozen for longer than that margin just before the call can still spend the
+  refresh token twice, and the user may then have to reconnect once.
 - When YNAB answers `401` to a call made with the stored access token (it was
   revoked or expired early), that token is dropped for every replica, with a
   compare-and-set so a newer one is kept. The call fails with an `auth_error`

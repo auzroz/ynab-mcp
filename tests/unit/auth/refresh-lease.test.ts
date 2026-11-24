@@ -212,6 +212,102 @@ for (const driver of testDrivers) {
       expect(refreshMock).toHaveBeenLastCalledWith(YNAB, 'rt0');
     });
 
+    it('a holder whose lease runs short before the send (a slow key check) gives it up without calling YNAB: 503', async () => {
+      const h = await driver.open();
+      const other = await h.reopen();
+      await seed(h.storage);
+      const stored = (await h.storage.getUser('u1'))?.encryptedRefreshToken;
+      refreshMock.mockResolvedValue({ accessToken: 'access-new', refreshToken: 'rt-rotated', expiresAt: Date.now() + 2 * HOUR });
+      let mono = 0;
+      const resolver = new YnabTokenResolver(h.storage, encryptor, YNAB, Date.now, { ...fast, monotonic: () => mono });
+      // The key check (assertKeyWritable reads the floors) stalls for 41 s of a 45 s lease: past the 5 s margin.
+      const floors = h.storage.getKeyFloors.bind(h.storage);
+      const slow = vi.spyOn(h.storage, 'getKeyFloors').mockImplementation(async () => {
+        mono += 41_000;
+        return floors();
+      });
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const refused = await resolver.resolve('u1').catch((e: unknown) => e);
+      expect(refused).toBeInstanceOf(YnabTokenUnavailableError);
+      expect((refused as YnabTokenUnavailableError).retryAfterSeconds).toBe(5);
+      expect(refreshMock).not.toHaveBeenCalled();
+      const row = await other.getUser('u1');
+      expect(row?.refreshLeaseUntil).toBeUndefined();
+      expect(row?.encryptedRefreshToken).toBe(stored);
+      await expect(resolver.accessTokenFor('u1')()).rejects.toBeInstanceOf(YnabAuthUnavailableError);
+
+      // Not remembered: once the check is quick again, the next attempt refreshes.
+      slow.mockRestore();
+      await expect(resolver.resolve('u1')).resolves.toMatchObject({ accessToken: 'access-new' });
+      expect(refreshMock).toHaveBeenCalledExactlyOnceWith(YNAB, 'rt0');
+    });
+
+    it('invalidate retries the clear when the rekey job moved the same token to a new ciphertext meanwhile', async () => {
+      const h = await driver.open();
+      const k1 = randomBytes(32).toString('base64');
+      const before = new Encryptor(k1);
+      const keyring = new Encryptor(randomBytes(32).toString('base64'), { keyId: '2', previousKeys: `1:${k1}` });
+      await h.storage.upsertUser({
+        userId: 'u1',
+        grantedScope: 'read-write',
+        encryptedRefreshToken: keyring.encrypt('rt0', refreshTokenContext('u1')),
+        updatedAt: Date.now(),
+      });
+      const row = await h.storage.getUser('u1');
+      const oldCt = before.encrypt('access-1', accessTokenContext('u1'));
+      await h.storage.updateUserRefreshToken('u1', row?.encryptedRefreshToken ?? '', row?.encryptedRefreshToken ?? '', {
+        encryptedAccessToken: oldCt,
+        expiresAt: Date.now() + 2 * HOUR,
+        now: Date.now(),
+      });
+      const resolver = new YnabTokenResolver(h.storage, keyring, YNAB, Date.now, fast);
+      const clear = h.storage.rekeyUserAccessToken.bind(h.storage);
+      const spy = vi.spyOn(h.storage, 'rekeyUserAccessToken').mockImplementationOnce(async (userId, old, next) => {
+        // Between invalidate's read and its clear, the rekey job rewrites the same token under key 2.
+        expect(await clear(userId, old, keyring.encrypt('access-1', accessTokenContext('u1')))).toBe(true);
+        return clear(userId, old, next);
+      });
+
+      await resolver.invalidate('u1', 'access-1');
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect((await h.storage.getUser('u1'))?.encryptedAccessToken).toBeUndefined();
+    });
+
+    it('invalidate stops when the row now holds a different token, or none', async () => {
+      const h = await driver.open();
+      await seed(h.storage);
+      const row = await h.storage.getUser('u1');
+      const share = async (token: string): Promise<void> => {
+        const current = await h.storage.getUser('u1');
+        await h.storage.updateUserRefreshToken('u1', current?.encryptedRefreshToken ?? '', current?.encryptedRefreshToken ?? '', {
+          encryptedAccessToken: encryptor.encrypt(token, accessTokenContext('u1')),
+          expiresAt: Date.now() + 2 * HOUR,
+          now: Date.now(),
+        });
+      };
+      expect(row).toBeDefined();
+      await share('access-1');
+      const resolver = new YnabTokenResolver(h.storage, encryptor, YNAB, Date.now, fast);
+      const clear = h.storage.rekeyUserAccessToken.bind(h.storage);
+      const spy = vi.spyOn(h.storage, 'rekeyUserAccessToken').mockImplementationOnce(async (userId, old, next) => {
+        // Another replica refreshed between the read and the clear: access-2 must stay.
+        await share('access-2');
+        return clear(userId, old, next);
+      });
+
+      await resolver.invalidate('u1', 'access-1');
+      expect(spy).toHaveBeenCalledTimes(1);
+      const after = await h.storage.getUser('u1');
+      expect(encryptor.decrypt(after?.encryptedAccessToken ?? '', accessTokenContext('u1'))).toBe('access-2');
+
+      // A row with no shared token, or no row at all: nothing to clear, no write.
+      await h.storage.rekeyUserAccessToken('u1', after?.encryptedAccessToken ?? '', undefined);
+      await resolver.invalidate('u1', 'access-2');
+      await resolver.invalidate('nobody', 'access-2');
+      expect(spy).toHaveBeenCalledTimes(2); // the line above, only
+    });
+
     it('a holder whose lease ran out mid-call still stores its token (the compare-and-set is on the ciphertext)', async () => {
       const h = await driver.open();
       const other = await h.reopen();
