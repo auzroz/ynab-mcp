@@ -96,8 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-upgrade backup (see Upgrading from 0.4.x).
 - MCP refresh tokens expire after 30 days without use or 90 days after the
   sign-in that issued them, whichever comes first (#54, #68). A client then
-  sends the user through sign-in again. There is nothing to configure, and
-  tokens issued before the upgrade stop working at it anyway (see the
+  sends the user through sign-in again. Change the windows with
+  `MCP_REFRESH_TOKEN_IDLE_DAYS` and `MCP_REFRESH_TOKEN_TTL_DAYS` (1 to 3650).
+  Tokens issued before the upgrade stop working at it anyway (see the
   authorization-server note above).
 - Client registration and `/authorize` follow the server's own rules (#55).
   Before upgrading, check that your clients fit them:
@@ -225,7 +226,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Docker image no longer installs python3, make and g++, and the release
   and Docker builds install with `npm ci --ignore-scripts`. The SQLite driver
   comes as a prebuilt binary for amd64 and arm64 (#62).
-
+- Storage waits are bounded, so a request can no longer hang on the database
+  (#99). Postgres cancels a statement after 10 seconds, a query after 15
+  seconds and a connection attempt after 10 seconds, and SQLite waits at most
+  5 seconds for a lock (60 seconds during the startup migration). A write that
+  times out fails the request and is not retried. There are no settings.
+- The consent page tells the user how to end the access later: open the YNAB
+  settings at app.ynab.com/settings, find Authorized Applications, and choose
+  Revoke next to this server's app, which is listed under the name you gave
+  your YNAB OAuth application (#85).
+- The database records a schema version and a minimum compatible release
+  (#73). A start that finds the database's floor above its own release, or an
+  unreadable one, refuses to start. The 0.5.0 migrations add nullable columns
+  and indexes (retention clocks for #54), which briefly lock each table at
+  startup, so take the backup first.
+- Tool descriptions and the server's MCP `instructions` tell the model that
+  budget free text (payee, account and category names, memos) is untrusted
+  data, not instructions (#61). Only descriptions change; schemas and output
+  are unchanged. Every write tool and the 17 read tools that return memos or
+  notes carry the note.
 ### Security
 
 - Stored YNAB refresh tokens are bound to their user and column, and carry a
@@ -301,7 +320,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   install. Releases include `SHA256SUMS`, build provenance attestations for every
   release file and the image, and SPDX SBOM attestations for the npm tarball
   and the image's npm dependencies. Verify them with `gh attestation verify`.
-
+- Text from the budget in tool output (payee, account and category names,
+  memos, notes) has Unicode bidirectional control characters removed, so it
+  can't be visually reordered to mislead the user or the model (#61).
+- A stored access level other than `read-only` or `read-write` is read as
+  read-only, so a corrupted or hand-edited row can't widen a connection (#73).
+- Erasing an account is supported by the storage layer (#53, #54): tokens
+  issued before an account was erased stay dead if the same person connects
+  again. A YNAB token refresh that finishes after the account was erased
+  fails instead of recreating the user, and the user reconnects (#93).
 ### Added
 
 - `YNAB_WRITE_LIMIT_PER_HOUR`: a per-user write cap on every transport (#61c).
@@ -374,6 +401,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer needs a manual re-run when npm is slow (#121).
 - Creating or updating a category target with a frequency (`goal_frequency`)
   works through the `ynab` SDK, with no direct-API workaround (#22, #44).
+- Completing a sign-in is one transaction (#94): the user's stored YNAB
+  token and the authorization code are written together or not at all. A
+  failed or late sign-in no longer replaces the user's stored YNAB refresh
+  token, and the retention sweep can no longer remove the client between the
+  callback's last check and the code being saved.
 
 ## [0.4.3] - 2026-11-23
 
