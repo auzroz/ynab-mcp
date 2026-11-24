@@ -58,6 +58,7 @@ import type { TokenHasher } from './token-hash.js';
 import type { YnabOAuthConfig } from './ynab-oauth.js';
 import { redirectPolicyFrom } from './client-metadata.js';
 import { dcrValidator } from './dcr-validator.js';
+import { retentionPolicyFromSettings } from '../config/http/retention.js';
 import { authorizeValidation } from './authorize-validation.js';
 import { authorizeGuard, authorizeRedirectGuard } from './authorize-guard.js';
 import { grantGuard } from './grant-guard.js';
@@ -243,6 +244,7 @@ export function mountAuthorizationServer(
     encryptionKey: config.encryptionKey as string,
     accessTokenTtlSec: config.accessTokenTtlSec,
     authCodeTtlSec: config.authCodeTtlSec,
+    retention: retentionPolicyFromSettings(config),
   });
   const { provider, issuer, resource } = oidc;
   // #64a: every successful rotation's response is sealed and stored for refresh-guard (refresh-grace.ts).
