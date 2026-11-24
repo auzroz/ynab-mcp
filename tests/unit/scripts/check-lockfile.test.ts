@@ -24,6 +24,69 @@ function good(name: string, version = '1.0.0') {
 
 const check = (l: unknown): string[] => checkLockfile(l);
 
+describe('install-script allow-list', () => {
+  const allow = { 'node_modules/esbuild': '0.28.2' };
+  const withScript = (name: string, version: string) => ({ ...good(name, version), hasInstallScript: true });
+
+  it('fails a new install-script package, naming it', () => {
+    const p = checkLockfile(lock({ 'node_modules/evil': withScript('evil', '1.0.0') }), allow);
+    expect(p).toHaveLength(1);
+    expect(p[0]).toContain('node_modules/evil');
+    expect(p[0]).toContain('install-script-allowlist.json');
+  });
+
+  it('passes an allowed install-script package at its pinned version', () => {
+    expect(checkLockfile(lock({ 'node_modules/esbuild': withScript('esbuild', '0.28.2') }), allow)).toEqual([]);
+  });
+
+  it('fails an allowed package whose version changed', () => {
+    const p = checkLockfile(lock({ 'node_modules/esbuild': withScript('esbuild', '0.29.0') }), allow);
+    expect(p).toHaveLength(1);
+    expect(p[0]).toMatch(/node_modules\/esbuild.*0\.28\.2.*0\.29\.0/);
+  });
+
+  it('passes a lockfile with no install scripts', () => {
+    expect(checkLockfile(lock({ 'node_modules/foo': good('foo') }), allow)).toEqual([]);
+  });
+
+  it('does not treat inherited allow-list keys as allowed', () => {
+    const p = checkLockfile(
+      lock({ 'node_modules/esbuild': withScript('esbuild', '0.28.2') }),
+      Object.create(allow),
+    );
+    expect(p).toHaveLength(1);
+    expect(p[0]).toContain('node_modules/esbuild');
+  });
+
+  it('fails an install-script alias even at an allowed path and version', () => {
+    const entry = { ...withScript('esbuild', '0.28.2'), name: 'other-pkg' };
+    const p = checkLockfile(lock({ 'node_modules/esbuild': entry }), allow);
+    expect(p).toHaveLength(1);
+    expect(p[0]).toMatch(/alias.*other-pkg/);
+  });
+
+  it('accepts an install-script entry with a matching or absent name', () => {
+    const base = withScript('esbuild', '0.28.2');
+    expect(checkLockfile(lock({ 'node_modules/esbuild': { ...base, name: 'esbuild' } }), allow)).toEqual([]);
+    expect(checkLockfile(lock({ 'node_modules/esbuild': base }), allow)).toEqual([]);
+  });
+
+  it('never echoes credentials or tokens from resolved URLs', () => {
+    const bad = (resolved: string) => ({ ...good('foo'), resolved, hasInstallScript: true });
+    const p = checkLockfile(
+      lock({
+        'node_modules/a': bad('https://USERMARK:s3cr3t-SENTINEL@registry.npmjs.org/a/-/a-1.0.0.tgz'),
+        'node_modules/b': bad('https://registry.npmjs.org/foo/-/foo-1.0.0.tgz?token=SENTINEL'),
+        'node_modules/c': bad('https://USERMARK:s3cr3t-SENTINEL@evil.example/c/-/c-1.0.0.tgz'),
+      }),
+      allow,
+    );
+    expect(p.length).toBeGreaterThan(0);
+    expect(p.join('\n')).not.toContain('SENTINEL');
+    expect(p.join('\n')).not.toContain('USERMARK');
+  });
+});
+
 describe('checkLockfile', () => {
   it('accepts registry entries, scoped names and nested paths', () => {
     expect(
