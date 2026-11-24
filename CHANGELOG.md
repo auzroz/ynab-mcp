@@ -170,7 +170,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A durable, attributable audit log** (#60a). Every write tool call is
   recorded with how it ended: `success`, `denied_read_only`, `denied_scope`
   (a read-only grant), `denied_write_limit` or `error`. Refused writes are
-  recorded too; a call that fails input validation is not. Each entry names
+  recorded too, up to 20 read-only or scope refusals per user per hour; a call
+  that fails input validation is not. Each entry names
   the user, the MCP client, its grant and the request, the tool, the operation,
   and the resource and budget ids. In OAuth mode entries go to the storage
   driver, so with `sqlite` or `postgres` they survive restarts and are shared

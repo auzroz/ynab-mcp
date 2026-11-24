@@ -146,6 +146,7 @@ export function buildYnabClient(
       onUnauthorized: ctx.onUnauthorized,
       clientId: options.clientId,
       clientUsage: components.clientUsage,
+      auditedDenials: components.auditedDenials,
       readOnlyReason: ctx.readOnlyReason,
     }
   );
@@ -257,8 +258,12 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
       // A tool hidden from a read-only caller's list is rejected here too, so
       // calling it by name gets the same read-only error even when its handler
       // would not reach the client's write guard (the deprecated no-op import).
+      // Recorded while the user's hourly budget of audited refusals lasts (a
+      // refusal costs no write slot, so a looping client is bounded here).
       if (ynabClient.isReadOnly() && isWrite) {
-        await recordWrite(name, ynabClient.getReadOnlyReason() === 'scope' ? 'denied_scope' : 'denied_read_only');
+        if (ynabClient.admitDeniedAudit()) {
+          await recordWrite(name, ynabClient.getReadOnlyReason() === 'scope' ? 'denied_scope' : 'denied_read_only');
+        }
         throw new ReadOnlyModeError(name);
       }
       // The per-user write cap (#61c, D-8): checked here, once per write tool

@@ -36,6 +36,14 @@ export const CACHE_PRUNE_INTERVAL_MS = 60 * 1000;
 /** Default bound on retained users (see UserRegistryOptions.maxEntries). */
 export const DEFAULT_MAX_USER_ENTRIES = 10_000;
 
+/**
+ * Refused writes (read-only mode, a read-only grant) recorded in the audit log
+ * per user per hour (#60a). Such a refusal costs no YNAB request and no write
+ * slot, so without a bound a looping client could add a row per call; past it
+ * the refusals still happen, unrecorded, and one stderr line says so.
+ */
+export const AUDITED_DENIALS_PER_HOUR = 20;
+
 /** The state one user's requests share. */
 export interface UserComponents {
   readonly rateLimiter: RateLimiter;
@@ -49,6 +57,8 @@ export interface UserComponents {
   readonly auditStore: MemoryAuditStore;
   /** Which of the user's clients sent their YNAB requests (#58), for ynab_rate_limit_status. */
   readonly clientUsage: ClientUsage;
+  /** How many refused writes the audit log still records this hour (#60a; see AUDITED_DENIALS_PER_HOUR). */
+  readonly auditedDenials: WriteLimiter;
   /** Fails this user's YNAB calls fast while YNAB is failing (#58); per user, never shared. */
   readonly breaker: CircuitBreaker;
   /** The user's write cap (#61c), shared by all their requests like the rate limiter. */
@@ -83,6 +93,7 @@ export function createUserComponents(
     deltaCache: new DeltaCache({ now, budget }),
     auditStore: new MemoryAuditStore(),
     clientUsage: new ClientUsage(now),
+    auditedDenials: new WriteLimiter(AUDITED_DENIALS_PER_HOUR, now),
     breaker: new CircuitBreaker({ now }),
     writeLimiter: new WriteLimiter(limits.writeLimitPerHour ?? WRITE_LIMIT_DEFAULT_PER_HOUR, now),
     feedState: { sinceDateRejected: false },

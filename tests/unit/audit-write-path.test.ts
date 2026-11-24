@@ -14,7 +14,7 @@ import {
   type RequestContext,
   type UserContext,
 } from '../../src/server.js';
-import { createUserComponents } from '../../src/services/user-registry.js';
+import { AUDITED_DENIALS_PER_HOUR, createUserComponents } from '../../src/services/user-registry.js';
 import { tools } from '../../src/tools/index.js';
 import { WRITE_TOOL_AUDIT_TARGETS } from '../../src/tools/audit-targets.js';
 import { cleanupDrivers, testDrivers, type DriverHandle } from './helpers/storage-drivers.js';
@@ -180,6 +180,19 @@ for (const driver of testDrivers) {
       expect(rows[0]?.resourceId).toBeUndefined();
       const stored = JSON.stringify(await rawRows(h, 'u1'));
       for (const sentinel of SENTINELS) expect(stored, sentinel).not.toContain(sentinel);
+    });
+
+    it('records at most 20 read-only or scope refusals per user per hour, and says so once', async () => {
+      const h = await driver.open();
+      vi.stubGlobal('fetch', vi.fn(async () => ynabEcho()));
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const { client } = await requestServer(h, { readOnly: true, readOnlyReason: 'scope' });
+      for (let i = 0; i < 50; i++) {
+        expect(JSON.parse(textOf(await client.callTool(SENTINEL_CALLS[2]!)))).toMatchObject({ type: 'read_only_mode' });
+      }
+      expect(await h.storage.listAuditEntries('u1', {}, 100)).toHaveLength(AUDITED_DENIALS_PER_HOUR);
+      const notices = errors.mock.calls.filter((c) => String(c[0]).includes('further ones are not recorded'));
+      expect(notices).toHaveLength(1);
     });
 
     it('records a write that fails before YNAB (rate limited) once, and none for invalid input', async () => {

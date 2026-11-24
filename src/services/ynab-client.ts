@@ -62,6 +62,8 @@ export interface YnabClientOptions {
   clientId?: string | undefined;
   /** The user's per-client usage (#58); none: not reported. */
   clientUsage?: ClientUsage | undefined;
+  /** The user's budget of audited refusals (#60a); none: every refusal is recorded. */
+  auditedDenials?: WriteLimiter | undefined;
   /**
    * Why a read-only client is read-only (#60a), so a refused write is audited
    * as `denied_read_only` (the operator's setting) or `denied_scope` (the
@@ -371,6 +373,7 @@ export class YnabClient {
   private readonly clientKey: string;
   private readonly clientUsage: ClientUsage | undefined;
   private readonly readOnlyReason: ReadOnlyReason;
+  private readonly auditedDenials: WriteLimiter | undefined;
 
   // Track server knowledge for delta sync. Keyed by budget, resource and any
   // request parameters that change the result set (see knowledgeKey), because a
@@ -474,6 +477,7 @@ export class YnabClient {
     this.clientKey = options.clientId ?? NO_CLIENT;
     this.clientUsage = options.clientUsage;
     this.readOnlyReason = options.readOnlyReason ?? 'read_only';
+    this.auditedDenials = options.auditedDenials;
   }
 
   // In-flight budget settings requests, one per budget UUID (#49).
@@ -559,6 +563,22 @@ export class YnabClient {
    */
   isReadOnly(): boolean {
     return this.readOnly;
+  }
+
+  /**
+   * Whether the audit log records this refused write (#60a): while the user's
+   * hourly budget of audited refusals lasts. The first one past it logs one
+   * stderr line, so the gap in the log is visible to the operator.
+   */
+  admitDeniedAudit(): boolean {
+    const admission = this.auditedDenials?.tryAcquire();
+    if (admission === undefined || admission.allowed) return true;
+    if (admission.firstRefusal) {
+      console.error(
+        `[AUDIT] more than ${admission.limit} refused writes this hour for one user; further ones are not recorded until ${new Date(admission.resetsAt).toISOString()}`
+      );
+    }
+    return false;
   }
 
   /** Why writes are refused when read-only (see YnabClientOptions.readOnlyReason). */

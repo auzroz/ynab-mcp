@@ -415,7 +415,12 @@ Each entry holds:
 
 A bulk call is one entry, with no `resource_id` unless it touched one record.
 `ynab_move_money` adds one `move` entry beside its two category updates. A
-call that fails input validation is not a write attempt and is not recorded.
+call that fails input validation is not a write attempt and is not recorded,
+and neither is a successful call of the deprecated `ynab_import_transactions`,
+which does nothing. Refused writes are bounded so a looping client can't fill
+the table: the write cap records only the first refusal of each episode, and
+read-only and scope refusals are recorded up to 20 per user per hour (per
+process), after which they are refused unrecorded and one stderr line says so.
 
 Entries hold ids only. There is no column for an amount or other financial
 value, a payee, account, category or memo text, or an error message: those
