@@ -28,6 +28,7 @@ import { securityTxt } from './routes/security-txt.js';
 import type { Encryptor } from '../crypto.js';
 import { rekeyJob } from '../auth/rekey-job.js';
 import { inactiveUserJob } from '../auth/inactive-user-job.js';
+import { sweepJob } from '../auth/sweep-job.js';
 
 /**
  * Whether `path` is /mcp or under it, as Express would match app.use('/mcp')
@@ -119,4 +120,4 @@ export function createJobRunner(list: readonly JobExtension[], ctx: ExtensionCon
 export const routes: readonly RouteExtension[] = [securityTxt];
 
 /** Background jobs, started in this order. */
-export const jobs: readonly JobExtension[] = [rekeyJob, inactiveUserJob];
+export const jobs: readonly JobExtension[] = [rekeyJob, inactiveUserJob, sweepJob];

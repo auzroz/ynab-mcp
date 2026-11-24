@@ -102,6 +102,21 @@ const oauthKeyring: HttpCheck = (config, problems) => {
   }
 };
 
+/**
+ * A refresh token's idle limit can't outlast its grant family's total limit
+ * (#54b): an idle window longer than the TTL would never take effect, so it is
+ * almost certainly a mistake.
+ */
+const refreshIdleWithinTtl: HttpCheck = (config, problems) => {
+  if (problems.failed('MCP_REFRESH_TOKEN_IDLE_DAYS') || problems.failed('MCP_REFRESH_TOKEN_TTL_DAYS')) return;
+  if (config.refreshTokenIdleDays > config.refreshTokenTtlDays) {
+    problems.add(
+      'MCP_REFRESH_TOKEN_IDLE_DAYS',
+      'MCP_REFRESH_TOKEN_IDLE_DAYS must not exceed MCP_REFRESH_TOKEN_TTL_DAYS (a grant ends at the total limit however recently it was used).'
+    );
+  }
+};
+
 /** Append-only: one line per rule. */
 export const HTTP_CHECKS: readonly HttpCheck[] = [
   oauthRefusesStaticYnab,
@@ -109,4 +124,5 @@ export const HTTP_CHECKS: readonly HttpCheck[] = [
   headerFallbackNeedsLoopback,
   oauthStorageRequired,
   oauthKeyring,
+  refreshIdleWithinTtl,
 ];

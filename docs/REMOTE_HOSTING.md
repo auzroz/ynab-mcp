@@ -69,6 +69,10 @@ Set these environment variables (see `.env.example`):
 | `MCP_DCR_PRIVATE_USE_SCHEMES` | no | Comma-separated private-use URI schemes (RFC 8252, e.g. `com.example.app`) a registering native app may use for its redirect URI. Default: none, so registrations need `https://` or `http://` to `localhost`, `127.0.0.1` or `[::1]` |
 | `MCP_TRUST_LOOPBACK_REDIRECTS` | no | Redirect authorization errors back to loopback redirect URIs (default `true`). The consent page labels a loopback address either way |
 | `MCP_INACTIVE_USER_DAYS` | no | Erase users inactive for this many days who have no live connection (integer 30-3650). Default: off. See "Erasing inactive users" |
+| `MCP_REFRESH_TOKEN_IDLE_DAYS` | no | A refresh token not used for this many days expires (integer 1-3650, default `30`). Must not exceed `MCP_REFRESH_TOKEN_TTL_DAYS`. See "Retention and the sweep" |
+| `MCP_REFRESH_TOKEN_TTL_DAYS` | no | A connection ends this many days after its sign-in, however often it is refreshed (integer 1-3650, default `90`) |
+| `MCP_ABANDONED_CLIENT_HOURS` | no | A registered client that never completed a sign-in is deleted after this many hours (integer 1-87600, default `24`) |
+| `MCP_UNUSED_CLIENT_DAYS` | no | A client with no live connection is deleted this many days after its last sign-in (integer 1-3650, default `90`) |
 
 OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
 `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL`; startup is refused if any is missing.
@@ -359,6 +363,47 @@ applies at once. The columns come with schema 6 (0.5.0): `encrypted_access_token
 `access_token_expires_at`, `refresh_lease_holder`, `refresh_lease_until` and
 `last_seen_at` on `users`, all nullable. 0.4.x ignores them, but don't run
 0.4.x and 0.5.0 replicas together (see "Encrypted YNAB tokens").
+
+### Retention and the sweep
+
+Credentials and registrations expire on a schedule, and a background sweep
+deletes what has expired. These are the defaults (0.5.0); each window is a
+setting.
+
+| What | Expires | Setting |
+| --- | --- | --- |
+| Refresh token (a connection) | 30 days after it was last used (each refresh issues a new one) | `MCP_REFRESH_TOKEN_IDLE_DAYS` (1-3650) |
+| Connection, in total | 90 days after its sign-in, however often it is refreshed | `MCP_REFRESH_TOKEN_TTL_DAYS` (1-3650) |
+| Client that never completed a sign-in | 24 hours after registering | `MCP_ABANDONED_CLIENT_HOURS` (1-87600) |
+| Client with no live connection | 90 days after its last sign-in | `MCP_UNUSED_CLIENT_DAYS` (1-3650) |
+| Access token, authorization code, sign-in in progress | their own short lifetimes (`MCP_ACCESS_TOKEN_TTL_SEC`, `MCP_AUTH_CODE_TTL_SEC`) | not retention settings |
+| Spent codes and refresh tokens | kept 30 days after use so a replay can still revoke its grant | fixed |
+
+The idle window must not exceed the total window, or startup is refused. A
+user whose connection expires signs in again (consent screen and YNAB); the
+YNAB grant itself is untouched. A changed refresh-token window applies to
+tokens issued after the change; the client windows apply at the next sweep.
+
+The sweep runs about 30 seconds after startup, then every 15 minutes, on every
+replica. On Postgres one replica sweeps at a time (an advisory lock); the
+others skip that pass. It deletes, in small batches:
+
+- expired authorization codes, access tokens, sign-ins in progress and
+  sessions;
+- refresh tokens past their idle or total window;
+- spent codes and refresh tokens past their 30 days, once their connection has
+  no live token;
+- tokens whose user is gone;
+- expired connections once nothing is left under them;
+- abandoned and unused clients, once nothing refers to them.
+
+It never deletes users: that is the opt-in "Erasing inactive users" below. A
+failed pass is logged and the next one runs on schedule. The log gives counts
+only, never a token, user or client id:
+
+```text
+[Sweep] expired-rows: deleted accessTokens=12 refreshTokens=3 oauthAbandonedClients=1
+```
 
 ### Erasing inactive users
 

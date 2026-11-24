@@ -164,6 +164,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation gives its slot back; one YNAB rejects keeps it. The first refusal of
   each episode is recorded in the audit log as `write_limit_refused`. It is separate
   from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests.
+- Retention windows are settings, and a sweep enforces them (#54): a
+  background job deletes expired credentials and clients every 15 minutes.
+  `MCP_REFRESH_TOKEN_IDLE_DAYS` (default 30) and `MCP_REFRESH_TOKEN_TTL_DAYS`
+  (default 90) bound a connection, `MCP_ABANDONED_CLIENT_HOURS` (default 24)
+  and `MCP_UNUSED_CLIENT_DAYS` (default 90) bound client registrations. Whole
+  numbers up to 3650 days; the idle window may not exceed the total. See
+  "Retention and the sweep" in `docs/REMOTE_HOSTING.md`.
 - Optional erase of inactive users (#54): `MCP_INACTIVE_USER_DAYS` (30 to
   3650, off by default). A background job erases each user who has had no
   sign-in and no YNAB token refresh for that many days and has no live
