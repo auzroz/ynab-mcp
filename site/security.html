@@ -81,24 +81,13 @@
 
         <section aria-labelledby="audit">
           <h2 id="audit">The audit log</h2>
-          <p>Every write through ynab-mcp, successful or not, is recorded with its time, tool, the kind of record and its ID. Ask Claude to <q>show the audit log</q> to review changes; the <a href="tools.html#ynab_audit_log"><code>ynab_audit_log</code></a> tool filters by operation, record type and outcome.</p>
-          <p>The log is kept in memory for the life of the server process (the most recent 1,000 entries). On a shared server, each user sees only their own entries.</p>
+          <p>Every write attempt through ynab-mcp is recorded with its time, tool, the kind of record and its ID, and how it ended: done, refused (the server or the connection is read-only, or the hourly write limit was reached) or failed. Ask Claude to <q>show the audit log</q> to review changes; the <a href="tools.html#ynab_audit_log"><code>ynab_audit_log</code></a> tool filters by operation, record type and outcome.</p>
+          <p>On your own computer the log is kept in memory for the life of the server process (the most recent 1,000 entries). A self-hosted server with OAuth and a database keeps it in the database, so it survives restarts, and each entry also names the app (MCP client) and request that made it. On a shared server, each user sees only their own entries, and deleting an account deletes its entries.</p>
         </section>
 
         <section aria-labelledby="privacy">
           <h2 id="privacy">Privacy in logs</h2>
-          <p>Audit entries record which fields were present, not what they said:</p>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th scope="col">Field</th><th scope="col">Recorded as</th></tr></thead>
-              <tbody>
-                <tr><td>Payee name</td><td><code>has_payee</code></td></tr>
-                <tr><td>Account or category name</td><td><code>has_name</code></td></tr>
-                <tr><td>Memo</td><td><code>has_memo</code></td></tr>
-              </tbody>
-            </table>
-          </div>
-          <p>Error text in the audit log is redacted for secret-looking patterns and truncated.</p>
+          <p>Audit entries hold IDs only. They never record an amount, a payee, account or category name, a memo, or an error message.</p>
         </section>
 
         <section aria-labelledby="sanitization">

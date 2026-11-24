@@ -53,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `ynab_audit_log` entries have a new shape (#60a): `timestamp`, `tool`,
+  `operation`, `resource_type`, `resource_id`, `budget_id`, `outcome`,
+  `success`, `client_id`, `family_id` and `request_id`. They no longer carry
+  `details` (amounts, dates, presence flags) or error text. The filters accept
+  every operation (`move`, `import`) and resource type the log records, and a
+  new `outcome` filter; `success: false` matches every outcome but `success`.
+  The summary adds `by_outcome`.
 - **What operators see after the authorization server move** (#47):
   - The consent page is now at `/oauth/interaction/<id>`, reached by a
     redirect from `/authorize`. Its choices go to `.../start`, and Cancel to
@@ -112,6 +119,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Audit entries hold ids only (#60a): no amount or other financial value, no
+  payee, account, category or memo text, and no error message, by
+  construction (the table has no column for one). Before, an entry's details
+  could carry a transaction's amount and date.
 - Stored YNAB refresh tokens are bound to their user and column, and carry a
   key id (#57). The new format is `v2.<kid>.<iv>.<tag>.<ct>`, with AAD
   `ynab-mcp|<column>|v2|<user id>`, so a ciphertext copied into another user's
@@ -156,6 +167,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A durable, attributable audit log** (#60a). Every write tool call is
+  recorded with how it ended: `success`, `denied_read_only`, `denied_scope`
+  (a read-only grant), `denied_write_limit` or `error`. Refused writes are
+  recorded too; a call that fails input validation is not. Each entry names
+  the user, the MCP client, its grant and the request, the tool, the operation,
+  and the resource and budget ids. In OAuth mode entries go to the storage
+  driver, so with `sqlite` or `postgres` they survive restarts and are shared
+  by replicas. In header mode and on stdio they stay in memory, newest 1,000
+  per user. Erasing an account erases its entries. This needs schema 7: one
+  `audit_log` table with two indexes, added on startup. The write cap's first
+  refusal is now recorded as `denied_write_limit` (it was `write_limit_refused`).
+  See "The audit log" in docs/REMOTE_HOSTING.md.
+- `ynab_rate_limit_status` reports the calling client's share of the user's
+  requests and refusals in the last hour, under `client_usage` (#58).
+  `client_id` is `null` on stdio and in header mode.
 - `YNAB_WRITE_LIMIT_PER_HOUR`: a per-user write cap on every transport (#61c).
   One write tool call is one write request, so a bulk call such as
   `ynab_create_transactions` counts as 1. It is checked once, before the tool

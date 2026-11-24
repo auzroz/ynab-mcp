@@ -291,7 +291,10 @@ All requests of one user share one rate limit, one cache (including the
 delta-sync snapshots, see README "Caching") and one audit log, so several
 clients can't exceed the per-user YNAB budget (`RATE_LIMIT_PER_HOUR`), a
 snapshot one request built saves the next a full fetch, and `ynab_audit_log`
-shows the user's writes from every client. Users never share any of it.
+shows the user's writes from every client (see "The audit log"). Users never
+share any of it. `ynab_rate_limit_status` shows the user's usage and, under
+`client_usage`, the calling client's share of it (requests sent and refused in
+the last hour).
 Snapshots are bounded per user (32 snapshots, 20,000 entities, dropped after 30
 minutes unused), so budget roughly that much memory per active user. This state
 is kept for an hour after the user's last request, so a quiet hour doesn't reset
@@ -366,7 +369,7 @@ Off by default. Set `MCP_INACTIVE_USER_DAYS` (30 to 3650) to erase users who
 have been inactive that long and have no live connection. A background job
 runs about a minute after startup, then hourly. It erases each such user with
 the same step as deleting an account: their stored YNAB grant, connections,
-tokens and codes.
+tokens, codes and audit log.
 
 - **Inactive** means no sign-in, no re-consent and no YNAB token refresh. A
   refresh happens about every two hours while the user makes requests, so any
@@ -386,6 +389,54 @@ tokens and codes.
 An erased user who comes back signs in again as a new account. The YNAB grant
 itself is not revoked at YNAB: the user can remove it under "Connected Apps" in
 YNAB's settings.
+
+### The audit log
+
+Every write tool call is recorded with how it ended (#60a). In OAuth mode the
+entries go to the storage driver's `audit_log` table, so with `sqlite` or
+`postgres` they survive restarts and every replica writes to one log. In
+header mode, which has no storage, and on stdio they are kept in memory, the
+newest 1,000 per user.
+
+Each entry holds:
+
+- `ts`: when (epoch ms; the tool shows an ISO time).
+- `user_id`: the YNAB user id (OAuth), the token's SHA-256 digest (header
+  mode) or `local` (stdio).
+- `client_id`, `family_id`: the MCP client and its grant (OAuth mode).
+- `request_id`: the HTTP request (on stdio, one per tool call).
+- `tool`, `operation` (`create`, `update`, `delete`, `move`, `import`),
+  `resource_type`, `resource_id` and `budget_id`.
+- `outcome`: `success`; `denied_read_only` (`YNAB_READ_ONLY`, or
+  `YNAB_OAUTH_ALLOW_WRITE` off); `denied_scope` (a read-only grant, on the
+  token or the user's YNAB connection); `denied_write_limit` (the write cap,
+  first refusal of each episode only); or `error` (YNAB refused it, or it
+  failed before reaching YNAB, for example rate-limited).
+
+A bulk call is one entry, with no `resource_id` unless it touched one record.
+`ynab_move_money` adds one `move` entry beside its two category updates. A
+call that fails input validation is not a write attempt and is not recorded.
+
+Entries hold ids only. There is no column for an amount or other financial
+value, a payee, account, category or memo text, or an error message: those
+stay in the tool's result and in the server's sanitized logs. The server also
+writes one stderr line per entry (`[AUDIT] <outcome>: <operation> on
+<resource type> (<id>) via <tool>`).
+
+Erasing an account (deleting it, or the inactive-user erase) erases its
+entries in the same transaction. A write that finishes after its account was
+erased, or erased and connected again, writes no entry: the insert checks the
+user row of the request's account generation, and on Postgres holds it, so an
+erase in flight either waits for the insert and deletes the entry or finds
+nothing to delete.
+
+`ynab_audit_log` shows all of the user's entries, from every client, newest
+first, filtered by operation, resource type, outcome or success. Entries are
+kept until the account is erased; a retention window and a per-client default
+view come in a later release (#60b).
+
+The table comes with schema 7 (0.5.0): `audit_log` and two indexes,
+`(user_id, ts)` and `(ts)`, created on startup. Older releases ignore it.
 
 ### Discovery (RFC 9728 / RFC 8414)
 
