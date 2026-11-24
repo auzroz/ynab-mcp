@@ -382,6 +382,8 @@ export function createServerForRequest(ctx: RequestContext): Server {
     familyId: ctx.familyId,
     requestId: ctx.requestId,
     generation: ctx.user.generation,
+    // A write never waits on its audit row past this call's deadline.
+    deadline: ctx.toolCalls.deadline,
   });
   const client = buildYnabClient(ctx.user, ctx.components, {
     deadline: ctx.toolCalls.deadline,

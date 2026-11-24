@@ -435,16 +435,23 @@ export class YnabClient {
     ];
     // Every call to YNAB goes through outboundFetch: a deadline (never past the
     // request's), the body read inside it, and the user's circuit breaker.
-    const fetchApi = (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
-      outboundFetch(input instanceof Request ? input.url : input, init, {
+    // It is also where a request is counted for its client (#58): only a
+    // request that reaches here is one, and its own refund undoes only it.
+    const fetchApi = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const refund = this.clientUsage?.sent(this.clientKey);
+      return outboundFetch(input instanceof Request ? input.url : input, init, {
         timeoutMs: options.outboundTimeoutMs,
         deadline: options.deadline,
         breaker: options.breaker,
         now: options.now,
         fetch: options.fetch,
         // Taken at acquire(), but nothing was sent: give the token back.
-        onNotSent: () => this.giveBackToken(),
+        onNotSent: () => {
+          refund?.();
+          this.giveBackToken();
+        },
       });
+    };
     if (typeof accessToken === 'string') {
       this.api = new ConfiguredApi(
         new ynab.Configuration({ accessToken, basePath: ynab.BASE_PATH, middleware, fetchApi })
@@ -496,7 +503,9 @@ export class YnabClient {
    * reservation while it lasts, else from the limiter (which fails fast).
    */
   private takeToken(): Promise<void> {
-    // Counted per client (#58) per request, so a fan-out's unused reservation is not.
+    // A refusal is counted for the client here (#58); a sent request is
+    // counted in fetchApi, when it is sent, so nothing is counted up front and
+    // nothing has to be taken back on a refusal or a token given back.
     const usage = this.clientUsage;
     const client = this.clientKey;
     const reservation = this.fanOut.getStore();
@@ -509,24 +518,16 @@ export class YnabClient {
         return Promise.reject(error);
       }
       reservation.remaining--;
-      usage?.sent(client);
       return Promise.resolve();
     }
-    // Counted up front and taken back on a refusal, so the caller awaits the limiter's own promise.
-    usage?.sent(client);
+    // The caller awaits the limiter's own promise (no extra tick); a refusal is noted beside it.
     const acquired = this.rateLimiter.acquire();
-    if (usage !== undefined) {
-      acquired.catch(() => {
-        usage.unsent(client);
-        usage.rejected(client);
-      });
-    }
+    if (usage !== undefined) acquired.catch(() => usage.rejected(client));
     return acquired;
   }
 
   /** Return a token taken by takeToken() for a request that was never sent. */
   private giveBackToken(): void {
-    this.clientUsage?.unsent(this.clientKey);
     const reservation = this.fanOut.getStore();
     if (reservation !== undefined && !reservation.closed) reservation.remaining++;
     else this.rateLimiter.release();

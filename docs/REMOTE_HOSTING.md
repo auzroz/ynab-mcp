@@ -514,7 +514,8 @@ Each entry holds:
 - `client_id`, `family_id`: the MCP client and its grant (OAuth mode).
 - `request_id`: the HTTP request (on stdio, one per tool call).
 - `tool`, `operation` (`create`, `update`, `delete`, `move`, `import`, or
-  `audit_suppressed`, below), `resource_type`, `resource_id` and `budget_id`.
+  `audit_suppressed`, below), `resource_type`, `resource_id` and `budget_id`
+  (a UUID, `last-used` or `default`; anything else is left out).
 - `outcome`: `success`; `denied_read_only` (`YNAB_READ_ONLY`, or
   `YNAB_OAUTH_ALLOW_WRITE` off); `denied_scope` (a read-only grant, on the
   token or the user's YNAB connection); `denied_write_limit` (the write cap,
@@ -534,10 +535,13 @@ stderr line; the refusals after it in that hour are refused but not recorded.
 So an `audit_suppressed` entry tells a reader of the log that entries are
 missing after it.
 
-Recording an entry never fails the write. If the store can't be written (the
-database is unreachable, say), the write's own result stands, the entry is
-lost, and the server logs `[AUDIT] could not record an entry` (sanitized). A
-write can therefore succeed with no audit entry; watch for that log line.
+Recording an entry never fails or holds up the write. A write waits at most 1
+second for its entry (less when its request is close to its deadline), so a
+slow database can't turn a write YNAB applied into a timeout; a slower insert
+finishes in the background. If the store can't be written (the database is
+unreachable, say), the write's own result stands, the entry is lost, and the
+server logs `[AUDIT] could not record an entry` (sanitized). A write can
+therefore succeed with no audit entry; watch for that log line.
 
 Entries hold ids only. There is no column for an amount or other financial
 value, a payee, account, category or memo text, or an error message: those

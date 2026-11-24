@@ -308,14 +308,16 @@ export class MemoryAuditStore implements AuditStore {
   }
 
   async listAuditEntries(userId: string, query: AuditQuery, limit: number): Promise<AuditRecord[]> {
-    const out: AuditRecord[] = [];
+    const matches: AuditRecord[] = [];
     const list = this.rows.get(userId) ?? [];
-    for (let i = list.length - 1; i >= 0 && out.length < limit; i--) {
+    // Newest inserted first, then a stable sort by time: the SQL order (ts
+    // DESC, then id DESC), applied before the limit.
+    for (let i = list.length - 1; i >= 0; i--) {
       const e = list[i] as AuditRecord;
-      if (auditMatches(e, query)) out.push({ ...e });
+      if (auditMatches(e, query)) matches.push(e);
     }
-    // Newest first by insertion, which is time order on one process's clock.
-    return out;
+    matches.sort((a, b) => b.ts - a.ts);
+    return matches.slice(0, limit).map((e) => ({ ...e }));
   }
 
   async countAuditEntries(userId: string, query: AuditQuery): Promise<Record<string, number>> {

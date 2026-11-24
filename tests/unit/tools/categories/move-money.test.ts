@@ -111,7 +111,7 @@ describe('handleMoveMoney', () => {
       operation: 'move',
       resourceType: 'category',
       resourceId: FROM,
-      budgetId: 'test-budget-id',
+      budgetId: undefined, // 'test-budget-id' is not identifier-shaped, so it is not stored
       outcome: 'success',
     });
     const text = JSON.stringify(rows[0]);

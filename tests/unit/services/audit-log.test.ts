@@ -4,18 +4,29 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { AuditLog, LOCAL_AUDIT_USER } from '../../../src/services/audit-log.js';
+import { AUDIT_APPEND_MAX_WAIT_MS, AuditLog, LOCAL_AUDIT_USER } from '../../../src/services/audit-log.js';
 import { MemoryAuditStore, type AuditStore } from '../../../src/storage/audit-rows.js';
 import { MemoryStorage } from '../../../src/storage/memory.js';
+
+const BUDGET = '77777777-7777-4777-8777-777777777777';
 
 const event = {
   operation: 'create',
   resourceType: 'transaction',
   tool: 'ynab_create_transaction',
   resourceId: 'txn-1',
-  budgetId: 'budget-1',
+  budgetId: BUDGET,
   outcome: 'success',
 } as const;
+
+/** A store whose append never settles (a stalled database). */
+function hangingStore(): AuditStore {
+  return {
+    appendAuditEntry: vi.fn(() => new Promise<boolean>(() => undefined)),
+    listAuditEntries: vi.fn(),
+    countAuditEntries: vi.fn(),
+  };
+}
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -42,10 +53,43 @@ describe('AuditLog', () => {
         operation: 'create',
         resourceType: 'transaction',
         resourceId: 'txn-1',
-        budgetId: 'budget-1',
+        budgetId: BUDGET,
         outcome: 'success',
       },
     ]);
+  });
+
+  it('stores a budget id only when it is identifier-shaped (a UUID, last-used or default)', async () => {
+    const log = new AuditLog(new MemoryAuditStore(), { userId: 'u1' });
+    for (const budgetId of [BUDGET, 'last-used', 'default', 'Sentinel budget\nsecond line', `${BUDGET}\n`, 'budget-1', '']) {
+      await log.record({ ...event, budgetId });
+    }
+    expect((await log.list({}, 10)).reverse().map((e) => e.budgetId)).toEqual([
+      BUDGET,
+      'last-used',
+      'default',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it('waits for a stalled store at most the cap, then lets the append finish in the background', async () => {
+    const store = hangingStore();
+    const log = new AuditLog(store, { userId: 'u1' }, Date.now, 50);
+    const started = Date.now();
+    await log.record(event);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(store.appendAuditEntry).toHaveBeenCalledTimes(1);
+    expect(AUDIT_APPEND_MAX_WAIT_MS).toBeLessThanOrEqual(1000);
+  });
+
+  it('waits at most half the time left before the call deadline', async () => {
+    const log = new AuditLog(hangingStore(), { userId: 'u1', deadline: Date.now() + 200 });
+    const started = Date.now();
+    await log.record(event);
+    expect(Date.now() - started).toBeLessThan(500);
   });
 
   it('defaults to the stdio user with no client', async () => {
@@ -97,9 +141,12 @@ describe('AuditLog', () => {
     await storage.upsertUser({ userId: 'u1', grantedScope: 'read-write', encryptedRefreshToken: 'enc', updatedAt: 1 });
     const generation = (await storage.getUser('u1'))?.createdAt ?? 0;
     await new AuditLog(storage, { userId: 'u1', generation }).record(event);
+    expect(await storage.listAuditEntries('u1', {}, 10)).toHaveLength(1);
+    // Another generation (erased and connected again since): refused.
     await new AuditLog(storage, { userId: 'u1', generation: generation + 1 }).record(event);
     expect(await storage.listAuditEntries('u1', {}, 10)).toHaveLength(1);
     await storage.deleteUserData('u1');
+    expect(await storage.listAuditEntries('u1', {}, 10)).toEqual([]);
     await new AuditLog(storage, { userId: 'u1', generation }).record(event);
     expect(await storage.listAuditEntries('u1', {}, 10)).toEqual([]);
   });
@@ -120,6 +167,6 @@ describe('AuditLog', () => {
   it('logs one stderr line per row, with ids and vocabulary only', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await new AuditLog().record({ ...event, outcome: 'denied_scope', resourceId: undefined });
-    expect(errors).toHaveBeenCalledWith('[AUDIT] denied_scope: create on transaction via ynab_create_transaction');
+    expect(errors.mock.calls).toEqual([['[AUDIT] denied_scope: create on transaction via ynab_create_transaction']]);
   });
 });

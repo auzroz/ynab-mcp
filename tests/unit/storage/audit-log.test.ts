@@ -61,6 +61,16 @@ describe('the audit_log table (M6)', () => {
 });
 
 describe('MemoryAuditStore', () => {
+  it('lists by time, newest first, then reverse insertion for equal times, before the limit (as the SQL)', async () => {
+    const store = new MemoryAuditStore();
+    // Inserted out of time order (a clock step, another replica's row).
+    for (const [ts, resourceId] of [[300, 'c'], [100, 'a'], [300, 'd'], [200, 'b'], [50, 'z']] as const) {
+      await store.appendAuditEntry(row({ ts, resourceId }));
+    }
+    expect((await store.listAuditEntries('u1', {}, 10)).map((e) => e.resourceId)).toEqual(['d', 'c', 'b', 'a', 'z']);
+    expect((await store.listAuditEntries('u1', {}, 2)).map((e) => e.resourceId)).toEqual(['d', 'c']);
+  });
+
   it("keeps each user's newest entries, bounded per user", async () => {
     const store = new MemoryAuditStore(3);
     for (let i = 0; i < 5; i++) await store.appendAuditEntry(row({ resourceId: `t${i}` }));

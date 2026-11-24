@@ -18,15 +18,27 @@ describe('ClientUsage', () => {
     let t = 1_000_000;
     const usage = new ClientUsage(() => t);
     usage.sent('a');
-    usage.sent('a');
+    const refund = usage.sent('a');
     usage.sent('b');
     usage.rejected('a');
-    usage.unsent('a');
+    refund();
+    refund(); // idempotent
     expect(usage.status('a')).toEqual({ sentLastHour: 1, rejectedLastHour: 1 });
     expect(usage.status('b')).toEqual({ sentLastHour: 1, rejectedLastHour: 0 });
     expect(usage.status('nobody')).toEqual({ sentLastHour: 0, rejectedLastHour: 0 });
     t += HOUR;
     expect(usage.status('a')).toEqual({ sentLastHour: 0, rejectedLastHour: 0 });
+  });
+
+  it("a refund removes its own request only: a later request of the same client keeps its time", () => {
+    let t = 1_000_000;
+    const usage = new ClientUsage(() => t);
+    const refundA = usage.sent('c'); // request A
+    t += 59 * 60_000;
+    usage.sent('c'); // request B, 59 minutes later
+    refundA(); // A was never sent after all
+    t += 2 * 60_000; // A's time is past the hour, B's is not
+    expect(usage.status('c').sentLastHour).toBe(1);
   });
 
   it('keeps at most maxClients, dropping the least recently active', () => {

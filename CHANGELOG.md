@@ -355,8 +355,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a read-only grant), `denied_write_limit` or `error`. Refused writes are
   recorded too, up to 20 read-only or scope refusals per user per hour, then
   one `audit_suppressed` entry marks that later ones are missing; a call that
-  fails input validation is not. Recording never fails a write: if the store
-  can't be written, the write stands and the entry is lost (logged). Each entry names
+  fails input validation is not. Recording never fails a write and holds it up
+  for at most 1 second: a slower insert finishes in the background, and if the
+  store can't be written the write stands and the entry is lost (logged). Each entry names
   the user, the MCP client, its grant and the request, the tool, the operation,
   and the resource and budget ids. In OAuth mode entries go to the storage
   driver, so with `sqlite` or `postgres` they survive restarts and are shared

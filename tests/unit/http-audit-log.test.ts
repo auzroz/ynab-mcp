@@ -52,7 +52,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const fetchMock = vi.fn<typeof fetch>();
 const handles: HttpApp[] = [];
 
-async function startApp(overrides: { allowWrite: boolean; readOnly?: boolean } = { allowWrite: true }): Promise<Express> {
+async function startApp(
+  overrides: { allowWrite: boolean; readOnly?: boolean; requestTimeoutMs?: number } = { allowWrite: true }
+): Promise<Express> {
   const handle = await buildHttpApp(
     makeHttpConfig({
       publicUrl: PUBLIC_URL,
@@ -63,6 +65,7 @@ async function startApp(overrides: { allowWrite: boolean; readOnly?: boolean } =
       encryptionKey,
       readOnly: overrides.readOnly ?? false,
       allowWrite: overrides.allowWrite,
+      ...(overrides.requestTimeoutMs !== undefined ? { requestTimeoutMs: overrides.requestTimeoutMs } : {}),
     })
   );
   handles.push(handle);
@@ -165,7 +168,8 @@ async function callTool(
   return { isError: result['isError'] === true, body: JSON.parse(result['content'][0]['text'] as string) };
 }
 
-const createGroup = { budget_id: 'plan-1', name: 'Sentinel Group Name' };
+const PLAN = '55555555-5555-4555-8555-555555555555';
+const createGroup = { budget_id: PLAN, name: 'Sentinel Group Name' };
 
 describe('the audit log over HTTP (#60a)', () => {
   it('records a write with the user, client, grant and request; the tool lists it', async () => {
@@ -185,7 +189,7 @@ describe('the audit log over HTTP (#60a)', () => {
       operation: 'create',
       resourceType: 'category_group',
       resourceId: 'g1',
-      budgetId: 'plan-1',
+      budgetId: PLAN,
       outcome: 'success',
     });
     expect(rows[0]?.familyId).toEqual(expect.any(String));
@@ -197,6 +201,22 @@ describe('the audit log over HTTP (#60a)', () => {
     const listed = await callTool(app, access, session, 'ynab_audit_log', {});
     expect(listed.body['count']).toBe(2);
     expect(listed.body['entries'][0]).toMatchObject({ client_id: clientId, outcome: 'success', request_id: rows[0]?.requestId });
+  });
+
+  it('a write YNAB applied returns its result promptly even when the audit store stalls', async () => {
+    const app = await startApp({ allowWrite: true, requestTimeoutMs: 1500 });
+    const { access } = await connect(app, 'read-write');
+    const session = await openSession(app, access);
+    // The database stops answering audit inserts.
+    const append = vi.spyOn(shared.storage!, 'appendAuditEntry').mockImplementation(() => new Promise<boolean>(() => undefined));
+    const started = Date.now();
+    const result = await callTool(app, access, session, 'ynab_create_category_group', createGroup);
+    const elapsed = Date.now() - started;
+    expect(result.isError).toBe(false);
+    expect(result.body['type']).not.toBe('request_timeout');
+    expect(append).toHaveBeenCalledTimes(1);
+    // Well inside the 1.5 s ceiling (the tool deadline is 1.35 s): the wait is half the time left, at most.
+    expect(elapsed).toBeLessThan(1200);
   });
 
   it("records a write refused by the operator's read-only setting as denied_read_only", async () => {
@@ -234,7 +254,7 @@ describe('the audit log over HTTP (#60a)', () => {
     const app = await startApp();
     const { access } = await connect(app, 'read-write');
     const session = await openSession(app, access);
-    const invalid = await callTool(app, access, session, 'ynab_create_category_group', { budget_id: 'plan-1' });
+    const invalid = await callTool(app, access, session, 'ynab_create_category_group', { budget_id: PLAN });
     expect(invalid.isError).toBe(true);
     expect(await shared.storage!.listAuditEntries(USER, {}, 10)).toEqual([]);
     await callTool(app, access, session, 'ynab_create_category_group', createGroup);

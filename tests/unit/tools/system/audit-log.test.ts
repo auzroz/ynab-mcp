@@ -23,13 +23,16 @@ interface Entry {
   success: boolean;
 }
 
+const B1 = '66666666-6666-4666-8666-666666666661';
+const B2 = '66666666-6666-4666-8666-666666666662';
+
 let audit: AuditLog;
 let client: YnabClient;
 
 async function seedEntries(): Promise<void> {
-  await audit.record({ operation: 'create', tool: 'ynab_create_transaction', budgetId: 'budget-1', resourceType: 'transaction', outcome: 'success' });
-  await audit.record({ operation: 'update', tool: 'ynab_update_transaction', budgetId: 'budget-1', resourceType: 'transaction', outcome: 'success' });
-  await audit.record({ operation: 'create', tool: 'ynab_create_account', budgetId: 'budget-2', resourceType: 'account', outcome: 'error' });
+  await audit.record({ operation: 'create', tool: 'ynab_create_transaction', budgetId: B1, resourceType: 'transaction', outcome: 'success' });
+  await audit.record({ operation: 'update', tool: 'ynab_update_transaction', budgetId: B1, resourceType: 'transaction', outcome: 'success' });
+  await audit.record({ operation: 'create', tool: 'ynab_create_account', budgetId: B2, resourceType: 'account', outcome: 'error' });
 }
 
 describe('handleAuditLog', () => {
@@ -62,7 +65,7 @@ describe('handleAuditLog', () => {
       operation: 'create',
       resource_type: 'account',
       resource_id: null,
-      budget_id: 'budget-2',
+      budget_id: B2,
       outcome: 'error',
       success: false,
       client_id: 'client-a',

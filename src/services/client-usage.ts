@@ -20,8 +20,13 @@ export const DEFAULT_MAX_TRACKED_CLIENTS = 50;
 /** The key of requests with no MCP client (stdio, header mode). */
 export const NO_CLIENT = '';
 
+/** One sent request; its own refund removes exactly this entry. */
+interface Sent {
+  at: number;
+}
+
 interface Counts {
-  sentAt: number[];
+  sentAt: Sent[];
   rejectedAt: number[];
 }
 
@@ -41,17 +46,24 @@ export class ClientUsage {
     private readonly maxClients: number = DEFAULT_MAX_TRACKED_CLIENTS
   ) {}
 
-  /** A request of `client` was sent (it took a rate-limit token). */
-  sent(client: string): void {
+  /**
+   * A request of `client` is being sent. Returns its refund: called when the
+   * request did not go out after all, it removes this entry and no other, so
+   * a later request of the same client keeps its own time (idempotent).
+   */
+  sent(client: string): () => void {
     const counts = this.touch(client);
     const now = this.now();
-    prune(counts.sentAt, now);
-    counts.sentAt.push(now);
-  }
-
-  /** A request `sent()` counted was not sent after all (its token went back). */
-  unsent(client: string): void {
-    this.clients.get(client)?.sentAt.pop();
+    pruneSent(counts.sentAt, now);
+    const entry: Sent = { at: now };
+    counts.sentAt.push(entry);
+    let refunded = false;
+    return () => {
+      if (refunded) return;
+      refunded = true;
+      const i = counts.sentAt.indexOf(entry);
+      if (i !== -1) counts.sentAt.splice(i, 1);
+    };
   }
 
   /** The rate limiter refused a call of `client`. */
@@ -66,7 +78,7 @@ export class ClientUsage {
     const counts = this.clients.get(client);
     if (counts === undefined) return { sentLastHour: 0, rejectedLastHour: 0 };
     const now = this.now();
-    prune(counts.sentAt, now);
+    pruneSent(counts.sentAt, now);
     prune(counts.rejectedAt, now);
     return { sentLastHour: counts.sentAt.length, rejectedLastHour: counts.rejectedAt.length };
   }
@@ -90,6 +102,13 @@ export class ClientUsage {
     }
     return counts;
   }
+}
+
+function pruneSent(sent: Sent[], now: number): void {
+  const cutoff = now - HOUR_MS;
+  let i = 0;
+  while (i < sent.length && (sent[i] as Sent).at <= cutoff) i++;
+  if (i > 0) sent.splice(0, i);
 }
 
 function prune(times: number[], now: number): void {
