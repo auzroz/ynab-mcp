@@ -75,14 +75,15 @@ describe('install-script allow-list', () => {
     const bad = (resolved: string) => ({ ...good('foo'), resolved, hasInstallScript: true });
     const p = checkLockfile(
       lock({
-        'node_modules/a': bad('https://user:s3cr3t-SENTINEL@registry.npmjs.org/a/-/a-1.0.0.tgz'),
+        'node_modules/a': bad('https://USERMARK:s3cr3t-SENTINEL@registry.npmjs.org/a/-/a-1.0.0.tgz'),
         'node_modules/b': bad('https://registry.npmjs.org/foo/-/foo-1.0.0.tgz?token=SENTINEL'),
-        'node_modules/c': bad('https://user:s3cr3t-SENTINEL@evil.example/c/-/c-1.0.0.tgz'),
+        'node_modules/c': bad('https://USERMARK:s3cr3t-SENTINEL@evil.example/c/-/c-1.0.0.tgz'),
       }),
       allow,
     );
     expect(p.length).toBeGreaterThan(0);
     expect(p.join('\n')).not.toContain('SENTINEL');
+    expect(p.join('\n')).not.toContain('USERMARK');
   });
 });
 
