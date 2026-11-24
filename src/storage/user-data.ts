@@ -1,7 +1,7 @@
 /**
  * Where a user's data lives: the catalog `deleteUserData` erases by on the SQL
  * drivers (STOR-1, ADR-0002 D4 and D12). A table that gains a user column is
- * covered by adding one entry here (#60b's `audit_log` in M5, for example);
+ * covered by adding one entry here (as #60a's `audit_log`, schema 7, was);
  * tests/unit/storage/user-data.test.ts fails while any table with a
  * `user_id` or `account_id` column is missing.
  *
@@ -9,7 +9,9 @@
  * the user row first (a transaction minting tokens holds it FOR KEY SHARE, so
  * it either commits before that DELETE and its tokens go below, or finds the
  * row gone), codes before code tombstones, tokens before tombstones (the order
- * the replay revocation writes them in), and the oidc-provider rows last.
+ * the replay revocation writes them in), then the oidc-provider rows, and the
+ * audit rows last (D-7b: erasing an account erases its audit log; an audit
+ * insert holds the user row, so it lands before this erase or not at all).
  * Memory storage mirrors the same entries in its own maps.
  */
 
@@ -42,6 +44,8 @@ export const USER_DATA_TABLES: readonly UserDataTable[] = [
   { table: 'consumed_refresh_tokens', column: 'user_id', orIn: { column: 'family_id', ids: 'families' } },
   // oidc-provider rows (M4).
   { table: 'oauth_rows', column: 'account_id', orIn: { column: 'grant_id', ids: 'grants' } },
+  // The audit log (M6, #60a; D-7b).
+  { table: 'audit_log', column: 'user_id' },
 ];
 
 /** The user's oidc-provider grants (`$1` = the user id). */

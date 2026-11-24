@@ -18,6 +18,9 @@
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
 import type { RetentionPolicy } from '../auth/retention-defaults.js';
 import type { StorageTimeouts } from './timeouts.js';
+import type { AuditStore } from './audit-rows.js';
+
+export type { AuditStore, AuditRecord, AuditQuery, AuditGuard } from './audit-rows.js';
 
 export type GrantedScope = 'read-only' | 'read-write';
 
@@ -333,7 +336,11 @@ export interface AccountStore {
   deleteUserData(userId: string): Promise<void>;
 }
 
-export interface Storage extends OAuthRowStore, CiphertextStore {
+/**
+ * Every driver also keeps the audit log (#60a, `audit_log`, schema 7; see
+ * src/storage/audit-rows.ts), erased with the account by {@link Storage.deleteUserData}.
+ */
+export interface Storage extends OAuthRowStore, CiphertextStore, AuditStore {
   init(): Promise<void>;
   close(): Promise<void>;
 
@@ -388,8 +395,9 @@ export interface Storage extends OAuthRowStore, CiphertextStore {
    *
    * The oidc-provider rows go in the same step (ADR-0002 D4, D12): every
    * `oauth_rows` row with the user's `account_id`, and every row of the user's
-   * grants. The 0.4.x token tables above are cleared too, although nothing
-   * reads them after the cut-over. (SQLite and Postgres: #47-1's driver step.)
+   * grants; so do the user's audit rows (`audit_log`, D-7b). The 0.4.x token
+   * tables above are cleared too, although nothing reads them after the
+   * cut-over. (SQLite and Postgres: #47-1's driver step.)
    *
    * With `onlyIf` (#54e, the inactive-user erase), the same erase runs only
    * when, checked inside its transaction (on Postgres after the account and

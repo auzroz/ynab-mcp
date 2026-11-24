@@ -34,6 +34,7 @@ import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import type { ClientSchemaValidator } from './types.js';
 import { TOKEN_HASHING_BACKFILL } from './token-hashing-migration.js';
 import { CLIENT_CONVERSION_BACKFILL, M4_COLUMNS, OAUTH_ROWS_TABLE } from './oauth-rows-migration.js';
+import { AUDIT_LOG_TABLE } from './audit-rows.js';
 
 export type Dialect = 'sqlite' | 'postgres';
 
@@ -130,9 +131,9 @@ export interface MigrationTx {
 /**
  * The version of this release's schema: the highest step applied. Bump it with
  * each step (M1 is 2, STOR-1's M2 is 3, #52's M3 is 4, ADR-0002's M4 is 5,
- * #48 and #54e's M5 is 6, and so on).
+ * #48 and #54e's M5 is 6, #60a's M6 is 7, and so on).
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** The release these migrations ship in. A database stamped with a newer floor is refused. */
 export const STORAGE_RELEASE = '0.5.0';
@@ -180,6 +181,10 @@ export const ADDED_TABLES: readonly AddedTable[] = [
   },
   // M4 (ADR-0002 D4): the oidc-provider rows, with their indexes. 0.4.x ignores it.
   OAUTH_ROWS_TABLE,
+  // M6 (schema 7, #60a): the audit log, with its indexes (in the table's own
+  // statements, so a restart takes no index lock on a table replicas write).
+  // Older releases ignore it.
+  AUDIT_LOG_TABLE,
 ];
 
 /** Columns added since 0.3.x, applied in order. */

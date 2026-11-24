@@ -54,6 +54,16 @@ import {
   signInCiphertext,
 } from './encryption-meta.js';
 import { resolveStorageTimeouts } from './timeouts.js';
+import {
+  auditCountSql,
+  auditInsert,
+  auditListSql,
+  auditRecordFromRow,
+  type AuditGuard,
+  type AuditQuery,
+  type AuditRecord,
+  type AuditRow,
+} from './audit-rows.js';
 import { applyMigrations, MIGRATION_PLAN, type MigrationDeps, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
@@ -743,6 +753,27 @@ export class SqliteStorage implements Storage, OAuthRowStore {
       )
       .all(seenBefore, afterUserId ?? null, afterUserId ?? null, limit) as Array<{ user_id: string }>;
     return rows.map((r) => r.user_id);
+  }
+
+  // The audit log (#60a). One statement each; a guarded insert checks the user row in the same statement.
+
+  async appendAuditEntry(entry: AuditRecord, guard?: AuditGuard): Promise<boolean> {
+    const { sql, params } = auditInsert('sqlite', entry, guard);
+    return this.database.prepare(toPositional(sql)).run(...params).changes === 1;
+  }
+
+  async listAuditEntries(userId: string, query: AuditQuery, limit: number): Promise<AuditRecord[]> {
+    const { sql, params } = auditListSql('sqlite', userId, query, limit);
+    return (this.database.prepare(toPositional(sql)).all(...params) as AuditRow[]).map(auditRecordFromRow);
+  }
+
+  async countAuditEntries(userId: string, query: AuditQuery): Promise<Record<string, number>> {
+    const { sql, params } = auditCountSql('sqlite', userId, query);
+    const counts: Record<string, number> = {};
+    for (const r of this.database.prepare(toPositional(sql)).all(...params) as Array<{ outcome: string; n: number }>) {
+      counts[r.outcome] = Number(r.n);
+    }
+    return counts;
   }
 
   // Account self-service
