@@ -1,6 +1,7 @@
 /**
  * #55: MCP_VERIFIED_REDIRECT_URIS, MCP_DCR_PRIVATE_USE_SCHEMES and
- * MCP_TRUST_LOOPBACK_REDIRECTS (src/config/http/dcr.ts).
+ * MCP_TRUST_LOOPBACK_REDIRECTS (src/config/http/dcr.ts); #46's
+ * MCP_CLIENT_ID_METADATA_DOCUMENTS.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -101,5 +102,16 @@ describe('MCP_TRUST_LOOPBACK_REDIRECTS', () => {
   it('is a strict boolean', () => {
     expect(loadHttpConfig({ ...BASE, MCP_TRUST_LOOPBACK_REDIRECTS: 'false' }).trustLoopbackRedirects).toBe(false);
     expect(() => loadHttpConfig({ ...BASE, MCP_TRUST_LOOPBACK_REDIRECTS: 'ture' })).toThrow(/MCP_TRUST_LOOPBACK_REDIRECTS/);
+  });
+});
+
+describe('MCP_CLIENT_ID_METADATA_DOCUMENTS (#46)', () => {
+  it('is off by default and a strict boolean', () => {
+    expect(loadHttpConfig(BASE).clientIdMetadataDocuments).toBe(false);
+    expect(loadHttpConfig({ ...BASE, MCP_CLIENT_ID_METADATA_DOCUMENTS: 'true' }).clientIdMetadataDocuments).toBe(true);
+    expect(loadHttpConfig({ ...BASE, MCP_CLIENT_ID_METADATA_DOCUMENTS: 'no' }).clientIdMetadataDocuments).toBe(false);
+    expect(() => loadHttpConfig({ ...BASE, MCP_CLIENT_ID_METADATA_DOCUMENTS: 'ture' })).toThrow(
+      /MCP_CLIENT_ID_METADATA_DOCUMENTS/
+    );
   });
 });

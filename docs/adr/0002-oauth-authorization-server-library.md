@@ -353,7 +353,7 @@ What an upgrading instance holds, and what happens to it:
 | #55 (P9) | Lands as planned. Its stages stay. #47-4 moves its consent-page hunk into the interaction route, and its phase-2 guard pre-validates the same parameters for the library. O acks. |
 | #59 (P7) | Its keys move from the SDK's internal limiters to D8's `route-limiter` stages in #47-4 |
 | #64a (P10) | **Re-scoped after the cut-over**, so it isn't built twice: D6's `refresh-guard`; `resource` required for new clients in `authorize-validation`; PKCE negative tests against the library; the library's `/revoke` owner check (the spike passed it); the grant level across clients (users, unchanged). Its own M4 is dropped. |
-| #46 | CIMD through the library's `clientIdMetadataDocument` feature: off by default, an `ack` of draft-03, `allowFetch` as the policy, and our own `fetch`. That `fetch` resolves the host once, refuses private and loopback addresses, and connects to the address it checked (a pinned lookup, so DNS rebinding can't swap it). The library already refuses redirects for these fetches (`redirect: 'manual'`) and applies its body limits. It lands after the cut-over (O). |
+| #46 | **Implemented** (see the addendum "#46: Client ID Metadata Documents"). CIMD through the library's `clientIdMetadataDocument` feature: off by default, an `ack` of draft-03, `allowFetch` as the policy, and our own `fetch`. That `fetch` resolves the host once, refuses private and loopback addresses, and connects to the address it checked (a pinned lookup, so DNS rebinding can't swap it). The library already refuses redirects for these fetches (`redirect: 'manual'`) and applies its body limits. It lands after the cut-over (O). |
 | #53b (P9) | `AccountStore` keeps its interface; #47-1 re-implements it over `oauth_rows` |
 | #54b (P10) | Lands first; #47-1 extends the sweep to `oauth_rows` |
 | #62a (merged) | No `release.yml` or `Dockerfile` change (no native dependencies). The audit gate covers the new packages. |
@@ -505,3 +505,27 @@ The in-place edits above (D2, D3, D7, D8, D15 and Consequences) record these; th
    - **Errors:** `sendOAuthError` writes JSON without an ETag, as the library does, so a refusal from a stage can't be told apart from the library's (#42: a replayed code answers exactly as an unknown one).
 3. **Consequences:** `POST /authorize` answers 405, and `prompt=none` returns `login_required`.
 4. **D15's dates are superseded.** On 2026-11-23 the maintainer decided to go as fast as possible, overriding Q7's "no dates earlier". The dependency order is unchanged.
+
+### 2026-11-24: #46: Client ID Metadata Documents
+
+D14's #46 row as built (`src/auth/client-id-metadata.ts`, wired in `provider.ts` and `as-router.ts`):
+
+1. **The feature:** `features.clientIdMetadataDocument` with `ack: 'draft-03'`, on only with `MCP_CLIENT_ID_METADATA_DOCUMENTS=true` (strict boolean, default `false`). It is set in `provider.ts` only, not in `CLIENT_SCHEMA_CONFIGURATION`. The library keeps doing what it already does: the `client_id` equality check, the URL-shape check, refusing shared-secret methods, `redirect: 'manual'`, deduplicating concurrent fetches, the success cache (`cacheDuration` 300 to 86 400 s) and the discovery flag.
+2. **`configuration.fetch` is ours,** and when the feature is off it refuses everything, so the library makes no outbound request except a metadata document fetch. The fetch:
+   - takes https on the default port only;
+   - resolves the host once and refuses it if any address is special-use (IPv4 and IPv6, IPv4-mapped forms included);
+   - connects to the checked address through a pinned `lookup`, with the URL's host as Host and SNI, and checks the peer address again once connected;
+   - refuses anything but 200;
+   - caps the body at 16 KiB while it streams, and refuses a compressed body;
+   - runs everything under one deadline: our 5 s, or the library's 2.5 s signal when that is shorter.
+
+   `fetchResponseBodyLimits` is set to the same cap.
+3. **The `/register` rules apply.** The fetch hands the library a normalized document, not the fetched one: `dcr-validator`'s `registrableMetadata` (now exported), plus `client_id` and `token_endpoint_auth_method: none`. The spike showed why: the library alone refuses a document's `scope` (`invalid_client_metadata`), and it would leave a loopback-only client `web`, without the loopback port relaxation.
+4. **`allowFetch`** checks two things in this order, and only on a library cache miss:
+   - **a failure cache:** a URL whose fetch or document failed is refused for 60 s, capped at 1 000 entries;
+   - **a per-IP fetch budget:** 20 per 15 minutes per client IP (IPv6 /64), on a limiter store, a shared one when #67b provides it.
+
+   A refusal over the budget is never cached, because one address over its budget mustn't refuse a client for everyone. The first lookup happens in `authorize-validation` or `client-auth`, outside the library's request context. So a new `cimd-context` stage, ahead of those stages on `/authorize`, `/token` and `/revoke`, records the requester in an `AsyncLocalStorage`. The second lookup in the same request isn't charged again. `libraryClients` treats the library's `invalid_client` from `Client.find` as an unknown client, so the library answers it with its fixed description.
+5. **An anchor row.** Storage saves a code only for a client with a row: the `authorizedAt` stamp and the sweep lock, on every driver. So the adapter inserts `{ client_id, client_id_metadata_document: true }` as a `Client` row, if absent, before a URL-form client's first code. It is written at code-save time, so only completed sign-ins write rows. `find` never returns a `Client` for a URL-form id, so the library always resolves the client from its document. The unused-client sweep removes the anchor like any client. No migration and no driver change.
+6. **#64a:** a metadata-document client counts as registered on 0.5.0 or later, so `resource` is required (lead decision). `isMetadataDocumentClientId` (`src/auth/client-id-url.ts`) tells it apart, as does the anchor's marker field.
+7. **`/register` stays.** It can be removed once the clients people use have moved to metadata documents, after the setting has been on by default for a release (REMOTE_HOSTING).

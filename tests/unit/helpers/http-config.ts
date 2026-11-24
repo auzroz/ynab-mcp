@@ -51,6 +51,7 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     verifiedRedirectUris: DEFAULT_VERIFIED_REDIRECT_URIS,
     privateUseSchemes: [],
     trustLoopbackRedirects: true,
+    clientIdMetadataDocuments: false,
     ...overrides,
   };
 }

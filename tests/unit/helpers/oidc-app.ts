@@ -22,6 +22,7 @@ import type { DriverHandle } from './storage-drivers.js';
 import { createOidcProvider, asLibraryHandler, type OidcProvider } from '../../../src/auth/oidc/provider.js';
 import { interactionRouter, type InteractionStore } from '../../../src/auth/oidc/interaction.js';
 import { createAccessTokenVerifier } from '../../../src/auth/oidc/verifier.js';
+import type { ClientIdMetadataDocuments } from '../../../src/auth/client-id-metadata.js';
 import { Encryptor } from '../../../src/crypto.js';
 import type { OAuthTokenVerifier } from '@modelcontextprotocol/server';
 import { TEST_TOKEN_HASHER } from './token-hasher.js';
@@ -53,6 +54,8 @@ export interface OidcTestAppOptions {
   mountPerRoute?: boolean;
   /** Express's `trust proxy` (TRUST_PROXY): hops trusted for `req.ip`; off by default, as in http.ts. */
   trustProxy?: number;
+  /** Client ID Metadata Documents (#46): the feature's hooks; off when absent. */
+  clientIdMetadata?: ClientIdMetadataDocuments;
 }
 
 /** The paths D8 mounts the library on (`as-library`). */
@@ -75,6 +78,7 @@ export function buildOidcTestApp(storage: Storage, options: OidcTestAppOptions =
     encryptionKey,
     accessTokenTtlSec: options.accessTokenTtlSec ?? 3600,
     authCodeTtlSec: options.authCodeTtlSec ?? 600,
+    clientIdMetadata: options.clientIdMetadata,
   });
   const encryptor = options.encryptor ?? new Encryptor(encryptionKey);
   const app = express();

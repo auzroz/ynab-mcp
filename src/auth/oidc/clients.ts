@@ -7,8 +7,11 @@
  *
  * A stored client the library's schema refuses reads as unknown, as the
  * library itself treats it at its endpoints; M4 already dropped the 0.4.x
- * clients that fail it (D12). Any other failure is thrown, for the stage to
- * answer with a generic 500.
+ * clients that fail it (D12). So does a URL-form `client_id` whose Client ID
+ * Metadata Document can't be used (#46: the library's `invalid_client`, from
+ * a failed fetch, a refused document, or the fetch budget), so the library
+ * answers it itself, with its fixed description. Any other failure is thrown,
+ * for the stage to answer with a generic 500.
  */
 
 import type Provider from 'oidc-provider';
@@ -37,6 +40,8 @@ export function libraryClients(provider: Provider): ClientLookup {
         return metadata;
       } catch (err) {
         if (err instanceof errors.InvalidClientMetadata) return undefined;
+        // #46: a metadata document that couldn't be fetched or used (only those throw this from find).
+        if (err instanceof errors.InvalidClient) return undefined;
         throw err;
       }
     },

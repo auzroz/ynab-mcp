@@ -169,6 +169,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sign-in and no YNAB token refresh for that many days and has no live
   connection. It re-checks both inside the erase's transaction and logs a
   count only. For existing users the clock starts at the upgrade.
+- Client ID Metadata Documents (#46), the replacement the MCP specification of
+  2026-07-28 gives for Dynamic Client Registration:
+  `MCP_CLIENT_ID_METADATA_DOCUMENTS=true` (experimental, off by default) lets a
+  client use an https URL as its `client_id`. The server fetches the client's
+  metadata from that URL and holds it to the `/register` rules, and discovery
+  advertises `client_id_metadata_document_supported`. The fetch is guarded
+  against server-side request forgery:
+  - public addresses only, resolved once and pinned against DNS rebinding;
+  - no redirects;
+  - 16 KB and 2.5 seconds at most;
+  - a per-address fetch budget.
+
+  A refusal never echoes the document. `/register` keeps working. See
+  docs/REMOTE_HOSTING.md, "Client ID Metadata Documents".
 
 ### Fixed
 

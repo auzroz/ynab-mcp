@@ -38,6 +38,12 @@
  *   - `sectorIdentifierUriValidate` is off and registration refuses
  *     `sector_identifier_uri`, so neither DCR nor `Client.find` ever fetches a
  *     URL a client named (#113's third note).
+ *   - Client ID Metadata Documents (#46): the library's experimental
+ *     `clientIdMetadataDocument` feature, on only when `clientIdMetadata` is
+ *     given (`MCP_CLIENT_ID_METADATA_DOCUMENTS`), with its draft acknowledged
+ *     and our own guarded `fetch` (../client-id-metadata.ts). The library's
+ *     `fetch` is otherwise one that refuses everything: it never makes an
+ *     outbound request but for a metadata document.
  *   - The client configuration endpoint (`GET /register/:id`), which the
  *     library serves whenever registration is on, is not served, and the DCR
  *     response doesn't name it: the SDK had none, and it would return the
@@ -95,6 +101,7 @@ import { canonicalResource, isSameResource } from '../resource.js';
 import { KNOWN_SCOPES } from '../authorize-validation.js';
 import { retentionPolicy, YNAB_CALLBACK_DEADLINE_MS, type RetentionPolicy } from '../retention-defaults.js';
 import { sanitizeErrorMessage } from '../../utils/sanitize.js';
+import { MAX_DOCUMENT_BYTES, refuseFetch, type ClientIdMetadataDocuments } from '../client-id-metadata.js';
 import { createOidcAdapter } from './adapter.js';
 import { routePath } from './route-path.js';
 import { CLIENT_SCHEMA_CONFIGURATION, ephemeralSigningKeys } from './client-schema.js';
@@ -155,6 +162,8 @@ export interface OidcProviderOptions {
   retention?: Partial<RetentionPolicy> | undefined;
   /** The adapter's clock (epoch ms); tests only. */
   now?: (() => number) | undefined;
+  /** Client ID Metadata Documents (#46): the feature's hooks; absent, the feature is off. */
+  clientIdMetadata?: ClientIdMetadataDocuments | undefined;
 }
 
 export interface OidcProvider {
@@ -338,6 +347,17 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
         },
         useGrantedResource: () => true,
       },
+      // #46: off unless MCP_CLIENT_ID_METADATA_DOCUMENTS is on (see the file comment).
+      clientIdMetadataDocument: options.clientIdMetadata?.feature ?? { enabled: false },
+    },
+    // The only outbound requests the library may make: metadata documents, through our guarded fetch.
+    fetch: options.clientIdMetadata?.fetch ?? refuseFetch,
+    // Our fetch caps the body itself; the library's own check is set to the same cap. The other
+    // purposes are never fetched here (see the file comment); a body for them would be refused.
+    fetchResponseBodyLimits: {
+      'client_id metadata document': MAX_DOCUMENT_BYTES,
+      jwks_uri: 0,
+      sector_identifier_uri: 0,
     },
     rotateRefreshToken: true,
     expiresWithSession: () => false,

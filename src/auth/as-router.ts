@@ -16,12 +16,16 @@
  *                      /revoke and /register, ahead of everything that can
  *                      answer), method-check (405 for a method the route
  *                      doesn't serve), then on /authorize the (client_id, IP)
- *                      route-limiter, the bounds (authorize-validation) and
- *                      the open-redirect guard (authorize-guard); on /token
- *                      and /revoke the route limiter and client
- *                      authentication (#52, D5), and on /token grant-guard
- *                      (D6); on /register the DCR validator and then the
- *                      per-redirect-host limit
+ *                      route-limiter, cimd-context, the bounds
+ *                      (authorize-validation) and the open-redirect guard
+ *                      (authorize-guard); on /token and /revoke the route
+ *                      limiter, cimd-context and client authentication (#52,
+ *                      D5), and on /token grant-guard (D6); on /register the
+ *                      DCR validator and then the per-redirect-host limit.
+ *                      cimd-context (#46) records who a client lookup is for,
+ *                      so a Client ID Metadata Document fetch it causes is
+ *                      charged to that IP (client-id-metadata.ts); it answers
+ *                      nothing and is a no-op while the feature is off
  *   router             what answers: the library (as-library, D1), the
  *                      protected-resource metadata (metadata), or the YNAB
  *                      sign-in (ynab-federation: the interaction router)
@@ -55,6 +59,7 @@ import type { TokenHasher } from './token-hash.js';
 import type { YnabOAuthConfig } from './ynab-oauth.js';
 import { redirectPolicyFrom } from './client-metadata.js';
 import { dcrValidator } from './dcr-validator.js';
+import { createClientIdMetadataDocuments, type MetadataTransport } from './client-id-metadata.js';
 import { authorizeValidation } from './authorize-validation.js';
 import { authorizeGuard, authorizeRedirectGuard } from './authorize-guard.js';
 import { grantGuard } from './grant-guard.js';
@@ -200,6 +205,8 @@ export interface AuthorizationServerOptions {
   observeStage?: StageObserver | undefined;
   /** A shared store for the rate limiters (#67b); the in-memory default when absent. */
   limiterStore?: LimiterStoreFactory | undefined;
+  /** Tests only: how Client ID Metadata Documents are fetched (#46), so nothing reaches the network. */
+  clientIdMetadataTransport?: MetadataTransport | undefined;
 }
 
 export interface AuthorizationServer {
@@ -224,11 +231,21 @@ export function mountAuthorizationServer(
   options: AuthorizationServerOptions
 ): AuthorizationServer {
   const { config, storage, encryptor, tokenHasher, ynab, observeStage, limiterStore } = options;
+  const keyOptions = { trustCfConnectingIp: config.trustCfConnectingIp };
   const publicUrl = config.publicUrl as string;
   // The protected resource (RFC 8707 audience) every token is bound to.
   const resourceServerUrl = new URL(config.resourceUrl ?? `${publicUrl}/mcp`);
   // #55: how registrations, authorization errors and the consent page treat redirect URIs.
   const redirectPolicy = redirectPolicyFrom(config);
+  // #46: URL-form client_ids, resolved from their metadata document under /register's rules.
+  const clientIdMetadata = config.clientIdMetadataDocuments
+    ? createClientIdMetadataDocuments({
+        policy: redirectPolicy,
+        keyOptions,
+        limiterStore,
+        transport: options.clientIdMetadataTransport,
+      })
+    : undefined;
 
   const oidc = createOidcProvider({
     store: storage,
@@ -238,6 +255,7 @@ export function mountAuthorizationServer(
     encryptionKey: config.encryptionKey as string,
     accessTokenTtlSec: config.accessTokenTtlSec,
     authCodeTtlSec: config.authCodeTtlSec,
+    clientIdMetadata,
   });
   const { provider, issuer, resource } = oidc;
   // authorize-guard's fail-closed net, inside the library (see authorize-guard.ts).
@@ -297,7 +315,6 @@ export function mountAuthorizationServer(
   // so a limited request costs no parsing. The client IP comes from req.ip, so
   // TRUST_PROXY must match the proxy hops, or every client behind the proxy
   // shares one budget. One limiter for all the legs.
-  const keyOptions = { trustCfConnectingIp: config.trustCfConnectingIp };
   const WINDOW_15_MIN = 15 * 60 * 1000;
   const tooMany = (what: string): unknown =>
     new OAuthError(OAuthErrorCode.TooManyRequests, `You have exceeded the rate limit for ${what} requests`).toResponseObject();
@@ -400,6 +417,10 @@ export function mountAuthorizationServer(
   const registerIp = stage('ip-limiter', ...registerIpLimiter(registerLimits));
   const registerHost = stage('register-host-limiter', registerHostLimiter(registerLimits));
   const clientAuth = (): Stage => stage('client-auth', clientAuthentication(clients));
+  // Ahead of the stages that look a client up (authorize-validation, client-auth), which is where a
+  // metadata document is first fetched; the library's own lookup after them runs inside it too.
+  const cimdContext = (): Stage =>
+    stage('cimd-context', clientIdMetadata?.requesterContext ?? ((_req, _res, next) => next()));
 
   // The documents are static and get no limiter; /oauth has its own.
   const routes: AsRoute[] = [
@@ -418,6 +439,7 @@ export function mountAuthorizationServer(
         // GET only: POST /authorize isn't served (provider.ts).
         methods('GET'),
         authorizeLimiter,
+        cimdContext(),
         // #55a: bounds, and the refusal of grandfathered plain-http clients.
         stage('authorize-validation', authorizeValidation({ clients, policy: redirectPolicy, issuer })),
         // #55b: no error redirect to an unverified client's redirect URI.
@@ -435,6 +457,7 @@ export function mountAuthorizationServer(
         cors(),
         methods('POST'),
         routeLimiter('token'),
+        cimdContext(),
         clientAuth(),
         stage('grant-guard', grantGuard({ provider, store: storage })),
       ],
@@ -454,7 +477,7 @@ export function mountAuthorizationServer(
       path: OIDC_ROUTES.revocation,
       limiters: [clientAuthIpLimiter('token revocation')],
       parser: boundedParser(),
-      slots: [cors(), methods('POST'), routeLimiter('token revocation'), clientAuth()],
+      slots: [cors(), methods('POST'), routeLimiter('token revocation'), cimdContext(), clientAuth()],
       router: asLibrary(),
     },
     {
