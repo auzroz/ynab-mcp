@@ -68,6 +68,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_VERIFIED_REDIRECT_URIS` | no | Comma-separated redirect URIs of trusted clients. Default: Claude's connector callbacks, `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`. An authorization error at `/authorize` is redirected back only to these (and to loopback, see below); for any other client it is shown on this server's own page with a "Return to" link, so the server can't be used as an open redirector. The consent page names a verified client plainly and any other as "calls itself". `none` empties the list. Each entry must be https (http only for loopback), at most 512 characters, with no userinfo or fragment |
 | `MCP_DCR_PRIVATE_USE_SCHEMES` | no | Comma-separated private-use URI schemes (RFC 8252, e.g. `com.example.app`) a registering native app may use for its redirect URI. Default: none, so registrations need `https://` or `http://` to `localhost`, `127.0.0.1` or `[::1]` |
 | `MCP_TRUST_LOOPBACK_REDIRECTS` | no | Redirect authorization errors back to loopback redirect URIs (default `true`). The consent page labels a loopback address either way |
+| `MCP_INACTIVE_USER_DAYS` | no | Erase users inactive for this many days who have no live connection (integer 30-3650). Default: off. See "Erasing inactive users" |
 
 OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
 `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL`; startup is refused if any is missing.
@@ -305,10 +306,86 @@ least recently used user entry under load (past 10,000 retained users) can reset
 too. With several replicas each process counts on its own, so a user can make up
 to the limit per replica. A write call that fails input validation gives its slot
 back; one that YNAB rejects keeps it. In OAuth mode every request looks up the user's YNAB grant and
-access token, refreshing the token when it expires; once the user's YNAB grant
-is gone (or the token can't be refreshed), requests are refused with `401` and
-the client re-authorizes, and a tool call whose token can't be refreshed
-midway fails with an `auth_error`.
+access token, refreshing the token when it expires. Once the user's YNAB grant
+is gone, or YNAB rejects its refresh token (`invalid_grant`), requests are
+refused with `401` and the client re-authorizes, and a tool call whose token
+can't be refreshed midway fails with an `auth_error`. A failure that clears by
+itself (YNAB timing out or answering `5xx`, the circuit breaker being open, or
+another replica's refresh taking too long) keeps the grant: the request gets
+`503` with `Retry-After`, and a tool call an `upstream_unavailable` result with
+`retry_after_seconds`.
+
+### Several replicas: YNAB token refresh
+
+YNAB issues a new refresh token on every refresh and spends the old one, so
+two processes refreshing one user at the same moment would leave one of them
+holding a spent token, and the user would have to reconnect. Since 0.5.0
+(#48) the replicas on one database take turns:
+
+- Each user row carries a **refresh lease** (a random holder id and an expiry).
+  A replica that needs a new YNAB access token claims it with one
+  compare-and-set `UPDATE`, which succeeds only while no unexpired lease is
+  held. The winner calls YNAB; no database connection or transaction is held
+  during that call.
+- The winner stores the rotated refresh token, the new **YNAB access token**
+  and its expiry in one statement, which also frees the lease. The access
+  token is encrypted like the refresh token, bound to its own column
+  (`users.encrypted_access_token`) and user. Every replica then uses it until
+  shortly before it expires (YNAB access tokens last two hours), instead of
+  refreshing on its own.
+- A replica that loses the claim polls the row for up to 15 seconds and uses
+  the stored access token as soon as it is there. It never calls YNAB itself
+  while the lease is held. If the wait runs out, that request gets `503` with
+  `Retry-After` (an `upstream_unavailable` result for a tool call), and the
+  client tries again.
+- A lease whose holder crashed expires after 45 seconds, and the next request
+  refreshes. Requests in one process share one refresh as before. A holder
+  that reaches the YNAB call with less than 5 seconds of its lease left gives
+  the lease up instead of calling (`503`), since another replica may claim it
+  as it runs out. This is not a fence (YNAB takes no fencing token): a process
+  frozen for longer than that margin just before the call can still spend the
+  refresh token twice, and the user may then have to reconnect once.
+- When YNAB answers `401` to a call made with the stored access token (it was
+  revoked or expired early), that token is dropped for every replica, with a
+  compare-and-set so a newer one is kept. The call fails with an `auth_error`
+  and is not retried, since a write could otherwise apply twice. The next call
+  refreshes.
+
+The same code runs on every driver; for several replicas, use `postgres`.
+The replicas' clocks must agree to within a few seconds (use NTP),
+because lease and token expiry times are compared across them. A re-consent
+clears the stored access token and the lease, so the new grant's access level
+applies at once. The columns come with schema 6 (0.5.0): `encrypted_access_token`,
+`access_token_expires_at`, `refresh_lease_holder`, `refresh_lease_until` and
+`last_seen_at` on `users`, all nullable. 0.4.x ignores them, but don't run
+0.4.x and 0.5.0 replicas together (see "Encrypted YNAB tokens").
+
+### Erasing inactive users
+
+Off by default. Set `MCP_INACTIVE_USER_DAYS` (30 to 3650) to erase users who
+have been inactive that long and have no live connection. A background job
+runs about a minute after startup, then hourly. It erases each such user with
+the same step as deleting an account: their stored YNAB grant, connections,
+tokens and codes.
+
+- **Inactive** means no sign-in, no re-consent and no YNAB token refresh. A
+  refresh happens about every two hours while the user makes requests, so any
+  real use resets the clock. Users who existed before the upgrade start their
+  clock at the upgrade (the first 0.5.0 start), not at their older activity.
+- **No live connection** means no unexpired MCP access token, refresh token or
+  authorization code, and no sign-in in progress. A connection keeps the user
+  however old their last activity is.
+- Both conditions are checked again inside the erase's transaction, so a user
+  who signs in, or whose client refreshes a token, while the job runs is kept.
+- The job logs a count only, never a user id:
+
+  ```text
+  [InactiveUsers] erased 2 user(s) not seen for 365 days and with no live grant
+  ```
+
+An erased user who comes back signs in again as a new account. The YNAB grant
+itself is not revoked at YNAB: the user can remove it under "Connected Apps" in
+YNAB's settings.
 
 ### Discovery (RFC 9728 / RFC 8414)
 
@@ -645,6 +722,16 @@ example:
 [Rekey] re-encrypted 3, 0 remaining
 ```
 
+The shared YNAB access token (see "Several replicas: YNAB token refresh") is
+rewritten too, under its own binding. One that has expired, or that no
+configured key opens, is cleared instead (the next request refreshes), so it
+never holds retirement back. The line then ends
+`; shared access tokens: 2 re-encrypted, 1 dropped`. The retirement's final
+check looks only at refresh tokens: a shared access token left under a
+retired key (written just before the announcement) can't be read any more,
+counts as absent, and the next request refreshes. It lasts two hours at most,
+and nothing is lost with it.
+
 Retirement takes two steps:
 
 1. When a pass finds nothing left under an older key or in the `v1` format,
@@ -655,8 +742,12 @@ Retirement takes two steps:
    older refuses every new refresh and sign-in before it calls YNAB, so it
    doesn't spend a user's token on a write the others are about to stop
    reading. (One already past that check finishes and is stored; see below.)
-   Its log says `Refusing to write with ENCRYPTION_KEY_ID …`, and its users
-   get an authorization error until it is updated.
+   Its log says `Refusing to write with ENCRYPTION_KEY_ID …`. Until it is
+   restarted with the current key, a request it would have to refresh a
+   token for gets `503` with `Retry-After: 30` (a tool call an
+   `upstream_unavailable` result), not a reconnect: the user's stored token
+   is fine, and a retry may reach another replica. A sign-in through it
+   fails.
 2. A pass at least an hour later that still finds nothing left retires them,
    and logs:
 
@@ -676,9 +767,11 @@ Two guards keep a token from being stored where no replica can read it:
   the retired key id in the same database transaction as the write (on
   Postgres, holding it `FOR SHARE`; the retirement takes the same row `FOR
   UPDATE` first, so one waits for the other). A write under a retired key is
-  refused and nothing is stored. The user gets the same authorization error
-  as for any failed refresh or sign-in, and connects again. This covers a
-  request that passed its key check and then stalled past the retirement.
+  refused and nothing is stored. A sign-in fails with the usual authorization
+  error. A refresh gets `503` with `Retry-After: 30`, like the key check, but
+  the token YNAB rotated during the call is lost with it, so the user
+  connects again once. This covers a request that passed its key check and
+  then stalled past the retirement.
 
   A write that lands after the announcement but before the retirement (a
   refresh already in flight when the announcement came) is stored as usual.
@@ -836,8 +929,9 @@ any MCP client that supports the `prompts` capability:
 
 ## Security notes
 
-- YNAB refresh tokens are encrypted at rest with AES-256-GCM (`ENCRYPTION_KEY`),
-  each bound to its user and column and tagged with its key id. Keep the key
+- YNAB refresh tokens, and the YNAB access token the replicas share, are
+  encrypted at rest with AES-256-GCM (`ENCRYPTION_KEY`), each bound to its user
+  and column and tagged with its key id. Keep the key
   secret. It can be rotated without logging anyone out: follow "Rotating
   ENCRYPTION_KEY" (pin `TOKEN_PEPPER` with `ynab-mcp derive-pepper` first, or
   the server refuses to start because the derived pepper would change).
@@ -854,7 +948,8 @@ any MCP client that supports the `prompts` capability:
 - `memory` storage is for evaluation only — it is not durable and not shared across
   replicas. For multiple replicas, use `postgres` (the in-flight caps, rate
   limits, write cap and caches are currently in-process; a shared store would be a future
-  enhancement).
+  enhancement). YNAB token refreshes are coordinated through the database; see
+  "Several replicas: YNAB token refresh".
 
 ## Interim header mode (single-user)
 

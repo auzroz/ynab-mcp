@@ -2,23 +2,49 @@
  * Resolves an authenticated user's current YNAB access token for a request.
  *
  * Given a YNAB user id (from the verified MCP access token), loads the user's
- * encrypted YNAB refresh token, returns a cached access token if still fresh, or
- * refreshes against YNAB — persisting the rotated refresh token, since YNAB issues
- * a new refresh token on every refresh.
+ * row and returns, in this order: this process's cached access token while it
+ * is fresh; the access token another replica shared in the row (#48) while it
+ * is fresh; or a new one from a refresh against YNAB, persisting the rotated
+ * refresh token, since YNAB issues a new refresh token on every refresh.
  *
- * The write-back is a compare-and-set against the token the refresh started
- * from (`Storage.updateUserRefreshToken`), never an upsert: a refresh that
- * finishes after the user erased their account (`deleteUserData`) cannot bring
- * the row back, and one that finishes after a re-consent or another replica's
- * refresh does not overwrite the newer token.
+ * Refresh-token rotation across replicas (#48, D-3). YNAB spends the refresh
+ * token on every refresh, so two replicas refreshing one user at once would
+ * leave one of them holding a spent token. Two layers keep it to one refresh:
+ *
+ *   1. In this process, concurrent requests join one refresh (`refreshing`).
+ *   2. Across replicas, a lease on the user row
+ *      (`Storage.claimRefreshLease`): a single compare-and-set UPDATE that
+ *      takes it only while no unexpired lease holds. The winner refreshes,
+ *      with no transaction and no pooled connection held across the YNAB
+ *      call, and writes the rotated refresh token, the new access token
+ *      (encrypted, AAD-bound to `users.encrypted_access_token`) and its expiry
+ *      in one statement that also frees the lease. A replica that loses the
+ *      claim polls the row with a bound ({@link REFRESH_LEASE_WAIT_MS}) for
+ *      that shared token; it never calls YNAB while the lease holds and no
+ *      fresh shared token is there, and fails closed when the wait runs out.
+ *      A lease whose holder crashed expires ({@link REFRESH_LEASE_TTL_MS}).
+ *      The same code runs on every driver.
+ *
+ * The write-back is a compare-and-set against the refresh token the refresh
+ * started from (`Storage.updateUserRefreshToken`), never an upsert, and that
+ * compare-and-set on the stored ciphertext is the version check: a refresh
+ * that finishes after the user erased their account (`deleteUserData`) cannot
+ * bring the row back, and one that finishes after a re-consent or another
+ * replica's refresh does not overwrite the newer token.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { Storage, GrantedScope, UserRecord } from '../storage/types.js';
-import { refreshTokenContext, type Encryptor } from '../crypto.js';
-import { YnabAuthError } from '../utils/errors.js';
+import { accessTokenContext, ciphertextVersion, refreshTokenContext, type Encryptor } from '../crypto.js';
+import {
+  CircuitOpenError,
+  OutboundTimeoutError,
+  YnabAuthError,
+  YnabAuthUnavailableError,
+} from '../utils/errors.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
-import { refreshAccessToken, type YnabOAuthConfig, type YnabTokenSet } from './ynab-oauth.js';
-import { assertKeyWritable } from './rekey-job.js';
+import { refreshAccessToken, YnabOAuthError, type YnabOAuthConfig, type YnabTokenSet } from './ynab-oauth.js';
+import { assertKeyWritable, KeyRetiredError } from './rekey-job.js';
 
 /** Refresh a bit early so an access token doesn't expire mid-request. */
 const REFRESH_SKEW_MS = 60_000;
@@ -30,12 +56,107 @@ const REFRESH_SKEW_MS = 60_000;
  */
 const REFRESH_FAILURE_TTL_MS = 30_000;
 
+/**
+ * #48: how long a refresh lease holds. Longer than the YNAB call (10 s at most,
+ * `OUTBOUND_TIMEOUT_MS`) plus a worst-case write-back (the Postgres query
+ * timeout, 15 s), with margin for clock skew between replicas. A holder that
+ * crashed delays the user's next refresh by at most this long.
+ */
+export const REFRESH_LEASE_TTL_MS = 45_000;
+
+/**
+ * #48: how long a replica that lost the claim waits for the holder's shared
+ * access token before it fails closed: longer than the YNAB call it waits for.
+ */
+export const REFRESH_LEASE_WAIT_MS = 15_000;
+
+/**
+ * #48: how much of the lease must be left when the YNAB call is sent. A
+ * holder that reaches the send later (a slow key check, a stalled event loop)
+ * gives up instead: another replica may already have claimed the expired
+ * lease and spent the same refresh token. Capped at a quarter of the lease,
+ * so a short test lease still leaves room to refresh.
+ */
+export const LEASE_SEND_MARGIN_MS = 5_000;
+
+/** #48: the first pause between polls of the row while another replica refreshes; it doubles up to {@link LEASE_POLL_MAX_MS}. */
+const LEASE_POLL_FIRST_MS = 50;
+const LEASE_POLL_MAX_MS = 500;
+
 /** A refresh skipped because the same grant failed moments ago (already logged). */
 class RecentRefreshFailureError extends Error {
   constructor() {
     super('YNAB token refresh failed recently: not retrying yet');
     this.name = 'RecentRefreshFailureError';
   }
+}
+
+/** How long a client is asked to wait after a transient token failure, when nothing says longer. */
+export const TOKEN_RETRY_AFTER_SEC = 5;
+
+/**
+ * How long a client is asked to wait when this replica's key is below the
+ * key floor (#57b). It refuses until an operator restarts it with the current
+ * key; a retry may reach a healthy replica meanwhile.
+ */
+export const KEY_RETIRED_RETRY_AFTER_SEC = 30;
+
+/**
+ * The YNAB access token can't be had right now, for a reason that clears by
+ * itself (#48, Q1): the token call timed out, failed on the network, got a
+ * 5xx, a 429 or `temporarily_unavailable`, or the circuit breaker is open; or
+ * another replica's refresh outlasted the wait. The stored refresh token is
+ * kept and nothing is remembered as failed: HTTP answers 503 with
+ * `Retry-After`, a tool call an `upstream_unavailable` result. Only a
+ * rejected refresh token (`invalid_grant`, or another 4xx) needs a reconnect.
+ */
+export class YnabTokenUnavailableError extends Error {
+  constructor(
+    public readonly retryAfterSeconds: number,
+    message = 'YNAB token refresh is temporarily unavailable'
+  ) {
+    super(message);
+    this.name = 'YnabTokenUnavailableError';
+  }
+}
+
+/**
+ * A KeyRetiredError (#57b: this replica's key is below the key floor), from
+ * the write-path check or from storage refusing the write, as the transient
+ * error the client retries (Q1): an operator problem, a replica left on an
+ * old key, not the user's token, so a reconnect wouldn't help and a retry may
+ * reach a healthy replica. Anything else is returned unchanged.
+ */
+function keyRetiredAsUnavailable(error: unknown): unknown {
+  return error instanceof KeyRetiredError
+    ? new YnabTokenUnavailableError(KEY_RETIRED_RETRY_AFTER_SEC, sanitizeErrorMessage(error))
+    : error;
+}
+
+/** Another replica held the refresh lease for longer than the wait bound (#48). Transient, not remembered as a failure. */
+export class RefreshLeaseTimeoutError extends YnabTokenUnavailableError {
+  constructor(retryAfterSeconds: number = TOKEN_RETRY_AFTER_SEC) {
+    super(retryAfterSeconds, 'Another replica is refreshing the YNAB token: timed out waiting for it');
+    this.name = 'RefreshLeaseTimeoutError';
+  }
+}
+
+/**
+ * Seconds to wait before retrying, when a failed YNAB token call is
+ * transient; undefined when it is not (a 4xx other than 429 and
+ * `temporarily_unavailable`: `invalid_grant` above all, the refresh token is
+ * dead). A failure without a YNAB answer (timeout, network, unreadable body)
+ * is transient: if YNAB did rotate the token meanwhile, the retry gets
+ * `invalid_grant` and the user reconnects then.
+ */
+export function transientRetryAfterSeconds(error: unknown): number | undefined {
+  if (error instanceof CircuitOpenError) return Math.max(1, Math.ceil(error.retryAfterMs / 1000));
+  if (error instanceof OutboundTimeoutError) return TOKEN_RETRY_AFTER_SEC;
+  if (error instanceof YnabOAuthError) {
+    const transient = error.status >= 500 || error.status === 429 || error.oauthError === 'temporarily_unavailable';
+    return transient ? TOKEN_RETRY_AFTER_SEC : undefined;
+  }
+  return TOKEN_RETRY_AFTER_SEC;
 }
 
 export interface ResolvedUser {
@@ -49,6 +170,21 @@ export interface ResolvedUser {
   generation: number;
 }
 
+/** Overrides of the refresh lease's timing (#48); tests use short values. */
+export interface RefreshLeaseOptions {
+  /** How long a claimed lease holds (default {@link REFRESH_LEASE_TTL_MS}). */
+  leaseTtlMs?: number;
+  /** How long a replica that lost the claim waits, in total (default {@link REFRESH_LEASE_WAIT_MS}). */
+  leaseWaitMs?: number;
+  /** The first pause between polls; doubles up to `pollMaxMs`. */
+  pollFirstMs?: number;
+  pollMaxMs?: number;
+  /** The pause itself (default: a timer). */
+  sleep?: (ms: number) => Promise<void>;
+  /** The monotonic clock the wait bound and the lease's send deadline use (default `performance.now`). */
+  monotonic?: () => number;
+}
+
 /** The user row is gone (erased or never connected): the client must re-authorize. */
 const RECONNECT = 'Unknown user: re-authorize the YNAB connection';
 
@@ -56,24 +192,56 @@ function generationOf(user: UserRecord): number {
   return user.createdAt ?? 0;
 }
 
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms).unref();
+  });
+
+/** A usable access token and its expiry. */
+interface AccessToken {
+  accessToken: string;
+  expiresAt: number;
+}
+
 export class YnabTokenResolver {
   // Keyed by user, and only valid for the account generation that minted it:
   // an erased account's token is never served to the account that replaced it.
-  private readonly cache = new Map<string, { accessToken: string; expiresAt: number; generation: number }>();
+  // Also only while the row still holds the shared ciphertext it came from
+  // (#48): once any replica clears it (a token YNAB rejected) or replaces it
+  // (a refresh, a re-consent), this process stops using its copy.
+  private readonly cache = new Map<
+    string,
+    { accessToken: string; expiresAt: number; generation: number; ciphertext: string | undefined }
+  >();
   // Refreshes in progress, per user. Concurrent requests join one refresh: YNAB
   // rotates the refresh token on every refresh, so a parallel second refresh
-  // would present an already-used one and fail.
+  // would present an already-used one and fail. The lease does the same across
+  // replicas.
   private readonly refreshing = new Map<string, Promise<ResolvedUser>>();
   // Recent refresh failures, per user, keyed to the refresh token that failed:
   // a newly stored grant (a different token) is tried at once.
   private readonly failed = new Map<string, { encryptedRefreshToken: string; until: number }>();
+  private readonly leaseTtlMs: number;
+  private readonly leaseWaitMs: number;
+  private readonly pollFirstMs: number;
+  private readonly pollMaxMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly monotonic: () => number;
 
   constructor(
     private readonly storage: Storage,
     private readonly encryptor: Encryptor,
     private readonly ynab: YnabOAuthConfig,
-    private readonly now: () => number = Date.now
-  ) {}
+    private readonly now: () => number = Date.now,
+    lease: RefreshLeaseOptions = {}
+  ) {
+    this.leaseTtlMs = lease.leaseTtlMs ?? REFRESH_LEASE_TTL_MS;
+    this.leaseWaitMs = lease.leaseWaitMs ?? REFRESH_LEASE_WAIT_MS;
+    this.pollFirstMs = lease.pollFirstMs ?? LEASE_POLL_FIRST_MS;
+    this.pollMaxMs = lease.pollMaxMs ?? LEASE_POLL_MAX_MS;
+    this.sleep = lease.sleep ?? defaultSleep;
+    this.monotonic = lease.monotonic ?? (() => performance.now());
+  }
 
   /**
    * The user's current YNAB access token and access level. With `generation`
@@ -93,10 +261,15 @@ export class YnabTokenResolver {
     if (
       cached &&
       cached.generation === generationOf(user) &&
+      cached.ciphertext === user.encryptedAccessToken &&
       cached.expiresAt > this.now() + REFRESH_SKEW_MS
     ) {
       return { accessToken: cached.accessToken, grantedScope: user.grantedScope, generation: generationOf(user) };
     }
+
+    // Another replica's refresh (#48), or this process's before a restart.
+    const shared = this.sharedAccessToken(user);
+    if (shared) return this.remember(user, shared);
 
     const failed = this.failed.get(userId);
     if (failed && failed.until > this.now() && failed.encryptedRefreshToken === user.encryptedRefreshToken) {
@@ -135,73 +308,268 @@ export class YnabTokenResolver {
         if (!(error instanceof RecentRefreshFailureError)) {
           console.error('[YnabToken] could not resolve a YNAB access token:', sanitizeErrorMessage(error));
         }
+        if (error instanceof YnabTokenUnavailableError) throw new YnabAuthUnavailableError(error.retryAfterSeconds);
         throw new YnabAuthError();
       }
     };
   }
 
-  /** Drop any cached access token or remembered failure for a user (e.g. after disconnect). */
-  invalidate(userId: string): void {
+  /**
+   * Drop the user's access token, so the next resolve refreshes: this
+   * process's cached copy and remembered failure, and, given the token YNAB
+   * rejected (`rejectedAccessToken`, e.g. on a 401 for a revoked token), the
+   * shared copy in the user's row (#48), on every replica. The shared token is
+   * cleared with a compare-and-set on the exact ciphertext that holds the
+   * rejected token, so a newer one another replica stored meanwhile is kept.
+   * Without `rejectedAccessToken` only this process's state is dropped.
+   */
+  async invalidate(userId: string, rejectedAccessToken?: string): Promise<void> {
+    this.forget(userId);
+    if (rejectedAccessToken === undefined) return;
+    // A miss may be the rekey job moving the same token to a new ciphertext:
+    // re-read and try again, twice at most, while the row still holds it.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const user = await this.storage.getUser(userId);
+      const ciphertext = user?.encryptedAccessToken;
+      if (user === undefined || ciphertext === undefined) return;
+      if (this.openAccessToken(user.userId, ciphertext) !== rejectedAccessToken) return;
+      if (await this.storage.rekeyUserAccessToken(userId, ciphertext, undefined)) return;
+    }
+  }
+
+  /** Drop this process's cached access token and remembered failure for a user. */
+  private forget(userId: string): void {
     this.cache.delete(userId);
     this.failed.delete(userId);
   }
 
   /**
-   * Refresh against YNAB and write the rotated refresh token back with a
-   * compare-and-set. On a miss the row is re-read: gone means the account was
-   * erased (reconnect error, nothing written); changed means a newer token was
-   * stored (a re-consent or another replica's refresh), which wins: the
-   * refresh is redone once from it, or refused if the account was re-created.
+   * Get a fresh access token across replicas (#48): claim the user's refresh
+   * lease and refresh under it, or, when another replica holds it, wait for
+   * the access token it shares. Every step is one storage statement; nothing
+   * is held between them.
    */
-  private async refresh(user: UserRecord, retried = false): Promise<ResolvedUser> {
-    const context = refreshTokenContext(user.userId);
+  private async refresh(start: UserRecord, retried = false): Promise<ResolvedUser> {
+    const userId = start.userId;
+    const generation = generationOf(start);
+    // The wait bound counts from the first claim, not from the first sleep.
+    const deadline = this.monotonic() + this.leaseWaitMs;
+    let pause = this.pollFirstMs;
+    for (;;) {
+      const holder = randomUUID();
+      const now = this.now();
+      // Read before the claim, so the lease as this process counts it never
+      // outlasts the lease as stored.
+      const claimedAt = this.monotonic();
+      const claimed = await this.storage.claimRefreshLease(userId, holder, now, now + this.leaseTtlMs);
+      if (claimed) {
+        if (generationOf(claimed) !== generation) {
+          await this.release(userId, holder);
+          this.forget(userId);
+          throw new Error(RECONNECT);
+        }
+        // Act on the row the claim returned, never on an older read: another
+        // replica may have refreshed between that read and this claim.
+        const shared = this.sharedAccessToken(claimed);
+        if (shared) {
+          await this.release(userId, holder);
+          return this.remember(claimed, shared);
+        }
+        const sendBy = claimedAt + this.leaseTtlMs - Math.min(LEASE_SEND_MARGIN_MS, Math.floor(this.leaseTtlMs / 4));
+        return this.refreshUnderLease(claimed, holder, retried, sendBy);
+      }
+
+      // Another replica holds the lease (or the row is gone): wait for its token.
+      const current = await this.storage.getUser(userId);
+      if (!current || generationOf(current) !== generation) {
+        this.forget(userId);
+        throw new Error(RECONNECT);
+      }
+      const shared = this.sharedAccessToken(current);
+      if (shared) return this.remember(current, shared);
+      // Never a refresh of our own while the lease holds: fail closed instead.
+      // Elapsed time (storage calls included), on a monotonic clock.
+      const left = deadline - this.monotonic();
+      if (left <= 0) {
+        // Retry once the holder's lease would have run out (it may have crashed).
+        const leaseLeft = (current.refreshLeaseUntil ?? 0) - this.now();
+        throw new RefreshLeaseTimeoutError(
+          leaseLeft > 0 ? Math.max(1, Math.ceil(leaseLeft / 1000)) : TOKEN_RETRY_AFTER_SEC
+        );
+      }
+      await this.sleep(Math.min(pause, left));
+      pause = Math.min(pause * 2, this.pollMaxMs);
+    }
+  }
+
+  /**
+   * Refresh against YNAB under the lease `holder` holds, from `user` (the row
+   * the claim returned), and write the rotated refresh token and the shared
+   * access token back with a compare-and-set, which also frees the lease. On
+   * a miss the row is re-read: gone means the account was erased (reconnect
+   * error, nothing written); changed means a newer token was stored, which
+   * wins: another replica's refresh (this lease ran out) shares its access
+   * token; a re-consent is refreshed from once, or refused if the account was
+   * re-created.
+   */
+  private async refreshUnderLease(
+    user: UserRecord,
+    holder: string,
+    retried: boolean,
+    /** Monotonic time by which the YNAB call must be sent, while the lease surely still holds. */
+    sendBy: number
+  ): Promise<ResolvedUser> {
+    const userId = user.userId;
+    const context = refreshTokenContext(userId);
     let set: YnabTokenSet;
     let refreshToken: string;
+    let called = false;
     try {
       // Before the YNAB call: a replica whose key is being retired must not
       // spend the token and write its successor where the others can't read
       // it (#57b). Re-read on every attempt, including the retry after a miss.
       await assertKeyWritable(this.storage, this.encryptor);
+    } catch (error) {
+      await this.release(userId, holder);
+      throw keyRetiredAsUnavailable(error);
+    }
+    // The lease must still hold when the refresh token is spent: past the
+    // deadline another replica may have claimed it and spent the same token.
+    // Give the lease up without calling YNAB; the client retries (503). This
+    // is not fencing (YNAB takes no fencing token): a process frozen between
+    // this check and the send for longer than the margin can still spend the
+    // token twice. YNAB's answer to a reused refresh token is untested; the
+    // worst case is that the user reconnects once. The write-back needs no
+    // holder check: a former holder that won at YNAB holds the only valid
+    // token, and the compare-and-set on the refresh ciphertext fences storage.
+    if (this.monotonic() >= sendBy) {
+      await this.release(userId, holder);
+      throw new YnabTokenUnavailableError(
+        TOKEN_RETRY_AFTER_SEC,
+        'The refresh lease ran short before the YNAB call: not sending it'
+      );
+    }
+    try {
       refreshToken = this.encryptor.decrypt(user.encryptedRefreshToken, context);
+      called = true;
       set = await refreshAccessToken(this.ynab, refreshToken);
     } catch (error) {
-      this.failed.set(user.userId, {
+      await this.release(userId, holder);
+      // A slow call may have outlived the lease, and another replica refreshed meanwhile.
+      const current = await this.storage.getUser(userId).catch(() => undefined);
+      const shared =
+        current && generationOf(current) === generationOf(user) ? this.sharedAccessToken(current) : undefined;
+      if (current && shared) return this.remember(current, shared);
+      // A transient YNAB failure keeps the grant and is not remembered (Q1).
+      // An unreadable stored token is not transient: it never opens again.
+      const retryAfter = called ? transientRetryAfterSeconds(error) : undefined;
+      if (retryAfter !== undefined) {
+        throw new YnabTokenUnavailableError(retryAfter, `YNAB token refresh failed transiently: ${sanitizeErrorMessage(error)}`);
+      }
+      this.failed.set(userId, {
         encryptedRefreshToken: user.encryptedRefreshToken,
         until: this.now() + REFRESH_FAILURE_TTL_MS,
       });
       throw error;
     }
-    this.failed.delete(user.userId);
+    this.failed.delete(userId);
 
     // YNAB rotates the refresh token on every refresh — persist the new one,
-    // but only over the token this refresh started from.
+    // but only over the token this refresh started from, with the access token
+    // the other replicas will use.
     const newCiphertext = this.encryptor.encrypt(set.refreshToken, context);
-    let stored = await this.storage.updateUserRefreshToken(user.userId, user.encryptedRefreshToken, newCiphertext);
+    const refreshed = {
+      encryptedAccessToken: this.encryptor.encrypt(set.accessToken, accessTokenContext(userId)),
+      expiresAt: set.expiresAt,
+      now: this.now(),
+    };
+    // Storage refuses the write itself (KeyRetiredError, #57b) when the key
+    // was retired during the YNAB call (an announcement alone doesn't: that
+    // write is stored, and the rekey job moves it): the lease is freed,
+    // nothing is stored or remembered, and the request gets the same 503 as
+    // a refusal before the call.
+    const writeBack = async (oldCiphertext: string): Promise<UserRecord | undefined> => {
+      try {
+        return await this.storage.updateUserRefreshToken(userId, oldCiphertext, newCiphertext, refreshed);
+      } catch (error) {
+        if (error instanceof KeyRetiredError) {
+          console.error(`[Rekey] ${error.message}`);
+          await this.release(userId, holder);
+        }
+        throw keyRetiredAsUnavailable(error);
+      }
+    };
+    let stored = await writeBack(user.encryptedRefreshToken);
     if (!stored) {
-      let current = await this.storage.getUser(user.userId);
+      let current = await this.storage.getUser(userId);
       // The rekey job (#57b) moved the same YNAB token to the current key
       // meanwhile: that token is spent now, so write over its new ciphertext
       // instead of refreshing again from it.
       if (current && generationOf(current) === generationOf(user) && this.holdsToken(current, refreshToken)) {
-        stored = await this.storage.updateUserRefreshToken(user.userId, current.encryptedRefreshToken, newCiphertext);
-        if (!stored) current = await this.storage.getUser(user.userId);
+        stored = await writeBack(current.encryptedRefreshToken);
+        if (!stored) current = await this.storage.getUser(userId);
       }
       if (!stored) {
-        if (!current || generationOf(current) !== generationOf(user) || retried) {
-          this.invalidate(user.userId);
+        await this.release(userId, holder);
+        if (!current || generationOf(current) !== generationOf(user)) {
+          this.forget(userId);
+          throw new Error(RECONNECT);
+        }
+        const shared = this.sharedAccessToken(current);
+        if (shared) return this.remember(current, shared);
+        if (retried) {
+          this.forget(userId);
           throw new Error(RECONNECT);
         }
         return this.refresh(current, true);
       }
     }
-    this.cache.set(user.userId, {
-      accessToken: set.accessToken,
-      expiresAt: set.expiresAt,
-      generation: generationOf(stored),
-    });
     // The access level as stored now, not as read before the YNAB call: a
     // re-consent that lowered it meanwhile (same YNAB token) applies at once.
-    return { accessToken: set.accessToken, grantedScope: stored.grantedScope, generation: generationOf(stored) };
+    return this.remember(stored, set);
+  }
+
+  /** Cache `token` for `user`'s generation and return it with the access level as stored. */
+  private remember(user: UserRecord, token: AccessToken): ResolvedUser {
+    const generation = generationOf(user);
+    this.cache.set(user.userId, {
+      accessToken: token.accessToken,
+      expiresAt: token.expiresAt,
+      generation,
+      ciphertext: user.encryptedAccessToken,
+    });
+    return { accessToken: token.accessToken, grantedScope: user.grantedScope, generation };
+  }
+
+  /**
+   * The shared access token in `user`'s row (#48), when it is fresh and opens
+   * under its own context. Anything else (none, expiring, a `v1` value, not
+   * bound to this user and column, a retired or unknown key) counts as
+   * absent: a refresh replaces it.
+   */
+  private sharedAccessToken(user: UserRecord): AccessToken | undefined {
+    const ciphertext = user.encryptedAccessToken;
+    const expiresAt = user.accessTokenExpiresAt;
+    if (ciphertext === undefined || expiresAt === undefined || expiresAt <= this.now() + REFRESH_SKEW_MS) {
+      return undefined;
+    }
+    const accessToken = this.openAccessToken(user.userId, ciphertext);
+    return accessToken === undefined ? undefined : { accessToken, expiresAt };
+  }
+
+  /** A shared access-token ciphertext opened under its own context (`v2` only), or undefined. */
+  private openAccessToken(userId: string, ciphertext: string): string | undefined {
+    if (ciphertextVersion(ciphertext)?.format !== 'v2') return undefined;
+    try {
+      return this.encryptor.decrypt(ciphertext, accessTokenContext(userId));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Free the lease `holder` holds; a failure is left to the lease's expiry. */
+  private async release(userId: string, holder: string): Promise<void> {
+    await this.storage.releaseRefreshLease(userId, holder).catch(() => undefined);
   }
 
   /** Whether `user`'s stored ciphertext (possibly re-encrypted) holds `refreshToken`. */

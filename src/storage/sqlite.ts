@@ -38,6 +38,8 @@ import type {
   KeyCheckOutcome,
   KeyFloors,
   StoredUserCiphertext,
+  RefreshedAccessToken,
+  InactiveUserCondition,
 } from './types.js';
 import {
   CONDITIONAL_RAISE_FLOOR_SQL,
@@ -75,7 +77,14 @@ import {
   runSqlSweep,
   type ConnectionRow,
 } from './retention.js';
-import { USER_DATA_TABLES, USER_GRANTS_SQL, userDataDeleteParams, userDataDeleteSql } from './user-data.js';
+import {
+  USER_DATA_TABLES,
+  USER_GRANTS_SQL,
+  USER_LIVE_GRANT_SQL,
+  userDataDeleteParams,
+  userDataDeleteSql,
+  userLiveGrantParams,
+} from './user-data.js';
 
 export interface SqliteStorageOptions extends StorageDriverOptions {
   path: string;
@@ -89,6 +98,10 @@ interface UserRow {
   encrypted_refresh_token: string;
   updated_at: number;
   created_at: number | null;
+  encrypted_access_token: string | null;
+  access_token_expires_at: number | null;
+  refresh_lease_until: number | null;
+  last_seen_at: number | null;
 }
 
 interface ClientRow {
@@ -167,6 +180,10 @@ function userFromRow(row: UserRow): UserRecord {
     encryptedRefreshToken: row.encrypted_refresh_token,
     updatedAt: row.updated_at,
     ...(row.created_at !== null ? { createdAt: row.created_at } : {}),
+    ...(row.encrypted_access_token !== null ? { encryptedAccessToken: row.encrypted_access_token } : {}),
+    ...(row.access_token_expires_at !== null ? { accessTokenExpiresAt: row.access_token_expires_at } : {}),
+    ...(row.refresh_lease_until !== null ? { refreshLeaseUntil: row.refresh_lease_until } : {}),
+    ...(row.last_seen_at !== null ? { lastSeenAt: row.last_seen_at } : {}),
   };
 }
 
@@ -453,23 +470,33 @@ export class SqliteStorage implements Storage, OAuthRowStore {
    * writes the user, inside its transaction. `created_at` is `now` on insert,
    * the same instant the sign-in's code is stamped with. The YNAB refresh
    * token's ciphertext is stored exactly as given (#57b binds its AAD to this
-   * column). #48 resets the user's refresh lease and shared access token here,
-   * and #54's inactive-user erase stamps `last_seen_at` here.
+   * column). As every upsert, it resets the user's refresh lease and shared
+   * access token (#48) and stamps `last_seen_at` (#54e).
    */
   private applyStagedUser(user: UserRecord, now: number): void {
     this.putUser(user, now);
   }
 
-  /** created_at is written by the insert only (the account's generation). */
+  /**
+   * created_at is written by the insert only (the account's generation). Every
+   * write is a sign-in or re-consent: the shared access token and the lease
+   * are cleared (the new grant may have another YNAB scope), and
+   * `last_seen_at` is stamped.
+   */
   private putUser(rec: UserRecord, now: number = Date.now()): void {
     this.database
       .prepare(
-        `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at, created_at)
-         VALUES (@userId, @grantedScope, @encryptedRefreshToken, @updatedAt, @createdAt)
+        `INSERT INTO users (user_id, granted_scope, encrypted_refresh_token, updated_at, created_at, last_seen_at)
+         VALUES (@userId, @grantedScope, @encryptedRefreshToken, @updatedAt, @createdAt, @createdAt)
          ON CONFLICT(user_id) DO UPDATE SET
            granted_scope = excluded.granted_scope,
            encrypted_refresh_token = excluded.encrypted_refresh_token,
-           updated_at = excluded.updated_at`
+           updated_at = excluded.updated_at,
+           encrypted_access_token = NULL,
+           access_token_expires_at = NULL,
+           refresh_lease_holder = NULL,
+           refresh_lease_until = NULL,
+           last_seen_at = excluded.last_seen_at`
       )
       .run({
         userId: rec.userId,
@@ -490,20 +517,59 @@ export class SqliteStorage implements Storage, OAuthRowStore {
   async updateUserRefreshToken(
     userId: string,
     oldCiphertext: string,
-    newCiphertext: string
+    newCiphertext: string,
+    refreshed?: RefreshedAccessToken
   ): Promise<UserRecord | undefined> {
     const row = this.database
       .transaction((): UserRow | undefined => {
+        // The floor read and the write under one write lock (#57b), on both
+        // ciphertexts a refresh writes.
         this.guardCiphertext(newCiphertext);
-        return this.database
-          .prepare(
-            `UPDATE users SET encrypted_refresh_token = ?, updated_at = ?
-             WHERE user_id = ? AND encrypted_refresh_token = ? RETURNING *`
-          )
-          .get(newCiphertext, Date.now(), userId, oldCiphertext) as UserRow | undefined;
+        if (refreshed) this.guardCiphertext(refreshed.encryptedAccessToken);
+        return refreshed
+          ? (this.database
+              .prepare(
+                `UPDATE users SET encrypted_refresh_token = ?, updated_at = ?, encrypted_access_token = ?,
+                   access_token_expires_at = ?, refresh_lease_holder = NULL, refresh_lease_until = NULL, last_seen_at = ?
+                 WHERE user_id = ? AND encrypted_refresh_token = ? RETURNING *`
+              )
+              .get(
+                newCiphertext,
+                refreshed.now,
+                refreshed.encryptedAccessToken,
+                refreshed.expiresAt,
+                refreshed.now,
+                userId,
+                oldCiphertext
+              ) as UserRow | undefined)
+          : (this.database
+              .prepare(
+                `UPDATE users SET encrypted_refresh_token = ?, updated_at = ?
+                 WHERE user_id = ? AND encrypted_refresh_token = ? RETURNING *`
+              )
+              .get(newCiphertext, Date.now(), userId, oldCiphertext) as UserRow | undefined);
       })
       .immediate();
     return row ? userFromRow(row) : undefined;
+  }
+
+  async claimRefreshLease(userId: string, holder: string, now: number, until: number): Promise<UserRecord | undefined> {
+    const row = this.database
+      .prepare(
+        `UPDATE users SET refresh_lease_holder = ?, refresh_lease_until = ?
+         WHERE user_id = ? AND (refresh_lease_until IS NULL OR refresh_lease_until <= ?) RETURNING *`
+      )
+      .get(holder, until, userId, now) as UserRow | undefined;
+    return row ? userFromRow(row) : undefined;
+  }
+
+  async releaseRefreshLease(userId: string, holder: string): Promise<void> {
+    this.database
+      .prepare(
+        `UPDATE users SET refresh_lease_holder = NULL, refresh_lease_until = NULL
+         WHERE user_id = ? AND refresh_lease_holder = ?`
+      )
+      .run(userId, holder);
   }
 
   async deleteUser(userId: string): Promise<void> {
@@ -519,21 +585,53 @@ export class SqliteStorage implements Storage, OAuthRowStore {
   ): Promise<StoredUserCiphertext[]> {
     const rows = this.database
       .prepare(
-        `SELECT user_id, encrypted_refresh_token FROM users
-         WHERE substr(encrypted_refresh_token, 1, ?) <> ? AND (? IS NULL OR user_id > ?)
+        `SELECT user_id, encrypted_refresh_token, encrypted_access_token, access_token_expires_at FROM users
+         WHERE (substr(encrypted_refresh_token, 1, ?) <> ?
+                OR (encrypted_access_token IS NOT NULL AND substr(encrypted_access_token, 1, ?) <> ?))
+           AND (? IS NULL OR user_id > ?)
          ORDER BY user_id LIMIT ?`
       )
-      .all(currentPrefix.length, currentPrefix, afterUserId ?? null, afterUserId ?? null, limit) as Array<{
+      .all(
+        currentPrefix.length,
+        currentPrefix,
+        currentPrefix.length,
+        currentPrefix,
+        afterUserId ?? null,
+        afterUserId ?? null,
+        limit
+      ) as Array<{
       user_id: string;
       encrypted_refresh_token: string;
+      encrypted_access_token: string | null;
+      access_token_expires_at: number | null;
     }>;
-    return rows.map((r) => ({ userId: r.user_id, encryptedRefreshToken: r.encrypted_refresh_token }));
+    return rows.map((r) => ({
+      userId: r.user_id,
+      encryptedRefreshToken: r.encrypted_refresh_token,
+      encryptedAccessToken: r.encrypted_access_token ?? undefined,
+      accessTokenExpiresAt: r.access_token_expires_at ?? undefined,
+    }));
   }
 
   async rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
     const result = this.database
       .prepare('UPDATE users SET encrypted_refresh_token = ? WHERE user_id = ? AND encrypted_refresh_token = ?')
       .run(newCiphertext, userId, oldCiphertext);
+    return result.changes === 1;
+  }
+
+  async rekeyUserAccessToken(userId: string, oldCiphertext: string, newCiphertext: string | undefined): Promise<boolean> {
+    const result =
+      newCiphertext === undefined
+        ? this.database
+            .prepare(
+              `UPDATE users SET encrypted_access_token = NULL, access_token_expires_at = NULL
+               WHERE user_id = ? AND encrypted_access_token = ?`
+            )
+            .run(userId, oldCiphertext)
+        : this.database
+            .prepare('UPDATE users SET encrypted_access_token = ? WHERE user_id = ? AND encrypted_access_token = ?')
+            .run(newCiphertext, userId, oldCiphertext);
     return result.changes === 1;
   }
 
@@ -591,9 +689,22 @@ export class SqliteStorage implements Storage, OAuthRowStore {
     return compareKeyCheck(row.value, check);
   }
 
-  async deleteUserData(userId: string): Promise<void> {
-    const erase = this.database.transaction((u: string): void => {
+  async deleteUserData(userId: string, onlyIf?: InactiveUserCondition): Promise<boolean> {
+    const erase = this.database.transaction((u: string): boolean => {
       const db = this.database;
+      // #54e: the inactive-user erase re-checks its condition here, under the
+      // write lock (IMMEDIATE), so a sign-in or refresh in another process
+      // either committed first (and is seen) or runs after the erase.
+      if (onlyIf) {
+        const user = db.prepare('SELECT last_seen_at FROM users WHERE user_id = ?').get(u) as
+          | { last_seen_at: number | null }
+          | undefined;
+        if (!user || user.last_seen_at === null || user.last_seen_at >= onlyIf.seenBefore) return false;
+        const live = db
+          .prepare(toPositional(USER_LIVE_GRANT_SQL))
+          .get(...userLiveGrantParams(u, onlyIf.now, this.retention));
+        if (live !== undefined) return false;
+      }
       const families = (
         db
           .prepare(
@@ -615,11 +726,23 @@ export class SqliteStorage implements Storage, OAuthRowStore {
           ...userDataDeleteParams(entry, 'sqlite', u, { families, grants })
         );
       }
+      return true;
     });
     // IMMEDIATE: one writer at a time, so a rotation or code exchange in
     // another process runs wholly before (and is erased) or after (and finds
     // no user row).
-    erase.immediate(userId);
+    return erase.immediate(userId);
+  }
+
+  async listInactiveUsers(seenBefore: number, afterUserId: string | undefined, limit: number): Promise<string[]> {
+    const rows = this.database
+      .prepare(
+        `SELECT user_id FROM users
+         WHERE last_seen_at IS NOT NULL AND last_seen_at < ? AND (? IS NULL OR user_id > ?)
+         ORDER BY user_id LIMIT ?`
+      )
+      .all(seenBefore, afterUserId ?? null, afterUserId ?? null, limit) as Array<{ user_id: string }>;
+    return rows.map((r) => r.user_id);
   }
 
   // Account self-service

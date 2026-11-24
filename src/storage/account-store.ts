@@ -15,6 +15,9 @@ export function createAccountStore(storage: Storage): AccountStore {
     revokeUserFamily: (userId: string, familyId: string) => storage.revokeUserFamily(userId, familyId),
     deleteTokenFamiliesForClient: (userId: string, clientId: string) =>
       storage.deleteTokenFamiliesForClient(userId, clientId),
-    deleteUserData: (userId: string) => storage.deleteUserData(userId),
+    // Never with the inactive-user condition: the tool erases unconditionally.
+    deleteUserData: async (userId: string) => {
+      await storage.deleteUserData(userId);
+    },
   });
 }

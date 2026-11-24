@@ -266,7 +266,7 @@ describe('loadHttpConfig composition', () => {
     expect(Object.keys(c).sort()).toEqual([
       'accessTokenTtlSec', 'allowAnonymousFallback', 'allowWrite', 'allowedHosts', 'allowedOrigins', 'authCodeTtlSec',
       'authMode', 'bindHost', 'cacheTtlMs', 'databaseUrl', 'defaultBudgetId', 'deprecatedSessionSettings',
-      'enableDnsRebindingProtection', 'encryptionKey', 'encryptionKeyId', 'encryptionKeyPrevious', 'fallbackAccessToken', 'logLevel', 'maxInflight',
+      'enableDnsRebindingProtection', 'encryptionKey', 'encryptionKeyId', 'encryptionKeyPrevious', 'fallbackAccessToken', 'inactiveUserDays', 'logLevel', 'maxInflight',
       'maxInflightPerClient', 'maxInflightPerUser', 'maxSessions', 'maxSessionsPerUser', 'oauthClientId',
       'oauthClientSecret', 'port', 'privateUseSchemes', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour',
       'readOnly', 'registerRateLimitPerHost', 'registerRateLimitPerIp', 'requestTimeoutMs', 'resourceUrl',

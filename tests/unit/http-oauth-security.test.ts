@@ -38,6 +38,7 @@ vi.mock('../../src/server.js', async () => {
 
 import { createHttpApp } from '../../src/http.js';
 import * as ynabOauth from '../../src/auth/ynab-oauth.js';
+import { YnabOAuthError } from '../../src/auth/ynab-oauth.js';
 import * as serverModule from '../../src/server.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import {
@@ -527,7 +528,7 @@ describe('the YNAB token is resolved per request', () => {
     // the app at YNAB and the call's own refresh is refused.
     refreshAccessTokenMock
       .mockImplementationOnce(async () => ({ accessToken: 'ya-x', refreshToken: 'yr-x', expiresAt: Date.now() + 30_000 }))
-      .mockRejectedValue(new Error('YNAB token request failed with status 400 (invalid_grant)'));
+      .mockRejectedValue(new YnabOAuthError('YNAB token request failed with status 400: invalid_grant', 400, 'invalid_grant'));
 
     const call = await mcp(app, 'post', alice.access).send(getUserCall(3));
     expect(call.status).toBe(200);
@@ -546,7 +547,7 @@ describe('the YNAB token is resolved per request', () => {
     rotateOnEveryResolve();
     await initialize(app, alice.access);
     // The user revoked the app at YNAB: the stored refresh token no longer works.
-    refreshAccessTokenMock.mockRejectedValue(new Error('YNAB token request failed with status 400 (invalid_grant)'));
+    refreshAccessTokenMock.mockRejectedValue(new YnabOAuthError('YNAB token request failed with status 400: invalid_grant', 400, 'invalid_grant'));
 
     const call = await mcp(app, 'post', alice.access).send(getUserCall(3));
     expect(call.status).toBe(401);

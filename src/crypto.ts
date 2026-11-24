@@ -1,7 +1,9 @@
 /**
- * At-rest encryption for the users' YNAB refresh tokens (`users.encrypted_refresh_token`).
+ * At-rest encryption for the users' YNAB tokens: the refresh token
+ * (`users.encrypted_refresh_token`) and, since #48, the YNAB access token the
+ * replicas share (`users.encrypted_access_token`).
  *
- * This is the only thing encrypted at rest. MCP access tokens, refresh tokens,
+ * These are the only things encrypted at rest. MCP access tokens, refresh tokens,
  * authorization codes, pending-auth state and DCR client secrets are not
  * encrypted but hashed: storage holds only keys derived from them (see
  * src/auth/token-hash.ts), so a copy of the database holds no usable credential.
@@ -44,14 +46,16 @@ export const LEGACY_KEY_ID = 1;
 
 /**
  * The columns a ciphertext can be bound to: part of the AAD, so a label is
- * fixed once written. Add a member for a new encrypted column (#48's shared
- * access token); never rename one.
+ * fixed once written. Add a member for a new encrypted column; never rename one.
  */
-export const CIPHERTEXT_COLUMNS = ['users.encrypted_refresh_token'] as const;
+export const CIPHERTEXT_COLUMNS = ['users.encrypted_refresh_token', 'users.encrypted_access_token'] as const;
 export type CiphertextColumn = (typeof CIPHERTEXT_COLUMNS)[number];
 
 /** The YNAB refresh token's column; the staged sign-in's copy carries the same binding. */
 export const YNAB_REFRESH_TOKEN_COLUMN: CiphertextColumn = 'users.encrypted_refresh_token';
+
+/** The shared YNAB access token's column (#48): written by the replica that refreshed, read by the others. */
+export const YNAB_ACCESS_TOKEN_COLUMN: CiphertextColumn = 'users.encrypted_access_token';
 
 /** Where a ciphertext is stored: its column and the row's owner (the YNAB user id). */
 export interface CipherContext {
@@ -87,6 +91,15 @@ export function aadFor(context: CipherContext): Buffer {
 /** The context of a user's YNAB refresh token (users row and staged sign-in alike). */
 export function refreshTokenContext(userId: string): CipherContext {
   return { column: YNAB_REFRESH_TOKEN_COLUMN, subject: userId };
+}
+
+/**
+ * The context of a user's shared YNAB access token (#48). Only ever `v2`: the
+ * column is newer than the `v1` format, so a `v1` value in it is refused
+ * before decrypting ({@link Encryptor.decrypt} would read `v1` unbound).
+ */
+export function accessTokenContext(userId: string): CipherContext {
+  return { column: YNAB_ACCESS_TOKEN_COLUMN, subject: userId };
 }
 
 /**

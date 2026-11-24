@@ -38,6 +38,8 @@ import type {
   KeyCheckOutcome,
   KeyFloors,
   StoredUserCiphertext,
+  RefreshedAccessToken,
+  InactiveUserCondition,
 } from './types.js';
 import { assertFloorAllows, compareKeyCheck, isBelowFloor, keyCheckMetaKey, signInCiphertext } from './encryption-meta.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
@@ -93,13 +95,24 @@ interface StoredClient {
   lastSeenAt: number | undefined;
 }
 
+/** A user row: the record plus the refresh lease's holder id (#48), which is never returned. */
+interface StoredUser extends UserRecord {
+  refreshLeaseHolder?: string | undefined;
+}
+
+/** The record a read returns: no lease holder, the access level checked. */
+function publicUser(rec: StoredUser): UserRecord {
+  const { refreshLeaseHolder: _holder, ...user } = rec;
+  return { ...user, grantedScope: parseGrantedScope(rec.grantedScope) };
+}
+
 interface StoredConsumedRefreshToken {
   rec: ConsumedRefreshTokenRecord;
   userId: string;
 }
 
 export class MemoryStorage implements Storage, OAuthRowStore {
-  private users = new Map<string, UserRecord>();
+  private users = new Map<string, StoredUser>();
   private clients = new Map<string, StoredClient>();
   private pending = new Map<string, PendingAuthRecord>();
   private authCodes = new Map<string, AuthCodeRecord>();
@@ -149,33 +162,71 @@ export class MemoryStorage implements Storage, OAuthRowStore {
    * writes the user, in the same step as its code. `created_at` is `now` on
    * insert, the instant the code is stamped with. The YNAB refresh token's
    * ciphertext is stored exactly as given (#57b binds its AAD to this column).
-   * #48 resets the user's refresh lease and shared access token here, and
-   * #54's inactive-user erase stamps `last_seen_at` here.
+   * As every upsert, it resets the user's refresh lease and shared access
+   * token (#48) and stamps `last_seen_at` (#54e).
    */
   private applyStagedUser(user: UserRecord, now: number): void {
     this.putUser(user, now);
   }
 
-  /** created_at is set by the insert only, from the storage clock (`now`, when the caller holds one instant). */
+  /**
+   * created_at is set by the insert only, from the storage clock (`now`, when
+   * the caller holds one instant). Every write is a sign-in or re-consent: the
+   * shared access token and the lease are cleared (the new grant may have
+   * another YNAB scope), and `last_seen_at` is stamped.
+   */
   private putUser(rec: UserRecord, now: number = Date.now()): void {
     const existing = this.users.get(rec.userId);
-    this.users.set(rec.userId, { ...rec, createdAt: existing ? existing.createdAt : now });
+    this.users.set(rec.userId, {
+      userId: rec.userId,
+      grantedScope: rec.grantedScope,
+      encryptedRefreshToken: rec.encryptedRefreshToken,
+      updatedAt: rec.updatedAt,
+      createdAt: existing ? existing.createdAt : now,
+      lastSeenAt: now,
+    });
   }
   async getUser(userId: string): Promise<UserRecord | undefined> {
     const rec = this.users.get(userId);
-    return rec && { ...rec, grantedScope: parseGrantedScope(rec.grantedScope) };
+    return rec && publicUser(rec);
   }
   async updateUserRefreshToken(
     userId: string,
     oldCiphertext: string,
-    newCiphertext: string
+    newCiphertext: string,
+    refreshed?: RefreshedAccessToken
   ): Promise<UserRecord | undefined> {
     const rec = this.users.get(userId);
     if (!rec || rec.encryptedRefreshToken !== oldCiphertext) return undefined;
+    // The persistence-time floor guard (#57b), on both ciphertexts a refresh writes.
     this.guardCiphertext(newCiphertext);
-    const updated = { ...rec, encryptedRefreshToken: newCiphertext, updatedAt: Date.now() };
+    if (refreshed) this.guardCiphertext(refreshed.encryptedAccessToken);
+    const updated: StoredUser = refreshed
+      ? {
+          ...rec,
+          encryptedRefreshToken: newCiphertext,
+          updatedAt: refreshed.now,
+          encryptedAccessToken: refreshed.encryptedAccessToken,
+          accessTokenExpiresAt: refreshed.expiresAt,
+          refreshLeaseHolder: undefined,
+          refreshLeaseUntil: undefined,
+          lastSeenAt: refreshed.now,
+        }
+      : { ...rec, encryptedRefreshToken: newCiphertext, updatedAt: Date.now() };
     this.users.set(userId, updated);
-    return { ...updated, grantedScope: parseGrantedScope(updated.grantedScope) };
+    return publicUser(updated);
+  }
+  async claimRefreshLease(userId: string, holder: string, now: number, until: number): Promise<UserRecord | undefined> {
+    const rec = this.users.get(userId);
+    if (!rec || (rec.refreshLeaseUntil !== undefined && rec.refreshLeaseUntil > now)) return undefined;
+    const claimed: StoredUser = { ...rec, refreshLeaseHolder: holder, refreshLeaseUntil: until };
+    this.users.set(userId, claimed);
+    return publicUser(claimed);
+  }
+  async releaseRefreshLease(userId: string, holder: string): Promise<void> {
+    const rec = this.users.get(userId);
+    if (!rec || rec.refreshLeaseHolder !== holder) return;
+    this.users.set(userId, { ...rec, refreshLeaseHolder: undefined, refreshLeaseUntil: undefined });
   }
   async deleteUser(userId: string): Promise<void> {
     this.users.delete(userId);
@@ -189,16 +240,36 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     limit: number
   ): Promise<StoredUserCiphertext[]> {
     return [...this.users.values()]
-      .filter((u) => !u.encryptedRefreshToken.startsWith(currentPrefix))
+      .filter(
+        (u) =>
+          !u.encryptedRefreshToken.startsWith(currentPrefix) ||
+          (u.encryptedAccessToken !== undefined && !u.encryptedAccessToken.startsWith(currentPrefix))
+      )
       .filter((u) => afterUserId === undefined || u.userId > afterUserId)
       .sort((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0))
       .slice(0, limit)
-      .map((u) => ({ userId: u.userId, encryptedRefreshToken: u.encryptedRefreshToken }));
+      .map((u) => ({
+        userId: u.userId,
+        encryptedRefreshToken: u.encryptedRefreshToken,
+        encryptedAccessToken: u.encryptedAccessToken,
+        accessTokenExpiresAt: u.accessTokenExpiresAt,
+      }));
   }
   async rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
     const rec = this.users.get(userId);
     if (!rec || rec.encryptedRefreshToken !== oldCiphertext) return false;
     this.users.set(userId, { ...rec, encryptedRefreshToken: newCiphertext });
+    return true;
+  }
+  async rekeyUserAccessToken(userId: string, oldCiphertext: string, newCiphertext: string | undefined): Promise<boolean> {
+    const rec = this.users.get(userId);
+    if (!rec || rec.encryptedAccessToken !== oldCiphertext) return false;
+    this.users.set(
+      userId,
+      newCiphertext === undefined
+        ? { ...rec, encryptedAccessToken: undefined, accessTokenExpiresAt: undefined }
+        : { ...rec, encryptedAccessToken: newCiphertext }
+    );
     return true;
   }
   async listStagedSignInCiphertexts(now: number): Promise<string[]> {
@@ -241,7 +312,8 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     return compareKeyCheck(stored, check);
   }
 
-  async deleteUserData(userId: string): Promise<void> {
+  async deleteUserData(userId: string, onlyIf?: InactiveUserCondition): Promise<boolean> {
+    if (onlyIf && !this.erasableAsInactive(userId, onlyIf)) return false;
     const families = new Set<string>();
     this.users.delete(userId);
     for (const [key, rec] of this.authCodes) {
@@ -280,6 +352,44 @@ export class MemoryStorage implements Storage, OAuthRowStore {
         this.oauthRows.delete(key);
       }
     }
+    return true;
+  }
+
+  /** #54e: the erase condition, as the SQL drivers check it (src/storage/user-data.ts, USER_LIVE_GRANT_SQL). */
+  private erasableAsInactive(userId: string, { seenBefore, now }: InactiveUserCondition): boolean {
+    const user = this.users.get(userId);
+    if (!user || user.lastSeenAt === undefined || user.lastSeenAt >= seenBefore) return false;
+    const live = (expiresAt: number | undefined): boolean => expiresAt === undefined || expiresAt >= now;
+    for (const row of this.oauthRows.values()) {
+      if (row.accountId !== userId || row.consumedAt !== undefined) continue;
+      if (row.model !== 'AccessToken' && row.model !== 'RefreshToken' && row.model !== 'AuthorizationCode' && row.model !== 'SignIn') continue;
+      if (live(row.expiresAt)) return false;
+    }
+    for (const { rec } of this.accessTokens.values()) {
+      if (rec.userId === userId && rec.expiresAt >= now) return false;
+    }
+    for (const rec of this.authCodes.values()) {
+      if (rec.userId === userId && rec.expiresAt >= now) return false;
+    }
+    for (const stored of this.refreshTokens.values()) {
+      if (stored.rec.userId !== userId) continue;
+      if (
+        stored.issuedAt >= now - this.retention.refreshTokenIdleMs &&
+        stored.familyCreatedAt >= now - this.retention.refreshTokenTtlMs
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async listInactiveUsers(seenBefore: number, afterUserId: string | undefined, limit: number): Promise<string[]> {
+    return [...this.users.values()]
+      .filter((u) => u.lastSeenAt !== undefined && u.lastSeenAt < seenBefore)
+      .map((u) => u.userId)
+      .filter((id) => afterUserId === undefined || id > afterUserId)
+      .sort()
+      .slice(0, limit);
   }
 
   // Account self-service

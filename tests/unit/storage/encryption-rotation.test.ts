@@ -22,6 +22,7 @@ import {
   encrypt as encryptV1,
   parseEncryptionKey,
   refreshTokenContext,
+  accessTokenContext,
 } from '../../../src/crypto.js';
 import {
   KeyRetiredError,
@@ -668,6 +669,89 @@ describe.each(testDrivers)('encryption rotation: $name', (driver) => {
       await expect(rekeyPass(store, new Encryptor(newKey()), {}, { log: () => undefined })).rejects.toThrow(
         /ENCRYPTION_KEY_ID is older/
       );
+    });
+
+    // ---- the shared YNAB access token (#48) ---------------------------------
+
+    /** Store `accessCt` as `userId`'s shared access token, expiring at `expiresAt`. */
+    async function share(store: Store, userId: string, accessCt: string, expiresAt: number): Promise<void> {
+      const row = await store.getUser(userId);
+      const ct = row?.encryptedRefreshToken ?? '';
+      await store.updateUserRefreshToken(userId, ct, ct, { encryptedAccessToken: accessCt, expiresAt, now: Date.now() });
+    }
+
+    it('lists and rewrites a shared access token under an older key, with its own context, and counts it', async () => {
+      const { store } = await open();
+      const k1 = newKey();
+      const before = new Encryptor(k1);
+      const keyring = new Encryptor(newKey(), { keyId: '2', previousKeys: `1:${k1}` });
+      // The refresh token is already current; only the access token is under key 1.
+      await addUser(store, 'u', keyring.encrypt('rt', refreshTokenContext('u')));
+      await share(store, 'u', before.encrypt('at', accessTokenContext('u')), Date.now() + 3_600_000);
+      expect((await store.listUserCiphertextsNotIn(keyring.currentPrefix, undefined, 10)).map((r) => r.userId)).toEqual(['u']);
+
+      const lines: string[] = [];
+      const c = clock();
+      const state: RekeyState = {};
+      const opts = { now: c.now, log: (m: string) => lines.push(m), graceMs: 60 * MINUTE };
+      const result = await rekeyPass(store, keyring, state, opts);
+      expect(result).toMatchObject({ rekeyed: 0, accessRekeyed: 1, accessDropped: 0, remaining: 0 });
+      const row = await store.getUser('u');
+      expect(row?.encryptedAccessToken?.startsWith('v2.2.')).toBe(true);
+      expect(keyring.decrypt(row?.encryptedAccessToken ?? '', accessTokenContext('u'))).toBe('at');
+      // Nothing is left under key 1 after this pass, so it also announces the retirement.
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/^\[Rekey\] re-encrypted 0, 0 remaining; nothing is left under older keys/);
+      expect(lines[0]).toMatch(/; shared access tokens: 1 re-encrypted, 0 dropped$/);
+      expect(await store.listUserCiphertextsNotIn(keyring.currentPrefix, undefined, 10)).toEqual([]);
+
+      // Key 1 retires once the grace period has passed: nothing is left under it.
+      c.advance(61 * MINUTE);
+      expect((await rekeyPass(store, keyring, state, opts)).retiredNow).toBe(true);
+      for (const line of lines) for (const secret of ['at', 'rt', k1]) expect(line).not.toContain(` ${secret} `);
+    });
+
+    it('drops an expired or unreadable shared access token instead of holding retirement back', async () => {
+      const { store } = await open();
+      const k1 = newKey();
+      const before = new Encryptor(k1);
+      const keyring = new Encryptor(newKey(), { keyId: '2', previousKeys: `1:${k1}` });
+      for (const id of ['expired', 'swapped', 'lost-key']) await addUser(store, id, keyring.encrypt('rt', refreshTokenContext(id)));
+      await share(store, 'expired', before.encrypt('at', accessTokenContext('expired')), Date.now() - 1);
+      await share(store, 'swapped', before.encrypt('at', accessTokenContext('someone-else')), Date.now() + 3_600_000);
+      await share(store, 'lost-key', new Encryptor(newKey(), { keyId: '7' }).encrypt('at', accessTokenContext('lost-key')).replace(/^v2\.7\./, 'v2.1.'), Date.now() + 3_600_000);
+
+      const result = await rekeyPass(store, keyring, {}, { log: () => undefined });
+      expect(result).toMatchObject({ accessRekeyed: 0, accessDropped: 3, remaining: 0, noKey: 0, unreadable: 0 });
+      for (const id of ['expired', 'swapped', 'lost-key']) {
+        const row = await store.getUser(id);
+        expect(row?.encryptedAccessToken).toBeUndefined();
+        expect(row?.accessTokenExpiresAt).toBeUndefined();
+        // The refresh token is untouched.
+        expect(keyring.decrypt(row?.encryptedRefreshToken ?? '', refreshTokenContext(id))).toBe('rt');
+      }
+    });
+
+    it('leaves a shared access token under a newer key alone, and a lost compare-and-set holds retirement back', async () => {
+      const { store } = await open();
+      const k1 = newKey();
+      const keyring = new Encryptor(k1);
+      const newer = new Encryptor(newKey(), { keyId: '2', previousKeys: `1:${k1}` });
+      await addUser(store, 'u', keyring.encrypt('rt', refreshTokenContext('u')));
+      await share(store, 'u', newer.encrypt('at', accessTokenContext('u')), Date.now() + 3_600_000);
+      expect(await rekeyPass(store, keyring, {}, { log: () => undefined })).toMatchObject({ newer: 1, remaining: 1, accessRekeyed: 0 });
+
+      // A refresh replaced the token between the listing and the write.
+      const current = new Encryptor(newKey(), { keyId: '3', previousKeys: `1:${k1}` });
+      await share(store, 'u', keyring.encrypt('at', accessTokenContext('u')), Date.now() + 3_600_000);
+      const listing = store.listUserCiphertextsNotIn.bind(store);
+      vi.spyOn(store, 'listUserCiphertextsNotIn').mockImplementationOnce(async (...args) => {
+        const page = await listing(...args);
+        await share(store, 'u', current.encrypt('at-next', accessTokenContext('u')), Date.now() + 3_600_000);
+        return page;
+      });
+      expect(await rekeyPass(store, current, {}, { log: () => undefined })).toMatchObject({ changed: 1, remaining: 1 });
+      expect(current.decrypt((await store.getUser('u'))?.encryptedAccessToken ?? '', accessTokenContext('u'))).toBe('at-next');
     });
 
     it('runs as a job: first pass, then stop() waits for it', async () => {

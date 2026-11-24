@@ -39,7 +39,7 @@ vi.mock('../../src/storage/index.js', async () => {
 });
 
 import { buildHttpApp, type HttpApp } from '../../src/http.js';
-import { refreshAccessToken } from '../../src/auth/ynab-oauth.js';
+import { refreshAccessToken, YnabOAuthError } from '../../src/auth/ynab-oauth.js';
 import { stageOfHandler } from '../../src/http/pipeline.js';
 import { Encryptor, refreshTokenContext } from '../../src/crypto.js';
 import { makeHttpConfig } from './helpers/http-config.js';
@@ -230,7 +230,7 @@ describe('what each position answers', () => {
   it('request-context refuses a token whose user is gone with the same 401 as a bad token (G6)', async () => {
     const { handle, token } = await oauthApp();
     // The token verifies, but the user's YNAB grant is gone: YNAB refuses the refresh.
-    vi.mocked(refreshAccessToken).mockRejectedValueOnce(new Error('YNAB token request failed with status 400 (invalid_grant)'));
+    vi.mocked(refreshAccessToken).mockRejectedValueOnce(new YnabOAuthError('YNAB token request failed with status 400: invalid_grant', 400, 'invalid_grant'));
     const refused = await post(handle.app, { Authorization: `Bearer ${token}` }, ping);
     expect(refused.res.status).toBe(401);
     expect(refused.stages).toEqual(upTo('oauth', 'request-context'));
