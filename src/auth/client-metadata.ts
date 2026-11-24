@@ -162,8 +162,9 @@ const RAW_HTTP_LOOPBACK = /^(http:\/\/(?:localhost|127\.0\.0\.1|\[::1\]))(?::(\d
  * `http://[::1]` spelled exactly so, with no userinfo. A fragment on either
  * side never matches, not even the same string (RFC 6749 section 3.1.2; a
  * client stored under older rules can still hold one). Stricter than
- * server-legacy's matcher, which also relaxes the port for https loopback
- * URIs, compares parsed paths and ignores userinfo and fragments; the
+ * the matcher of the SDK handlers oidc-provider replaced, which also relaxed
+ * the port for https loopback URIs, compared parsed paths and ignored userinfo
+ * and fragments; the
  * authorize-validation stage refuses what this refuses before the handler
  * runs.
  */

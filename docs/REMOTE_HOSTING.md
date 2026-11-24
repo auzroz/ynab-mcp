@@ -134,6 +134,8 @@ volumes: { ynab-data: {} }
   ```bash
   npx mcp-remote https://YOUR_PUBLIC_URL/mcp
   ```
+- **Any other MCP client** — see "Using other MCP clients" below for the
+  redirect URIs it may register and what to set for a client you trust.
 
 ### Consent screen and browser binding
 
@@ -221,6 +223,67 @@ with an `http://` redirect URI to a host other than loopback is refused at
 `/authorize`, and a redirect URI with a fragment can't be used. Such a client
 has to register again. The server logs, once per client, any
 other rule an older registration breaks.
+
+### Using other MCP clients
+
+The server registers any MCP client that follows the rules in "Client
+registration and authorization errors"; nothing needs configuring for a client
+that registers itself (RFC 7591) and uses PKCE. What you may need to set is the
+list of clients you vouch for, and which private-use schemes you accept. By
+callback type:
+
+- **Claude (claude.ai, Claude Desktop connectors).** Out of the box. Claude's
+  two callbacks, `https://claude.ai/api/mcp/auth_callback` and
+  `https://claude.com/api/mcp/auth_callback`, are the default
+  `MCP_VERIFIED_REDIRECT_URIS`.
+- **Loopback clients** (a CLI or desktop app that listens on
+  `http://localhost`, `http://127.0.0.1` or `http://[::1]`, such as
+  `mcp-remote`). They register as they are, and the port may differ from the
+  one registered (RFC 8252 section 7.3). Authorization errors are redirected
+  back to them while `MCP_TRUST_LOOPBACK_REDIRECTS` is `true` (the default).
+  The consent page labels the address as one on the user's own device.
+- **Hosted clients with an `https://` callback.** They register as they are.
+  Until their callback is on `MCP_VERIFIED_REDIRECT_URIS`, the consent page
+  says "an application at *host* that calls itself *name*", and an
+  authorization error is shown on your server's page, with a link back the
+  user can choose to follow, instead of being redirected. A sign-in that
+  succeeds is unaffected. To vouch for such a client, add its exact callback
+  URI to `MCP_VERIFIED_REDIRECT_URIS`.
+- **Native apps with a custom scheme** (`com.example.app:/callback`). A
+  registration naming a private-use scheme is refused with
+  `invalid_redirect_uri` until you list the scheme in
+  `MCP_DCR_PRIVATE_USE_SCHEMES`. **The default is empty**: no private-use
+  scheme is accepted. `http`, `https` and browser schemes can't be listed.
+  A private-use callback can't go on `MCP_VERIFIED_REDIRECT_URIS` (entries
+  are `https://` or loopback `http://`), so an authorization error for such a
+  client is always shown on your server's page rather than redirected.
+  That covers the initial `/authorize` request only. When the user cancels
+  the consent page, or YNAB denies access, the browser is redirected back to
+  the client's registered callback with `access_denied` through the resume
+  route, for any registered callback, including private-use and unverified
+  `https://` ones. A client must handle `access_denied` there.
+
+Rules for the two lists:
+
+- **`MCP_VERIFIED_REDIRECT_URIS` replaces the default list; it doesn't add to
+  it.** Setting it to your own client's callback drops Claude's two callbacks,
+  so Claude's connector then gets the unverified treatment above. Include
+  Claude's callbacks in your value if you still want them:
+  ```
+  MCP_VERIFIED_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback,https://app.example.com/mcp/callback
+  ```
+  `none` empties the list. Entries are matched as whole URIs, not by host
+  (at most 20 entries, 512 characters each, `https://` or loopback `http://`,
+  no userinfo or fragment).
+- **`MCP_DCR_PRIVATE_USE_SCHEMES` is a comma-separated list of scheme names**
+  (`com.example.app`, with or without the colon), empty by default. Only the
+  schemes you list are accepted; `none` is the same as unset.
+- A registration with **more than 5 `redirect_uris` is refused** with
+  `400 invalid_client_metadata`. A single invalid URI (plain `http://` to a
+  non-loopback host, a fragment, userinfo, over 512 characters, an unlisted
+  scheme) is refused with `invalid_redirect_uri`.
+- A malformed value in either variable refuses to start, naming the variable
+  and never its value.
 
 ### Access level per connection
 
@@ -733,6 +796,37 @@ Clients, tokens and codes now live in one `oauth_rows` table, which the first
   `/oauth/ynab/start` and `/oauth/cancel` are gone. The YNAB redirect URI
   (`/oauth/ynab/callback`) is unchanged, so nothing changes at YNAB.
 
+### Upgrading to 0.5.0: configuration
+
+Settings and defaults that change for an existing HTTP deployment (the
+changelog has the full list):
+
+- **Set `AUTH_MODE`** to `oauth` or `header`. Without it the server refuses to
+  start (0.4.x guessed it from the OAuth variables).
+- **`YNAB_OAUTH_ALLOW_WRITE` defaults to `false`.** Set it to `true` (with
+  `YNAB_READ_ONLY=false`) to let connections write. It is checked on every
+  request, so a read-write grant from 0.4.x can't write while it is off.
+- **`oauth` mode refuses `YNAB_ACCESS_TOKEN` and `YNAB_BUDGET_ID`.** Remove
+  them.
+- **Header mode with `YNAB_ACCESS_TOKEN`** refuses a non-loopback bind unless
+  `MCP_ALLOW_ANONYMOUS_FALLBACK=true`. A Docker deployment binds every
+  interface (`MCP_BIND_HOST` unset), so it needs that setting or a loopback
+  `MCP_BIND_HOST`. **Warning:** with the fallback on, anyone who can reach the
+  server without an `X-YNAB-Token` header acts as the owner of
+  `YNAB_ACCESS_TOKEN`: they can read the whole budget, and write if writes are
+  enabled. Enable it only behind proxy authentication or on a private
+  network; otherwise leave `YNAB_ACCESS_TOKEN` out and have each client send
+  its own `X-YNAB-Token`.
+- **Remove sticky sessions** at your proxy: `/mcp` is stateless. The
+  `MCP_MAX_SESSIONS*` settings have no effect (see "Requests, limits and
+  timeouts").
+- **MCP refresh tokens expire** after 30 days without use or 90 days in
+  total. A client that was idle for longer signs in again.
+- **Choose the pepper** (see "Hashed tokens and the pepper (0.5.0)"), and back
+  up the database first.
+- **Out-of-range numeric settings refuse to start**, and every problem is
+  listed in one startup message that never shows a value.
+
 ### Changing TOKEN_PEPPER
 
 Changing the pepper logs every user out (every stored token stops matching).
@@ -982,8 +1076,10 @@ any MCP client that supports the `prompts` capability:
   the server refuses to start because the derived pepper would change).
 - MCP tokens, authorization codes and `state` are stored only as keyed hashes,
   and DCR client secrets only as SHA-256 hashes, so a copy of the database holds
-  no usable MCP credential. A value that isn't a correctly tagged `ymcp1_` token
-  (or a 0.4.x-shaped one) is refused without a database read. `/token` and
+  no usable MCP credential. A token or code that isn't 43 base64url characters
+  is refused before its credential row is read (on `/token`, client
+  authentication reads the client record first), and so is a `state` that
+  isn't a correctly tagged `ymcp1_` value. `/token` and
   `/revoke` verify client secrets behind a per-(client_id, address) limit (50
   per 15 minutes per route); see "Client addresses and rate limits".
 - Access is read-only or read-write **per connection**, per the consent choice
