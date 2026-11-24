@@ -5,6 +5,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    // Shares one supertest server per app so HTTP suites do not exhaust local ports (#126)
+    setupFiles: ['tests/setup/supertest-shared-server.ts'],
     exclude: ['node_modules', 'dist'],
     coverage: {
       provider: 'v8',
