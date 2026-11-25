@@ -255,9 +255,7 @@ describe('amounts follow the budget currency format', () => {
 
     it('ynab_transaction_search describes min and max in the budget currency', async () => {
       client.getCurrencyFormat.mockResolvedValue(mockEurCurrencyFormat);
-      const parsed = JSON.parse(
-        await handleTransactionSearch({ min_amount: 80, max_amount: 100 }, client as never)
-      );
+      const parsed = await handleTransactionSearch({ min_amount: 80, max_amount: 100 }, client as never);
       const criteria = JSON.stringify(parsed);
       expect(criteria).toContain('min: 80,00€');
       expect(criteria).toContain('max: 100,00€');

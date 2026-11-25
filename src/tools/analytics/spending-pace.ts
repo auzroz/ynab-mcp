@@ -12,6 +12,7 @@ import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -19,6 +20,62 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
+
+const paceStatus = z.enum(['on_track', 'ahead', 'behind', 'overspent']);
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const spendingPaceOutputSchema = z.object({
+  status: paceStatus,
+  message: z.string(),
+  month: z.string(),
+  progress: z.object({
+    day_of_month: z.number().int(),
+    days_in_month: z.number().int(),
+    days_remaining: z.number().int(),
+    percent_elapsed: z.string(),
+  }),
+  overall: z.object({
+    total_budgeted: z.string(),
+    total_spent: z.string(),
+    remaining: z.string(),
+    percent_spent: z.string().describe('A percentage, or "N/A (no budget)" when there is spending but no budget'),
+    daily_target: z.string(),
+    daily_actual: z.string(),
+    daily_allowance_remaining: z.string(),
+    projected_end_of_month: z.string(),
+  }),
+  category_status: z.object({
+    overspent: z.number().int(),
+    behind: z.number().int(),
+    on_track: z.number().int(),
+    ahead: z.number().int(),
+  }),
+  categories_needing_attention: z
+    .array(
+      z.object({
+        category: z.string(),
+        group: z.string(),
+        budgeted: z.string(),
+        spent: z.string(),
+        remaining: z.string(),
+        daily_target: z.string(),
+        daily_actual: z.string(),
+        status: paceStatus.describe('overspent or behind'),
+      })
+    )
+    .describe('Overspent and behind-pace categories, at most 10'),
+  categories_ahead: z
+    .array(
+      z.object({
+        category: z.string(),
+        group: z.string(),
+        remaining: z.string(),
+        status: paceStatus.describe('ahead'),
+      })
+    )
+    .describe('At most 5'),
+});
+export type SpendingPaceOutput = z.output<typeof spendingPaceOutputSchema>;
 
 // Tool definition
 export const spendingPaceTool: Tool = {
@@ -44,6 +101,7 @@ Returns current spending rate vs target rate with projections.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(spendingPaceOutputSchema),
 };
 
 interface CategoryPace {
@@ -65,7 +123,7 @@ interface CategoryPace {
 export async function handleSpendingPace(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<SpendingPaceOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -181,54 +239,50 @@ export async function handleSpendingPace(
     statusCounts[c.status]++;
   }
 
-  return JSON.stringify(
-    {
-      status: overallStatus,
-      message: overallMessage,
-      month: currentMonth,
-      progress: {
-        day_of_month: dayOfMonth,
-        days_in_month: daysInMonth,
-        days_remaining: daysRemaining,
-        percent_elapsed: `${Math.round(percentMonthElapsed)}%`,
-      },
-      overall: {
-        total_budgeted: money(totalBudgeted),
-        total_spent: money(totalSpent),
-        remaining: money(totalRemaining),
-        percent_spent: totalBudgeted > 0
-          ? `${Math.round((totalSpent / totalBudgeted) * 100)}%`
-          : (totalSpent > 0 ? 'N/A (no budget)' : '0%'),
-        daily_target: money(overallDailyTarget),
-        daily_actual: money(overallDailyActual),
-        daily_allowance_remaining: money(dailyAllowanceRemaining),
-        projected_end_of_month: money(projectedTotalSpend),
-      },
-      category_status: statusCounts,
-      categories_needing_attention: categoryPaces
-        .filter((c) => c.status === 'overspent' || c.status === 'behind')
-        .slice(0, 10)
-        .map((c) => ({
-          category: c.category_name,
-          group: c.group_name,
-          budgeted: money(c.budgeted),
-          spent: money(c.spent),
-          remaining: money(c.remaining),
-          daily_target: money(c.daily_target),
-          daily_actual: money(c.daily_actual),
-          status: c.status,
-        })),
-      categories_ahead: categoryPaces
-        .filter((c) => c.status === 'ahead')
-        .slice(0, 5)
-        .map((c) => ({
-          category: c.category_name,
-          group: c.group_name,
-          remaining: money(c.remaining),
-          status: c.status,
-        })),
+  return {
+    status: overallStatus,
+    message: overallMessage,
+    month: currentMonth,
+    progress: {
+      day_of_month: dayOfMonth,
+      days_in_month: daysInMonth,
+      days_remaining: daysRemaining,
+      percent_elapsed: `${Math.round(percentMonthElapsed)}%`,
     },
-    null,
-    2
-  );
+    overall: {
+      total_budgeted: money(totalBudgeted),
+      total_spent: money(totalSpent),
+      remaining: money(totalRemaining),
+      percent_spent: totalBudgeted > 0
+        ? `${Math.round((totalSpent / totalBudgeted) * 100)}%`
+        : (totalSpent > 0 ? 'N/A (no budget)' : '0%'),
+      daily_target: money(overallDailyTarget),
+      daily_actual: money(overallDailyActual),
+      daily_allowance_remaining: money(dailyAllowanceRemaining),
+      projected_end_of_month: money(projectedTotalSpend),
+    },
+    category_status: statusCounts,
+    categories_needing_attention: categoryPaces
+      .filter((c) => c.status === 'overspent' || c.status === 'behind')
+      .slice(0, 10)
+      .map((c) => ({
+        category: c.category_name,
+        group: c.group_name,
+        budgeted: money(c.budgeted),
+        spent: money(c.spent),
+        remaining: money(c.remaining),
+        daily_target: money(c.daily_target),
+        daily_actual: money(c.daily_actual),
+        status: c.status,
+      })),
+    categories_ahead: categoryPaces
+      .filter((c) => c.status === 'ahead')
+      .slice(0, 5)
+      .map((c) => ({
+        category: c.category_name,
+        group: c.group_name,
+        remaining: money(c.remaining),
+        status: c.status,
+      })),
+  };
 }

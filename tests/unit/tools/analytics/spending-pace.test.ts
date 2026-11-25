@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { handleSpendingPace } from '../../../../src/tools/analytics/spending-pace.js';
+import { handleSpendingPace as rawHandleSpendingPace, spendingPaceOutputSchema } from '../../../../src/tools/analytics/spending-pace.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createCategoriesResponse,
@@ -11,6 +12,8 @@ import {
   mockMonthDetail,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleSpendingPace = validating(spendingPaceOutputSchema, rawHandleSpendingPace);
 
 function monthWith(
   categories: Array<{ id: string; name: string; budgeted: number; activity: number; hidden?: boolean }>
@@ -49,7 +52,7 @@ describe('handleSpendingPace', () => {
       monthWith([{ id: 'cat-dining-666', name: 'Dining Out', budgeted: 100000, activity: -150000 }])
     );
 
-    const result = JSON.parse(await handleSpendingPace({}, mockClient as never));
+    const result = await handleSpendingPace({}, mockClient as never);
 
     expect(result.status).toBe('overspent');
     expect(result.message).toContain('over budget');
@@ -62,7 +65,7 @@ describe('handleSpendingPace', () => {
       monthWith([{ id: 'cat-groceries-555', name: 'Groceries', budgeted: 310000, activity: -300000 }])
     );
 
-    const result = JSON.parse(await handleSpendingPace({}, mockClient as never));
+    const result = await handleSpendingPace({}, mockClient as never);
 
     expect(result.status).toBe('behind');
     expect(result.categories_needing_attention.length).toBeGreaterThan(0);
@@ -74,7 +77,7 @@ describe('handleSpendingPace', () => {
       monthWith([{ id: 'cat-gas-888', name: 'Gas', budgeted: 620000, activity: -30000 }])
     );
 
-    const result = JSON.parse(await handleSpendingPace({}, mockClient as never));
+    const result = await handleSpendingPace({}, mockClient as never);
 
     expect(result.status).toBe('ahead');
     expect(result.categories_ahead.length).toBeGreaterThan(0);
@@ -86,7 +89,7 @@ describe('handleSpendingPace', () => {
       monthWith([{ id: 'cat-transport-777', name: 'Transportation', budgeted: 310000, activity: -150000 }])
     );
 
-    const result = JSON.parse(await handleSpendingPace({}, mockClient as never));
+    const result = await handleSpendingPace({}, mockClient as never);
 
     expect(result.status).toBe('on_track');
   });
@@ -96,7 +99,7 @@ describe('handleSpendingPace', () => {
       monthWith([{ id: 'cat-groceries-555', name: 'Groceries', budgeted: 310000, activity: -150000 }])
     );
 
-    const result = JSON.parse(await handleSpendingPace({}, mockClient as never));
+    const result = await handleSpendingPace({}, mockClient as never);
 
     expect(result.progress.day_of_month).toBe(15);
     expect(result.progress.days_in_month).toBe(31);
@@ -112,7 +115,7 @@ describe('handleSpendingPace', () => {
       ])
     );
 
-    const result = JSON.parse(await handleSpendingPace({}, mockClient as never));
+    const result = await handleSpendingPace({}, mockClient as never);
 
     const counts = result.category_status;
     expect(counts.overspent + counts.behind + counts.on_track + counts.ahead).toBe(0);

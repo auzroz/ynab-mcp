@@ -19,6 +19,13 @@ import { closedOutputSchema, toOutputSchema } from '../../../src/tools/output-sc
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
+import { spendingAnalysisOutputSchema } from '../../../src/tools/analytics/spending-analysis.js';
+import { incomeExpenseOutputSchema } from '../../../src/tools/analytics/income-expense.js';
+import { spendingByPayeeOutputSchema } from '../../../src/tools/analytics/spending-by-payee.js';
+import { monthlyComparisonOutputSchema } from '../../../src/tools/analytics/monthly-comparison.js';
+import { spendingTrendsOutputSchema } from '../../../src/tools/analytics/spending-trends.js';
+import { transactionSearchOutputSchema } from '../../../src/tools/analytics/transaction-search.js';
+import { spendingPaceOutputSchema } from '../../../src/tools/analytics/spending-pace.js';
 import { AuditLog } from '../../../src/services/audit-log.js';
 import { YnabClient } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
@@ -85,24 +92,17 @@ const PENDING_OUTPUT_SCHEMA = [
   'ynab_list_money_movement_groups',
   // Analytics (45c)
   'ynab_detect_recurring',
-  'ynab_spending_analysis',
   'ynab_budget_health',
   'ynab_savings_opportunities',
   'ynab_budget_vs_actuals',
   'ynab_quick_summary',
-  'ynab_income_expense',
   'ynab_net_worth',
   'ynab_goal_progress',
-  'ynab_spending_by_payee',
   'ynab_unused_categories',
-  'ynab_monthly_comparison',
-  'ynab_spending_trends',
   'ynab_cash_flow_forecast',
   'ynab_reconciliation_helper',
   'ynab_budget_suggestions',
   'ynab_overspending_alerts',
-  'ynab_transaction_search',
-  'ynab_spending_pace',
   'ynab_category_balances',
   'ynab_credit_card_status',
   'ynab_age_of_money',
@@ -117,6 +117,13 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,
+  ynab_spending_analysis: spendingAnalysisOutputSchema,
+  ynab_income_expense: incomeExpenseOutputSchema,
+  ynab_spending_by_payee: spendingByPayeeOutputSchema,
+  ynab_monthly_comparison: monthlyComparisonOutputSchema,
+  ynab_spending_trends: spendingTrendsOutputSchema,
+  ynab_transaction_search: transactionSearchOutputSchema,
+  ynab_spending_pace: spendingPaceOutputSchema,
 };
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/null-output-0.4.1.json', import.meta.url));

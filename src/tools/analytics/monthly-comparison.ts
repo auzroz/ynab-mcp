@@ -12,6 +12,7 @@ import { getCurrentMonth, getPreviousMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -19,6 +20,55 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
+
+const directionSchema = z.enum(['up', 'down', 'same']);
+const changeSchema = z.object({
+  category: z.string(),
+  group: z.string(),
+  this_month: z.string(),
+  last_month: z.string(),
+  change: z.string().describe('Formatted amount, or "new" for a category with no spending last month'),
+  change_percent: z.string().describe('A signed percentage, or "new"'),
+});
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const monthlyComparisonOutputSchema = z.object({
+  status: z.enum(['better', 'worse', 'similar']),
+  message: z.string(),
+  months: z.object({ current: z.string(), previous: z.string() }),
+  comparison: z.object({
+    spending: z.object({
+      this_month: z.string(),
+      last_month: z.string(),
+      change: z.string(),
+      change_percent: z.number().int().describe('100 when last month had none and this month has some'),
+      direction: directionSchema,
+    }),
+    income: z.object({
+      this_month: z.string(),
+      last_month: z.string(),
+      change: z.string(),
+      change_percent: z.number().int().describe('100 when last month had none and this month has some'),
+      direction: directionSchema,
+    }),
+    budgeted: z.object({
+      this_month: z.string(),
+      last_month: z.string(),
+      change: z.string(),
+    }),
+  }),
+  notable_changes: z.object({
+    biggest_increases: z.array(changeSchema).describe('At most 5, new categories included'),
+    biggest_decreases: z.array(changeSchema).describe('At most 5'),
+  }),
+  insights: z.object({
+    categories_with_increased_spending: z.number().int(),
+    categories_with_decreased_spending: z.number().int(),
+    categories_unchanged: z.number().int(),
+    new_categories: z.number().int(),
+  }),
+});
+export type MonthlyComparisonOutput = z.output<typeof monthlyComparisonOutputSchema>;
 
 // Tool definition
 export const monthlyComparisonTool: Tool = {
@@ -44,6 +94,7 @@ Returns side-by-side comparison of spending, income, and category performance.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(monthlyComparisonOutputSchema),
 };
 
 interface CategoryChange {
@@ -64,7 +115,7 @@ interface CategoryChange {
 export async function handleMonthlyComparison(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<MonthlyComparisonOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -246,63 +297,59 @@ export async function handleMonthlyComparison(
     .filter((c) => c.direction === 'down')
     .slice(0, 5);
 
-  return JSON.stringify(
-    {
-      status,
-      message,
-      months: {
-        current: currentMonth,
-        previous: previousMonth,
+  return {
+    status,
+    message,
+    months: {
+      current: currentMonth,
+      previous: previousMonth,
+    },
+    comparison: {
+      spending: {
+        this_month: money(currentSpending),
+        last_month: money(previousSpending),
+        change: money(spendingChange),
+        change_percent: Math.round(spendingChangePercent),
+        direction: spendingChange > 0 ? 'up' : spendingChange < 0 ? 'down' : 'same',
       },
-      comparison: {
-        spending: {
-          this_month: money(currentSpending),
-          last_month: money(previousSpending),
-          change: money(spendingChange),
-          change_percent: Math.round(spendingChangePercent),
-          direction: spendingChange > 0 ? 'up' : spendingChange < 0 ? 'down' : 'same',
-        },
-        income: {
-          this_month: money(currentIncome),
-          last_month: money(previousIncome),
-          change: money(incomeChange),
-          change_percent: Math.round(incomeChangePercent),
-          direction: incomeChange > 0 ? 'up' : incomeChange < 0 ? 'down' : 'same',
-        },
-        budgeted: {
-          this_month: money(currentBudgeted),
-          last_month: money(previousBudgeted),
-          change: money(budgetedChange),
-        },
+      income: {
+        this_month: money(currentIncome),
+        last_month: money(previousIncome),
+        change: money(incomeChange),
+        change_percent: Math.round(incomeChangePercent),
+        direction: incomeChange > 0 ? 'up' : incomeChange < 0 ? 'down' : 'same',
       },
-      notable_changes: {
-        biggest_increases: biggestIncreases.map((c) => ({
-          category: c.category,
-          group: c.group,
-          this_month: c.this_month,
-          last_month: c.last_month,
-          change: c.change,
-          change_percent: c.direction === 'new' ? 'new' : `+${c.change_percent}%`,
-        })),
-        biggest_decreases: biggestDecreases.map((c) => ({
-          category: c.category,
-          group: c.group,
-          this_month: c.this_month,
-          last_month: c.last_month,
-          change: c.change,
-          change_percent: `${c.change_percent}%`,
-        })),
-      },
-      insights: {
-        categories_with_increased_spending: categoryChanges.filter((c) => c.direction === 'up')
-          .length,
-        categories_with_decreased_spending: categoryChanges.filter((c) => c.direction === 'down')
-          .length,
-        categories_unchanged: categoryChanges.filter((c) => c.direction === 'same').length,
-        new_categories: categoryChanges.filter((c) => c.direction === 'new').length,
+      budgeted: {
+        this_month: money(currentBudgeted),
+        last_month: money(previousBudgeted),
+        change: money(budgetedChange),
       },
     },
-    null,
-    2
-  );
+    notable_changes: {
+      biggest_increases: biggestIncreases.map((c) => ({
+        category: c.category,
+        group: c.group,
+        this_month: c.this_month,
+        last_month: c.last_month,
+        change: c.change,
+        change_percent: c.direction === 'new' ? 'new' : `+${c.change_percent}%`,
+      })),
+      biggest_decreases: biggestDecreases.map((c) => ({
+        category: c.category,
+        group: c.group,
+        this_month: c.this_month,
+        last_month: c.last_month,
+        change: c.change,
+        change_percent: `${c.change_percent}%`,
+      })),
+    },
+    insights: {
+      categories_with_increased_spending: categoryChanges.filter((c) => c.direction === 'up')
+        .length,
+      categories_with_decreased_spending: categoryChanges.filter((c) => c.direction === 'down')
+        .length,
+      categories_unchanged: categoryChanges.filter((c) => c.direction === 'same').length,
+      new_categories: categoryChanges.filter((c) => c.direction === 'new').length,
+    },
+  };
 }
