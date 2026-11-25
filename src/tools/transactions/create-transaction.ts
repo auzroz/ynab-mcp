@@ -21,7 +21,7 @@ import {
   toSaveSubTransactions,
 } from './subtransactions.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Cleared status options
 const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
@@ -85,15 +85,15 @@ export const createTransactionOutputSchema = z.object({
     .describe('When success is false: the import_id that already exists'),
   transaction: z
     .object({
-      id: z.string(),
-      date: z.string(),
+      id: fromYnab(z.string()),
+      date: fromYnab(z.string()),
       amount: money(),
       payee_name: z.string(),
       category_name: z.string(),
       account_name: z.string(),
       memo: z.string().nullable(),
-      cleared: z.string().describe('YNAB cleared status'),
-      approved: z.boolean(),
+      cleared: fromYnab(z.string().describe('YNAB cleared status')),
+      approved: fromYnab(z.boolean()),
       subtransactions: z.array(createdSubtransactionSchema).exactOptional().describe('The splits; omitted when none'),
     })
     .exactOptional()

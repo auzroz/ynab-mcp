@@ -11,6 +11,7 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -25,7 +26,7 @@ const inputSchema = z.object({
 export const updatePayeeOutputSchema = z.object({
   success: z.literal(true),
   message: z.string(),
-  payee: z.object({ id: z.string(), name: z.string() }),
+  payee: z.object({ id: fromYnab(z.string()), name: z.string() }),
 });
 export type UpdatePayeeOutput = z.output<typeof updatePayeeOutputSchema>;
 

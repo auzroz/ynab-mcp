@@ -16,7 +16,7 @@ import { validateScheduledDate } from '../../utils/date-validation.js';
 import { frequencies, flagColors } from '../../utils/scheduled-constants.js';
 import { omitNull } from '../../utils/omit-null.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -69,10 +69,10 @@ export const updateScheduledTransactionOutputSchema = z.object({
   message: z.string().exactOptional().describe('When success is true'),
   scheduled_transaction: z
     .object({
-      id: z.string(),
-      date_first: z.string(),
-      date_next: z.string(),
-      frequency: z.string().describe('YNAB frequency, such as monthly or everyOtherWeek'),
+      id: fromYnab(z.string()),
+      date_first: fromYnab(z.string()),
+      date_next: fromYnab(z.string()),
+      frequency: fromYnab(z.string().describe('YNAB frequency, such as monthly or everyOtherWeek')),
       amount: money(),
       payee_name: z.string(),
       category_name: z.string(),

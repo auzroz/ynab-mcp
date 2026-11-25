@@ -13,7 +13,7 @@ import { buildGoalDetail, goalDetailSchema } from '../../utils/goals.js';
 import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -31,10 +31,10 @@ const inputSchema = z.object({
 export const getMonthCategoryOutputSchema = z.object({
   month: z.string(),
   category: z.object({
-    id: z.string(),
-    category_group_id: z.string(),
+    id: fromYnab(z.string()),
+    category_group_id: fromYnab(z.string()),
     name: z.string(),
-    hidden: z.boolean(),
+    hidden: fromYnab(z.boolean()),
     note: z.string().nullable(),
     budgeted: money(),
     activity: money(),

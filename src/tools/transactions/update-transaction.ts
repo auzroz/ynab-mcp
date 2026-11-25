@@ -14,7 +14,7 @@ import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Cleared status options
 const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
@@ -70,15 +70,15 @@ export const updateTransactionOutputSchema = z.object({
   success: z.literal(true),
   message: z.string(),
   transaction: z.object({
-    id: z.string(),
-    date: z.string(),
+    id: fromYnab(z.string()),
+    date: fromYnab(z.string()),
     amount: money(),
     payee_name: z.string(),
     category_name: z.string(),
     account_name: z.string(),
     memo: z.string().nullable(),
-    cleared: z.string().describe('YNAB cleared status'),
-    approved: z.boolean(),
+    cleared: fromYnab(z.string().describe('YNAB cleared status')),
+    approved: fromYnab(z.boolean()),
     flag_color: z.string().exactOptional().describe('YNAB flag colour; omitted when unflagged'),
   }),
 });

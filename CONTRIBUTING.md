@@ -104,7 +104,10 @@ These are the rules reviewers check, and most of them have tests that enforce th
 
 1. **Create the file:** `src/tools/<resource>/<action>-<thing>.ts`. Names are `ynab_<action>_<resource>`, such as `ynab_list_accounts`, `ynab_get_account` and `ynab_update_category`.
 2. **Define the input** as a zod schema, plus the matching JSON schema for the tool definition.
-3. **Define the output** as a zod `z.object` schema. Put `outputSchema: toOutputSchema(schema)` on the definition and have the handler return the object, not a JSON string. The rules (nulls, failure shapes, open schemas) are in `src/tools/output-schema.ts`, and `tests/unit/tools/output-schemas.test.ts` checks the tool's real output against the schema. Until a tool has a schema it goes on that test's `PENDING_OUTPUT_SCHEMA` list.
+3. **Define the output** as a zod `z.object` schema. Put `outputSchema: toOutputSchema(schema)` on the definition and have the handler return the object, typed `Promise<z.output<typeof schema>>`, not a JSON string. The rules are in `src/tools/output-schema.ts`, and `tests/unit/tools/output-schemas.test.ts` checks the tool's real output against the schema. Until a tool has a schema it goes on that test's `PENDING_OUTPUT_SCHEMA` list.
+   - A key the tool leaves out is `.exactOptional()`; a value it reports as null on purpose is `.nullable()`.
+   - Wrap a value copied verbatim from YNAB (an id, date, flag, enum string or raw amount) in `fromYnab(...)` from `src/tools/schemas/common.ts`. Clients are then told it may be missing or null, while the tests still require it.
+   - Wrap the tool's handler in `validating(schema, handler)` (`tests/unit/tools/output-validation.ts`) in its unit test, so every result the test reads is checked against the schema.
 4. **Write a description that says when to use the tool** (`Use when the user asks: ...`). If YNAB can't do part of what a user might ask, say so ("Not possible through the YNAB API ...").
 5. **Add the tool's title and hints** to `src/tools/annotations.ts`; typecheck fails without them.
    - Reads are `READ`.

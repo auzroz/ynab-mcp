@@ -14,7 +14,7 @@ import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { omitNull } from '../../utils/omit-null.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count, money } from '../schemas/common.js';
+import { count, fromYnab, money } from '../schemas/common.js';
 
 // Input schema - accepts YYYY-MM-DD format or "current"
 const inputSchema = z.object({
@@ -33,7 +33,7 @@ const inputSchema = z.object({
 
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getMonthOutputSchema = z.object({
-  month: z.string(),
+  month: fromYnab(z.string()),
   summary: z.object({
     note: z.string().nullable(),
     income: money(),
@@ -45,7 +45,7 @@ export const getMonthOutputSchema = z.object({
   category_count: count(),
   categories_by_group: z.array(
     z.object({
-      group_id: z.string(),
+      group_id: fromYnab(z.string()),
       group_name: z.string(),
       categories: z.array(z.object({ name: z.string(), budgeted: money(), activity: money(), balance: money() })),
     })

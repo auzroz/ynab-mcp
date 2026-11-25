@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { usdFallbackFormatter, type MoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeMemo, sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { transactionDeltaSummaryShape } from '../../utils/delta.js';
+import { fromYnab } from '../schemas/common.js';
 
 /** YNAB's transaction type filter, shared by every transaction list tool. */
 export const transactionTypeSchema = z
@@ -108,7 +109,7 @@ export function truncationSummary(totalCount: number, returnedCount: number) {
 
 /** transactionChainFields. */
 export const transactionChainShape = {
-  account_id: z.string(),
+  account_id: fromYnab(z.string()),
   payee_id: z.string().nullable(),
   category_id: z.string().nullable(),
   transfer_account_id: z.string().nullable(),
@@ -121,8 +122,8 @@ export const transactionChainShape = {
 
 /** formatSubtransaction: a split line of a listed transaction. */
 export const subtransactionOutputSchema = z.object({
-  id: z.string(),
-  transaction_id: z.string(),
+  id: fromYnab(z.string()),
+  transaction_id: fromYnab(z.string()),
   amount: z.string(),
   memo: z.string().nullable(),
   payee_id: z.string().nullable(),
@@ -150,12 +151,12 @@ export const listSummaryShape = {
 
 /** The fields of a listed transaction that every transaction list tool reports. */
 export const listedTransactionShape = {
-  id: z.string(),
-  date: z.string(),
+  id: fromYnab(z.string()),
+  date: fromYnab(z.string()),
   amount: z.string(),
   memo: z.string().nullable(),
-  cleared: z.string().describe('YNAB cleared status: cleared, uncleared or reconciled'),
-  approved: z.boolean(),
+  cleared: fromYnab(z.string().describe('YNAB cleared status: cleared, uncleared or reconciled')),
+  approved: fromYnab(z.boolean()),
   flag_color: z.string().exactOptional().describe('YNAB flag colour; omitted when unflagged'),
   ...transactionChainShape,
 };

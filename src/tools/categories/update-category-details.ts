@@ -24,7 +24,7 @@ import {
   refineGoalFrequency,
 } from './category-targets.js';
 import { toOutputSchema } from '../output-schema.js';
-import { milliunits, money } from '../schemas/common.js';
+import { fromYnab, milliunits, money } from '../schemas/common.js';
 
 const UPDATABLE_FIELDS = ['name', 'note', 'category_group_id', ...CATEGORY_TARGET_FIELDS] as const;
 
@@ -58,9 +58,9 @@ export const updateCategoryDetailsOutputSchema = z.object({
   message: z.string(),
   updated_fields: z.array(z.enum(UPDATABLE_FIELDS)),
   category: z.object({
-    id: z.string(),
+    id: fromYnab(z.string()),
     name: z.string(),
-    category_group_id: z.string(),
+    category_group_id: fromYnab(z.string()),
     note: z.string().nullable(),
     goal_target: milliunits().nullable(),
     goal_target_display: money().nullable(),

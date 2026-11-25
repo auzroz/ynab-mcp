@@ -8,7 +8,7 @@
 import DecimalJS from 'decimal.js';
 import { z } from 'zod';
 import type { Account } from 'ynab';
-import { money as moneyText } from '../schemas/common.js';
+import { fromYnab, money as moneyText } from '../schemas/common.js';
 import { usdFallbackFormatter, type MoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 
@@ -82,8 +82,8 @@ const MAP_NOTE = 'Omitted from ynab_list_accounts when empty; always present (po
 
 /** The detail fields both account tools return (#45; rules in ../output-schema.ts). Nulls are reported on purpose. */
 export const accountDetailFieldsShape = {
-  on_budget: z.boolean(),
-  closed: z.boolean(),
+  on_budget: fromYnab(z.boolean()),
+  closed: fromYnab(z.boolean()),
   note: z.string().nullable(),
   last_reconciled_at: z.string().nullable(),
   direct_import_linked: z.boolean().nullable(),

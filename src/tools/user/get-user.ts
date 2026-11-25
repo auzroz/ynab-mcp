@@ -8,13 +8,14 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema (no parameters needed)
 const inputSchema = z.object({}).strict();
 
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getUserOutputSchema = z.object({
-  user: z.object({ id: z.string() }),
+  user: z.object({ id: fromYnab(z.string()) }),
 });
 export type GetUserOutput = z.output<typeof getUserOutputSchema>;
 

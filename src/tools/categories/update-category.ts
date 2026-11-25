@@ -12,7 +12,7 @@ import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -36,7 +36,7 @@ export const updateCategoryOutputSchema = z.object({
   message: z.string(),
   month: z.string(),
   category: z.object({
-    id: z.string(),
+    id: fromYnab(z.string()),
     name: z.string(),
     budgeted: money(),
     activity: money(),

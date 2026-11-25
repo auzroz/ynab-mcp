@@ -11,6 +11,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { CATEGORY_GROUP_NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -24,7 +25,7 @@ const inputSchema = z.object({
 export const createCategoryGroupOutputSchema = z.object({
   success: z.literal(true),
   message: z.string(),
-  category_group: z.object({ id: z.string(), name: z.string() }),
+  category_group: z.object({ id: fromYnab(z.string()), name: z.string() }),
 });
 export type CreateCategoryGroupOutput = z.output<typeof createCategoryGroupOutputSchema>;
 

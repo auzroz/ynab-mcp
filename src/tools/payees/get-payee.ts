@@ -10,6 +10,7 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -25,7 +26,7 @@ export const getPayeeOutputSchema = z.object({
     id: z.string(),
     name: z.string(),
     transfer_account_id: z.string().nullable().describe('The account a transfer payee transfers to; null for other payees'),
-    deleted: z.boolean(),
+    deleted: fromYnab(z.boolean()),
   }),
 });
 export type GetPayeeOutput = z.output<typeof getPayeeOutputSchema>;

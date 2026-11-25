@@ -10,6 +10,7 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeString } from '../../utils/sanitize.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -24,8 +25,8 @@ export const getPayeeLocationOutputSchema = z.object({
   payee_location: z.object({
     id: z.string(),
     payee_id: z.string(),
-    latitude: z.string(),
-    longitude: z.string(),
+    latitude: fromYnab(z.string()),
+    longitude: fromYnab(z.string()),
   }),
 });
 export type GetPayeeLocationOutput = z.output<typeof getPayeeLocationOutputSchema>;

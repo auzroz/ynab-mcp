@@ -31,7 +31,7 @@ import {
 } from './format.js';
 import { omitNull } from '../../utils/omit-null.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 const DEFAULT_RANGE_NOTE =
   'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.';
@@ -78,7 +78,7 @@ export const listPayeeTransactionsOutputSchema = z.object({
       ...listedTransactionShape,
       category_name: z.string(),
       account_name: z.string(),
-      type: z.string().describe("YNAB row type: 'transaction', or 'subtransaction' for a split line of parent_transaction_id"),
+      type: fromYnab(z.string().describe("YNAB row type: 'transaction', or 'subtransaction' for a split line of parent_transaction_id")),
       parent_transaction_id: z.string().nullable(),
     })
   ),

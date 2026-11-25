@@ -14,7 +14,7 @@ import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -29,26 +29,26 @@ const OMITTED = 'Omitted when YNAB has no value';
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getScheduledTransactionOutputSchema = z.object({
   scheduled_transaction: z.object({
-    id: z.string(),
-    date_first: z.string(),
-    date_next: z.string(),
-    frequency: z.string().describe('YNAB frequency, such as monthly or everyOtherWeek'),
+    id: fromYnab(z.string()),
+    date_first: fromYnab(z.string()),
+    date_next: fromYnab(z.string()),
+    frequency: fromYnab(z.string().describe('YNAB frequency, such as monthly or everyOtherWeek')),
     amount: money(),
     memo: z.string().nullable(),
     flag_color: z.string().exactOptional().describe('YNAB flag colour; omitted when unflagged'),
     flag_name: z.string().nullable(),
-    account_id: z.string(),
+    account_id: fromYnab(z.string()),
     account_name: z.string(),
     payee_id: z.string().exactOptional().describe(OMITTED),
     payee_name: z.string(),
     category_id: z.string().exactOptional().describe(OMITTED),
     category_name: z.string(),
     transfer_account_id: z.string().exactOptional().describe(OMITTED),
-    deleted: z.boolean(),
+    deleted: fromYnab(z.boolean()),
     subtransactions: z.array(
       z.object({
-        id: z.string(),
-        scheduled_transaction_id: z.string(),
+        id: fromYnab(z.string()),
+        scheduled_transaction_id: fromYnab(z.string()),
         amount: money(),
         memo: z.string().nullable(),
         payee_id: z.string().exactOptional().describe(OMITTED),

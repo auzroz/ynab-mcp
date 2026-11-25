@@ -18,7 +18,7 @@ import {
   refineGoalFrequency,
 } from './category-targets.js';
 import { toOutputSchema } from '../output-schema.js';
-import { milliunits, money } from '../schemas/common.js';
+import { fromYnab, milliunits, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -37,9 +37,9 @@ export const createCategoryOutputSchema = z.object({
   success: z.literal(true),
   message: z.string(),
   category: z.object({
-    id: z.string(),
+    id: fromYnab(z.string()),
     name: z.string(),
-    category_group_id: z.string(),
+    category_group_id: fromYnab(z.string()),
     goal_target: milliunits().nullable().describe('Null when the category has no target'),
     goal_target_display: money().nullable(),
   }),

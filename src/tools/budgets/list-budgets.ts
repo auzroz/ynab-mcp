@@ -10,7 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { makeMoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count, currencyFormatSchema, dateFormatSchema, money } from '../schemas/common.js';
+import { count, currencyFormatSchema, dateFormatSchema, fromYnab, money } from '../schemas/common.js';
 import { omitNull } from '../../utils/omit-null.js';
 
 // Input schema
@@ -22,7 +22,7 @@ const inputSchema = z.object({
 });
 
 const budgetSchema = z.object({
-  id: z.string(),
+  id: fromYnab(z.string()),
   name: z.string(),
   last_modified: z.string().exactOptional().describe('Omitted when YNAB does not report it'),
   currency_format: currencyFormatSchema.exactOptional().describe('Omitted when the budget has none'),
@@ -32,11 +32,11 @@ const budgetSchema = z.object({
   accounts: z
     .array(
       z.object({
-        id: z.string(),
+        id: fromYnab(z.string()),
         name: z.string(),
-        type: z.string().describe('YNAB account type'),
+        type: fromYnab(z.string().describe('YNAB account type')),
         balance: money(),
-        closed: z.boolean(),
+        closed: fromYnab(z.boolean()),
       })
     )
     .exactOptional()

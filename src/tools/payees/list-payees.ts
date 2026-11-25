@@ -11,7 +11,7 @@ import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, deltaFields, deltaOutputShape, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count, serverKnowledge } from '../schemas/common.js';
+import { count, fromYnab, serverKnowledge } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -42,7 +42,7 @@ export const listPayeesOutputSchema = z.object({
     deleted_count: count().exactOptional().describe(DELTA),
     note: z.string().exactOptional().describe(DELTA),
   }),
-  server_knowledge: serverKnowledge(),
+  server_knowledge: fromYnab(serverKnowledge()),
 });
 export type ListPayeesOutput = z.output<typeof listPayeesOutputSchema>;
 

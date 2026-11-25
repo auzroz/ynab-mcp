@@ -21,7 +21,7 @@ import {
   toSaveSubTransactions,
 } from './subtransactions.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count, money } from '../schemas/common.js';
+import { count, fromYnab, money } from '../schemas/common.js';
 
 // Transaction schema for bulk creation
 const transactionSchema = z
@@ -65,8 +65,8 @@ export const createTransactionsOutputSchema = z.object({
   summary: z.object({ created_count: count(), duplicate_count: count(), total_amount: money() }),
   transactions: z.array(
     z.object({
-      id: z.string(),
-      date: z.string(),
+      id: fromYnab(z.string()),
+      date: fromYnab(z.string()),
       amount: money(),
       payee_name: z.string(),
       category_name: z.string(),

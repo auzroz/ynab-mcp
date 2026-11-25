@@ -17,7 +17,7 @@ import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Derive account types from the YNAB SDK enum to prevent drift. The YNAB API
 // only supports CREATING this restricted set (SaveAccountType) — loan/mortgage
@@ -46,11 +46,11 @@ export const createAccountOutputSchema = z.object({
   success: z.literal(true),
   message: z.string(),
   account: z.object({
-    id: z.string(),
+    id: fromYnab(z.string()),
     name: z.string(),
-    type: z.string().describe('YNAB account type'),
+    type: fromYnab(z.string().describe('YNAB account type')),
     balance: money(),
-    on_budget: z.boolean(),
+    on_budget: fromYnab(z.boolean()),
   }),
 });
 export type CreateAccountOutput = z.output<typeof createAccountOutputSchema>;

@@ -14,7 +14,7 @@ import { sanitizeFlagName } from './format.js';
 import { sanitizeName, sanitizeMemo, sanitizeString } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -29,18 +29,18 @@ const OMITTED = 'Omitted when YNAB has no value';
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getTransactionOutputSchema = z.object({
   transaction: z.object({
-    id: z.string(),
-    date: z.string(),
+    id: fromYnab(z.string()),
+    date: fromYnab(z.string()),
     amount: money(),
     memo: z.string().nullable(),
     payee_id: z.string().exactOptional().describe(OMITTED),
     payee_name: z.string(),
     category_id: z.string().exactOptional().describe(OMITTED),
     category_name: z.string(),
-    account_id: z.string(),
+    account_id: fromYnab(z.string()),
     account_name: z.string(),
-    cleared: z.string().describe('YNAB cleared status: cleared, uncleared or reconciled'),
-    approved: z.boolean(),
+    cleared: fromYnab(z.string().describe('YNAB cleared status: cleared, uncleared or reconciled')),
+    approved: fromYnab(z.boolean()),
     flag_color: z.string().exactOptional().describe('YNAB flag colour; omitted when unflagged'),
     flag_name: z.string().nullable(),
     import_id: z.string().nullable(),
@@ -52,8 +52,8 @@ export const getTransactionOutputSchema = z.object({
     matched_transaction_id: z.string().exactOptional().describe(OMITTED),
     subtransactions: z.array(
       z.object({
-        id: z.string(),
-        transaction_id: z.string(),
+        id: fromYnab(z.string()),
+        transaction_id: fromYnab(z.string()),
         amount: money(),
         memo: z.string().nullable(),
         payee_id: z.string().exactOptional().describe(OMITTED),

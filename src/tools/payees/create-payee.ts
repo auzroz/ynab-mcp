@@ -11,6 +11,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { PAYEE_NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -24,7 +25,7 @@ const inputSchema = z.object({
 export const createPayeeOutputSchema = z.object({
   success: z.literal(true),
   message: z.string(),
-  payee: z.object({ id: z.string(), name: z.string() }),
+  payee: z.object({ id: fromYnab(z.string()), name: z.string() }),
 });
 export type CreatePayeeOutput = z.output<typeof createPayeeOutputSchema>;
 

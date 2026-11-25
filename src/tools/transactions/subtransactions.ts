@@ -10,6 +10,7 @@ import type * as ynab from 'ynab';
 import { MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, ynabId } from '../../utils/schemas.js';
 import { toDecimal, usdFallbackFormatter, type MoneyFormatter, sumMilliunits, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeMemo, sanitizeName } from '../../utils/sanitize.js';
+import { fromYnab } from '../schemas/common.js';
 
 /** Minimum splits for a split transaction (YNAB: a split needs at least two parts). */
 export const MIN_SUBTRANSACTIONS = 2;
@@ -105,9 +106,9 @@ export function toSaveSubTransactions(
 
 /** A split of a created transaction, as the create tools report it (#45). Nulls are reported on purpose. */
 export const createdSubtransactionSchema = z.object({
-  id: z.string(),
+  id: fromYnab(z.string()),
   amount: z.string(),
-  amount_milliunits: z.number().int(),
+  amount_milliunits: fromYnab(z.number().int()),
   payee_id: z.string().nullable(),
   payee_name: z.string(),
   category_id: z.string().nullable(),

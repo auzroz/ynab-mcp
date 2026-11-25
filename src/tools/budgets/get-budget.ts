@@ -12,7 +12,7 @@ import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { isInternalGroup } from '../../utils/categories.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count, dateFormatSchema, money, serverKnowledge } from '../schemas/common.js';
+import { count, dateFormatSchema, fromYnab, money, serverKnowledge } from '../schemas/common.js';
 import { omitNull } from '../../utils/omit-null.js';
 
 // Input schema
@@ -24,7 +24,7 @@ const inputSchema = z.object({
 
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getBudgetOutputSchema = z.object({
-  budget_id: z.string(),
+  budget_id: fromYnab(z.string()),
   name: z.string(),
   last_modified: z.string().exactOptional().describe('Omitted when YNAB does not report it'),
   first_month: z.string().nullable(),
@@ -39,7 +39,7 @@ export const getBudgetOutputSchema = z.object({
     payee_count: count(),
   }),
   accounts_by_type: z
-    .record(z.string(), z.array(z.object({ id: z.string(), name: z.string(), balance: money() })))
+    .record(z.string(), z.array(z.object({ id: fromYnab(z.string()), name: z.string(), balance: money() })))
     .describe('Open accounts keyed by YNAB account type'),
   category_groups: z.array(
     z.object({
@@ -49,7 +49,7 @@ export const getBudgetOutputSchema = z.object({
       ),
     })
   ),
-  server_knowledge: serverKnowledge(),
+  server_knowledge: fromYnab(serverKnowledge()),
 });
 export type GetBudgetOutput = z.output<typeof getBudgetOutputSchema>;
 

@@ -12,7 +12,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -27,8 +27,8 @@ export const deleteTransactionOutputSchema = z.object({
   success: z.literal(true),
   message: z.string(),
   deleted_transaction: z.object({
-    id: z.string(),
-    date: z.string(),
+    id: fromYnab(z.string()),
+    date: fromYnab(z.string()),
     amount: money(),
     payee_name: z.string(),
     category_name: z.string(),

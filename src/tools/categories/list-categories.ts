@@ -17,7 +17,7 @@ const MONTH_DELTA_NOTE =
   'Budgeted, activity, balance and goal amounts are for the current month (UTC). When a new month begins they change without YNAB reporting a change, so a delta does not show it: re-read in full (omit since_server_knowledge) after a month boundary.';
 import { isInternalGroup } from '../../utils/categories.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count, milliunits, money, serverKnowledge } from '../schemas/common.js';
+import { count, fromYnab, milliunits, money, serverKnowledge } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -32,24 +32,24 @@ const inputSchema = z.object({
 });
 
 const categorySchema = z.object({
-  id: z.string(),
+  id: fromYnab(z.string()),
   name: z.string(),
   budgeted: money(),
   activity: money(),
   balance: money(),
-  balance_raw: milliunits(),
+  balance_raw: fromYnab(milliunits()),
   goal_type: z.string().nullable().describe('YNAB goal type; null without a target'),
   goal: goalDetailSchema.nullable().describe('Null when the category has no target'),
   goal_percentage_complete: z.number().nullable(),
   goal_under_funded: money().nullable(),
   goal_under_funded_raw: milliunits().nullable(),
-  hidden: z.boolean(),
+  hidden: fromYnab(z.boolean()),
 });
 
 const groupSchema = z.object({
-  id: z.string(),
+  id: fromYnab(z.string()),
   name: z.string(),
-  hidden: z.boolean(),
+  hidden: fromYnab(z.boolean()),
   categories: z.array(categorySchema),
 });
 
@@ -83,7 +83,7 @@ export const listCategoriesOutputSchema = z.object({
     })
     .exactOptional()
     .describe(FULL),
-  server_knowledge: serverKnowledge(),
+  server_knowledge: fromYnab(serverKnowledge()),
 });
 export type ListCategoriesOutput = z.output<typeof listCategoriesOutputSchema>;
 

@@ -14,7 +14,7 @@ import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, deltaOutputShape, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 import { omitNull } from '../../utils/omit-null.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count, money, serverKnowledge } from '../schemas/common.js';
+import { count, fromYnab, money, serverKnowledge } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -33,19 +33,19 @@ export const listMonthsOutputSchema = z.object({
   deleted_months: z.array(z.string()).exactOptional().describe(`${DELTA}: months have no id, so deleted ones are listed by month`),
   months: z.array(
     z.object({
-      month: z.string(),
+      month: fromYnab(z.string()),
       note: z.string().nullable(),
       income: money(),
       budgeted: money(),
       activity: money(),
       to_be_budgeted: money(),
       age_of_money: z.number().int().exactOptional().describe('Days; omitted when YNAB has no value'),
-      deleted: z.boolean(),
+      deleted: fromYnab(z.boolean()),
     })
   ),
   count: count(),
   note: z.string().exactOptional().describe(DELTA),
-  server_knowledge: serverKnowledge(),
+  server_knowledge: fromYnab(serverKnowledge()),
 });
 export type ListMonthsOutput = z.output<typeof listMonthsOutputSchema>;
 

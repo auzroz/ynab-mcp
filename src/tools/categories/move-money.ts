@@ -22,7 +22,7 @@ import { getCurrentMonth } from '../../utils/dates.js';
 import { errorResponseSchema, formatErrorResponse, ReadOnlyModeError, ValidationError, YnabAuthError } from '../../utils/errors.js';
 import { isInternalCategory } from '../../utils/categories.js';
 import { toOutputSchema } from '../output-schema.js';
-import { milliunits, money } from '../schemas/common.js';
+import { fromYnab, milliunits, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z
@@ -53,7 +53,7 @@ const DONE = 'Successful move only';
 
 /** One category of the move: its state before (failures) or before and after (success). */
 const sideSchema = z.object({
-  id: z.string(),
+  id: fromYnab(z.string()),
   name: z.string(),
   original_budgeted: money().exactOptional().describe(FAILED),
   original_budgeted_milliunits: milliunits().exactOptional().describe(FAILED),

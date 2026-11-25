@@ -13,7 +13,7 @@ import { maskId } from '../../utils/mask.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId, monthParam } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count } from '../schemas/common.js';
+import { count, fromYnab } from '../schemas/common.js';
 
 const inputSchema = z.object({
   budget_id: budgetId()
@@ -28,9 +28,9 @@ const inputSchema = z.object({
 export const listMoneyMovementGroupsOutputSchema = z.object({
   money_movement_groups: z.array(
     z.object({
-      id: z.string(),
-      month: z.string(),
-      group_created_at: z.string(),
+      id: fromYnab(z.string()),
+      month: fromYnab(z.string()),
+      group_created_at: fromYnab(z.string()),
       note: z.string().nullable(),
       has_performed_by_user: z.boolean(),
       performed_by_user_id: z.string().nullable().describe('Masked'),

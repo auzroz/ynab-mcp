@@ -14,7 +14,7 @@ import { maskId } from '../../utils/mask.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId, monthParam } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count, milliunits, money } from '../schemas/common.js';
+import { count, fromYnab, milliunits, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -31,9 +31,9 @@ const inputSchema = z.object({
 });
 
 const movementSchema = z.object({
-  id: z.string(),
+  id: fromYnab(z.string()),
   amount: money(),
-  amount_milliunits: milliunits(),
+  amount_milliunits: fromYnab(milliunits()),
   month: z.string().nullable(),
   moved_at: z.string().nullable(),
   from_category_id: z.string().nullable().describe('Null when the money came from Ready to Assign'),
@@ -52,7 +52,7 @@ export const listMoneyMovementsOutputSchema = z.object({
   money_movement_groups: z
     .array(
       z.object({
-        id: z.string(),
+        id: fromYnab(z.string()),
         month: z.string().nullable(),
         group_created_at: z.string().nullable().describe('Null for a group the groups endpoint did not return'),
         note: z.string().nullable(),

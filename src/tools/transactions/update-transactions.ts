@@ -12,7 +12,7 @@ import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { toMilliunits } from '../../utils/milliunits.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count } from '../schemas/common.js';
+import { count, fromYnab } from '../schemas/common.js';
 
 // Cleared status / flag color options
 const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
@@ -70,7 +70,7 @@ export const updateTransactionsOutputSchema = z.object({
   message: z.string(),
   requested_count: count(),
   updated_count: count(),
-  transaction_ids: z.array(z.string()),
+  transaction_ids: fromYnab(z.array(z.string())),
 });
 export type UpdateTransactionsOutput = z.output<typeof updateTransactionsOutputSchema>;
 

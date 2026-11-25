@@ -13,7 +13,7 @@ import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { accountDetailFields, accountDetailFieldsShape } from './account-fields.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -26,9 +26,9 @@ const inputSchema = z.object({
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getAccountOutputSchema = z.object({
   account: z.object({
-    id: z.string(),
+    id: fromYnab(z.string()),
     name: z.string(),
-    type: z.string().describe('YNAB account type'),
+    type: fromYnab(z.string().describe('YNAB account type')),
     balance: money(),
     cleared_balance: money(),
     uncleared_balance: money(),

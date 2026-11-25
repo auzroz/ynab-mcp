@@ -12,7 +12,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -28,10 +28,10 @@ export const deleteScheduledTransactionOutputSchema = z.object({
   success: z.literal(true),
   message: z.string(),
   deleted_scheduled_transaction: z.object({
-    id: z.string(),
-    date_first: z.string(),
-    date_next: z.string(),
-    frequency: z.string().describe('YNAB frequency, such as monthly or everyOtherWeek'),
+    id: fromYnab(z.string()),
+    date_first: fromYnab(z.string()),
+    date_next: fromYnab(z.string()),
+    frequency: fromYnab(z.string().describe('YNAB frequency, such as monthly or everyOtherWeek')),
     amount: money(),
     payee_name: z.string(),
     category_name: z.string(),

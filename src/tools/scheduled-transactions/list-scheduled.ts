@@ -15,7 +15,7 @@ import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, deltaFields, deltaOutputShape, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 import { omitNull } from '../../utils/omit-null.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count, money, serverKnowledge } from '../schemas/common.js';
+import { count, fromYnab, money, serverKnowledge } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -34,10 +34,10 @@ export const listScheduledTransactionsOutputSchema = z.object({
   ...deltaOutputShape,
   scheduled_transactions: z.array(
     z.object({
-      id: z.string(),
-      date_first: z.string(),
-      date_next: z.string(),
-      frequency: z.string().describe('YNAB frequency, such as monthly or everyOtherWeek'),
+      id: fromYnab(z.string()),
+      date_first: fromYnab(z.string()),
+      date_next: fromYnab(z.string()),
+      frequency: fromYnab(z.string().describe('YNAB frequency, such as monthly or everyOtherWeek')),
       amount: money(),
       memo: z.string().nullable(),
       payee_name: z.string(),
@@ -45,14 +45,14 @@ export const listScheduledTransactionsOutputSchema = z.object({
       account_name: z.string(),
       flag_color: z.string().exactOptional().describe('YNAB flag colour; omitted when unflagged'),
       flag_name: z.string().nullable(),
-      account_id: z.string(),
+      account_id: fromYnab(z.string()),
       payee_id: z.string().nullable(),
       category_id: z.string().nullable(),
       transfer_account_id: z.string().nullable(),
       subtransactions: z.array(
         z.object({
-          id: z.string(),
-          scheduled_transaction_id: z.string(),
+          id: fromYnab(z.string()),
+          scheduled_transaction_id: fromYnab(z.string()),
           amount: money(),
           memo: z.string().nullable(),
           payee_id: z.string().exactOptional().describe(OMITTED),
@@ -70,7 +70,7 @@ export const listScheduledTransactionsOutputSchema = z.object({
     deleted_count: count().exactOptional().describe(DELTA),
     note: z.string().exactOptional().describe(DELTA),
   }),
-  server_knowledge: serverKnowledge(),
+  server_knowledge: fromYnab(serverKnowledge()),
 });
 export type ListScheduledTransactionsOutput = z.output<typeof listScheduledTransactionsOutputSchema>;
 

@@ -14,7 +14,7 @@ import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
 import { toOutputSchema } from '../output-schema.js';
-import { money } from '../schemas/common.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -27,17 +27,17 @@ const inputSchema = z.object({
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getCategoryOutputSchema = z.object({
   category: z.object({
-    id: z.string(),
-    category_group_id: z.string(),
+    id: fromYnab(z.string()),
+    category_group_id: fromYnab(z.string()),
     name: z.string(),
-    hidden: z.boolean(),
+    hidden: fromYnab(z.boolean()),
     note: z.string().nullable(),
     budgeted: money(),
     activity: money(),
     balance: money(),
     goal: goalDetailSchema.nullable().describe('Null when the category has no target'),
     original_category_group_id: z.string().exactOptional().describe('Omitted unless the category was moved'),
-    deleted: z.boolean(),
+    deleted: fromYnab(z.boolean()),
   }),
 });
 export type GetCategoryOutput = z.output<typeof getCategoryOutputSchema>;

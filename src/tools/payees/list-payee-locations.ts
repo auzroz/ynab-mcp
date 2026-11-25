@@ -10,7 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeString } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count } from '../schemas/common.js';
+import { count, fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -23,7 +23,7 @@ const inputSchema = z.object({
 export const listPayeeLocationsOutputSchema = z.object({
   location_count: count(),
   payee_locations: z.array(
-    z.object({ id: z.string(), payee_id: z.string(), latitude: z.string(), longitude: z.string() })
+    z.object({ id: z.string(), payee_id: z.string(), latitude: fromYnab(z.string()), longitude: fromYnab(z.string()) })
   ),
 });
 export type ListPayeeLocationsOutput = z.output<typeof listPayeeLocationsOutputSchema>;

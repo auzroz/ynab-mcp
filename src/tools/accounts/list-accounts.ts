@@ -18,7 +18,7 @@ import { accountDetailFields, accountDetailFieldsShape } from './account-fields.
 import { budgetId } from '../../utils/schemas.js';
 import { DELTA_SUMMARY_NOTE, deltaFields, deltaOutputShape, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 import { toOutputSchema } from '../output-schema.js';
-import { count, money, serverKnowledge } from '../schemas/common.js';
+import { count, fromYnab, money, serverKnowledge } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -33,7 +33,7 @@ const inputSchema = z.object({
 });
 
 const accountSchema = z.object({
-  id: z.string(),
+  id: fromYnab(z.string()),
   name: z.string(),
   balance: money(),
   cleared_balance: money(),
@@ -60,7 +60,7 @@ export const listAccountsOutputSchema = z.object({
     deleted_count: count().exactOptional().describe(DELTA),
     note: z.string().exactOptional().describe(DELTA),
   }),
-  server_knowledge: serverKnowledge(),
+  server_knowledge: fromYnab(serverKnowledge()),
 });
 export type ListAccountsOutput = z.output<typeof listAccountsOutputSchema>;
 
