@@ -1,17 +1,20 @@
 /**
  * Who may call the account tools (#53c). This is the one place it is decided.
  *
- * Until the maintainer decides, the restrictive reading applies. Revoking a
- * connection and disconnecting change the user's account, so they need what a
- * YNAB write needs: a read-write grant on this connection (and a read-write
- * YNAB connection for the user), and writes enabled by the operator
- * (`YNAB_READ_ONLY` off, `YNAB_OAUTH_ALLOW_WRITE` on).
- * Listing connections is allowed on any grant. Neither tool counts against the
- * write cap (#61c), because neither makes a YNAB request.
+ * Maintainer decision (2026-11-25): any connection may list, revoke and
+ * disconnect, read-only grants included, whatever the operator's write
+ * settings. The consent page promises the user can disconnect at any time, and
+ * on a default instance (writes off) every grant is read-only, so requiring
+ * write access would leave revoke and disconnect unreachable. None of the three
+ * changes budget data or makes a YNAB request, so neither the YNAB read-only
+ * settings nor the write cap (#61c) apply. The cost: a read-only client can
+ * end the user's other connections here or erase the account on this server;
+ * YNAB's own authorization is untouched.
  *
- * To allow every grant instead, set {@link ACCOUNT_CHANGES_NEED_WRITE_ACCESS}
- * to false. tools/list hides a refused tool, and tools/call refuses it
- * (src/server.ts), so nothing else changes.
+ * The restrictive reading (revoke and disconnect need writes enabled and a
+ * read-write grant) is kept behind {@link ACCOUNT_CHANGES_NEED_WRITE_ACCESS}
+ * and tested, so it stays a one-line change. tools/list hides a refused tool,
+ * and tools/call refuses it (src/server.ts).
  */
 
 import type { GrantedScope } from '../../storage/types.js';
@@ -20,8 +23,8 @@ import type { GrantedScope } from '../../storage/types.js';
 export const ACCOUNT_TOOL_NAMES = ['ynab_list_connections', 'ynab_revoke_connection', 'ynab_disconnect'] as const;
 export type AccountToolName = (typeof ACCOUNT_TOOL_NAMES)[number];
 
-/** The pending decision. True is the restrictive answer, the default for now. */
-export const ACCOUNT_CHANGES_NEED_WRITE_ACCESS = true;
+/** False: every grant may revoke and disconnect (maintainer decision, 2026-11-25). True is the restrictive reading. */
+export const ACCOUNT_CHANGES_NEED_WRITE_ACCESS = false;
 
 /** What the policy looks at for one request. */
 export interface AccountToolAccess {

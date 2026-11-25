@@ -455,17 +455,18 @@ after the client has the timeout result. That result says `outcome: "unknown"`
 and is not a sign that nothing changed. Check with `ynab_list_connections`
 before retrying. After a disconnect that did commit, that call gets `401`.
 
-**Who may call them.** Any connection may list. Revoking and disconnecting
-need what a YNAB write needs: writes enabled for the instance
-(`YNAB_READ_ONLY=false` and `YNAB_OAUTH_ALLOW_WRITE=true`), a read-write grant
-on the calling connection, and a read-write YNAB connection for the user.
-Otherwise the two tools are left out of `tools/list`, and a call by name gets
-`account_change_not_allowed` with `reason` `read_only` (the instance setting)
-or `scope` (a read-only grant). On an instance with writes off, the default,
-users can list their connections but can't revoke them from a client. They
-can still remove access at YNAB, as above. The write cap
-(`YNAB_WRITE_LIMIT_PER_HOUR`) doesn't apply, since these tools make no YNAB
-request.
+**Who may call them.** Any connection may list, revoke and disconnect,
+read-only grants included, whatever the instance's write settings
+(`YNAB_READ_ONLY`, `YNAB_OAUTH_ALLOW_WRITE`). The write cap
+(`YNAB_WRITE_LIMIT_PER_HOUR`) doesn't count them either. None of the three
+changes budget data or makes a YNAB request, and on an instance with writes
+off (the default) every connection is read-only, so a stricter rule would
+leave users no way to disconnect from a client. YNAB write tools stay hidden
+from and refused to a read-only connection as before; only these three are
+exempt. The cost: any connected client, a read-only one included, can end the
+user's other connections on this server, or erase the user's account here.
+It can't touch the budget, and YNAB's own authorization of the server stays
+in place until the user revokes it at YNAB.
 
 **What a disconnect clears on the replica that ran it.** This replica forgets
 the user's in-memory state at once: the cached budget data and delta

@@ -36,7 +36,7 @@ const PUBLIC_URL = 'https://mcp.example.com';
 const RESOURCE = `${PUBLIC_URL}/mcp`;
 const handles: HttpApp[] = [];
 
-async function startOauthApp(overrides: { allowWrite?: boolean } = {}): Promise<HttpApp> {
+async function startOauthApp(overrides: { allowWrite?: boolean; writeLimitPerHour?: number } = {}): Promise<HttpApp> {
   const handle = await buildHttpApp(
     makeHttpConfig({
       publicUrl: PUBLIC_URL,
@@ -47,6 +47,7 @@ async function startOauthApp(overrides: { allowWrite?: boolean } = {}): Promise<
       encryptionKey: randomBytes(32).toString('base64'),
       readOnly: false,
       allowWrite: overrides.allowWrite ?? true,
+      ...(overrides.writeLimitPerHour !== undefined ? { writeLimitPerHour: overrides.writeLimitPerHour } : {}),
     })
   );
   handles.push(handle);
@@ -185,35 +186,55 @@ describe('account tools over /mcp (oauth mode)', () => {
     expect((await mcpInitialize(app, bearer(theirs))).status).toBe(200);
   });
 
-  it('a read-only connection (restrictive default) lists connections but may not revoke or disconnect', async () => {
-    const { app } = await startOauthApp();
+  it('a read-only connection lists, revokes and disconnects, and the write cap does not count them', async () => {
+    // A cap of 1: three account-tool calls below would pass it if they counted.
+    const { app } = await startOauthApp({ writeLimitPerHour: 1 });
     const ro = await connect(app, 'u1', 'read-only', 'Viewer');
+    const tablet = await connect(app, 'u1', 'read-write', 'Tablet');
+    const phone = await connect(app, 'u1', 'read-write', 'Phone');
     const conn = await mcpConnect(app, bearer(ro));
     const names = await conn.listTools();
-    expect(names).toContain('ynab_list_connections');
-    expect(names).not.toContain('ynab_revoke_connection');
-    expect(names).not.toContain('ynab_disconnect');
-    const id = await ownFamilyId(conn);
-    for (const [name, args] of [
-      ['ynab_revoke_connection', { family_id: id }],
-      ['ynab_disconnect', { confirm: 'DISCONNECT' }],
-    ] as const) {
-      const res = await call(conn, name, args);
-      expect(res.isError, name).toBe(true);
-      expect(res.body, name).toMatchObject({ type: 'account_change_not_allowed', reason: 'scope' });
+    for (const name of ACCOUNT_TOOL_NAMES) expect(names).toContain(name);
+    // Only the account tools are exempt: YNAB writes stay hidden from a read-only grant.
+    expect(names).not.toContain('ynab_create_category_group');
+
+    const list = (await call(conn, 'ynab_list_connections')).body['connections'] as Array<Record<string, any>>;
+    const idOf = (name: string) => list.find((c) => c['client_name'] === name)?.['family_id'] as string;
+    for (const victim of ['Tablet', 'Phone']) {
+      const res = await call(conn, 'ynab_revoke_connection', { family_id: idOf(victim) });
+      expect(res, victim).toMatchObject({ isError: false, body: { revoked: true, this_connection: false } });
     }
-    expect((await mcpInitialize(app, bearer(ro))).status).toBe(200);
+    expect((await mcpInitialize(app, bearer(tablet))).status).toBe(401);
+    expect((await mcpInitialize(app, bearer(phone))).status).toBe(401);
+
+    expect((await call(conn, 'ynab_disconnect', { confirm: 'DISCONNECT' })).body['disconnected']).toBe(true);
+    expect((await mcpInitialize(app, bearer(ro))).status).toBe(401);
   });
 
-  it('on an instance with writes off (the 0.5.0 default), revoke and disconnect are refused as read_only', async () => {
-    // allowWrite false: the consent page offers read-only only, and the operator setting is named first.
+  it('on an instance with writes off (the 0.5.0 default), a read-only connection revokes another and disconnects', async () => {
+    // allowWrite false: the consent page offers read-only only, so every connection is read-only.
     const { app } = await startOauthApp({ allowWrite: false });
-    const access = await connect(app, 'u1', 'read-only', 'Laptop');
-    const conn = await mcpConnect(app, bearer(access));
-    expect((await call(conn, 'ynab_list_connections')).isError).toBe(false);
-    const res = await call(conn, 'ynab_disconnect', { confirm: 'DISCONNECT' });
-    expect(res.body).toMatchObject({ type: 'account_change_not_allowed', reason: 'read_only' });
-    expect((await mcpInitialize(app, bearer(access))).status).toBe(200);
+    const laptop = await connect(app, 'u1', 'read-only', 'Laptop');
+    const phone = await connect(app, 'u1', 'read-only', 'Phone');
+    const conn = await mcpConnect(app, bearer(laptop));
+    const names = await conn.listTools();
+    for (const name of ACCOUNT_TOOL_NAMES) expect(names).toContain(name);
+
+    // YNAB writes are still refused by the instance setting.
+    const write = await call(conn, 'ynab_create_category_group', { budget_id: 'plan-1', name: 'Sneaky' });
+    expect(write.isError).toBe(true);
+    expect(write.body['type']).toBe('read_only_mode');
+
+    const list = (await call(conn, 'ynab_list_connections')).body['connections'] as Array<Record<string, any>>;
+    const phoneId = list.find((c) => c['client_name'] === 'Phone')?.['family_id'] as string;
+    const revoked = await call(conn, 'ynab_revoke_connection', { family_id: phoneId });
+    expect(revoked).toMatchObject({ isError: false, body: { revoked: true } });
+    expect((await mcpInitialize(app, bearer(phone))).status).toBe(401);
+    expect((await mcpInitialize(app, bearer(laptop))).status).toBe(200);
+
+    const done = await call(conn, 'ynab_disconnect', { confirm: 'DISCONNECT' });
+    expect(done).toMatchObject({ isError: false, body: { disconnected: true } });
+    expect((await mcpInitialize(app, bearer(laptop))).status).toBe(401);
   });
 });
 

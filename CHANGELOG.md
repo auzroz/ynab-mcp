@@ -391,10 +391,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client may revoke itself. `ynab_disconnect { confirm: "DISCONNECT" }` erases
   the user's account on the server: their stored YNAB tokens, every connection
   and the audit log. It also drops what the replica holds in memory for them,
-  and the reply says how to revoke the server at YNAB too. Listing works on any
-  connection. Revoking and disconnecting need a read-write connection on an
-  instance with writes enabled, and are not counted against the write cap.
-  Stdio and header mode don't have these tools. See "Managing connections" in
+  and the reply says how to revoke the server at YNAB too. Any connection may
+  use all three, read-only ones included, whatever the instance's write
+  settings, and they don't count against the write cap. So a read-only client
+  can end the user's other connections or erase their account on this server
+  (never budget data, and not YNAB's own authorization). Stdio and header mode
+  don't have these tools. See "Managing connections" in
   docs/REMOTE_HOSTING.md.
 - **A durable, attributable audit log** (#60a). Every write tool call is
   recorded with how it ended: `success`, `denied_read_only`, `denied_scope`

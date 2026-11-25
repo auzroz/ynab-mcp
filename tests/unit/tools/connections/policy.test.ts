@@ -18,6 +18,7 @@ import { accountTools, toolCatalog, tools } from '../../../../src/tools/index.js
 import { buildYnabClient, createServerFromClient } from '../../../../src/server.js';
 import type { AccountToolContext } from '../../../../src/tools/connections/context.js';
 import type { AccountStore, ConnectionRecord } from '../../../../src/storage/types.js';
+import { AccountChangeNotAllowedError, formatErrorResponse } from '../../../../src/utils/errors.js';
 
 const RW: AccountToolAccess = { grantScope: 'read-write', operatorReadOnly: false };
 const RO_GRANT: AccountToolAccess = { grantScope: 'read-only', operatorReadOnly: false };
@@ -26,8 +27,8 @@ const RO_BOTH: AccountToolAccess = { grantScope: 'read-only', operatorReadOnly: 
 const CHANGES = ['ynab_revoke_connection', 'ynab_disconnect'] as const;
 
 describe('accountToolAllowed', () => {
-  it('is restrictive until the maintainer decides (flip ACCOUNT_CHANGES_NEED_WRITE_ACCESS and this line)', () => {
-    expect(ACCOUNT_CHANGES_NEED_WRITE_ACCESS).toBe(true);
+  it('lets every grant revoke and disconnect by default (maintainer decision, 2026-11-25)', () => {
+    expect(ACCOUNT_CHANGES_NEED_WRITE_ACCESS).toBe(false);
   });
 
   it('allows listing on any grant, either way', () => {
@@ -38,7 +39,7 @@ describe('accountToolAllowed', () => {
     }
   });
 
-  describe('restrictive: changes need write access', () => {
+  describe('restrictive reading (needWriteAccess: true, kept for a one-line flip)', () => {
     it('allows revoke and disconnect on a read-write grant with writes enabled', () => {
       for (const tool of CHANGES) expect(accountToolAllowed(tool, RW, true)).toBe(true);
     });
@@ -52,15 +53,23 @@ describe('accountToolAllowed', () => {
       }
     });
 
-    it('is the default', () => {
-      for (const tool of CHANGES) {
-        expect(accountToolAllowed(tool, RO_GRANT)).toBe(false);
-        expect(accountToolAllowed(tool, RW)).toBe(true);
+    it('formats a refusal with its reason and no detail beyond it', () => {
+      for (const reason of ['scope', 'read_only'] as const) {
+        const body = JSON.parse(formatErrorResponse(new AccountChangeNotAllowedError(reason)));
+        expect(body).toMatchObject({ error: true, type: 'account_change_not_allowed', reason });
       }
     });
   });
 
-  describe('permissive: any grant may revoke and disconnect', () => {
+  describe('permissive: any grant may revoke and disconnect (the default)', () => {
+    it('is the default', () => {
+      for (const tool of ACCOUNT_TOOL_NAMES) {
+        for (const access of [RW, RO_GRANT, RO_OPERATOR, RO_BOTH]) {
+          expect(accountToolAllowed(tool, access), `${tool} ${JSON.stringify(access)}`).toBe(true);
+        }
+      }
+    });
+
     it('allows every account tool on every grant and under the operator setting', () => {
       for (const tool of ACCOUNT_TOOL_NAMES) {
         for (const access of [RW, RO_GRANT, RO_OPERATOR, RO_BOTH]) {
@@ -184,23 +193,18 @@ describe('the server with and without an account context', () => {
     await s.close();
   });
 
-  it('a read-only grant (restrictive default) lists only ynab_list_connections and is refused the others by name', async () => {
-    for (const [access, reason] of [
-      [RO_GRANT, 'scope'],
-      [RO_OPERATOR, 'read_only'],
-    ] as const) {
+  it('a read-only grant, and an instance with writes off, list and run all three', async () => {
+    for (const access of [RO_GRANT, RO_OPERATOR, RO_BOTH]) {
       const { ctx, calls } = stubContext(access);
       const s = await connectServer(true, ctx);
       const names = await s.names();
-      expect(names).toContain('ynab_list_connections');
-      for (const name of CHANGES) expect(names).not.toContain(name);
+      for (const name of ACCOUNT_TOOL_NAMES) expect(names, JSON.stringify(access)).toContain(name);
+      // The YNAB write tools stay hidden: only the account tools are exempt.
+      expect(names).not.toContain('ynab_create_transaction');
       expect((await s.call('ynab_list_connections')).isError).toBe(false);
-      for (const name of CHANGES) {
-        const res = await s.call(name, name === 'ynab_disconnect' ? { confirm: 'DISCONNECT' } : { family_id: 'B'.repeat(43) });
-        expect(res.isError, name).toBe(true);
-        expect(JSON.parse(res.text)).toMatchObject({ type: 'account_change_not_allowed', reason });
-      }
-      expect(calls).toEqual([]);
+      expect((await s.call('ynab_revoke_connection', { family_id: 'B'.repeat(43) })).isError).toBe(false);
+      expect((await s.call('ynab_disconnect', { confirm: 'DISCONNECT' })).isError).toBe(false);
+      expect(calls).toEqual(['revoke', 'erase', 'after']);
       await s.close();
     }
   });
