@@ -395,7 +395,7 @@ WS7.4 (`feat/stateless-http`) builds the decisions above as written. No SDK gap 
 
 ### 2026-11-25: #45a structured output, as built (D15)
 
-45a (`feat/structured-output`) builds the mechanism and the system tools' schemas. These are lead decisions, made 2026-11-25; none changes D15's intent.
+45a (`feat/structured-output`) builds the mechanism and the system tools' schemas. None of the points below changes D15's intent. Lead decisions (2026-11-25): the split, open advertised schemas checked closed in the test, the structuredContent guarantee, and the in-band failure rule. The others are implementation choices that are still open for review: removing `$schema`, and stored values as strings. D15.2 said `outputSchema: z.toJSONSchema(schema)`; how that is converted is under "Mechanism".
 
 - **Split, replacing D15.6's ten-tool pilot.** 45a is the mechanism plus `ynab_rate_limit_status`, `ynab_audit_log` and `ynab_health_check`. 45b covers the core tools, by resource. 45c covers the analytics tools. `PENDING_OUTPUT_SCHEMA` in `tests/unit/tools/output-schemas.test.ts` lists the tools still without a schema. The list can only shrink, and it reaches zero with 45c. D15.6(b) still holds: a tool without a schema at the tag ships without `outputSchema`.
 - **Mechanism.**
@@ -404,7 +404,7 @@ WS7.4 (`feat/stateless-http`) builds the decisions above as written. No SDK gap 
   - A tool with a schema whose handler returns text only is an internal error, so the client gets an `isError` result, never a normal result without `structuredContent`.
   - `handleToolCall` still returns the text, for callers and tests that read it.
   - The advertised schema is `z.toJSONSchema(schema, { target: 'draft-2020-12', io: 'output' })` (the SDK's own conversion), with two changes: `$schema` is removed, and every `additionalProperties: false` is removed. The function is `toOutputSchema` in `src/tools/output-schema.ts`, which also holds the rules below.
-- **What the v2 client does (checked 2026-11-25 against `@modelcontextprotocol/client` 2.4.0 on both eras; pinned in `tests/unit/server-structured-output.test.ts`).**
+- **What the v2 client does.** Checked 2026-11-25 against `@modelcontextprotocol/client` 2.4.0 on both eras, over HTTP and in memory. `tests/unit/server-structured-output.test.ts` pins this in memory (2025). `tests/unit/http-v2-client.test.ts` checks our server's structuredContent on both eras.
   - It validates `structuredContent` only for a tool it has listed.
   - It rejects a non-error result without `structuredContent` (`-32600`).
   - It rejects `structuredContent` that fails the schema (`-32602`).
@@ -412,7 +412,7 @@ WS7.4 (`feat/stateless-http`) builds the decisions above as written. No SDK gap 
   - The server validates nothing. On the 2025 codec, `projectCallToolResult` wraps a non-object root as `{result: …}`, so every root is a single `z.object`.
 - **Null convention (D15.1, unchanged).** The output keeps the 0.4.x shape: a null-valued key is omitted, as #44 does, and its schema property is optional. A field reported as null on purpose stays required and is `nullable`. For example, `ynab_rate_limit_status`'s `ynab_exhausted`, `client_usage` and `cache`, and every audit entry field. Adding schemas changes no output, so there is no CHANGELOG Breaking entry.
 - **Open advertised schemas, closed in the test.** The advertised schemas accept extra keys, so a field added to a tool's output can't make a validating client reject the tool. The test validates real output (#44's null-payload fixture and the system tools' other shapes) against the closed form, so a field the schema misses still fails CI.
-- **No `$schema`.** 2020-12 is the MCP default dialect. A draft-07 validator, such as the v1 SDK client's Ajv, can't resolve the 2020-12 URI. The test compiles every advertised schema under both dialects.
+- **No `$schema`.** 2020-12 is the MCP default dialect. Classic (draft-07) Ajv 8.20, the engine the v1 SDK client uses by default, throws `no schema with key or ref "https://json-schema.org/draft/2020-12/schema"` on a schema that declares it; without it, it compiles. A v1 client wasn't run. The test compiles every advertised schema under both dialects.
 - **Stored values are strings.** Audit entries' `operation`, `resource_type` and `outcome`, and `by_outcome`'s keys, are `string`, with the known values (from `AUDIT_OPERATIONS`, `AUDIT_OUTCOMES` and `AUDIT_RESOURCE_TYPES`) in the description. A row that a newer replica wrote must not fail an older replica's schema.
 - **In-band failures (rule for 45b).** A schema covers every non-`isError` shape its tool can return. These are:
   - `ynab_move_money`'s four `error: true, success: false` results.
