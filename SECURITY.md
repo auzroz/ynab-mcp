@@ -34,7 +34,7 @@ Security fixes go into the latest release first. A fix for 0.4.x is backported w
 In scope: the software in this repository, as released on npm and as `ghcr.io/auzroz/ynab-mcp` images. The areas that matter most:
 - handling of YNAB tokens, and their encryption at rest in OAuth storage;
 - the OAuth flow: consent, resource binding, refresh-token rotation and reuse detection;
-- isolation between users and sessions in HTTP mode;
+- isolation between users and between connections in HTTP mode;
 - read-only enforcement;
 - anything that could expose one user's budget data to another.
 
