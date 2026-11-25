@@ -24,7 +24,11 @@ vi.mock('../../../../src/auth/ynab-oauth.js', async () => {
 import { FULL_SCOPE, cookieSigningKey, normalizeAuthorizeScope } from '../../../../src/auth/oidc/provider.js';
 import { createClientSchemaValidator } from '../../../../src/auth/oidc/client-schema.js';
 import { isClientSecretHash } from '../../../../src/auth/token-hash.js';
-import type { ConsumeOutcome, Storage } from '../../../../src/storage/types.js';
+import type { AuditRecord, ConsumeOutcome, Storage } from '../../../../src/storage/types.js';
+import { createRevocationRecorder } from '../../../../src/auth/revocation-audit.js';
+import { OWNER_LOOKUP_MAX_WAIT_MS } from '../../../../src/auth/oidc/adapter.js';
+
+
 import { REFRESH_TOKEN_IDLE_DAYS } from '../../../../src/auth/retention-defaults.js';
 import { testDrivers, cleanupDrivers, type DriverHandle } from '../../helpers/storage-drivers.js';
 import {
@@ -118,14 +122,14 @@ function consumeBarrier(storage: Storage, n: number): { store: Storage; outcomes
   const store = new Proxy(storage, {
     get(target, prop) {
       if (prop === 'consumeOAuthRow') {
-        return async (key: string): Promise<ConsumeOutcome> => {
+        return async (key: string, onReplay?: Parameters<Storage['consumeOAuthRow']>[1]): Promise<ConsumeOutcome> => {
           if (armed) {
             await new Promise<void>((resolve) => {
               waiting.push(resolve);
               if (waiting.length >= n) for (const release of waiting.splice(0)) release();
             });
           }
-          const outcome = await target.consumeOAuthRow(key);
+          const outcome = await target.consumeOAuthRow(key, onReplay);
           outcomes.push(outcome);
           return outcome;
         };
@@ -135,6 +139,14 @@ function consumeBarrier(storage: Storage, n: number): { store: Storage; outcomes
     },
   });
   return { store, outcomes, arm: () => (armed = true) };
+}
+
+/** The user's revocation rows, once `n` are there and nothing more arrives. */
+async function revokeRows(storage: Storage, n: number): Promise<AuditRecord[]> {
+  const all = (): Promise<AuditRecord[]> => storage.listAuditEntries('ynab-user-1', { operation: 'revoke' }, 100);
+  await vi.waitFor(async () => expect(await all()).toHaveLength(n), { timeout: 3000, interval: 20 });
+  await new Promise((r) => setTimeout(r, 100));
+  return all();
 }
 
 for (const driver of testDrivers) {
@@ -473,6 +485,62 @@ for (const driver of testDrivers) {
         }
       }
       expect(live.length).toBeLessThanOrEqual(1);
+    });
+
+    it("#60b: the library's own reuse check (no grant-guard in front) records one revoked_reuse row", async () => {
+      await setup({ revocations: createRevocationRecorder(handle.storage) });
+      const { tokens } = await signIn(t, clientId);
+      const spent = tokens['refresh_token'] as string;
+      expect((await refresh(t.app, { clientId, refreshToken: spent })).status).toBe(200);
+      expect((await refresh(t.app, { clientId, refreshToken: spent })).body.error).toBe('invalid_grant');
+      const rows = await revokeRows(handle.storage, 1);
+      expect(rows[0]).toMatchObject({ operation: 'revoke', resourceType: 'grant', outcome: 'revoked_reuse', clientId });
+      expect(rows[0]?.resourceId).toBe(rows[0]?.familyId);
+      expect(JSON.stringify(rows)).not.toContain(spent);
+    });
+
+    it.each([
+      ['fails', () => Promise.reject(new Error('lookup failed Bearer abc.def'))],
+      ['never answers', () => new Promise<never>(() => undefined)],
+    ])('#60b: when the audit owner lookup %s, /revoke still ends the grant, within the bound, with no audit row', async (_name, fault) => {
+      let armed = false;
+      const faulty = new Proxy(handle.storage, {
+        get(target, prop) {
+          if (prop === 'findOAuthRow') {
+            return (key: string) => (armed && key.startsWith('Grant:') ? fault() : target.findOAuthRow(key));
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+        },
+      });
+      await setup({ providerStore: faulty, revocations: createRevocationRecorder(handle.storage) });
+      const { tokens } = await signIn(t, clientId);
+      armed = true;
+      const started = Date.now();
+      const res = await request(t.app).post('/revoke').type('form').send({ token: tokens['refresh_token'], client_id: clientId });
+      expect(res.status).toBe(200);
+      expect(Date.now() - started).toBeLessThan(OWNER_LOOKUP_MAX_WAIT_MS + 1500);
+      armed = false;
+      await expect(t.verifier.verifyAccessToken(tokens['access_token'] as string)).rejects.toMatchObject({ code: 'invalid_token' });
+      expect((await refresh(t.app, { clientId, refreshToken: tokens['refresh_token'] as string })).body.error).toBe('invalid_grant');
+      expect((await oauthRowsOf(handle)).filter((r) => r.model === 'AccessToken' || r.model === 'RefreshToken' || r.model === 'Grant')).toEqual([]);
+      await new Promise((r) => setTimeout(r, 150));
+      expect(await handle.storage.listAuditEntries('ynab-user-1', {}, 10)).toEqual([]);
+    });
+
+    it('#60b: the forced race records exactly one revoked_replay row, and no reuse row', async () => {
+      const barrier = consumeBarrier(handle.storage, 2);
+      await setup({ providerStore: barrier.store, revocations: createRevocationRecorder(handle.storage) });
+      const { tokens } = await signIn(t, clientId);
+      barrier.arm();
+      await Promise.all([
+        refresh(t.app, { clientId, refreshToken: tokens['refresh_token'] as string }),
+        refresh(t.app, { clientId, refreshToken: tokens['refresh_token'] as string }),
+      ]);
+      expect(barrier.outcomes.slice(-2).sort()).toEqual(['consumed', 'replayed']);
+      const rows = await revokeRows(handle.storage, 1);
+      expect(rows[0]).toMatchObject({ operation: 'revoke', resourceType: 'grant', outcome: 'revoked_replay', clientId });
+      expect(JSON.stringify(rows)).not.toContain(tokens['refresh_token'] as string);
     });
 
     it('#113 note 2: a forced race (both read the token before either consumes it) leaves no live token (spike 32)', async () => {

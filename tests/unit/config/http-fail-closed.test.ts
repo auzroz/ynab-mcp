@@ -264,7 +264,7 @@ describe('loadHttpConfig composition', () => {
   it('returns every slice', () => {
     const c = loadHttpConfig(OAUTH_ENV);
     expect(Object.keys(c).sort()).toEqual([
-      'abandonedClientHours', 'accessTokenTtlSec', 'allowAnonymousFallback', 'allowWrite', 'allowedHosts', 'allowedOrigins', 'authCodeTtlSec',
+      'abandonedClientHours', 'accessTokenTtlSec', 'allowAnonymousFallback', 'allowWrite', 'allowedHosts', 'allowedOrigins', 'auditRetentionDays', 'authCodeTtlSec',
       'authMode', 'bindHost', 'cacheTtlMs', 'clientIdMetadataDocuments', 'databaseUrl', 'defaultBudgetId', 'deprecatedSessionSettings',
       'enableDnsRebindingProtection', 'encryptionKey', 'encryptionKeyId', 'encryptionKeyPrevious', 'fallbackAccessToken', 'inactiveUserDays', 'logLevel', 'maxInflight',
       'maxInflightPerClient', 'maxInflightPerUser', 'maxSessions', 'maxSessionsPerUser', 'mcpReplicas', 'oauthClientId',

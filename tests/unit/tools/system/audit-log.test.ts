@@ -48,7 +48,7 @@ describe('handleAuditLog', () => {
   });
 
   it('returns a message when no operations have been performed', async () => {
-    const parsed = JSON.parse(await handleAuditLog({}, client));
+    const parsed = await handleAuditLog({}, client);
     expect(parsed.entries).toEqual([]);
     expect(parsed.count).toBe(0);
     expect(parsed.message).toBe('No matching audit log entries found');
@@ -57,7 +57,7 @@ describe('handleAuditLog', () => {
 
   it('returns full entries most-recent-first with global summary', async () => {
     await seedEntries();
-    const parsed = JSON.parse(await handleAuditLog({}, client));
+    const parsed = await handleAuditLog({}, client);
     expect(parsed.count).toBe(3);
     expect(parsed.entries[0]).toEqual({
       timestamp: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
@@ -72,20 +72,20 @@ describe('handleAuditLog', () => {
       family_id: 'grant-a',
       request_id: 'req-1',
     });
-    expect(parsed.summary).toEqual({ total_operations: 3, success_count: 2, failure_count: 1, by_outcome: { success: 2, error: 1 } });
+    expect(parsed.summary).toEqual({ total_operations: 3, success_count: 2, failure_count: 1, revocation_count: 0, by_outcome: { success: 2, error: 1 } });
     expect(parsed.message).toContain('Showing 3');
   });
 
   it('filters by operation', async () => {
     await seedEntries();
-    const parsed = JSON.parse(await handleAuditLog({ operation: 'create' }, client));
+    const parsed = await handleAuditLog({ operation: 'create' }, client);
     expect(parsed.count).toBe(2);
     expect(parsed.entries.every((e: Entry) => e.operation === 'create')).toBe(true);
   });
 
   it('filters by resource_type and success', async () => {
     await seedEntries();
-    const parsed = JSON.parse(await handleAuditLog({ resource_type: 'account', success: false }, client));
+    const parsed = await handleAuditLog({ resource_type: 'account', success: false }, client);
     expect(parsed.count).toBe(1);
     expect(parsed.entries[0].resource_type).toBe('account');
     expect(parsed.entries[0].success).toBe(false);
@@ -95,24 +95,24 @@ describe('handleAuditLog', () => {
     await seedEntries();
     await audit.record({ operation: 'delete', tool: 'ynab_delete_transaction', resourceType: 'transaction', outcome: 'denied_scope' });
     await audit.record({ operation: 'create', tool: 'ynab_create_payee', resourceType: 'payee', outcome: 'denied_write_limit' });
-    const failed = JSON.parse(await handleAuditLog({ success: false }, client));
+    const failed = await handleAuditLog({ success: false }, client);
     expect(failed.entries.map((e: Entry) => e.outcome)).toEqual(['denied_write_limit', 'denied_scope', 'error']);
-    const scope = JSON.parse(await handleAuditLog({ outcome: 'denied_scope' }, client));
+    const scope = await handleAuditLog({ outcome: 'denied_scope' }, client);
     expect(scope.entries.map((e: Entry) => e.outcome)).toEqual(['denied_scope']);
     // Contradictory filters match nothing.
-    expect(JSON.parse(await handleAuditLog({ outcome: 'success', success: false }, client)).count).toBe(0);
+    expect((await handleAuditLog({ outcome: 'success', success: false }, client)).count).toBe(0);
   });
 
   it('respects the limit parameter', async () => {
     await seedEntries();
-    const parsed = JSON.parse(await handleAuditLog({ limit: 1 }, client));
+    const parsed = await handleAuditLog({ limit: 1 }, client);
     expect(parsed.count).toBe(1);
     expect(parsed.entries[0].tool).toBe('ynab_create_account');
   });
 
   it('returns a summary-only response without entries', async () => {
     await seedEntries();
-    const parsed = JSON.parse(await handleAuditLog({ summary_only: true }, client));
+    const parsed = await handleAuditLog({ summary_only: true }, client);
     expect(parsed.entries).toBeUndefined();
     expect(parsed.summary.total_operations).toBe(3);
     expect(parsed.summary.success_count).toBe(2);
@@ -123,7 +123,7 @@ describe('handleAuditLog', () => {
 
   it('returns a filtered summary-only response with filters_applied flag', async () => {
     await seedEntries();
-    const parsed = JSON.parse(await handleAuditLog({ summary_only: true, operation: 'update' }, client));
+    const parsed = await handleAuditLog({ summary_only: true, operation: 'update' }, client);
     expect(parsed.summary.total_operations).toBe(1);
     expect(parsed.filters_applied).toBe(true);
     expect(parsed.message).toContain('(filtered)');
@@ -131,13 +131,13 @@ describe('handleAuditLog', () => {
 
   it('returns no-match message for filtered summary with zero results', async () => {
     await seedEntries();
-    const parsed = JSON.parse(await handleAuditLog({ summary_only: true, resource_type: 'category' }, client));
+    const parsed = await handleAuditLog({ summary_only: true, resource_type: 'category' }, client);
     expect(parsed.summary.total_operations).toBe(0);
     expect(parsed.message).toBe('No matching audit log entries found');
   });
 
   it('returns no-write message for unfiltered summary with zero entries', async () => {
-    const parsed = JSON.parse(await handleAuditLog({ summary_only: true }, client));
+    const parsed = await handleAuditLog({ summary_only: true }, client);
     expect(parsed.summary.total_operations).toBe(0);
     expect(parsed.message).toBe('No write operations have been attempted yet');
   });
@@ -150,13 +150,13 @@ describe('handleAuditLog', () => {
     await asB.record({ operation: 'delete', tool: 'ynab_delete_transaction', resourceType: 'transaction', outcome: 'success' });
     await asB.record({ operation: 'update', tool: 'ynab_update_payee', resourceType: 'payee', outcome: 'error' });
     const clientA = new YnabClient('t', 'b', new RateLimiter(180), new Cache(300000), true, asA);
-    const listed = JSON.parse(await handleAuditLog({}, clientA));
+    const listed = await handleAuditLog({}, clientA);
     expect(listed.entries.map((e: { client_id: string }) => e.client_id)).toEqual(['client-a']);
     expect(listed.summary.total_operations).toBe(1);
-    expect(JSON.parse(await handleAuditLog({ summary_only: true }, clientA)).summary.total_operations).toBe(1);
+    expect((await handleAuditLog({ summary_only: true }, clientA)).summary.total_operations).toBe(1);
     // Without a client id (stdio, header mode) the user's whole log is shown.
     const local = new YnabClient('t', 'b', new RateLimiter(180), new Cache(300000), true, new AuditLog(store, { userId: 'u1' }));
-    expect(JSON.parse(await handleAuditLog({}, local)).count).toBe(3);
+    expect((await handleAuditLog({}, local)).count).toBe(3);
   });
 
   it('rejects unexpected properties (strict schema)', async () => {

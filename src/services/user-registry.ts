@@ -224,6 +224,23 @@ export class UserRegistry {
     };
   }
 
+  /**
+   * Forget a user's components now (#53c, after `ynab_disconnect` erased the
+   * account): the cache, delta snapshots, memory audit rows, limiter and
+   * usage report. Leases still held (the disconnecting request's own) keep
+   * the dropped set until they are released; their release touches only that
+   * detached entry. The user's next request gets a fresh set.
+   */
+  drop(userKey: string): void {
+    const entry = this.entries.get(userKey);
+    if (entry === undefined) return;
+    this.entries.delete(userKey);
+    entry.components.cache.clear();
+    entry.components.deltaCache.clear();
+    // Rows are recorded under the registry key (header mode); oauth mode keeps none here.
+    entry.components.auditStore.deleteUser(userKey);
+  }
+
   /** Number of users with retained state (live or within the eviction window). */
   get size(): number {
     return this.entries.size;

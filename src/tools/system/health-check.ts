@@ -9,12 +9,37 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeErrorMessage } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
 
 /**
  * Input schema for health check tool.
  * Accepts an empty object (no parameters required).
  */
 const inputSchema = z.object({}).strict();
+
+const checkSchema = z.object({
+  name: z.string(),
+  status: z.enum(['pass', 'fail']),
+  duration_ms: z.number().int().optional(),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+type Check = z.output<typeof checkSchema>;
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const healthCheckOutputSchema = z.object({
+  status: z.enum(['healthy', 'unhealthy']),
+  message: z.string(),
+  checks: z.array(checkSchema),
+  summary: z.object({
+    total_checks: z.number().int(),
+    passed: z.number().int(),
+    failed: z.number().int(),
+    total_duration_ms: z.number().int(),
+  }),
+  timestamp: z.string(),
+});
+export type HealthCheckOutput = z.output<typeof healthCheckOutputSchema>;
 
 // Tool definition
 export const healthCheckTool: Tool = {
@@ -32,6 +57,7 @@ Returns server status, API connectivity, and configuration details.`,
     properties: {},
     required: [],
   },
+  outputSchema: toOutputSchema(healthCheckOutputSchema),
 };
 
 // Handler function
@@ -41,18 +67,12 @@ Returns server status, API connectivity, and configuration details.`,
 export async function handleHealthCheck(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<HealthCheckOutput> {
   // Validate inputs (rejects unexpected properties)
   inputSchema.parse(args);
 
   const startTime = Date.now();
-  const checks: {
-    name: string;
-    status: 'pass' | 'fail';
-    duration_ms?: number;
-    message?: string;
-    error?: string;
-  }[] = [];
+  const checks: Check[] = [];
 
   // Check 1: Rate limiter status
   await client.refreshRateLimitStatus();
@@ -115,23 +135,19 @@ export async function handleHealthCheck(
   const overallStatus = failedChecks.length === 0 ? 'healthy' : 'unhealthy';
   const totalDuration = Date.now() - startTime;
 
-  return JSON.stringify(
-    {
-      status: overallStatus,
-      message:
-        overallStatus === 'healthy'
-          ? 'All systems operational'
-          : `${failedChecks.length} check(s) failed`,
-      checks,
-      summary: {
-        total_checks: checks.length,
-        passed: checks.filter((c) => c.status === 'pass').length,
-        failed: failedChecks.length,
-        total_duration_ms: totalDuration,
-      },
-      timestamp: new Date().toISOString(),
+  return {
+    status: overallStatus,
+    message:
+      overallStatus === 'healthy'
+        ? 'All systems operational'
+        : `${failedChecks.length} check(s) failed`,
+    checks,
+    summary: {
+      total_checks: checks.length,
+      passed: checks.filter((c) => c.status === 'pass').length,
+      failed: failedChecks.length,
+      total_duration_ms: totalDuration,
     },
-    null,
-    2
-  );
+    timestamp: new Date().toISOString(),
+  };
 }

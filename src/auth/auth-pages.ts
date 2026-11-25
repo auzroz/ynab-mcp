@@ -15,6 +15,7 @@
 
 import { stripBidi, stripInvisible } from '../utils/sanitize.js';
 import { displayClientName, redirectHostLabel, type RedirectTrust } from './client-metadata.js';
+import { YNAB_REVOKE_STEPS } from './ynab-revoke-text.js';
 
 /** The CSP of every page here (#55): nothing but inline styles; no framing. */
 export const PAGE_CSP =
@@ -97,7 +98,7 @@ export function renderConsentPage(input: ConsentPageInput): string {
 ${loopback}<p class="muted">Full address: <code>${htmlEscape(input.redirectUri)}</code>. Continue only if you started this connection and recognize that address.</p>
 <a class="btn" href="${htmlEscape(input.readOnlyLink)}"><strong>Read-only</strong><br><span class="muted">View budgets, accounts, and transactions. No changes.</span></a>
 ${input.readWriteLink !== undefined ? `<a class="btn" href="${htmlEscape(input.readWriteLink)}"><strong>Read &amp; write</strong><br><span class="muted">View and modify (create/update/delete) your budget data.</span></a>` : ''}
-<p class="muted">You'll be sent to YNAB to authorize. To end this access later, open your YNAB settings at app.ynab.com/settings, find Authorized Applications, and choose Revoke next to this server's app. It's listed under the name its owner gave it when registering it with YNAB.</p>
+<p class="muted">You'll be sent to YNAB to authorize. To end this access later, ${YNAB_REVOKE_STEPS}</p>
 <p><a href="${htmlEscape(input.cancelLink)}">Cancel</a></p>`
   );
 }

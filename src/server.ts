@@ -16,7 +16,17 @@ import { createUserComponents, type UserComponents } from './services/user-regis
 import { AuditLog, LOCAL_AUDIT_USER } from './services/audit-log.js';
 import type { AuditOutcome, AuditStore } from './storage/audit-rows.js';
 import { WRITE_TOOL_AUDIT_TARGETS } from './tools/audit-targets.js';
-import { tools, handleToolCall } from './tools/index.js';
+import {
+  tools,
+  accountTools,
+  getTool,
+  handleAccountToolCall,
+  isAccountToolName,
+  runToolCall,
+  type ToolCallOutput,
+} from './tools/index.js';
+import type { AccountToolContext, AccountToolSetup } from './tools/connections/context.js';
+import { accountToolAllowed, accountToolDenial, type AccountToolName } from './tools/connections/policy.js';
 import { UNTRUSTED_TEXT_NOTE } from './tools/untrusted-note.js';
 import {
   prompts,
@@ -27,6 +37,7 @@ import {
 } from './prompts/index.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
 import {
+  AccountChangeNotAllowedError,
   formatErrorResponse,
   isInputValidationError,
   RateLimitStoreUnavailableError,
@@ -114,6 +125,8 @@ export interface RequestContext {
   /** The user's components, held by this request's registry lease. */
   readonly components: UserComponents;
   readonly toolCalls: ToolCallBounds;
+  /** OAuth mode only: what the account tools (#53c) run with. Undefined in header mode, which has no connections. */
+  readonly accountTools?: AccountToolSetup | undefined;
 }
 
 /** Per-request parts of a YnabClient (HTTP); stdio and tests leave them out. */
@@ -176,6 +189,19 @@ function toolTimeoutResult(outcomeUnknown: boolean): { content: Array<{ type: 't
   return { content: [{ type: 'text', text: JSON.stringify(body, null, 2) }], isError: true };
 }
 
+/** An account tool (#53c) that hit its deadline: a revoke or erase that started may still complete. */
+function accountToolTimeoutResult(outcomeUnknown: boolean): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+  if (!outcomeUnknown) return toolTimeoutResult(false);
+  const body = {
+    error: true,
+    type: 'request_timeout',
+    message: 'Request timed out; the change may still have been applied',
+    outcome: 'unknown',
+    suggestion: 'Check with ynab_list_connections before retrying.',
+  };
+  return { content: [{ type: 'text', text: JSON.stringify(body, null, 2) }], isError: true };
+}
+
 /**
  * Run `work` within `bounds`: its value, or `undefined` with whether it
  * started when the deadline came first (or the request had already ended, in
@@ -210,7 +236,11 @@ export const SERVER_DESCRIPTION =
  * Shared by the stdio (single-user) and HTTP (per-request) entrypoints; HTTP
  * passes the request's tool-call bounds.
  */
-export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolCallBounds): Server {
+export function createServerFromClient(
+  ynabClient: YnabClient,
+  toolCalls?: ToolCallBounds,
+  accountContext?: AccountToolContext
+): Server {
   const server = new Server(
     {
       name: 'ynab-mcp',
@@ -236,14 +266,22 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
 
   const writeToolNames = new Set(tools.filter((t) => t.annotations?.readOnlyHint !== true).map((t) => t.name));
 
+  // The account tools this caller may run (OAuth mode only, #53c): the
+  // policy's answer for this request, so a refused one is hidden as a write
+  // tool is from a read-only caller. tools/call applies the policy again.
+  const listedAccountTools =
+    accountContext === undefined
+      ? []
+      : accountTools.filter((t) => accountToolAllowed(t.name as AccountToolName, accountContext));
+
   server.setRequestHandler('tools/list', async () => {
     // Hide write tools from read-only callers. This is a UX nicety only: the
     // YnabClient write guard still rejects writes server-side. Uses the
     // per-client value, computed per HTTP request (ADR-0001 D4).
     if (ynabClient.isReadOnly()) {
-      return { tools: tools.filter((t) => t.annotations?.readOnlyHint === true) };
+      return { tools: [...tools.filter((t) => t.annotations?.readOnlyHint === true), ...listedAccountTools] };
     }
-    return { tools };
+    return { tools: [...tools, ...listedAccountTools] };
   });
 
   // How a refused or failed write is audited (#60a): the tool's operation and
@@ -306,9 +344,9 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
         if (admission === undefined) return toolTimeoutResult(false);
         releaseSlot = await admission;
       }
-      const call = async (): Promise<string> => {
+      const call = async (): Promise<ToolCallOutput> => {
         try {
-          return await handleToolCall(name, args, ynabClient);
+          return await runToolCall(name, args, ynabClient);
         } catch (error) {
           if (releaseSlot !== undefined && isInputValidationError(error)) releaseSlot();
           // A write that failed before its client method recorded it (rate
@@ -320,7 +358,7 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
           throw error;
         }
       };
-      let result: string;
+      let result: ToolCallOutput;
       if (toolCalls === undefined) {
         result = await call();
       } else {
@@ -344,9 +382,44 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
         }
         result = outcome.value;
       }
+      const content = [{ type: 'text' as const, text: result.text }];
+      if (result.structured === undefined) return { content };
+      // Structured output (#45, ADR-0001 D15): the object the text block was
+      // serialized from, projected for the connection's era against the same
+      // schema tools/list advertises. Error results never carry it.
+      return server.projectCallToolResult(
+        { content, structuredContent: result.structured },
+        getTool(name)?.outputSchema
+      );
+    } catch (error) {
       return {
-        content: [{ type: 'text' as const, text: result }],
+        content: [{ type: 'text' as const, text: formatErrorResponse(error) }],
+        isError: true as const,
       };
+    }
+  };
+
+  /**
+   * An account tool's call (#53c). It runs apart from the write path above:
+   * its own policy instead of the YNAB read-only check, no write cap and no
+   * write audit row (it makes no YNAB request; revocations are recorded by
+   * AccountStore, #60b). It is bounded by the request like any tool call.
+   */
+  const callAccountTool = async (name: AccountToolName, args: Record<string, unknown>, ctx: AccountToolContext) => {
+    try {
+      assertSafeToolInput(args);
+      const denial = accountToolDenial(name, ctx);
+      if (denial !== undefined) throw new AccountChangeNotAllowedError(denial);
+      const call = (): Promise<string> => handleAccountToolCall(name, args, ctx);
+      let result: string;
+      if (toolCalls === undefined) {
+        result = await call();
+      } else {
+        const outcome = await runWithin(toolCalls, call);
+        if (!outcome.done) return accountToolTimeoutResult(outcome.started && name !== 'ynab_list_connections');
+        result = outcome.value;
+      }
+      return { content: [{ type: 'text' as const, text: result }] };
     } catch (error) {
       return {
         content: [{ type: 'text' as const, text: formatErrorResponse(error) }],
@@ -357,6 +430,14 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
 
   server.setRequestHandler('tools/call', async (request) => {
     const { name, arguments: args } = request.params;
+    // Without an account context (stdio, header mode) an account tool's name
+    // falls through to the registry below, which calls it an unknown tool.
+    if (accountContext !== undefined && isAccountToolName(name)) {
+      if (name === 'ynab_list_connections') return callAccountTool(name, args ?? {}, accountContext);
+      // Revoke and disconnect run as one tools/call of the audit log, so whatever
+      // AccountStore records names the tool (#60b). Nothing is recorded here.
+      return auditLog.runCall(name, () => callAccountTool(name, args ?? {}, accountContext));
+    }
     // A write tool runs as one audited call: every row it records names it and the request (#60a).
     if (writeToolNames.has(name)) return auditLog.runCall(name, () => callTool(name, args ?? {}));
     return callTool(name, args ?? {});
@@ -414,7 +495,13 @@ export function createServerForRequest(ctx: RequestContext): Server {
     auditLog,
     clientId: ctx.clientId,
   });
-  return createServerFromClient(client, ctx.toolCalls);
+  // The account tools' store is opened on this request's audit log (#53c, #60b).
+  let accountContext: AccountToolContext | undefined;
+  if (ctx.accountTools !== undefined) {
+    const { openAccounts, ...rest } = ctx.accountTools;
+    accountContext = Object.freeze({ ...rest, accounts: openAccounts(auditLog) });
+  }
+  return createServerFromClient(client, ctx.toolCalls, accountContext);
 }
 
 /**

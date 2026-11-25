@@ -8,9 +8,63 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeString } from '../../utils/sanitize.js';
+import { BREAKER_STATES } from '../../services/circuit-breaker.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema (strict - rejects unexpected properties)
 const inputSchema = z.object({}).strict();
+
+const count = () => z.number().int();
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Nulls here are reported on purpose. */
+export const rateLimitStatusOutputSchema = z.object({
+  status: z.enum(['healthy', 'warning', 'critical']),
+  message: z.string(),
+  ynab_exhausted: z
+    .object({
+      active: z.boolean(),
+      exhausted_at: z.string(),
+      resets_at: z.string(),
+      retry_after_seconds: count(),
+    })
+    .nullable()
+    .describe('Null when YNAB has not answered 429 within the window'),
+  rate_limit: z.object({
+    available_requests: count(),
+    total_limit: count(),
+    used_requests: count(),
+    percent_used: z.number(),
+    store: z
+      .enum(['memory', 'postgres'])
+      .describe('memory: this process holds the budget; postgres: every replica shares it (RATE_LIMIT_STORE)'),
+  }),
+  usage: z.object({
+    requests_last_hour: count(),
+    rejected_last_hour: count(),
+    max_wait_ms: count(),
+  }),
+  client_usage: z
+    .object({
+      client_id: z.string().nullable().describe('Null on stdio and in header mode'),
+      requests_last_hour: count(),
+      rejected_last_hour: count(),
+    })
+    .nullable()
+    .describe('Null when per-client usage is not tracked'),
+  upstream: z.object({
+    circuit: z.enum(BREAKER_STATES),
+    consecutive_failures: count(),
+    retry_after_seconds: count().optional(),
+  }),
+  cache: z.object({ bytes: count(), max_bytes: count() }).nullable(),
+  timing: z.object({
+    can_make_request_now: z.boolean(),
+    wait_time_seconds: count(),
+    full_reset_minutes: count(),
+  }),
+  recommendations: z.array(z.string()),
+});
+export type RateLimitStatusOutput = z.output<typeof rateLimitStatusOutputSchema>;
 
 // Tool definition
 export const rateLimitStatusTool: Tool = {
@@ -32,6 +86,7 @@ upstream.circuit is the circuit breaker: after 20 consecutive YNAB 5xx responses
     properties: {},
     required: [],
   },
+  outputSchema: toOutputSchema(rateLimitStatusOutputSchema),
 };
 
 // Handler function
@@ -41,7 +96,7 @@ upstream.circuit is the circuit breaker: after 20 consecutive YNAB 5xx responses
 export async function handleRateLimitStatus(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<RateLimitStatusOutput> {
   // Validate input (ensures no unexpected properties)
   inputSchema.parse(args);
 
@@ -86,58 +141,54 @@ export async function handleRateLimitStatus(
     statusMessage = 'YNAB rate-limited this account (429); requests are paused until it resets';
   }
 
-  return JSON.stringify(
-    {
-      status: statusLevel,
-      message: statusMessage,
-      ynab_exhausted: ynabExhausted,
-      rate_limit: {
-        available_requests: status.available,
-        total_limit: status.limit,
-        used_requests: status.used,
-        percent_used: status.percentUsed,
-        // memory: this process's budget; postgres: shared by every replica (#67c).
-        store: status.store,
-      },
-      usage: {
-        requests_last_hour: status.sentLastHour,
-        rejected_last_hour: status.rejectedLastHour,
-        max_wait_ms: status.maxWaitMs,
-      },
-      // The calling client's share of the user's usage (#58).
-      client_usage: clientUsage
-        ? {
-            client_id: clientUsage.clientId === undefined ? null : sanitizeString(clientUsage.clientId, 200),
-            requests_last_hour: clientUsage.sentLastHour,
-            rejected_last_hour: clientUsage.rejectedLastHour,
-          }
-        : null,
-      // The circuit breaker (#58): after repeated YNAB failures or timeouts, calls fail fast for a while.
-      upstream: {
-        circuit: upstream.circuit?.state ?? 'closed',
-        consecutive_failures: upstream.circuit?.consecutiveFailures ?? 0,
-        ...(upstream.circuit && upstream.circuit.retryAfterMs > 0
-          ? { retry_after_seconds: Math.ceil(upstream.circuit.retryAfterMs / 1000) }
-          : {}),
-      },
-      cache: upstream.cache
-        ? { bytes: upstream.cache.bytes, max_bytes: upstream.cache.maxBytes }
-        : null,
-      timing: {
-        can_make_request_now: status.canMakeRequest && upstream.circuit?.state !== 'open',
-        wait_time_seconds: waitTimeSeconds,
-        full_reset_minutes: resetTimeMinutes,
-      },
-      recommendations:
-        status.percentUsed > 50
-          ? [
-              'Use filtered queries instead of fetching all data',
-              'Rely on cached data when possible',
-              'Batch operations when available',
-            ]
-          : [],
+  return {
+    status: statusLevel,
+    message: statusMessage,
+    ynab_exhausted: ynabExhausted,
+    rate_limit: {
+      available_requests: status.available,
+      total_limit: status.limit,
+      used_requests: status.used,
+      percent_used: status.percentUsed,
+      // memory: this process's budget; postgres: shared by every replica (#67c).
+      store: status.store,
     },
-    null,
-    2
-  );
+    usage: {
+      requests_last_hour: status.sentLastHour,
+      rejected_last_hour: status.rejectedLastHour,
+      max_wait_ms: status.maxWaitMs,
+    },
+    // The calling client's share of the user's usage (#58).
+    client_usage: clientUsage
+      ? {
+          client_id: clientUsage.clientId === undefined ? null : sanitizeString(clientUsage.clientId, 200),
+          requests_last_hour: clientUsage.sentLastHour,
+          rejected_last_hour: clientUsage.rejectedLastHour,
+        }
+      : null,
+    // The circuit breaker (#58): after repeated YNAB failures or timeouts, calls fail fast for a while.
+    upstream: {
+      circuit: upstream.circuit?.state ?? 'closed',
+      consecutive_failures: upstream.circuit?.consecutiveFailures ?? 0,
+      ...(upstream.circuit && upstream.circuit.retryAfterMs > 0
+        ? { retry_after_seconds: Math.ceil(upstream.circuit.retryAfterMs / 1000) }
+        : {}),
+    },
+    cache: upstream.cache
+      ? { bytes: upstream.cache.bytes, max_bytes: upstream.cache.maxBytes }
+      : null,
+    timing: {
+      can_make_request_now: status.canMakeRequest && upstream.circuit?.state !== 'open',
+      wait_time_seconds: waitTimeSeconds,
+      full_reset_minutes: resetTimeMinutes,
+    },
+    recommendations:
+      status.percentUsed > 50
+        ? [
+            'Use filtered queries instead of fetching all data',
+            'Rely on cached data when possible',
+            'Batch operations when available',
+          ]
+        : [],
+  };
 }

@@ -39,6 +39,13 @@ export const MIN_ABANDONED_CLIENT_MS = 3_600_000;
 export const UNUSED_CLIENT_DAYS = 90;
 
 /**
+ * Audit log rows (#60b) are deleted this long after they were written, by the
+ * retention sweep (`AUDIT_RETENTION_DAYS`). Durable storage only: stdio and
+ * header mode keep each user's newest 1000 rows in memory instead.
+ */
+export const AUDIT_RETENTION_DAYS = 90;
+
+/**
  * How long a consumed authorization code or refresh token of the
  * oidc-provider adapter is kept after its consumption, so a replay can still
  * be recognized and revoke its grant (ADR-0002 D6; 0.4.x's
@@ -61,6 +68,8 @@ export interface RetentionPolicy {
   abandonedClientMs: number;
   /** Clients with no live grant are swept this long after their last authorization. */
   unusedClientMs: number;
+  /** Audit log rows are pruned this long after they were written. */
+  auditRetentionMs: number;
 }
 
 export const DEFAULT_RETENTION: Readonly<RetentionPolicy> = Object.freeze({
@@ -68,6 +77,7 @@ export const DEFAULT_RETENTION: Readonly<RetentionPolicy> = Object.freeze({
   refreshTokenTtlMs: REFRESH_TOKEN_TTL_DAYS * DAY_MS,
   abandonedClientMs: ABANDONED_CLIENT_HOURS * HOUR_MS,
   unusedClientMs: UNUSED_CLIENT_DAYS * DAY_MS,
+  auditRetentionMs: AUDIT_RETENTION_DAYS * DAY_MS,
 });
 
 /** {@link DEFAULT_RETENTION} with any given windows replaced. */

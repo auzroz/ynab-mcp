@@ -216,6 +216,19 @@ describe.skipIf(!postgres.enabled)('RATE_LIMIT_STORE=postgres across two replica
     expect(await sql('SELECT user_id FROM rate_limit_buckets')).toEqual([]);
   });
 
+  it("the account tools (#53c) touch neither shared limit: no bucket, no write-cap row, no YNAB call", async () => {
+    stubYnab();
+    const { a, tokens, handle } = await twoReplicas({ writeLimitPerHour: 1, readOnly: false, allowWrite: true }, undefined, 'read-write');
+    const onA = await mcpConnect(a.app, bearer(tokens[0]!));
+    for (let i = 0; i < 3; i++) {
+      const listed = await onA.callTool('ynab_list_connections');
+      expect(listed.isError).toBe(false);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(await handle.sql!('SELECT user_id FROM rate_limit_buckets')).toEqual([]);
+    expect(await handle.sql!('SELECT user_id FROM rate_limit_writes')).toEqual([]);
+  });
+
   it('an authorization-server limit counts both replicas: /token per (client_id, address)', async () => {
     const { a, b } = await twoReplicas();
     const token = (app: HttpApp) =>
