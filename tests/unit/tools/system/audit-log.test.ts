@@ -72,7 +72,7 @@ describe('handleAuditLog', () => {
       family_id: 'grant-a',
       request_id: 'req-1',
     });
-    expect(parsed.summary).toEqual({ total_operations: 3, success_count: 2, failure_count: 1, by_outcome: { success: 2, error: 1 } });
+    expect(parsed.summary).toEqual({ total_operations: 3, success_count: 2, failure_count: 1, revocation_count: 0, by_outcome: { success: 2, error: 1 } });
     expect(parsed.message).toContain('Showing 3');
   });
 

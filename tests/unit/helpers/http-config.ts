@@ -57,8 +57,12 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     refreshTokenTtlDays: 90,
     abandonedClientHours: 24,
     unusedClientDays: 90,
+    auditRetentionDays: 90,
     // The loader's default (#64a).
     requireResource: true,
+    // The loader's defaults (#67).
+    rateLimitStore: 'memory',
+    mcpReplicas: 1,
     ...overrides,
   };
 }

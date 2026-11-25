@@ -9,6 +9,7 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -23,6 +24,43 @@ const inputSchema = z.object({
     .optional()
     .describe('Number of months to analyze (default 6)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const incomeExpenseOutputSchema = z.object({
+  status: z.enum(['healthy', 'warning', 'concern']),
+  message: z.string(),
+  trend: z.enum(['improving', 'declining', 'stable']),
+  trend_message: z.string(),
+  period: z.object({
+    months_analyzed: z.number().int().describe('Months with at least one transaction'),
+    since_date: z.string(),
+  }),
+  totals: z.object({
+    total_income: z.string(),
+    total_expenses: z.string(),
+    net_savings: z.string(),
+    savings_rate: z.string().describe('A percentage, or "N/A" with no income'),
+  }),
+  averages: z.object({
+    avg_monthly_income: z.string(),
+    avg_monthly_expenses: z.string(),
+    avg_monthly_net: z.string(),
+  }),
+  monthly_breakdown: z.array(
+    z.object({
+      month: z.string().describe('YYYY-MM'),
+      income: z.string(),
+      expenses: z.string(),
+      net: z.string(),
+      savings_rate: z.string().describe('A percentage, or "N/A" with no income that month'),
+    })
+  ),
+  insights: z.object({
+    best_month: z.string().nullable().describe('Null with no transactions in the period'),
+    worst_month: z.string().nullable().describe('Null with no transactions in the period'),
+  }),
+});
+export type IncomeExpenseOutput = z.output<typeof incomeExpenseOutputSchema>;
 
 // Tool definition
 export const incomeExpenseTool: Tool = {
@@ -54,6 +92,7 @@ Returns monthly income, expenses, net savings, and savings rate.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(incomeExpenseOutputSchema),
 };
 
 interface MonthData {
@@ -74,7 +113,7 @@ interface MonthData {
 export async function handleIncomeExpense(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<IncomeExpenseOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -211,44 +250,40 @@ export async function handleIncomeExpense(
     statusMessage = 'Spending exceeds income';
   }
 
-  return JSON.stringify(
-    {
-      status,
-      message: statusMessage,
-      trend,
-      trend_message: trendMessage,
-      period: {
-        months_analyzed: monthlyData.length,
-        since_date: sinceDateStr,
-      },
-      totals: {
-        total_income: money(totalIncome),
-        total_expenses: money(totalExpenses),
-        net_savings: money(totalNet),
-        savings_rate: overallSavingsRate !== null ? `${Math.round(overallSavingsRate)}%` : 'N/A',
-      },
-      averages: {
-        avg_monthly_income: money(avgIncome),
-        avg_monthly_expenses: money(avgExpenses),
-        avg_monthly_net: money(avgNet),
-      },
-      monthly_breakdown: monthlyData.map((m) => ({
-        month: m.month,
-        income: m.income,
-        expenses: m.expenses,
-        net: m.net,
-        savings_rate: m.savings_rate !== null ? `${m.savings_rate}%` : 'N/A',
-      })),
-      insights: {
-        best_month: monthlyData.length > 0
-          ? monthlyData.reduce((best, m) => m.net_raw > best.net_raw ? m : best).month
-          : null,
-        worst_month: monthlyData.length > 0
-          ? monthlyData.reduce((worst, m) => m.net_raw < worst.net_raw ? m : worst).month
-          : null,
-      },
+  return {
+    status,
+    message: statusMessage,
+    trend,
+    trend_message: trendMessage,
+    period: {
+      months_analyzed: monthlyData.length,
+      since_date: sinceDateStr,
     },
-    null,
-    2
-  );
+    totals: {
+      total_income: money(totalIncome),
+      total_expenses: money(totalExpenses),
+      net_savings: money(totalNet),
+      savings_rate: overallSavingsRate !== null ? `${Math.round(overallSavingsRate)}%` : 'N/A',
+    },
+    averages: {
+      avg_monthly_income: money(avgIncome),
+      avg_monthly_expenses: money(avgExpenses),
+      avg_monthly_net: money(avgNet),
+    },
+    monthly_breakdown: monthlyData.map((m) => ({
+      month: m.month,
+      income: m.income,
+      expenses: m.expenses,
+      net: m.net,
+      savings_rate: m.savings_rate !== null ? `${m.savings_rate}%` : 'N/A',
+    })),
+    insights: {
+      best_month: monthlyData.length > 0
+        ? monthlyData.reduce((best, m) => m.net_raw > best.net_raw ? m : best).month
+        : null,
+      worst_month: monthlyData.length > 0
+        ? monthlyData.reduce((worst, m) => m.net_raw < worst.net_raw ? m : worst).month
+        : null,
+    },
+  };
 }

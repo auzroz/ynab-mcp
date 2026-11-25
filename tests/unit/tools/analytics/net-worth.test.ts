@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleNetWorth } from '../../../../src/tools/analytics/net-worth.js';
+import { handleNetWorth as rawHandleNetWorth, netWorthOutputSchema } from '../../../../src/tools/analytics/net-worth.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createAccountsResponse,
@@ -19,6 +20,8 @@ import {
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
 
+const handleNetWorth = validating(netWorthOutputSchema, rawHandleNetWorth);
+
 describe('handleNetWorth', () => {
   let mockClient: MockClient;
 
@@ -29,8 +32,7 @@ describe('handleNetWorth', () => {
   it('calculates net worth from all accounts', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleNetWorth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleNetWorth({}, mockClient as never);
 
     expect(parsed.net_worth).toBeDefined();
     expect(parsed.summary).toBeDefined();
@@ -42,8 +44,7 @@ describe('handleNetWorth', () => {
   it('correctly separates assets and liabilities', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleNetWorth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleNetWorth({}, mockClient as never);
 
     // Assets should include checking, savings, investments
     // Liabilities should include credit cards, mortgage, auto loan
@@ -63,8 +64,7 @@ describe('handleNetWorth', () => {
   it('groups accounts by type', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleNetWorth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleNetWorth({}, mockClient as never);
 
     const checkingGroup = parsed.by_account_type.find(
       (g: { type: string }) => g.type === 'checking'
@@ -84,8 +84,7 @@ describe('handleNetWorth', () => {
   it('excludes closed accounts by default', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleNetWorth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleNetWorth({}, mockClient as never);
 
     // Count should not include closed account
     expect(parsed.account_count.closed_excluded).toBeGreaterThan(0);
@@ -100,8 +99,7 @@ describe('handleNetWorth', () => {
   it('includes closed accounts when requested', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleNetWorth({ include_closed: true }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleNetWorth({ include_closed: true }, mockClient as never);
 
     expect(parsed.account_count.closed_excluded).toBe(0);
   });
@@ -109,8 +107,7 @@ describe('handleNetWorth', () => {
   it('separates budget and tracking accounts', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleNetWorth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleNetWorth({}, mockClient as never);
 
     expect(parsed.breakdown.budget_accounts).toBeDefined();
     expect(parsed.breakdown.tracking_accounts).toBeDefined();
@@ -127,8 +124,7 @@ describe('handleNetWorth', () => {
     ];
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(positiveNetWorthAccounts));
 
-    const result = await handleNetWorth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleNetWorth({}, mockClient as never);
 
     expect(parsed.status).toBe('positive');
     expect(parsed.message).toContain('positive');
@@ -142,8 +138,7 @@ describe('handleNetWorth', () => {
     ];
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(negativeNetWorthAccounts));
 
-    const result = await handleNetWorth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleNetWorth({}, mockClient as never);
 
     expect(parsed.status).toBe('negative');
     expect(parsed.message).toContain('negative');
@@ -155,8 +150,7 @@ describe('handleNetWorth', () => {
       createAccountsResponse([mockCreditCardWithOverpayment])
     );
 
-    const result = await handleNetWorth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleNetWorth({}, mockClient as never);
 
     // Overpayment should contribute positively to net worth
     const netWorth = parseFloat(parsed.net_worth.replace(/[^0-9.-]/g, ''));
@@ -175,8 +169,7 @@ describe('handleNetWorth', () => {
   it('handles empty accounts list', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse([]));
 
-    const result = await handleNetWorth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleNetWorth({}, mockClient as never);
 
     expect(parsed.status).toBe('zero');
     expect(parsed.account_count.total).toBe(0);

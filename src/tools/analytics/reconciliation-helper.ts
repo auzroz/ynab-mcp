@@ -11,6 +11,7 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -21,6 +22,47 @@ const inputSchema = z.object({
     .optional()
     .describe('Specific account UUID to check (optional, shows all if not specified)'),
 }).strict();
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings; nulls here are reported on purpose. */
+export const reconciliationHelperOutputSchema = z.object({
+  status: z.enum(['up_to_date', 'needs_attention', 'overdue']),
+  message: z.string(),
+  summary: z.object({
+    lookback_days: z.number().int(),
+    since_date: z.string(),
+    accounts_with_uncleared: z.number().int(),
+    total_uncleared_transactions: z.number().int(),
+    total_uncleared_amount: z.string(),
+    accounts_needing_attention: z.number().int(),
+  }),
+  accounts: z
+    .array(
+      z.object({
+        account: z.string(),
+        type: z.string().describe('YNAB account type'),
+        cleared_balance: z.string(),
+        uncleared_balance: z.string(),
+        working_balance: z.string(),
+        uncleared_count: z.number().int(),
+        oldest_pending: z.string().nullable().describe('Null when the account has no uncleared transaction'),
+        transactions: z
+          .array(
+            z.object({
+              date: z.string(),
+              payee: z.string(),
+              category: z.string().nullable().describe('Null when uncategorized or the category is unknown'),
+              amount: z.string(),
+              days_pending: z.number().int(),
+              memo: z.string().nullable(),
+            })
+          )
+          .describe('Oldest first, at most 10'),
+      })
+    )
+    .describe('Accounts with uncleared transactions; with account_id, that account even when it has none'),
+  tips: z.array(z.string()),
+});
+export type ReconciliationHelperOutput = z.output<typeof reconciliationHelperOutputSchema>;
 
 // Tool definition
 export const reconciliationHelperTool: Tool = {
@@ -54,6 +96,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     required: [],
     additionalProperties: false,
   },
+  outputSchema: toOutputSchema(reconciliationHelperOutputSchema),
 };
 
 interface UnclearedTransaction {
@@ -84,7 +127,7 @@ interface AccountReconciliation {
 export async function handleReconciliationHelper(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<ReconciliationHelperOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -224,42 +267,38 @@ export async function handleReconciliationHelper(
     message = `${totalUnclearedCount} transaction(s) pending across ${accountResults.length} account(s)`;
   }
 
-  return JSON.stringify(
-    {
-      status,
-      message,
-      summary: {
-        lookback_days: lookbackDays,
-        since_date: sinceDateStr,
-        accounts_with_uncleared: accountResults.filter((a) => a.uncleared_count > 0).length,
-        total_uncleared_transactions: totalUnclearedCount,
-        total_uncleared_amount: money(totalUncleared),
-        accounts_needing_attention: needsAttention.length,
-      },
-      accounts: accountResults.map((a) => ({
-        account: a.account_name,
-        type: a.account_type,
-        cleared_balance: a.cleared_balance,
-        uncleared_balance: a.uncleared_balance,
-        working_balance: a.working_balance,
-        uncleared_count: a.uncleared_count,
-        oldest_pending: a.oldest_uncleared,
-        transactions: a.uncleared_transactions.slice(0, 10).map((t) => ({
-          date: t.date,
-          payee: t.payee,
-          category: t.category,
-          amount: t.amount,
-          days_pending: t.days_pending,
-          memo: t.memo,
-        })),
-      })),
-      tips: [
-        'Mark transactions as cleared when they appear on your bank statement',
-        'Reconcile accounts regularly to catch discrepancies early',
-        'Transactions pending over 7 days may need investigation',
-      ],
+  return {
+    status,
+    message,
+    summary: {
+      lookback_days: lookbackDays,
+      since_date: sinceDateStr,
+      accounts_with_uncleared: accountResults.filter((a) => a.uncleared_count > 0).length,
+      total_uncleared_transactions: totalUnclearedCount,
+      total_uncleared_amount: money(totalUncleared),
+      accounts_needing_attention: needsAttention.length,
     },
-    null,
-    2
-  );
+    accounts: accountResults.map((a) => ({
+      account: a.account_name,
+      type: a.account_type,
+      cleared_balance: a.cleared_balance,
+      uncleared_balance: a.uncleared_balance,
+      working_balance: a.working_balance,
+      uncleared_count: a.uncleared_count,
+      oldest_pending: a.oldest_uncleared,
+      transactions: a.uncleared_transactions.slice(0, 10).map((t) => ({
+        date: t.date,
+        payee: t.payee,
+        category: t.category,
+        amount: t.amount,
+        days_pending: t.days_pending,
+        memo: t.memo,
+      })),
+    })),
+    tips: [
+      'Mark transactions as cleared when they appear on your bank statement',
+      'Reconcile accounts regularly to catch discrepancies early',
+      'Transactions pending over 7 days may need investigation',
+    ],
+  };
 }

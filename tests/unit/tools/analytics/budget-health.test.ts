@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleBudgetHealth } from '../../../../src/tools/analytics/budget-health.js';
+import { handleBudgetHealth as rawHandleBudgetHealth, budgetHealthOutputSchema } from '../../../../src/tools/analytics/budget-health.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createMonthResponse,
@@ -13,6 +14,8 @@ import {
   mockOverspentMonth,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleBudgetHealth = validating(budgetHealthOutputSchema, rawHandleBudgetHealth);
 
 describe('handleBudgetHealth', () => {
   let mockClient: MockClient;
@@ -25,8 +28,7 @@ describe('handleBudgetHealth', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetHealth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetHealth({}, mockClient as never);
 
     expect(parsed.health_score).toBeGreaterThanOrEqual(0);
     expect(parsed.health_score).toBeLessThanOrEqual(100);
@@ -42,8 +44,7 @@ describe('handleBudgetHealth', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetHealth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetHealth({}, mockClient as never);
 
     // Dining Out is overspent by $75 in mock data
     const overspentAlerts = parsed.alerts.filter(
@@ -61,8 +62,7 @@ describe('handleBudgetHealth', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetHealth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetHealth({}, mockClient as never);
 
     // Vacation has goal_under_funded in mock data
     const underfundedAlerts = parsed.alerts.filter(
@@ -75,8 +75,7 @@ describe('handleBudgetHealth', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockOverspentMonth));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetHealth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetHealth({}, mockClient as never);
 
     // Should have critical alert for overbudgeted
     const overbudgetedAlert = parsed.alerts.find(
@@ -91,8 +90,7 @@ describe('handleBudgetHealth', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetHealth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetHealth({}, mockClient as never);
 
     // Mock month has $500 to_be_budgeted
     const unbudgetedAlert = parsed.alerts.find(
@@ -106,8 +104,7 @@ describe('handleBudgetHealth', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetHealth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetHealth({}, mockClient as never);
 
     expect(parsed.month_progress.days_remaining).toBeGreaterThanOrEqual(0);
     expect(parsed.month_progress.percent_complete).toBeGreaterThanOrEqual(0);
@@ -119,8 +116,7 @@ describe('handleBudgetHealth', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockOverspentMonth));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetHealth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetHealth({}, mockClient as never);
 
     expect(parsed.recommendations.length).toBeGreaterThan(0);
     // Should recommend addressing critical issues
@@ -144,8 +140,7 @@ describe('handleBudgetHealth', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockOverspentMonth));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetHealth({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetHealth({}, mockClient as never);
 
     // Critical should come before warning, warning before info
     const severityOrder = { critical: 0, warning: 1, info: 2 };

@@ -3,13 +3,16 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleSpendingByPayee } from '../../../../src/tools/analytics/spending-by-payee.js';
+import { handleSpendingByPayee as rawHandleSpendingByPayee, spendingByPayeeOutputSchema } from '../../../../src/tools/analytics/spending-by-payee.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createTransactionsResponse,
   mockAllTransactions,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleSpendingByPayee = validating(spendingByPayeeOutputSchema, rawHandleSpendingByPayee);
 
 function tx(overrides: {
   id: string;
@@ -46,8 +49,7 @@ describe('handleSpendingByPayee', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
 
-    const result = await handleSpendingByPayee({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingByPayee({}, mockClient as never);
 
     expect(parsed.top_payees[0].payee).toBe('Amazon');
     expect(parsed.top_payees[0].transactions).toBe(2);
@@ -66,8 +68,7 @@ describe('handleSpendingByPayee', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
 
-    const result = await handleSpendingByPayee({ limit: 2 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingByPayee({ limit: 2 }, mockClient as never);
 
     expect(parsed.top_payees.length).toBe(2);
     expect(parsed.summary.payees_shown).toBe(2);
@@ -82,8 +83,7 @@ describe('handleSpendingByPayee', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
 
-    const result = await handleSpendingByPayee({ min_transactions: 2 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingByPayee({ min_transactions: 2 }, mockClient as never);
 
     const names = parsed.top_payees.map((p: { payee: string }) => p.payee);
     expect(names).toContain('Frequent');
@@ -98,8 +98,7 @@ describe('handleSpendingByPayee', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
 
-    const result = await handleSpendingByPayee({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingByPayee({}, mockClient as never);
 
     expect(parsed.summary.transaction_count).toBe(1);
     expect(parsed.top_payees.length).toBe(1);
@@ -109,8 +108,7 @@ describe('handleSpendingByPayee', () => {
   it('handles empty transactions', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([] as never));
 
-    const result = await handleSpendingByPayee({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingByPayee({}, mockClient as never);
 
     expect(parsed.top_payees).toEqual([]);
     expect(parsed.summary.unique_payees).toBe(0);
@@ -123,8 +121,7 @@ describe('handleSpendingByPayee', () => {
   it('works with the full fixture transaction set', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = await handleSpendingByPayee({ months: 6 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingByPayee({ months: 6 }, mockClient as never);
 
     expect(parsed.period.months_analyzed).toBe(6);
     expect(parsed.top_payees.length).toBeGreaterThan(0);

@@ -153,6 +153,41 @@ describe('account tools over /mcp (oauth mode)', () => {
     expect((await mcpInitialize(app, bearer(laptop))).status).toBe(200);
   });
 
+  it('#60b: ynab_revoke_connection writes exactly one revoked audit row; ynab_disconnect writes none and erases them', async () => {
+    const { app } = await startOauthApp();
+    const laptop = await connect(app, 'u1', 'read-write', 'Laptop');
+    await connect(app, 'u1', 'read-only', 'Phone');
+    const conn = await mcpConnect(app, bearer(laptop));
+    const list = (await call(conn, 'ynab_list_connections')).body['connections'] as Array<Record<string, any>>;
+    const own = list.find((c) => c['this_connection'] === true)?.['family_id'] as string;
+    const phoneId = list.find((c) => c['this_connection'] === false)?.['family_id'] as string;
+
+    expect((await call(conn, 'ynab_revoke_connection', { family_id: phoneId })).isError).toBe(false);
+    // Already gone: not_found, and no second row.
+    expect((await call(conn, 'ynab_revoke_connection', { family_id: phoneId })).isError).toBe(true);
+    const log = await call(conn, 'ynab_audit_log', { all_clients: true });
+    const rows = log.body['entries'] as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      tool: 'ynab_revoke_connection',
+      operation: 'revoke',
+      resource_type: 'grant',
+      resource_id: phoneId,
+      outcome: 'revoked',
+      success: null,
+      family_id: own,
+    });
+    expect(typeof rows[0]?.['request_id']).toBe('string');
+    expect(log.body['summary']).toMatchObject({ total_operations: 1, revocation_count: 1, failure_count: 0 });
+
+    expect((await call(conn, 'ynab_disconnect', { confirm: 'DISCONNECT' })).isError).toBe(false);
+    // The same person connects again: the erase took the revocation row, and the disconnect wrote none.
+    const tablet = await mcpConnect(app, bearer(await connect(app, 'u1', 'read-write', 'Tablet')));
+    const after = await call(tablet, 'ynab_audit_log', { all_clients: true });
+    expect(after.body['entries']).toEqual([]);
+    expect(after.body['summary']).toMatchObject({ total_operations: 0, revocation_count: 0 });
+  });
+
   it('a client may revoke its own connection: the reply says so and its next request gets 401', async () => {
     const { app } = await startOauthApp();
     const laptop = await connect(app, 'u1', 'read-write', 'Laptop');

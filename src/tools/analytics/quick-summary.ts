@@ -11,6 +11,7 @@ import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { z } from 'zod';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -18,6 +19,40 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
+
+const nameBalance = z.object({ name: z.string(), balance: z.string() });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings; nulls here are reported on purpose. */
+export const quickSummaryOutputSchema = z.object({
+  status: z.enum(['healthy', 'warning', 'attention_needed']),
+  message: z.string(),
+  month: z.string(),
+  key_metrics: z.object({
+    ready_to_assign: z.string(),
+    spent_this_month: z.string(),
+    total_in_budget_accounts: z.string(),
+    total_debt: z.string(),
+    total_in_tracking_accounts: z.string(),
+    age_of_money: z.string().nullable().describe('"N days"; null until YNAB has calculated it'),
+  }),
+  alerts: z.object({
+    overspent_categories: z
+      .array(z.object({ name: z.string(), overspent_by: z.string() }))
+      .nullable()
+      .describe('At most 5; null when there are none'),
+    underfunded_goals: z
+      .array(z.object({ name: z.string(), needed: z.string() }))
+      .nullable()
+      .describe('At most 5; null when there are none'),
+    low_balance_accounts: z.array(nameBalance).nullable().describe('Under 10 in the budget currency; null when there are none'),
+  }),
+  account_summary: z.object({
+    checking_savings: z.array(nameBalance),
+    debt_accounts: z.array(nameBalance),
+  }),
+  tips: z.array(z.string()),
+});
+export type QuickSummaryOutput = z.output<typeof quickSummaryOutputSchema>;
 
 // Tool definition
 export const quickSummaryTool: Tool = {
@@ -44,6 +79,7 @@ This is the best tool to use for general budget status questions.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(quickSummaryOutputSchema),
 };
 
 // Handler function
@@ -53,7 +89,7 @@ This is the best tool to use for general budget status questions.`,
 export async function handleQuickSummary(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<QuickSummaryOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -138,49 +174,45 @@ export async function handleQuickSummary(
     statusMessage = 'Budget is on track';
   }
 
-  return JSON.stringify(
-    {
-      status: overallStatus,
-      message: statusMessage,
-      month: currentMonth,
-      key_metrics: {
-        ready_to_assign: money(readyToAssign),
-        spent_this_month: money(thisMonthActivity),
-        total_in_budget_accounts: money(totalBudgetAccountBalance),
-        total_debt: money(totalDebt),
-        total_in_tracking_accounts: money(totalTrackingBalance),
-        age_of_money: monthData.age_of_money != null ? `${monthData.age_of_money} days` : null,
-      },
-      alerts: {
-        overspent_categories: overspentCategories.length > 0 ? overspentCategories.slice(0, 5) : null,
-        underfunded_goals: underfundedGoals.length > 0 ? underfundedGoals : null,
-        low_balance_accounts: lowBalanceAccounts.length > 0 ? lowBalanceAccounts : null,
-      },
-      account_summary: {
-        checking_savings: budgetAccounts
-          .filter((a) => cashTypes.has(String(a.type)))
-          .map((a) => ({ name: sanitizeName(a.name), balance: money(a.balance) })),
-        debt_accounts: debtAccounts.map((a) => ({
-          name: sanitizeName(a.name),
-          balance: money(a.balance),
-        })),
-      },
-      tips:
-        overallStatus !== 'healthy'
-          ? [
-              overspentCategories.length > 0
-                ? 'Move money from other categories to cover overspending'
-                : null,
-              readyToAssign < 0
-                ? 'Unassign money from categories to fix negative Ready to Assign'
-                : null,
-              underfundedGoals.length > 0
-                ? 'Consider adjusting goals or finding more money to fund them'
-                : null,
-            ].filter(Boolean)
-          : [],
+  return {
+    status: overallStatus,
+    message: statusMessage,
+    month: currentMonth,
+    key_metrics: {
+      ready_to_assign: money(readyToAssign),
+      spent_this_month: money(thisMonthActivity),
+      total_in_budget_accounts: money(totalBudgetAccountBalance),
+      total_debt: money(totalDebt),
+      total_in_tracking_accounts: money(totalTrackingBalance),
+      age_of_money: monthData.age_of_money != null ? `${monthData.age_of_money} days` : null,
     },
-    null,
-    2
-  );
+    alerts: {
+      overspent_categories: overspentCategories.length > 0 ? overspentCategories.slice(0, 5) : null,
+      underfunded_goals: underfundedGoals.length > 0 ? underfundedGoals : null,
+      low_balance_accounts: lowBalanceAccounts.length > 0 ? lowBalanceAccounts : null,
+    },
+    account_summary: {
+      checking_savings: budgetAccounts
+        .filter((a) => cashTypes.has(String(a.type)))
+        .map((a) => ({ name: sanitizeName(a.name), balance: money(a.balance) })),
+      debt_accounts: debtAccounts.map((a) => ({
+        name: sanitizeName(a.name),
+        balance: money(a.balance),
+      })),
+    },
+    tips:
+      overallStatus !== 'healthy'
+        ? [
+            overspentCategories.length > 0
+              ? 'Move money from other categories to cover overspending'
+              : null,
+            readyToAssign < 0
+              ? 'Unassign money from categories to fix negative Ready to Assign'
+              : null,
+            underfundedGoals.length > 0
+              ? 'Consider adjusting goals or finding more money to fund them'
+              : null,
+          ].filter((tip): tip is string => tip !== null)
+        : [],
+  };
 }

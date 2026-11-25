@@ -16,13 +16,13 @@
  */
 
 import { createHash } from 'node:crypto';
-import { RateLimiter } from './rate-limiter.js';
+import { RateLimiter, type RequestLimiter } from './rate-limiter.js';
 import { Cache } from './cache.js';
 import { DeltaCache } from './delta-cache.js';
 import { MemoryAuditStore } from '../storage/audit-rows.js';
 import { ClientUsage } from './client-usage.js';
 import { CircuitBreaker } from './circuit-breaker.js';
-import { WriteLimiter } from './write-limiter.js';
+import { WriteLimiter, type WriteCap } from './write-limiter.js';
 import { WRITE_LIMIT_DEFAULT_PER_HOUR } from '../config/write-limit.js';
 import { ByteBudget, DEFAULT_USER_CACHE_BYTES } from './byte-budget.js';
 import type { TransactionFeedState } from './ynab-client.js';
@@ -46,7 +46,8 @@ export const AUDITED_DENIALS_PER_HOUR = 20;
 
 /** The state one user's requests share. */
 export interface UserComponents {
-  readonly rateLimiter: RateLimiter;
+  /** The user's YNAB request budget: this process's own, or shared by every replica (#67c). */
+  readonly rateLimiter: RequestLimiter;
   readonly cache: Cache;
   readonly deltaCache: DeltaCache;
   /**
@@ -61,8 +62,8 @@ export interface UserComponents {
   readonly auditedDenials: WriteLimiter;
   /** Fails this user's YNAB calls fast while YNAB is failing (#58); per user, never shared. */
   readonly breaker: CircuitBreaker;
-  /** The user's write cap (#61c), shared by all their requests like the rate limiter. */
-  readonly writeLimiter: WriteLimiter;
+  /** The user's write cap (#61c), shared by all their requests like the rate limiter; across replicas with RATE_LIMIT_STORE=postgres (#67). */
+  readonly writeLimiter: WriteCap;
   /**
    * What YNAB has told us about the transaction change feed (a rejected
    * since_date), kept per user so a new request's YnabClient does not repeat a
@@ -82,20 +83,24 @@ export function createUserComponents(
     /** Cap on the serialized size of the user's cache and snapshots together (default 8 MiB). */
     cacheMaxBytes?: number | undefined;
   },
-  now: () => number = Date.now
+  now: () => number = Date.now,
+  /** The user's limiter when it lives elsewhere (RATE_LIMIT_STORE=postgres); in-process otherwise. */
+  rateLimiter?: RequestLimiter,
+  /** The user's write cap when it lives elsewhere (RATE_LIMIT_STORE=postgres); in-process otherwise. */
+  writeLimiter?: WriteCap
 ): UserComponents {
   // One byte budget for both stores, so a user's snapshots and cached
   // responses together stay under it (#58).
   const budget = new ByteBudget(limits.cacheMaxBytes ?? DEFAULT_USER_CACHE_BYTES);
   return {
-    rateLimiter: new RateLimiter(limits.rateLimitPerHour, now, limits.rateLimitMaxWaitMs),
+    rateLimiter: rateLimiter ?? new RateLimiter(limits.rateLimitPerHour, now, limits.rateLimitMaxWaitMs),
     cache: new Cache(limits.cacheTtlMs, budget),
     deltaCache: new DeltaCache({ now, budget }),
     auditStore: new MemoryAuditStore(),
     clientUsage: new ClientUsage(now),
     auditedDenials: new WriteLimiter(AUDITED_DENIALS_PER_HOUR, now),
     breaker: new CircuitBreaker({ now }),
-    writeLimiter: new WriteLimiter(limits.writeLimitPerHour ?? WRITE_LIMIT_DEFAULT_PER_HOUR, now),
+    writeLimiter: writeLimiter ?? new WriteLimiter(limits.writeLimitPerHour ?? WRITE_LIMIT_DEFAULT_PER_HOUR, now),
     feedState: { sinceDateRejected: false },
   };
 }
@@ -137,6 +142,13 @@ export interface UserRegistryOptions {
    */
   maxEntries?: number;
   now?: () => number;
+  /**
+   * Builds a user's rate limiter (RATE_LIMIT_STORE=postgres: one on the
+   * shared bucket, #67c). Absent: an in-process RateLimiter per user.
+   */
+  rateLimiterFor?: ((userKey: string) => RequestLimiter) | undefined;
+  /** Builds a user's write cap (RATE_LIMIT_STORE=postgres: the shared one, #67). Absent: in-process. */
+  writeLimiterFor?: ((userKey: string) => WriteCap) | undefined;
 }
 
 interface Entry {
@@ -158,6 +170,8 @@ export class UserRegistry {
   private readonly idleEvictionMs: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
+  private readonly rateLimiterFor: ((userKey: string) => RequestLimiter) | undefined;
+  private readonly writeLimiterFor: ((userKey: string) => WriteCap) | undefined;
   private lastPrunedAt = 0;
 
   constructor(opts: UserRegistryOptions) {
@@ -171,6 +185,8 @@ export class UserRegistry {
     this.idleEvictionMs = opts.idleEvictionMs ?? RATE_LIMIT_WINDOW_MS;
     this.maxEntries = opts.maxEntries ?? DEFAULT_MAX_USER_ENTRIES;
     this.now = opts.now ?? Date.now;
+    this.rateLimiterFor = opts.rateLimiterFor;
+    this.writeLimiterFor = opts.writeLimiterFor;
   }
 
   /** Take a hold on the user's components for a request, creating them if needed. */
@@ -180,7 +196,16 @@ export class UserRegistry {
     let entry = this.entries.get(userKey);
     if (!entry) {
       if (this.entries.size >= this.maxEntries) this.evictLeastRecentlyUsedIdle();
-      entry = { components: createUserComponents(this.limits, this.now), liveLeases: 0, lastUsedAt: now };
+      entry = {
+        components: createUserComponents(
+          this.limits,
+          this.now,
+          this.rateLimiterFor?.(userKey),
+          this.writeLimiterFor?.(userKey)
+        ),
+        liveLeases: 0,
+        lastUsedAt: now,
+      };
       this.entries.set(userKey, entry);
     }
     entry.liveLeases++;
@@ -231,7 +256,9 @@ export class UserRegistry {
    * window. Dropping one as soon as its last request finished would hand the
    * user a fresh rate limiter on the next one; the full-bucket check
    * additionally keeps an entry whose limiter is still refilling, so evicting
-   * never grants capacity. Lazy (run on acquire): entries only accumulate as
+   * never grants capacity. A shared limiter (#67c) keeps its budget in the
+   * database, so dropping its entry grants nothing and the check is skipped.
+   * Lazy (run on acquire): entries only accumulate as
    * new requests arrive. The same sweep prunes expired cache entries and idle
    * snapshots (at most once a CACHE_PRUNE_INTERVAL_MS), so a user's expired
    * data does not sit in memory until their next read.
@@ -247,7 +274,7 @@ export class UserRegistry {
     for (const [key, entry] of this.entries) {
       if (entry.liveLeases > 0 || now - entry.lastUsedAt < this.idleEvictionMs) continue;
       const status = entry.components.rateLimiter.getStatus();
-      if (status.available < status.limit) continue;
+      if (status.store === 'memory' && status.available < status.limit) continue;
       this.entries.delete(key);
     }
   }

@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleTransactionSearch } from '../../../../src/tools/analytics/transaction-search.js';
+import { handleTransactionSearch as rawHandleTransactionSearch, transactionSearchOutputSchema } from '../../../../src/tools/analytics/transaction-search.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createAccountsResponse,
@@ -17,6 +18,8 @@ import {
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
 
+const handleTransactionSearch = validating(transactionSearchOutputSchema, rawHandleTransactionSearch);
+
 describe('handleTransactionSearch', () => {
   let mockClient: MockClient;
 
@@ -29,7 +32,7 @@ describe('handleTransactionSearch', () => {
   it('returns all non-deleted transactions with summary stats', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = JSON.parse(await handleTransactionSearch({}, mockClient as never));
+    const result = await handleTransactionSearch({}, mockClient as never);
 
     expect(result.summary.total_matches).toBe(mockAllTransactions.length);
     expect(result.search.criteria).toBe('all transactions');
@@ -40,9 +43,7 @@ describe('handleTransactionSearch', () => {
   it('filters by payee (partial match, case-insensitive)', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = JSON.parse(
-      await handleTransactionSearch({ payee: 'kroger' }, mockClient as never)
-    );
+    const result = await handleTransactionSearch({ payee: 'kroger' }, mockClient as never);
 
     expect(result.summary.total_matches).toBe(3); // 3 Kroger grocery txns
     expect(result.transactions.every((t: { payee: string }) => /Kroger/i.test(t.payee))).toBe(true);
@@ -51,9 +52,7 @@ describe('handleTransactionSearch', () => {
   it('filters by category (partial match)', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = JSON.parse(
-      await handleTransactionSearch({ category: 'dining' }, mockClient as never)
-    );
+    const result = await handleTransactionSearch({ category: 'dining' }, mockClient as never);
 
     expect(result.summary.total_matches).toBe(mockDiningTransactions.length);
   });
@@ -61,9 +60,7 @@ describe('handleTransactionSearch', () => {
   it('filters by amount range (absolute values)', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = JSON.parse(
-      await handleTransactionSearch({ min_amount: 80, max_amount: 100 }, mockClient as never)
-    );
+    const result = await handleTransactionSearch({ min_amount: 80, max_amount: 100 }, mockClient as never);
 
     expect(result.summary.total_matches).toBeGreaterThan(0);
     // Every returned transaction's absolute amount must fall within [80, 100],
@@ -80,9 +77,7 @@ describe('handleTransactionSearch', () => {
   it('filters by transaction type (inflow only)', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = JSON.parse(
-      await handleTransactionSearch({ type: 'inflow' }, mockClient as never)
-    );
+    const result = await handleTransactionSearch({ type: 'inflow' }, mockClient as never);
 
     expect(result.summary.total_matches).toBe(mockIncomeTransactions.length);
     expect(result.search.criteria).toContain('type: inflow');
@@ -91,9 +86,7 @@ describe('handleTransactionSearch', () => {
   it('filters by until_date', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockGroceryTransactions));
 
-    const result = JSON.parse(
-      await handleTransactionSearch({ until_date: '2024-01-12' }, mockClient as never)
-    );
+    const result = await handleTransactionSearch({ until_date: '2024-01-12' }, mockClient as never);
 
     // grocery txns on/before 2024-01-12 => 2 of them
     expect(result.summary.total_matches).toBe(2);
@@ -103,9 +96,7 @@ describe('handleTransactionSearch', () => {
   it('matches free-text query against payee, memo, or category', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = JSON.parse(
-      await handleTransactionSearch({ query: 'weekly groceries' }, mockClient as never)
-    );
+    const result = await handleTransactionSearch({ query: 'weekly groceries' }, mockClient as never);
 
     // matches the memo "Weekly groceries"
     expect(result.summary.total_matches).toBe(1);
@@ -115,9 +106,7 @@ describe('handleTransactionSearch', () => {
   it('applies the limit and reports has_more', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = JSON.parse(
-      await handleTransactionSearch({ limit: 3 }, mockClient as never)
-    );
+    const result = await handleTransactionSearch({ limit: 3 }, mockClient as never);
 
     expect(result.summary.showing).toBe(3);
     expect(result.has_more).toBe(true);
@@ -136,7 +125,7 @@ describe('handleTransactionSearch', () => {
   it('returns empty results gracefully', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([]));
 
-    const result = JSON.parse(await handleTransactionSearch({}, mockClient as never));
+    const result = await handleTransactionSearch({}, mockClient as never);
 
     expect(result.summary.total_matches).toBe(0);
     expect(result.transactions).toEqual([]);
@@ -147,9 +136,7 @@ describe('handleTransactionSearch', () => {
     mockClient.getBudgetFirstMonth.mockResolvedValue('2019-03-01');
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = JSON.parse(
-      await handleTransactionSearch({ until_date: '2020-01-31' }, mockClient as never)
-    );
+    const result = await handleTransactionSearch({ until_date: '2020-01-31' }, mockClient as never);
 
     expect(mockClient.getBudgetFirstMonth).toHaveBeenCalledWith('test-budget-id');
     expect(mockClient.getTransactions).toHaveBeenCalledWith('test-budget-id', {
@@ -178,7 +165,7 @@ describe('handleTransactionSearch', () => {
   it('notes the 12-month YNAB default when no dates are given', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = JSON.parse(await handleTransactionSearch({}, mockClient as never));
+    const result = await handleTransactionSearch({}, mockClient as never);
 
     expect(mockClient.getBudgetFirstMonth).not.toHaveBeenCalled();
     expect(result.search.note).toContain('last 12 months');

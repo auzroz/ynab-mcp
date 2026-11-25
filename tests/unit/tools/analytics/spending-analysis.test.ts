@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleSpendingAnalysis } from '../../../../src/tools/analytics/spending-analysis.js';
+import { handleSpendingAnalysis as rawHandleSpendingAnalysis, spendingAnalysisOutputSchema } from '../../../../src/tools/analytics/spending-analysis.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createTransactionsResponse,
@@ -12,6 +13,8 @@ import {
   mockCategoryGroups,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleSpendingAnalysis = validating(spendingAnalysisOutputSchema, rawHandleSpendingAnalysis);
 
 describe('handleSpendingAnalysis', () => {
   let mockClient: MockClient;
@@ -24,8 +27,7 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingAnalysis({}, mockClient as never);
 
     expect(parsed.spending_by_category).toBeInstanceOf(Array);
     expect(parsed.spending_by_category.length).toBeGreaterThan(0);
@@ -43,8 +45,7 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingAnalysis({}, mockClient as never);
 
     expect(parsed.summary).toBeDefined();
     expect(parsed.summary.total_spent).toBeDefined();
@@ -58,8 +59,7 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingAnalysis({}, mockClient as never);
 
     expect(parsed.monthly_spending).toBeInstanceOf(Array);
     if (parsed.monthly_spending.length > 0) {
@@ -74,8 +74,7 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingAnalysis({}, mockClient as never);
 
     expect(parsed.insights.top_5_categories).toBeInstanceOf(Array);
     expect(parsed.insights.top_5_categories.length).toBeLessThanOrEqual(5);
@@ -93,8 +92,7 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis({ months: 6 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingAnalysis({ months: 6 }, mockClient as never);
 
     expect(parsed.summary.analysis_period).toBe('6 months');
   });
@@ -103,11 +101,10 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis(
+    const parsed = await handleSpendingAnalysis(
       { category_id: 'cat-groceries-555' },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     // Should only have one category in results (category_id is not exposed in output)
     expect(parsed.spending_by_category.length).toBe(1);
@@ -118,8 +115,7 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingAnalysis({}, mockClient as never);
 
     // Transfers should not appear as spending categories
     const transferCategory = parsed.spending_by_category.find(
@@ -132,8 +128,7 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingAnalysis({}, mockClient as never);
 
     // Income should not appear in spending analysis
     const incomeCategory = parsed.spending_by_category.find(
@@ -146,8 +141,7 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingAnalysis({}, mockClient as never);
 
     expect(parsed.insights.increasing_spending).toBeInstanceOf(Array);
     expect(parsed.insights.decreasing_spending).toBeInstanceOf(Array);
@@ -157,8 +151,7 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([]));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingAnalysis({}, mockClient as never);
 
     expect(parsed.spending_by_category).toEqual([]);
     expect(parsed.summary.total_spent).toBe('$0.00');
@@ -169,8 +162,7 @@ describe('handleSpendingAnalysis', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSpendingAnalysis({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingAnalysis({}, mockClient as never);
 
     // Sum of all percentages should be approximately 100
     const totalPercent = parsed.spending_by_category.reduce(

@@ -629,6 +629,22 @@ describe('startHttpServer', () => {
     }
   });
 
+  it('warns at startup when several replicas run on per-process rate limits, naming RATE_LIMIT_STORE (#67a)', async () => {
+    const errors = vi.mocked(console.error);
+    for (const [mcpReplicas, expected] of [[3, 1], [1, 0]] as const) {
+      errors.mockClear();
+      const server = await startHttpServer(makeHttpConfig({ bindHost: '127.0.0.1', mcpReplicas }));
+      try {
+        await new Promise((resolve) => (server.listening ? resolve(undefined) : server.once('listening', resolve)));
+        const warnings = errors.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('MCP_REPLICAS'));
+        expect(warnings).toHaveLength(expected);
+        if (expected) expect(warnings[0]).toContain('MCP_REPLICAS=3 but RATE_LIMIT_STORE=memory');
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    }
+  });
+
   it('closing the http.Server lets a request in flight finish, then finishes', async () => {
     const server = await startHttpServer(makeHttpConfig({ bindHost: '127.0.0.1' }));
     await new Promise((resolve) => (server.listening ? resolve(undefined) : server.once('listening', resolve)));

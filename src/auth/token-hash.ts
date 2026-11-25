@@ -71,6 +71,7 @@ const PEPPER_FROM_ENCRYPTION_KEY = 'ynab-mcp/token-pepper/v1';
 const TAG_KEY_INFO = 'ynab-mcp/ymcp1-tag';
 const STORAGE_KEY_INFO = 'ynab-mcp/h1-key';
 const REFRESH_GRACE_KEY_INFO = 'ynab-mcp/refresh-grace-key';
+const RATE_LIMIT_KEY_INFO = 'ynab-mcp/rate-limit-key';
 /** The fingerprint message the plan fixes: HMAC(pepper, "ynab-mcp/pepper-check"). */
 const FINGERPRINT_MESSAGE = 'ynab-mcp/pepper-check';
 
@@ -110,6 +111,13 @@ export interface TokenKeyDeriver {
   readonly fingerprint: string;
   /** Whether a stored fingerprint is this pepper's, compared in constant time. */
   fingerprintMatches(stored: string): boolean;
+  /**
+   * The stored form of a shared rate limiter's key (#67b): HMAC-SHA256, hex,
+   * of `limiter` and `key` under a key derived from the pepper, so a database
+   * copy can't be enumerated back to client addresses. Every replica shares
+   * the pepper, so they agree on it.
+   */
+  limiterKey(limiter: string, key: string): string;
 }
 
 /**
@@ -152,6 +160,7 @@ export class TokenHasher implements TokenKeyDeriver, LibraryKeyDeriver, RefreshG
   private readonly tagKey: Buffer;
   private readonly storageKeyKey: Buffer;
   private readonly refreshGraceKeyKey: Buffer;
+  private readonly rateLimitKeyKey: Buffer;
   readonly fingerprint: string;
 
   /** `pepper`: 32 secret bytes. Use {@link TokenHasher.fromSecrets} for the configured one. */
@@ -160,6 +169,7 @@ export class TokenHasher implements TokenKeyDeriver, LibraryKeyDeriver, RefreshG
     this.tagKey = hkdf32(pepper, TAG_KEY_INFO);
     this.storageKeyKey = hkdf32(pepper, STORAGE_KEY_INFO);
     this.refreshGraceKeyKey = hkdf32(pepper, REFRESH_GRACE_KEY_INFO);
+    this.rateLimitKeyKey = hkdf32(pepper, RATE_LIMIT_KEY_INFO);
     this.fingerprint = createHmac('sha256', pepper).update(FINGERPRINT_MESSAGE).digest('hex');
   }
 
@@ -227,6 +237,10 @@ export class TokenHasher implements TokenKeyDeriver, LibraryKeyDeriver, RefreshG
 
   clientSecretHash(secret: string): string {
     return hashClientSecret(secret);
+  }
+
+  limiterKey(limiter: string, key: string): string {
+    return createHmac('sha256', this.rateLimitKeyKey).update(`${limiter}\0${key}`).digest('hex');
   }
 
   /** Whether `stored` (from `schema_meta`) is this pepper's fingerprint, in constant time. */

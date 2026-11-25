@@ -12,6 +12,7 @@ import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { isInternalGroup } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -19,6 +20,56 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings, *_milliunits raw. */
+export const budgetHealthOutputSchema = z.object({
+  health_score: z.number().int().describe('0 to 100'),
+  health_status: z.enum(['excellent', 'good', 'fair', 'poor']),
+  month: z.string(),
+  alerts: z
+    .array(
+      z.object({
+        severity: z.enum(['critical', 'warning', 'info']),
+        type: z.string().describe('unbudgeted_funds, overbudgeted, overspent_category or underfunded_goal'),
+        message: z.string(),
+        category: z.string().exactOptional(),
+        amount: z.string().exactOptional(),
+      })
+    )
+    .describe('At most 10, most severe first'),
+  key_metrics: z.object({
+    to_be_budgeted: z.string(),
+    total_budgeted: z.string(),
+    total_spent: z.string(),
+    total_income: z.string(),
+    total_overspent: z.string(),
+    overspent_category_count: z.number().int(),
+    underfunded_goals_count: z.number().int(),
+  }),
+  month_progress: z.object({
+    days_remaining: z.number().int(),
+    percent_complete: z.number().int(),
+    daily_budget_remaining: z.string(),
+    daily_budget_remaining_milliunits: z.number().int(),
+  }),
+  category_health: z
+    .array(
+      z.object({
+        name: z.string(),
+        budgeted: z.string(),
+        budgeted_milliunits: z.number().int(),
+        spent: z.string(),
+        spent_milliunits: z.number().int(),
+        available: z.string(),
+        available_milliunits: z.number().int(),
+        status: z.enum(['on_track', 'overspent', 'underfunded', 'warning']),
+        percent_used: z.number().int(),
+      })
+    )
+    .describe('At most 15, problems first'),
+  recommendations: z.array(z.string()),
+});
+export type BudgetHealthOutput = z.output<typeof budgetHealthOutputSchema>;
 
 // Tool definition
 export const budgetHealthTool: Tool = {
@@ -44,6 +95,7 @@ Provides key metrics, alerts, and recommendations.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(budgetHealthOutputSchema),
 };
 
 interface HealthAlert {
@@ -73,7 +125,7 @@ interface CategoryHealth {
 export async function handleBudgetHealth(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<BudgetHealthOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -220,39 +272,35 @@ export async function handleBudgetHealth(
   const daysRemaining = daysInMonth - dayOfMonth;
   const percentMonthComplete = Math.round((dayOfMonth / daysInMonth) * 100);
 
-  return JSON.stringify(
-    {
-      health_score: healthScore,
-      health_status: healthStatus,
-      month: currentMonth,
-      alerts: alerts.slice(0, 10), // Top 10 alerts
-      key_metrics: {
-        to_be_budgeted: money(toBeBudgeted),
-        total_budgeted: money(totalBudgeted),
-        total_spent: money(Math.abs(totalActivity)),
-        total_income: money(totalIncome),
-        total_overspent: money(totalOverspent),
-        overspent_category_count: overspentCount,
-        underfunded_goals_count: underfundedGoals,
-      },
-      month_progress: {
-        days_remaining: daysRemaining,
-        percent_complete: percentMonthComplete,
-        daily_budget_remaining:
-          daysRemaining > 0
-            ? money(Math.round((totalBudgeted + totalActivity) / daysRemaining))
-            : money(totalBudgeted + totalActivity), // Last day: show remaining budget
-        daily_budget_remaining_milliunits:
-          daysRemaining > 0
-            ? Math.round((totalBudgeted + totalActivity) / daysRemaining)
-            : totalBudgeted + totalActivity,
-      },
-      category_health: categoryHealth.slice(0, 15), // Top 15 categories
-      recommendations: generateRecommendations(alerts, healthScore, toBeBudgeted),
+  return {
+    health_score: healthScore,
+    health_status: healthStatus,
+    month: currentMonth,
+    alerts: alerts.slice(0, 10), // Top 10 alerts
+    key_metrics: {
+      to_be_budgeted: money(toBeBudgeted),
+      total_budgeted: money(totalBudgeted),
+      total_spent: money(Math.abs(totalActivity)),
+      total_income: money(totalIncome),
+      total_overspent: money(totalOverspent),
+      overspent_category_count: overspentCount,
+      underfunded_goals_count: underfundedGoals,
     },
-    null,
-    2
-  );
+    month_progress: {
+      days_remaining: daysRemaining,
+      percent_complete: percentMonthComplete,
+      daily_budget_remaining:
+        daysRemaining > 0
+          ? money(Math.round((totalBudgeted + totalActivity) / daysRemaining))
+          : money(totalBudgeted + totalActivity), // Last day: show remaining budget
+      daily_budget_remaining_milliunits:
+        daysRemaining > 0
+          ? Math.round((totalBudgeted + totalActivity) / daysRemaining)
+          : totalBudgeted + totalActivity,
+    },
+    category_health: categoryHealth.slice(0, 15), // Top 15 categories
+    recommendations: generateRecommendations(alerts, healthScore, toBeBudgeted),
+  };
 }
 
 function generateRecommendations(

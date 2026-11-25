@@ -240,7 +240,7 @@ describe('amounts follow the budget currency format', () => {
     it('ynab_quick_summary formats metrics in the budget currency', async () => {
       client.getCurrencyFormat.mockResolvedValue(mockJpyCurrencyFormat);
       client.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
-      const parsed = JSON.parse(await handleQuickSummary({}, client as never));
+      const parsed = await handleQuickSummary({}, client as never);
 
       expect(parsed.key_metrics.ready_to_assign).toMatch(/^-?¥[\d,]+$/);
       expect(parsed.key_metrics.spent_this_month).toMatch(/^-?¥[\d,]+$/);
@@ -249,9 +249,7 @@ describe('amounts follow the budget currency format', () => {
 
     it('ynab_transaction_search describes min and max in the budget currency', async () => {
       client.getCurrencyFormat.mockResolvedValue(mockEurCurrencyFormat);
-      const parsed = JSON.parse(
-        await handleTransactionSearch({ min_amount: 80, max_amount: 100 }, client as never)
-      );
+      const parsed = await handleTransactionSearch({ min_amount: 80, max_amount: 100 }, client as never);
       const criteria = JSON.stringify(parsed);
       expect(criteria).toContain('min: 80,00€');
       expect(criteria).toContain('max: 100,00€');

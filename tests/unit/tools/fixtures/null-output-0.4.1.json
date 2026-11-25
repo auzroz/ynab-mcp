@@ -1730,7 +1730,8 @@
         "available_requests": 10000,
         "total_limit": 10000,
         "used_requests": 0,
-        "percent_used": 0
+        "percent_used": 0,
+        "store": "memory"
       },
       "usage": {
         "requests_last_hour": 0,
@@ -1760,6 +1761,7 @@
         "total_operations": 0,
         "success_count": 0,
         "failure_count": 0,
+        "revocation_count": 0,
         "by_outcome": {}
       },
       "message": "No matching audit log entries found"

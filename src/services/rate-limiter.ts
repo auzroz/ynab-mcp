@@ -15,7 +15,7 @@
 
 import { RateLimitError } from '../utils/errors.js';
 
-const HOUR_MS = 60 * 60 * 1000;
+export const HOUR_MS = 60 * 60 * 1000;
 /** Shortest and longest exhaustion window honoured, whatever YNAB's header says. */
 const MIN_EXHAUSTION_MS = 1000;
 const MAX_EXHAUSTION_MS = HOUR_MS;
@@ -26,11 +26,14 @@ export const DEFAULT_MAX_WAIT_MS = 2000;
 /** Cap on remembered rejections so a flood cannot grow memory. */
 const MAX_TRACKED_REJECTIONS = 1000;
 
+/** Where a limiter keeps its budget: in this process, or shared through Postgres (#67c). */
+export type RateLimitStoreKind = 'memory' | 'postgres';
+
 /**
- * What YnabClient needs from a request limiter. Async where a shared store (a
- * Postgres-backed limiter for several instances, #67b) would have to be, so the
- * token bucket can be swapped without touching callers; the in-process
- * RateLimiter below is the one implementation today.
+ * What YnabClient needs from a request limiter. Async where a shared store
+ * has to be, so the token bucket can be swapped without touching callers: the
+ * in-process RateLimiter below, or SharedRateLimiter
+ * (src/services/shared-rate-limiter.ts) with `RATE_LIMIT_STORE=postgres`.
  */
 export interface RequestLimiter {
   /** Take one request's token, or throw a RateLimitError (fail fast). */
@@ -44,6 +47,11 @@ export interface RequestLimiter {
   /** Throw a RateLimitError while YNAB's own 429 window is in force. */
   throwIfExhaustedByYnab(): void;
   getStatus(): ReturnType<RateLimiter['getStatus']>;
+  /**
+   * Bring getStatus() up to date where the budget lives elsewhere (a shared
+   * store); absent for the in-process limiter, whose status is always current.
+   */
+  refresh?(): Promise<void>;
 }
 
 /** A 429 from YNAB, as the limiter remembers it. */
@@ -59,20 +67,24 @@ export interface YnabExhaustion {
 }
 
 export class RateLimiter implements RequestLimiter {
-  private tokens: number;
-  private lastRefill: number;
-  private readonly maxTokens: number;
-  private readonly refillRate: number; // tokens per millisecond
-  private readonly maxWaitMs: number;
+  // Protected for SharedRateLimiter, which keeps the same bookkeeping (the
+  // send record, refusals, YNAB's 429) and a snapshot of the shared bucket here.
+  protected tokens: number;
+  protected lastRefill: number;
+  protected readonly maxTokens: number;
+  protected readonly refillRate: number; // tokens per millisecond
+  protected readonly maxWaitMs: number;
   /** True while one caller sleeps for a token; a second caller fails fast. */
   private waiterActive = false;
   private rejectedAt: number[] = [];
-  private readonly now: () => number;
+  protected readonly now: () => number;
   // Send times (ms) of requests in the last hour, oldest first. Lets a 429 from
   // YNAB be mapped to "when the oldest request leaves YNAB's rolling window".
-  private sentAt: number[] = [];
-  private ynabExhaustedAt: number | undefined;
-  private ynabExhaustedUntil = 0;
+  protected sentAt: number[] = [];
+  protected ynabExhaustedAt: number | undefined;
+  protected ynabExhaustedUntil = 0;
+  /** Where the budget lives (getStatus().store). */
+  protected readonly storeKind: RateLimitStoreKind = 'memory';
 
   // `now` is injectable so callers that reason about refill time (the HTTP
   // user registry's eviction check) can be tested on a fake clock.
@@ -219,6 +231,12 @@ export class RateLimiter implements RequestLimiter {
     maxWaitMs: number;
     /** Set once YNAB has answered 429 to this limiter's requests; absent before that. */
     ynabExhausted?: YnabExhaustion;
+    /**
+     * `memory`: this process holds the budget. `postgres`: every replica
+     * shares it (#67c), `available` and `used` are the last value read from
+     * the database, and the send and refusal counts are this replica's.
+     */
+    store: RateLimitStoreKind;
   } {
     this.refill();
     const ynabExhausted = this.getYnabExhaustion();
@@ -249,6 +267,7 @@ export class RateLimiter implements RequestLimiter {
       waitTimeMs,
       resetTimeMs: Math.max(resetTimeMs, exhaustedMs),
       ...(ynabExhausted ? { ynabExhausted } : {}),
+      store: this.storeKind,
     };
   }
 
@@ -298,7 +317,7 @@ export class RateLimiter implements RequestLimiter {
     if (remaining > 0) throw this.reject(remaining);
   }
 
-  private reject(waitMs: number): RateLimitError {
+  protected reject(waitMs: number): RateLimitError {
     const now = this.now();
     this.pruneRejected(now);
     if (this.rejectedAt.length < MAX_TRACKED_REJECTIONS) this.rejectedAt.push(now);
@@ -312,20 +331,20 @@ export class RateLimiter implements RequestLimiter {
     if (i > 0) this.rejectedAt.splice(0, i);
   }
 
-  private recordSent(): void {
+  protected recordSent(): void {
     const now = this.now();
     this.pruneSent(now);
     this.sentAt.push(now);
   }
 
-  private pruneSent(now: number): void {
+  protected pruneSent(now: number): void {
     const cutoff = now - HOUR_MS;
     let i = 0;
     while (i < this.sentAt.length && this.sentAt[i]! <= cutoff) i++;
     if (i > 0) this.sentAt.splice(0, i);
   }
 
-  private refill(): void {
+  protected refill(): void {
     const now = this.now();
     const elapsed = now - this.lastRefill;
     const newTokens = elapsed * this.refillRate;
@@ -334,7 +353,7 @@ export class RateLimiter implements RequestLimiter {
     this.lastRefill = now;
   }
 
-  private sleep(ms: number): Promise<void> {
+  protected sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

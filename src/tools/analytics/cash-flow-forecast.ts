@@ -10,6 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -24,6 +25,50 @@ const inputSchema = z.object({
     .optional()
     .describe('Number of days to forecast (default 30)'),
 });
+
+const occurrenceSchema = z.object({
+  date: z.string(),
+  payee: z.string(),
+  amount: z.string(),
+  frequency: z.string().describe('Frequency label, such as "Monthly"'),
+});
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const cashFlowForecastOutputSchema = z.object({
+  status: z.enum(['healthy', 'caution', 'warning']),
+  message: z.string(),
+  forecast_period: z.object({
+    start: z.string(),
+    end: z.string(),
+    days: z.number().int(),
+  }),
+  current_position: z.object({
+    cash_balance: z.string(),
+    budget_accounts: z.number().int(),
+  }),
+  projected: z.object({
+    end_balance: z.string(),
+    total_income: z.string(),
+    total_expenses: z.string(),
+    net_change: z.string(),
+    lowest_balance: z.string(),
+    lowest_balance_date: z.string(),
+  }),
+  upcoming_expenses: z.array(occurrenceSchema).describe('Next 7 days, at most 10'),
+  upcoming_income: z.array(occurrenceSchema).describe('At most 5'),
+  daily_forecast: z
+    .array(
+      z.object({
+        date: z.string(),
+        income: z.string(),
+        expenses: z.string(),
+        balance: z.string(),
+      })
+    )
+    .describe('Days with scheduled activity, and the 1st and 15th; at most 15'),
+  scheduled_transaction_count: z.number().int(),
+});
+export type CashFlowForecastOutput = z.output<typeof cashFlowForecastOutputSchema>;
 
 // Tool definition
 export const cashFlowForecastTool: Tool = {
@@ -53,6 +98,7 @@ Returns projected cash flow including scheduled income and expenses.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(cashFlowForecastOutputSchema),
 };
 
 interface ScheduledItem {
@@ -79,7 +125,7 @@ interface DailyForecast {
 export async function handleCashFlowForecast(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<CashFlowForecastOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -298,50 +344,46 @@ export async function handleCashFlowForecast(
     .filter((i) => i.type === 'income')
     .slice(0, 5);
 
-  return JSON.stringify(
-    {
-      status,
-      message,
-      forecast_period: {
-        start: todayStr,
-        end: endDateStr,
-        days: forecastDays,
-      },
-      current_position: {
-        cash_balance: money(currentCash),
-        budget_accounts: budgetAccounts.length,
-      },
-      projected: {
-        end_balance: money(projectedEndBalance),
-        total_income: money(totalScheduledIncome),
-        total_expenses: money(totalScheduledExpenses),
-        net_change: money(netProjectedChange),
-        lowest_balance: money(lowestBalance),
-        lowest_balance_date: lowestBalanceDate,
-      },
-      upcoming_expenses: upcomingExpenses.map((e) => ({
-        date: e.date,
-        payee: e.payee,
-        amount: e.formatted_amount,
-        frequency: e.frequency,
-      })),
-      upcoming_income: upcomingIncome.map((i) => ({
-        date: i.date,
-        payee: i.payee,
-        amount: i.formatted_amount,
-        frequency: i.frequency,
-      })),
-      daily_forecast: dailyForecasts.slice(0, 15).map((d) => ({
-        date: d.date,
-        income: money(d.scheduled_income),
-        expenses: money(d.scheduled_expenses),
-        balance: money(d.running_balance),
-      })),
-      scheduled_transaction_count: scheduledItems.length,
+  return {
+    status,
+    message,
+    forecast_period: {
+      start: todayStr,
+      end: endDateStr,
+      days: forecastDays,
     },
-    null,
-    2
-  );
+    current_position: {
+      cash_balance: money(currentCash),
+      budget_accounts: budgetAccounts.length,
+    },
+    projected: {
+      end_balance: money(projectedEndBalance),
+      total_income: money(totalScheduledIncome),
+      total_expenses: money(totalScheduledExpenses),
+      net_change: money(netProjectedChange),
+      lowest_balance: money(lowestBalance),
+      lowest_balance_date: lowestBalanceDate,
+    },
+    upcoming_expenses: upcomingExpenses.map((e) => ({
+      date: e.date,
+      payee: e.payee,
+      amount: e.formatted_amount,
+      frequency: e.frequency,
+    })),
+    upcoming_income: upcomingIncome.map((i) => ({
+      date: i.date,
+      payee: i.payee,
+      amount: i.formatted_amount,
+      frequency: i.frequency,
+    })),
+    daily_forecast: dailyForecasts.slice(0, 15).map((d) => ({
+      date: d.date,
+      income: money(d.scheduled_income),
+      expenses: money(d.scheduled_expenses),
+      balance: money(d.running_balance),
+    })),
+    scheduled_transaction_count: scheduledItems.length,
+  };
 }
 
 /**

@@ -4,14 +4,19 @@
  * server has storage (oauth mode); the windows are settings
  * (src/config/http/retention.ts) that the storage driver was built with.
  *
- * Today the one {@link SweepStep} is `Storage.sweepExpired`: expired codes,
+ * The first {@link SweepStep} is `Storage.sweepExpired`: expired codes,
  * tokens and sign-ins, consumed credentials past their replay window,
  * orphaned tokens, expired grants, and abandoned or unused client
  * registrations, in batches (on Postgres under an advisory lock, so replicas
  * don't sweep at once; a replica that finds the lock held does nothing).
+ * The second is `Storage.sweepRateLimitRows` (#67): ended rate-limit windows
+ * and full, idle request buckets of the shared limiters (no lock: its
+ * batches skip rows a limiter holds, and deleting a row twice is harmless).
  *
- * Seam for #60b: the audit-log prune (90 days) is a further entry in
- * {@link SWEEP_STEPS}, with no change to the scheduling below.
+ * The second is `Storage.pruneAuditLog` (#60b): audit log rows older than
+ * `AUDIT_RETENTION_DAYS` (default 90), in batches through the `(ts)` index.
+ * It needs no lock: on Postgres a batch skips rows another replica's prune
+ * holds.
  *
  * Failure handling: a step that throws is logged (through
  * `sanitizeErrorMessage`) and the remaining steps still run; a failed pass
@@ -35,7 +40,7 @@ export interface SweepStep {
   run(storage: Storage): Promise<Readonly<Record<string, number>>>;
 }
 
-/** The steps of a pass, in order. #60b appends the audit-log prune here. */
+/** The steps of a pass, in order. */
 export const SWEEP_STEPS: readonly SweepStep[] = [
   {
     name: 'expired-rows',
@@ -45,7 +50,21 @@ export const SWEEP_STEPS: readonly SweepStep[] = [
       return ran ? { ...deleted } : {};
     },
   },
+  {
+    name: 'audit-log',
+    async run(storage) {
+      return { auditRows: await storage.pruneAuditLog() };
+    },
+  },
+  {
+    // #67: shared limiter rows that limit nothing any more (RATE_LIMIT_STORE=postgres).
+    name: 'rate-limit-rows',
+    async run(storage) {
+      return { ...(await storage.sweepRateLimitRows()) };
+    },
+  },
 ];
+
 
 export interface SweepPassOptions {
   steps?: readonly SweepStep[];

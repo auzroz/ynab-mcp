@@ -10,6 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -25,6 +26,52 @@ const inputSchema = z.object({
     .describe('Number of months to analyze (default 3)'),
   category_id: z.string().max(36).optional().describe('Optional: Focus on a specific category'),
 });
+
+const trendSchema = z.enum(['increasing', 'decreasing', 'stable']);
+const trendPercentSchema = z
+  .number()
+  .int()
+  .nullable()
+  .describe('Change from the first half of the period to the second; null with under two months of data or none in the first half');
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const spendingAnalysisOutputSchema = z.object({
+  spending_by_category: z.array(
+    z.object({
+      category_name: z.string(),
+      group_name: z.string(),
+      total_spent: z.string(),
+      transaction_count: z.number().int(),
+      average_per_transaction: z.string(),
+      percent_of_total: z.number().describe('Percent of total spending, one decimal'),
+      monthly_average: z.string(),
+      trend: trendSchema,
+      trend_percent: trendPercentSchema,
+    })
+  ),
+  monthly_spending: z.array(
+    z.object({
+      month: z.string().describe('YYYY-MM'),
+      total_spent: z.string(),
+      category_breakdown: z.array(z.object({ name: z.string(), amount: z.string() })).describe('Top 5 categories'),
+    })
+  ),
+  summary: z.object({
+    total_spent: z.string(),
+    monthly_average: z.string(),
+    daily_average: z.string(),
+    transaction_count: z.number().int(),
+    category_count: z.number().int(),
+    analysis_period: z.string(),
+    since_date: z.string(),
+  }),
+  insights: z.object({
+    top_5_categories: z.array(z.object({ name: z.string(), amount: z.string(), percent: z.number() })),
+    increasing_spending: z.array(z.object({ name: z.string(), trend_percent: trendPercentSchema })),
+    decreasing_spending: z.array(z.object({ name: z.string(), trend_percent: trendPercentSchema })),
+  }),
+});
+export type SpendingAnalysisOutput = z.output<typeof spendingAnalysisOutputSchema>;
 
 // Tool definition
 export const spendingAnalysisTool: Tool = {
@@ -59,6 +106,7 @@ Provides category breakdowns, trends, and insights.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(spendingAnalysisOutputSchema),
 };
 
 interface CategorySpending {
@@ -87,7 +135,7 @@ interface MonthlySpending {
 export async function handleSpendingAnalysis(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<SpendingAnalysisOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -238,38 +286,34 @@ export async function handleSpendingAnalysis(
   // Exclude internal milliunits field from output
   const spendingByCategory = categorySpending.map(({ total_spent_milliunits: _unused, ...rest }) => rest);
 
-  return JSON.stringify(
-    {
-      spending_by_category: spendingByCategory,
-      monthly_spending: monthlySpending,
-      summary: {
-        total_spent: money(totalSpending),
-        monthly_average: money(months > 0 ? totalSpending / months : 0),
-        daily_average: money(dailyAverage),
-        transaction_count: transactions.length,
-        category_count: categorySpending.length,
-        analysis_period: `${months} months`,
-        since_date: sinceDateStr,
-      },
-      insights: {
-        top_5_categories: topCategories.map((c) => ({
-          name: c.category_name,
-          amount: c.total_spent,
-          percent: c.percent_of_total,
-        })),
-        increasing_spending: increasingCategories.slice(0, 3).map((c) => ({
-          name: c.category_name,
-          trend_percent: c.trend_percent,
-        })),
-        decreasing_spending: decreasingCategories.slice(0, 3).map((c) => ({
-          name: c.category_name,
-          trend_percent: c.trend_percent,
-        })),
-      },
+  return {
+    spending_by_category: spendingByCategory,
+    monthly_spending: monthlySpending,
+    summary: {
+      total_spent: money(totalSpending),
+      monthly_average: money(months > 0 ? totalSpending / months : 0),
+      daily_average: money(dailyAverage),
+      transaction_count: transactions.length,
+      category_count: categorySpending.length,
+      analysis_period: `${months} months`,
+      since_date: sinceDateStr,
     },
-    null,
-    2
-  );
+    insights: {
+      top_5_categories: topCategories.map((c) => ({
+        name: c.category_name,
+        amount: c.total_spent,
+        percent: c.percent_of_total,
+      })),
+      increasing_spending: increasingCategories.slice(0, 3).map((c) => ({
+        name: c.category_name,
+        trend_percent: c.trend_percent,
+      })),
+      decreasing_spending: decreasingCategories.slice(0, 3).map((c) => ({
+        name: c.category_name,
+        trend_percent: c.trend_percent,
+      })),
+    },
+  };
 }
 
 function calculateTrend(

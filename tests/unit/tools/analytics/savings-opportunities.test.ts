@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleSavingsOpportunities } from '../../../../src/tools/analytics/savings-opportunities.js';
+import { handleSavingsOpportunities as rawHandleSavingsOpportunities, savingsOpportunitiesOutputSchema } from '../../../../src/tools/analytics/savings-opportunities.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createTransactionsResponse,
@@ -12,6 +13,8 @@ import {
   mockAllTransactions,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleSavingsOpportunities = validating(savingsOpportunitiesOutputSchema, rawHandleSavingsOpportunities);
 
 describe('handleSavingsOpportunities', () => {
   let mockClient: MockClient;
@@ -24,8 +27,7 @@ describe('handleSavingsOpportunities', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSavingsOpportunities({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSavingsOpportunities({}, mockClient as never);
 
     expect(parsed.opportunities).toBeInstanceOf(Array);
     expect(parsed.summary).toBeDefined();
@@ -57,8 +59,7 @@ describe('handleSavingsOpportunities', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(diningTxns as never));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSavingsOpportunities({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSavingsOpportunities({}, mockClient as never);
 
     const discretionary = parsed.opportunities.find(
       (o: { type: string }) => o.type === 'discretionary'
@@ -77,8 +78,7 @@ describe('handleSavingsOpportunities', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(subs as never));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSavingsOpportunities({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSavingsOpportunities({}, mockClient as never);
 
     const recurring = parsed.opportunities.find(
       (o: { type: string }) => o.type === 'recurring_expense'
@@ -93,8 +93,7 @@ describe('handleSavingsOpportunities', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([] as never));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSavingsOpportunities({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSavingsOpportunities({}, mockClient as never);
 
     expect(parsed.opportunities).toEqual([]);
     expect(parsed.summary.total_opportunities_found).toBe(0);
@@ -106,8 +105,7 @@ describe('handleSavingsOpportunities', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([] as never));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleSavingsOpportunities({ months: 6 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSavingsOpportunities({ months: 6 }, mockClient as never);
 
     expect(parsed.summary.analysis_period).toBe('6 months');
   });

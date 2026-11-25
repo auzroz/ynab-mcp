@@ -67,6 +67,29 @@ import { ACCOUNT_TOOL_NAMES } from '../../../src/tools/connections/policy.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
+import { detectRecurringOutputSchema } from '../../../src/tools/analytics/detect-recurring.js';
+import { spendingAnalysisOutputSchema } from '../../../src/tools/analytics/spending-analysis.js';
+import { budgetHealthOutputSchema } from '../../../src/tools/analytics/budget-health.js';
+import { savingsOpportunitiesOutputSchema } from '../../../src/tools/analytics/savings-opportunities.js';
+import { budgetVsActualsOutputSchema } from '../../../src/tools/analytics/budget-vs-actuals.js';
+import { quickSummaryOutputSchema } from '../../../src/tools/analytics/quick-summary.js';
+import { incomeExpenseOutputSchema } from '../../../src/tools/analytics/income-expense.js';
+import { netWorthOutputSchema } from '../../../src/tools/analytics/net-worth.js';
+import { goalProgressOutputSchema } from '../../../src/tools/analytics/goal-progress.js';
+import { spendingByPayeeOutputSchema } from '../../../src/tools/analytics/spending-by-payee.js';
+import { unusedCategoriesOutputSchema } from '../../../src/tools/analytics/unused-categories.js';
+import { monthlyComparisonOutputSchema } from '../../../src/tools/analytics/monthly-comparison.js';
+import { spendingTrendsOutputSchema } from '../../../src/tools/analytics/spending-trends.js';
+import { cashFlowForecastOutputSchema } from '../../../src/tools/analytics/cash-flow-forecast.js';
+import { reconciliationHelperOutputSchema } from '../../../src/tools/analytics/reconciliation-helper.js';
+import { budgetSuggestionsOutputSchema } from '../../../src/tools/analytics/budget-suggestions.js';
+import { overspendingAlertsOutputSchema } from '../../../src/tools/analytics/overspending-alerts.js';
+import { transactionSearchOutputSchema } from '../../../src/tools/analytics/transaction-search.js';
+import { spendingPaceOutputSchema } from '../../../src/tools/analytics/spending-pace.js';
+import { categoryBalancesOutputSchema } from '../../../src/tools/analytics/category-balances.js';
+import { creditCardStatusOutputSchema } from '../../../src/tools/analytics/credit-card-status.js';
+import { ageOfMoneyOutputSchema } from '../../../src/tools/analytics/age-of-money.js';
+import { previewScheduledTransactionOutputSchema } from '../../../src/tools/analytics/preview-scheduled.js';
 import { AuditLog } from '../../../src/services/audit-log.js';
 import { YnabClient } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
@@ -89,29 +112,6 @@ const PENDING_OUTPUT_SCHEMA = [
   // Scheduled transactions
   // Money movements
   // Analytics (45c)
-  'ynab_detect_recurring',
-  'ynab_spending_analysis',
-  'ynab_budget_health',
-  'ynab_savings_opportunities',
-  'ynab_budget_vs_actuals',
-  'ynab_quick_summary',
-  'ynab_income_expense',
-  'ynab_net_worth',
-  'ynab_goal_progress',
-  'ynab_spending_by_payee',
-  'ynab_unused_categories',
-  'ynab_monthly_comparison',
-  'ynab_spending_trends',
-  'ynab_cash_flow_forecast',
-  'ynab_reconciliation_helper',
-  'ynab_budget_suggestions',
-  'ynab_overspending_alerts',
-  'ynab_transaction_search',
-  'ynab_spending_pace',
-  'ynab_category_balances',
-  'ynab_credit_card_status',
-  'ynab_age_of_money',
-  'ynab_preview_scheduled_transaction',
   // Account tools (#53c, OAuth HTTP mode only; their own call path in server.ts)
 ];
 
@@ -169,6 +169,29 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,
+  ynab_detect_recurring: detectRecurringOutputSchema,
+  ynab_spending_analysis: spendingAnalysisOutputSchema,
+  ynab_budget_health: budgetHealthOutputSchema,
+  ynab_savings_opportunities: savingsOpportunitiesOutputSchema,
+  ynab_budget_vs_actuals: budgetVsActualsOutputSchema,
+  ynab_quick_summary: quickSummaryOutputSchema,
+  ynab_income_expense: incomeExpenseOutputSchema,
+  ynab_net_worth: netWorthOutputSchema,
+  ynab_goal_progress: goalProgressOutputSchema,
+  ynab_spending_by_payee: spendingByPayeeOutputSchema,
+  ynab_unused_categories: unusedCategoriesOutputSchema,
+  ynab_monthly_comparison: monthlyComparisonOutputSchema,
+  ynab_spending_trends: spendingTrendsOutputSchema,
+  ynab_cash_flow_forecast: cashFlowForecastOutputSchema,
+  ynab_reconciliation_helper: reconciliationHelperOutputSchema,
+  ynab_budget_suggestions: budgetSuggestionsOutputSchema,
+  ynab_overspending_alerts: overspendingAlertsOutputSchema,
+  ynab_transaction_search: transactionSearchOutputSchema,
+  ynab_spending_pace: spendingPaceOutputSchema,
+  ynab_category_balances: categoryBalancesOutputSchema,
+  ynab_credit_card_status: creditCardStatusOutputSchema,
+  ynab_age_of_money: ageOfMoneyOutputSchema,
+  ynab_preview_scheduled_transaction: previewScheduledTransactionOutputSchema,
 };
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/null-output-0.4.1.json', import.meta.url));
@@ -269,7 +292,7 @@ describe('output schemas: real output validates', () => {
     const mock = createMockClient();
     mock.getRateLimitStatus.mockReturnValue({
       available: 0, limit: 180, used: 180, percentUsed: 100, canMakeRequest: false, waitTimeMs: 4000,
-      resetTimeMs: 60_000, sentLastHour: 180, rejectedLastHour: 4, maxWaitMs: 2000,
+      resetTimeMs: 60_000, sentLastHour: 180, rejectedLastHour: 4, maxWaitMs: 2000, store: 'postgres',
       ynabExhausted: { active: true, exhaustedAtMs: 1_700_000_000_000, untilMs: 1_700_000_900_000, retryAfterMs: 900_000 },
     });
     mock.getClientUsage.mockReturnValue({ clientId: 'client-a', sentLastHour: 7, rejectedLastHour: 1 });
@@ -303,12 +326,32 @@ describe('output schemas: real output validates', () => {
     await audit.record({ operation: 'create', tool: 'ynab_create_transaction', budgetId: 'b1', resourceType: 'transaction', resourceId: 'tx1', outcome: 'success' });
     await audit.record({ operation: 'update', tool: 'ynab_update_category', resourceType: 'category', outcome: 'denied_scope' });
     await audit.record({ operation: 'audit_suppressed', tool: 'ynab_update_category', resourceType: 'category', outcome: 'denied_scope' });
-    for (const args of [{}, { success: false }, { operation: 'update' }, { summary_only: true }, { summary_only: true, outcome: 'error' }]) {
+    // #60b: a bulk call's rows, and a revocation (success: null).
+    await audit.recordMany({ operation: 'create', tool: 'ynab_create_transactions', budgetId: 'b1', resourceType: 'transaction', outcome: 'success' }, ['tx2', 'tx3']);
+    await audit.recordRevocation({ resourceType: 'grant', resourceId: 'grant-b', outcome: 'revoked' });
+    for (const args of [
+      {},
+      { success: false },
+      { operation: 'update' },
+      { operation: 'revoke', all_clients: true },
+      { all_clients: true },
+      { summary_only: true },
+      { summary_only: true, all_clients: true },
+      { summary_only: true, outcome: 'error' },
+    ]) {
       const { text, structured } = await runToolCall('ynab_audit_log', args, client);
       expect(structured).toBeDefined();
       expect(text).toBe(JSON.stringify(structured, null, 2));
       expectValid('ynab_audit_log', structured);
     }
+    const revoke = (await runToolCall('ynab_audit_log', { operation: 'revoke', all_clients: true }, client)).structured as {
+      all_clients?: boolean;
+      entries: Array<{ success: boolean | null }>;
+      summary: { revocation_count: number };
+    };
+    expect(revoke.all_clients).toBe(true);
+    expect(revoke.entries.map((e) => e.success)).toEqual([null]);
+    expect(revoke.summary.revocation_count).toBe(1);
   });
 
   it('ynab_audit_log: a row with an operation and outcome this release does not know still validates', async () => {

@@ -35,6 +35,7 @@ import type { ClientSchemaValidator } from './types.js';
 import { TOKEN_HASHING_BACKFILL } from './token-hashing-migration.js';
 import { CLIENT_CONVERSION_BACKFILL, M4_COLUMNS, OAUTH_ROWS_TABLE } from './oauth-rows-migration.js';
 import { AUDIT_LOG_TABLE } from './audit-rows.js';
+import { RATE_LIMIT_BUCKETS_TABLE, RATE_LIMIT_HITS_TABLE, RATE_LIMIT_WRITES_TABLE } from './shared-limits.js';
 
 export type Dialect = 'sqlite' | 'postgres';
 
@@ -131,9 +132,9 @@ export interface MigrationTx {
 /**
  * The version of this release's schema: the highest step applied. Bump it with
  * each step (M1 is 2, STOR-1's M2 is 3, #52's M3 is 4, ADR-0002's M4 is 5,
- * #48 and #54e's M5 is 6, #60a's M6 is 7, and so on).
+ * #48 and #54e's M5 is 6, #60a's M6 is 7, #67's M7 is 8, and so on).
  */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /** The release these migrations ship in. A database stamped with a newer floor is refused. */
 export const STORAGE_RELEASE = '0.5.0';
@@ -185,6 +186,12 @@ export const ADDED_TABLES: readonly AddedTable[] = [
   // statements, so a restart takes no index lock on a table replicas write).
   // Older releases ignore it.
   AUDIT_LOG_TABLE,
+  // M7 (schema 8, #67): the shared rate-limit state (RATE_LIMIT_STORE=postgres),
+  // one entry per table so each is checked on its own. Created on every SQL
+  // driver; only the Postgres store writes them. Older releases ignore them.
+  RATE_LIMIT_HITS_TABLE,
+  RATE_LIMIT_BUCKETS_TABLE,
+  RATE_LIMIT_WRITES_TABLE,
 ];
 
 /** Columns added since 0.3.x, applied in order. */

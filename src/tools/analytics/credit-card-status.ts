@@ -12,6 +12,7 @@ import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -19,6 +20,41 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
+
+/**
+ * What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings.
+ * With no open credit card account it returns only status (no_credit_cards), message and
+ * an empty credit_cards.
+ */
+export const creditCardStatusOutputSchema = z.object({
+  status: z.enum(['no_credit_cards', 'all_covered', 'some_covered', 'underfunded']),
+  message: z.string(),
+  month: z.string().exactOptional(),
+  summary: z
+    .object({
+      total_cards: z.number().int(),
+      total_balance: z.string(),
+      total_payment_available: z.string(),
+      total_shortfall: z.string(),
+      cards_covered: z.number().int(),
+      cards_partial: z.number().int(),
+      cards_underfunded: z.number().int(),
+    })
+    .exactOptional(),
+  credit_cards: z.array(
+    z.object({
+      account: z.string(),
+      balance: z.string().describe('Amount owed'),
+      cleared: z.string(),
+      pending: z.string(),
+      payment_available: z.string(),
+      shortfall: z.string().nullable().describe('Null when the payment category covers the balance'),
+      status: z.enum(['covered', 'partial', 'underfunded']),
+    })
+  ),
+  tips: z.array(z.string()).exactOptional(),
+});
+export type CreditCardStatusOutput = z.output<typeof creditCardStatusOutputSchema>;
 
 // Tool definition
 export const creditCardStatusTool: Tool = {
@@ -44,6 +80,7 @@ Returns credit card balances with corresponding payment category balances.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(creditCardStatusOutputSchema),
 };
 
 interface CreditCardInfo {
@@ -63,7 +100,7 @@ interface CreditCardInfo {
 export async function handleCreditCardStatus(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<CreditCardStatusOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -82,15 +119,11 @@ export async function handleCreditCardStatus(
   );
 
   if (creditCards.length === 0) {
-    return JSON.stringify(
-      {
-        status: 'no_credit_cards',
-        message: 'No active credit card accounts found',
-        credit_cards: [],
-      },
-      null,
-      2
-    );
+    return {
+      status: 'no_credit_cards',
+      message: 'No active credit card accounts found',
+      credit_cards: [],
+    };
   }
 
   // Find Credit Card Payments category group
@@ -182,39 +215,35 @@ export async function handleCreditCardStatus(
     overallMessage = `${coveredCount} of ${cardInfos.length} cards fully covered`;
   }
 
-  return JSON.stringify(
-    {
-      status: overallStatus,
-      message: overallMessage,
-      month: currentMonth,
-      summary: {
-        total_cards: cardInfos.length,
-        total_balance: money(totalBalance),
-        total_payment_available: money(totalPaymentAvailable),
-        total_shortfall: money(totalShortfall),
-        cards_covered: coveredCount,
-        cards_partial: cardInfos.filter((c) => c.status === 'partial').length,
-        cards_underfunded: underfundedCount,
-      },
-      credit_cards: cardInfos.map((c) => ({
-        account: c.account_name,
-        balance: money(c.balance),
-        cleared: money(c.cleared_balance),
-        pending: money(c.uncleared_balance),
-        payment_available: money(c.payment_category_balance),
-        shortfall: c.payment_shortfall > 0 ? money(c.payment_shortfall) : null,
-        status: c.status,
-      })),
-      tips:
-        totalShortfall > 0
-          ? [
-              'Assign funds to credit card payment categories to cover balances',
-              'Payment categories auto-fill when you budget for credit card spending',
-              'Pay at least the cleared balance to avoid interest',
-            ]
-          : ['All credit cards are covered - great job!'],
+  return {
+    status: overallStatus,
+    message: overallMessage,
+    month: currentMonth,
+    summary: {
+      total_cards: cardInfos.length,
+      total_balance: money(totalBalance),
+      total_payment_available: money(totalPaymentAvailable),
+      total_shortfall: money(totalShortfall),
+      cards_covered: coveredCount,
+      cards_partial: cardInfos.filter((c) => c.status === 'partial').length,
+      cards_underfunded: underfundedCount,
     },
-    null,
-    2
-  );
+    credit_cards: cardInfos.map((c) => ({
+      account: c.account_name,
+      balance: money(c.balance),
+      cleared: money(c.cleared_balance),
+      pending: money(c.uncleared_balance),
+      payment_available: money(c.payment_category_balance),
+      shortfall: c.payment_shortfall > 0 ? money(c.payment_shortfall) : null,
+      status: c.status,
+    })),
+    tips:
+      totalShortfall > 0
+        ? [
+            'Assign funds to credit card payment categories to cover balances',
+            'Payment categories auto-fill when you budget for credit card spending',
+            'Pay at least the cleared balance to avoid interest',
+          ]
+        : ['All credit cards are covered - great job!'],
+  };
 }

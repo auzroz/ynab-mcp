@@ -3,9 +3,12 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleIncomeExpense } from '../../../../src/tools/analytics/income-expense.js';
+import { handleIncomeExpense as rawHandleIncomeExpense, incomeExpenseOutputSchema } from '../../../../src/tools/analytics/income-expense.js';
+import { validating } from './output.js';
 import { createMockClient, createTransactionsResponse } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleIncomeExpense = validating(incomeExpenseOutputSchema, rawHandleIncomeExpense);
 
 function tx(date: string, amount: number, id: string, transfer = false) {
   return {
@@ -38,8 +41,7 @@ describe('handleIncomeExpense', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
 
-    const result = await handleIncomeExpense({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleIncomeExpense({}, mockClient as never);
 
     expect(parsed.totals.total_income).toBeDefined();
     expect(parsed.totals.total_expenses).toBeDefined();
@@ -60,8 +62,7 @@ describe('handleIncomeExpense', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
 
-    const result = await handleIncomeExpense({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleIncomeExpense({}, mockClient as never);
 
     expect(parsed.status).toBe('concern');
     expect(parsed.message).toBe('Spending exceeds income');
@@ -71,8 +72,7 @@ describe('handleIncomeExpense', () => {
     const txns = [tx('2024-01-20', -300000, 'e1')];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
 
-    const result = await handleIncomeExpense({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleIncomeExpense({}, mockClient as never);
 
     expect(parsed.status).toBe('concern');
     expect(parsed.message).toBe('No income recorded, but expenses occurred');
@@ -82,8 +82,7 @@ describe('handleIncomeExpense', () => {
   it('handles completely empty period (warning)', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([] as never));
 
-    const result = await handleIncomeExpense({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleIncomeExpense({}, mockClient as never);
 
     expect(parsed.status).toBe('warning');
     expect(parsed.message).toBe('No income or expenses recorded in this period');
@@ -98,8 +97,7 @@ describe('handleIncomeExpense', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
 
-    const result = await handleIncomeExpense({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleIncomeExpense({}, mockClient as never);
 
     // Only income should count; no expenses
     expect(parsed.totals.total_expenses).toMatch(/0\.00/);
@@ -121,8 +119,7 @@ describe('handleIncomeExpense', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
 
-    const result = await handleIncomeExpense({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleIncomeExpense({}, mockClient as never);
 
     expect(parsed.trend).toBe('improving');
   });

@@ -12,6 +12,7 @@ import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -33,6 +34,38 @@ const inputSchema = z.object({
     .optional()
     .describe('Search category names (partial match)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const categoryBalancesOutputSchema = z.object({
+  month: z.string(),
+  filter: z.string().describe('The filters applied, or "none"'),
+  summary: z.object({
+    categories_shown: z.number().int(),
+    total_balance: z.string(),
+    total_budgeted: z.string(),
+    total_activity: z.string(),
+  }),
+  by_group: z.array(
+    z.object({
+      group: z.string(),
+      category_count: z.number().int(),
+      total_balance: z.string(),
+      categories: z.array(
+        z.object({
+          name: z.string(),
+          balance: z.string(),
+          budgeted: z.string(),
+          activity: z.string(),
+        })
+      ),
+    })
+  ),
+  top_balances: z
+    .array(z.object({ category: z.string(), group: z.string(), balance: z.string(), budgeted: z.string() }))
+    .describe('At most 10'),
+  negative_balances: z.array(z.object({ category: z.string(), group: z.string(), balance: z.string() })),
+});
+export type CategoryBalancesOutput = z.output<typeof categoryBalancesOutputSchema>;
 
 // Tool definition
 export const categoryBalancesTool: Tool = {
@@ -73,6 +106,7 @@ Returns current category balances with filtering options.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(categoryBalancesOutputSchema),
 };
 
 interface CategoryBalance {
@@ -91,7 +125,7 @@ interface CategoryBalance {
 export async function handleCategoryBalances(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<CategoryBalancesOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -201,32 +235,28 @@ export async function handleCategoryBalances(
   if (validated.group) filterDesc.push(`group: "${sanitizeString(validated.group, 100) ?? ''}"`);
   if (validated.search) filterDesc.push(`search: "${sanitizeString(validated.search, 100) ?? ''}"`);
 
-  return JSON.stringify(
-    {
-      month: currentMonth,
-      filter: filterDesc.length > 0 ? filterDesc.join(', ') : 'none',
-      summary: {
-        categories_shown: categories.length,
-        total_balance: money(totalBalance),
-        total_budgeted: money(totalBudgeted),
-        total_activity: money(totalActivity),
-      },
-      by_group: groupSummaries.map(({ _rawBalance, ...rest }) => rest),
-      top_balances: categories.slice(0, 10).map((c) => ({
+  return {
+    month: currentMonth,
+    filter: filterDesc.length > 0 ? filterDesc.join(', ') : 'none',
+    summary: {
+      categories_shown: categories.length,
+      total_balance: money(totalBalance),
+      total_budgeted: money(totalBudgeted),
+      total_activity: money(totalActivity),
+    },
+    by_group: groupSummaries.map(({ _rawBalance, ...rest }) => rest),
+    top_balances: categories.slice(0, 10).map((c) => ({
+      category: c.category_name,
+      group: c.group_name,
+      balance: money(c.balance),
+      budgeted: money(c.budgeted),
+    })),
+    negative_balances: categories
+      .filter((c) => c.balance < 0)
+      .map((c) => ({
         category: c.category_name,
         group: c.group_name,
         balance: money(c.balance),
-        budgeted: money(c.budgeted),
       })),
-      negative_balances: categories
-        .filter((c) => c.balance < 0)
-        .map((c) => ({
-          category: c.category_name,
-          group: c.group_name,
-          balance: money(c.balance),
-        })),
-    },
-    null,
-    2
-  );
+  };
 }

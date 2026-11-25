@@ -11,6 +11,7 @@ import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import DecimalJS from 'decimal.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
 
@@ -27,6 +28,48 @@ const inputSchema = z.object({
     .optional()
     .describe('Number of months to analyze (default 3)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings, *_milliunits raw. */
+export const savingsOpportunitiesOutputSchema = z.object({
+  opportunities: z
+    .array(
+      z.object({
+        type: z.enum(['recurring_expense', 'high_variance', 'discretionary', 'underused_subscription', 'large_single']),
+        category: z.string(),
+        description: z.string(),
+        potential_monthly_savings: z.string(),
+        potential_monthly_savings_milliunits: z.number().int(),
+        current_monthly_spend: z.string(),
+        current_monthly_spend_milliunits: z.number().int(),
+        suggestion: z.string(),
+        confidence: z.enum(['high', 'medium', 'low']),
+      })
+    )
+    .describe('At most 15, largest savings first'),
+  summary: z.object({
+    total_opportunities_found: z.number().int(),
+    total_potential_monthly_savings: z.string(),
+    total_potential_monthly_savings_milliunits: z.number().int(),
+    high_confidence_savings: z.string(),
+    high_confidence_savings_milliunits: z.number().int(),
+    current_monthly_spend: z.string(),
+    current_monthly_spend_milliunits: z.number().int(),
+    potential_savings_percent: z.number().int(),
+    analysis_period: z.string(),
+  }),
+  quick_wins: z
+    .array(
+      z.object({
+        category: z.string(),
+        description: z.string(),
+        potential_savings: z.string(),
+        potential_savings_milliunits: z.number().int(),
+        action: z.string(),
+      })
+    )
+    .describe('High-confidence opportunities, at most 5'),
+});
+export type SavingsOpportunitiesOutput = z.output<typeof savingsOpportunitiesOutputSchema>;
 
 // Tool definition
 export const savingsOpportunitiesTool: Tool = {
@@ -58,6 +101,7 @@ Analyzes spending to identify areas where cuts might be possible.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(savingsOpportunitiesOutputSchema),
 };
 
 interface SavingsOpportunity {
@@ -104,7 +148,7 @@ const DISCRETIONARY_CATEGORIES = [
 export async function handleSavingsOpportunities(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<SavingsOpportunitiesOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -330,32 +374,28 @@ export async function handleSavingsOpportunities(
     return sum + o.potential_monthly_savings_milliunits;
   }, 0);
 
-  return JSON.stringify(
-    {
-      opportunities: deduped.slice(0, 15), // Top 15 opportunities
-      summary: {
-        total_opportunities_found: deduped.length,
-        total_potential_monthly_savings: money(totalPotentialSavingsMilliunits),
-        total_potential_monthly_savings_milliunits: totalPotentialSavingsMilliunits,
-        high_confidence_savings: money(highConfidenceSavingsMilliunits),
-        high_confidence_savings_milliunits: highConfidenceSavingsMilliunits,
-        current_monthly_spend: money(totalCurrentSpend),
-        current_monthly_spend_milliunits: Math.round(totalCurrentSpend),
-        potential_savings_percent:
-          totalCurrentSpend > 0
-            ? Math.round((totalPotentialSavingsMilliunits / totalCurrentSpend) * 100)
-            : 0,
-        analysis_period: `${months} months`,
-      },
-      quick_wins: highConfidenceOpportunities.slice(0, 5).map((o) => ({
-        category: o.category,
-        description: o.description,
-        potential_savings: o.potential_monthly_savings,
-        potential_savings_milliunits: o.potential_monthly_savings_milliunits,
-        action: o.suggestion,
-      })),
+  return {
+    opportunities: deduped.slice(0, 15), // Top 15 opportunities
+    summary: {
+      total_opportunities_found: deduped.length,
+      total_potential_monthly_savings: money(totalPotentialSavingsMilliunits),
+      total_potential_monthly_savings_milliunits: totalPotentialSavingsMilliunits,
+      high_confidence_savings: money(highConfidenceSavingsMilliunits),
+      high_confidence_savings_milliunits: highConfidenceSavingsMilliunits,
+      current_monthly_spend: money(totalCurrentSpend),
+      current_monthly_spend_milliunits: Math.round(totalCurrentSpend),
+      potential_savings_percent:
+        totalCurrentSpend > 0
+          ? Math.round((totalPotentialSavingsMilliunits / totalCurrentSpend) * 100)
+          : 0,
+      analysis_period: `${months} months`,
     },
-    null,
-    2
-  );
+    quick_wins: highConfidenceOpportunities.slice(0, 5).map((o) => ({
+      category: o.category,
+      description: o.description,
+      potential_savings: o.potential_monthly_savings,
+      potential_savings_milliunits: o.potential_monthly_savings_milliunits,
+      action: o.suggestion,
+    })),
+  };
 }

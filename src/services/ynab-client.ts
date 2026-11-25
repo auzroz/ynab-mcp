@@ -18,7 +18,7 @@ import {
   YnabApiError,
   YnabAuthError,
 } from '../utils/errors.js';
-import { WriteLimiter } from './write-limiter.js';
+import { WriteLimiter, type WriteCap } from './write-limiter.js';
 import { NO_CLIENT, type ClientUsage, type ClientUsageStatus } from './client-usage.js';
 import { WRITE_LIMIT_DEFAULT_PER_HOUR } from '../config/write-limit.js';
 import type { AuditLog } from './audit-log.js';
@@ -57,7 +57,7 @@ export interface YnabClientOptions {
   /** The user's circuit breaker (#58); none: no breaking. */
   breaker?: CircuitBreaker | undefined;
   /** The user's write cap (#61c); a client built without one gets the default cap of its own. */
-  writeLimiter?: WriteLimiter | undefined;
+  writeLimiter?: WriteCap | undefined;
   /** The calling MCP client (oauth mode), for the per-client usage report (#58). */
   clientId?: string | undefined;
   /** The user's per-client usage (#58); none: not reported. */
@@ -263,6 +263,25 @@ function isKnowledge(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+/** A YNAB transaction id: a UUID, with a date suffix for a scheduled occurrence. Never free text. */
+const YNAB_TRANSACTION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:_\d{4}-\d{2}-\d{2})?$/i;
+
+/**
+ * The ids of the transactions a create or bulk update saved, as YNAB's
+ * response names them (#60b's per-item audit rows). Duplicates YNAB skipped
+ * (`duplicate_import_ids`) are not among them; `import_id` (user text) is
+ * never used.
+ */
+function savedTransactionIds(response: ynab.SaveTransactionsResponse): string[] {
+  const data = response.data;
+  const ids =
+    data.transaction !== undefined && data.transaction !== null
+      ? [data.transaction.id]
+      : // Both lists: either may be empty or absent (recordMany drops the duplicates).
+        [...(data.transactions?.map((t) => t.id) ?? []), ...(data.transaction_ids ?? [])];
+  return ids.filter((v): v is string => typeof v === 'string' && YNAB_TRANSACTION_ID.test(v));
+}
+
 /** Shallow copy of a response with some data fields replaced. */
 function withData<R extends { data: object }>(response: R, data: Partial<R['data']>): R {
   return { ...response, data: { ...response.data, ...data } };
@@ -369,7 +388,7 @@ export class YnabClient {
   // Per user in HTTP mode (UserComponents), so it outlives this client.
   private readonly feedState: TransactionFeedState;
   private readonly breaker: CircuitBreaker | undefined;
-  private readonly writeLimiter: WriteLimiter;
+  private readonly writeLimiter: WriteCap;
   private readonly clientKey: string;
   private readonly clientUsage: ClientUsage | undefined;
   private readonly readOnlyReason: ReadOnlyReason;
@@ -598,10 +617,13 @@ export class YnabClient {
    * agent adds one row, not one per call).
    * Returns a handle that gives the slot back; the caller uses it only when
    * the call failed input validation, before any YNAB request.
+   * With RATE_LIMIT_STORE=postgres the cap is counted across replicas (#67),
+   * so admission waits on the database.
    * @throws WriteLimitError when the cap is used up
+   * @throws RateLimitStoreUnavailableError when the shared cap can't be read (fail closed)
    */
-  admitWrite(_tool: string): () => void {
-    const admission = this.writeLimiter.tryAcquire();
+  async admitWrite(_tool: string): Promise<() => void> {
+    const admission = await this.writeLimiter.tryAcquire();
     if (admission.allowed) return admission.release;
     throw new WriteLimitError(admission.limit, admission.resetsAt, admission.retryAfterMs, admission.firstRefusal);
   }
@@ -618,6 +640,19 @@ export class YnabClient {
    */
   getRateLimitStatus(): ReturnType<RequestLimiter['getStatus']> {
     return this.rateLimiter.getStatus();
+  }
+
+  /**
+   * Read a shared rate limit (RATE_LIMIT_STORE=postgres) again before
+   * getRateLimitStatus(). Status only: when the store can't be read, the last
+   * value read stays and nothing is thrown.
+   */
+  async refreshRateLimitStatus(): Promise<void> {
+    try {
+      await this.rateLimiter.refresh?.();
+    } catch {
+      // Logged by the store; the status shows the last value read.
+    }
   }
 
   /**
@@ -1640,17 +1675,11 @@ export class YnabClient {
     try {
       const response = await this.api.transactions.createTransaction(budgetId, data);
       this.invalidateTransactionHistory(budgetId);
-      // One row per call; it names the transaction when the call created exactly one.
-      const created = response.data.transaction?.id ??
-        (response.data.transactions?.length === 1 ? response.data.transactions[0]?.id : undefined);
-      await auditLog.record({
-        operation: 'create',
-        tool: 'ynab_create_transaction',
-        budgetId,
-        resourceType: 'transaction',
-        resourceId: created,
-        outcome: 'success',
-      });
+      // One row per transaction created (#60b), all with the call's request id.
+      await auditLog.recordMany(
+        { operation: 'create', tool: 'ynab_create_transaction', budgetId, resourceType: 'transaction', outcome: 'success' },
+        savedTransactionIds(response)
+      );
       return response;
     } catch (error) {
       await auditLog.record({
@@ -1709,13 +1738,11 @@ export class YnabClient {
     try {
       const response = await this.api.transactions.updateTransactions(budgetId, data);
       this.invalidateTransactionHistory(budgetId);
-      await auditLog.record({
-        operation: 'update',
-        tool: 'ynab_update_transactions',
-        budgetId,
-        resourceType: 'transaction',
-        outcome: 'success',
-      });
+      // One row per transaction updated (#60b), all with the call's request id.
+      await auditLog.recordMany(
+        { operation: 'update', tool: 'ynab_update_transactions', budgetId, resourceType: 'transaction', outcome: 'success' },
+        savedTransactionIds(response)
+      );
       return response;
     } catch (error) {
       await auditLog.record({

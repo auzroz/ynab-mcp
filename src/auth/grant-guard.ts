@@ -27,6 +27,13 @@
  *
  * The response is a fixed `invalid_grant`, the same as for an unknown value.
  * A storage failure is a 500 `server_error`, logged sanitized.
+ *
+ * #60b: a revocation here is one audit row (`revoked_reuse`), written only
+ * when this call's `revokeOAuthGrant` deleted the grant's rows, so two
+ * requests presenting one spent credential at once record it once. The row
+ * names the grant's user, the presenting client and the revoked grant, never
+ * the credential. Recording waits a bounded time and never changes the
+ * response.
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
@@ -35,6 +42,7 @@ import { z } from 'zod';
 import type { OAuthRowStore } from '../storage/types.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { InvalidGrantError, ServerError, sendOAuthError } from './errors.js';
+import type { RevocationRecorder } from './revocation-audit.js';
 
 /** The library's own description for every refused grant (`errors.InvalidGrant`). */
 export const INVALID_GRANT_DESCRIPTION = 'grant request is invalid';
@@ -43,10 +51,14 @@ export interface GrantGuardOptions {
   provider: Provider;
   /** Revokes a grant with everything under it (the adapter's `revokeByGrantId`). */
   store: Pick<OAuthRowStore, 'revokeOAuthGrant'>;
+  /** #60b: the audit log's revocation rows; absent, nothing is recorded. */
+  revocations?: RevocationRecorder | undefined;
 }
 
 /** What the stage reads of a refresh token or code. */
 interface GrantCredential {
+  /** The grant's user (the YNAB user id). */
+  accountId?: string | undefined;
   clientId?: string | undefined;
   grantId?: string | undefined;
   consumed?: unknown;
@@ -65,7 +77,7 @@ function fieldsOf(body: unknown): Record<string, unknown> {
   return body !== null && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
 }
 
-export function grantGuard({ provider, store }: GrantGuardOptions): RequestHandler {
+export function grantGuard({ provider, store, revocations }: GrantGuardOptions): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     // Only the token endpoint itself (the mount's root); nothing under it is a grant request.
     if (req.method !== 'POST' || req.path !== '/') {
@@ -109,8 +121,9 @@ export function grantGuard({ provider, store }: GrantGuardOptions): RequestHandl
       return;
     }
 
+    let deleted: number;
     try {
-      await store.revokeOAuthGrant(found.grantId);
+      deleted = await store.revokeOAuthGrant(found.grantId);
     } catch (err) {
       console.error('[OAuth] grant-guard could not revoke a grant:', sanitizeErrorMessage(err));
       sendOAuthError(res, new ServerError('Internal Server Error'));
@@ -120,6 +133,17 @@ export function grantGuard({ provider, store }: GrantGuardOptions): RequestHandl
       `[OAuth] A ${foreign ? 'credential of another client' : 'consumed credential'} was presented at /token ` +
         `(${label}); revoked its grant`
     );
+    if (deleted > 0 && revocations !== undefined) {
+      await revocations.record({
+        userId: typeof found.accountId === 'string' ? found.accountId : undefined,
+        // The presenting client (authenticated by client-auth); its own grant only when it is the revoked one.
+        clientId,
+        familyId: foreign ? undefined : found.grantId,
+        grantId: found.grantId,
+        outcome: 'revoked_reuse',
+      });
+    }
+
     sendOAuthError(res, new InvalidGrantError(INVALID_GRANT_DESCRIPTION));
   };
 }

@@ -49,6 +49,8 @@ Set these environment variables (see `.env.example`):
 | `STORAGE_DRIVER` | no | `memory` (default, **non-durable**), `sqlite`, or `postgres` |
 | `SQLITE_PATH` | if sqlite | e.g. `/data/ynab-mcp.db` |
 | `DATABASE_URL` | if postgres | `postgres://user:pass@host:5432/db` |
+| `RATE_LIMIT_STORE` | no | Where the rate limits are kept: `memory` (default, each process its own) or `postgres` (shared by every replica on the database: the per-user YNAB budget, the authorization server's limits and the metadata-document fetch budget). `postgres` requires `STORAGE_DRIVER=postgres`; any other value refuses to start. See "Several replicas: shared rate limits" |
+| `MCP_REPLICAS` | no | How many replicas serve this deployment (integer 1-1000, default `1`). Only used for a startup warning: more than one with `RATE_LIMIT_STORE=memory` warns that every limit is per replica. See "Several replicas: shared rate limits" |
 | `MCP_RESOURCE_URL` | no | Absolute URL of the MCP endpoint (the OAuth resource/audience). Default `PUBLIC_URL` + `/mcp`. Must be https (http only for `localhost`, `127.0.0.1`, `[::1]`), no fragment |
 | `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | no | Comma-separated Host / Origin allowlists. Explicit values **replace** the derived defaults. Defaults: host and origin of `PUBLIC_URL`, plus `localhost`, `127.0.0.1`, `[::1]` (bare and with `:PORT`) when `PUBLIC_URL` is unset or loopback |
 | `ENABLE_DNS_REBINDING_PROTECTION` | no | Host/Origin validation, **on by default** (previously off; a breaking default in 0.4.0). `false` disables it entirely. **Unsafe**: see "Host and Origin validation" |
@@ -58,7 +60,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_REQUEST_TIMEOUT_MS` | no | Longest a `/mcp` request runs (integer 5000-300000, default `60000`). See "Requests, limits and timeouts" |
 | `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` / `MCP_SESSION_IDLE_TIMEOUT_MS` | no | **Deprecated, no effect** since 0.5.0 (`/mcp` is stateless). Still parsed, so a malformed value refuses to start; a set value logs a warning once at startup. Removed in 0.6 |
 | `RATE_LIMIT_MAX_WAIT_MS` | no | Longest a request waits for a per-user YNAB rate-limit token (integer 0-60000, default `2000`). `0` never waits. Past that, or when another request is already waiting, the tool returns `rate_limited` with `retry_after_seconds` at once, so a burst can't pile up behind the limiter |
-| `YNAB_WRITE_LIMIT_PER_HOUR` | no | Write requests one user may make per hour (integer 0-1000, default `20`; **breaking** in 0.5.0, since writes were previously unlimited). One write tool call counts as 1, so a bulk call is 1. `0` turns the cap off. Counted per user (the YNAB user in oauth mode, the token in header mode), shared by all of that user's clients and requests, in memory: a restart resets it. A refused write returns `write_limit_exceeded` naming the limit and when it resets, and takes no YNAB request. Separate from `RATE_LIMIT_PER_HOUR` |
+| `YNAB_WRITE_LIMIT_PER_HOUR` | no | Write requests one user may make per hour (integer 0-1000, default `20`; **breaking** in 0.5.0, since writes were previously unlimited). One write tool call counts as 1, so a bulk call is 1. `0` turns the cap off. Counted per user (the YNAB user in oauth mode, the token in header mode), shared by all of that user's clients and requests, in memory (a restart resets it), or across every replica with `RATE_LIMIT_STORE=postgres`. A refused write returns `write_limit_exceeded` naming the limit and when it resets, and takes no YNAB request. Separate from `RATE_LIMIT_PER_HOUR` |
 | `TRUST_PROXY` | if behind a reverse proxy | Number of proxies between the client and this server whose `X-Forwarded-For` to trust (integer 0-10, default `0`; e.g. `1` behind a single Traefik/Caddy/nginx). Too low and every client shares one rate-limit bucket, so one client can lock out the others; too high and clients can spoof their address. Set it only when the app is reachable solely through the proxy. See "Client addresses and rate limits" |
 | `TRUST_CF_CONNECTING_IP` | no | `true` to take the client address from `CF-Connecting-IP` (default `false`). Separate from `TRUST_PROXY`; turn it on only when the server is reachable solely through Cloudflare. See "Client addresses and rate limits" |
 | `REGISTER_RATE_LIMIT_PER_IP` | no | `/register` requests per client address per hour (integer 1-100000, default `100`) |
@@ -75,6 +77,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_REFRESH_TOKEN_TTL_DAYS` | no | A connection ends this many days after its sign-in, however often it is refreshed (integer 1-3650, default `90`) |
 | `MCP_ABANDONED_CLIENT_HOURS` | no | A registered client that never completed a sign-in is deleted after this many hours (integer 1-87600, default `24`) |
 | `MCP_UNUSED_CLIENT_DAYS` | no | A client with no live connection is deleted this many days after its last sign-in (integer 1-3650, default `90`) |
+| `AUDIT_RETENTION_DAYS` | no | Audit log entries are deleted this many days after they were written (integer 1-3650, default `90`; `0` is refused). OAuth mode's durable log only: stdio and header mode keep the newest 1,000 entries per user in memory. See "The audit log" |
 
 OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
 `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL`; startup is refused if any is missing.
@@ -345,7 +348,10 @@ fetch is our own, not the library's:
   document fetches per 15 minutes. A cached document costs nothing. Past the
   budget the request is refused without a fetch.
 
-The caches and the budget are in memory, so each replica fetches on its own.
+The document caches (and the cache of failed URLs) are in memory, so each
+replica fetches a document on its own. The fetch budget is per process too,
+unless `RATE_LIMIT_STORE=postgres` shares it across the replicas (see
+"Several replicas: shared rate limits").
 A client using a metadata document gets one row in storage when its first
 sign-in completes (it has no registration), which the unused-client cleanup
 removes like any other client.
@@ -434,7 +440,9 @@ name there gets "Unknown tool".
   (a 43-character grant id, or a 0.4.x UUID) is refused before storage is
   read. A client may revoke its own connection. The reply then says
   `this_connection: true`, the current request still finishes, and the next
-  one is refused.
+  one is refused. Each revoke that ends a connection is one `revoked` entry
+  in the audit log (see "Revoked connections"); a `not_found` reply writes
+  none.
 - **`ynab_disconnect { confirm: "DISCONNECT" }`** erases the user's account on
   this server, with the same step as [erasing an inactive
   user](#erasing-inactive-users). That covers the stored YNAB tokens, every
@@ -558,16 +566,19 @@ the last hour).
 Snapshots are bounded per user (32 snapshots, 20,000 entities, dropped after 30
 minutes unused), so budget roughly that much memory per active user. This state
 is kept for an hour after the user's last request, so a quiet hour doesn't reset
-the rate limit. With several replicas, these caps, the rate limit and the caches
-are per process.
+the rate limit. With several replicas, these caps and the caches are per
+process, and so is the rate limit unless `RATE_LIMIT_STORE=postgres` (see
+"Several replicas: shared rate limits").
 
-The write cap (`YNAB_WRITE_LIMIT_PER_HOUR`) is the same kind of per-process,
-in-memory state, held per user next to the rate limiter, the circuit breaker and
-the caches, and shared by all of the user's requests and clients. A restart
-resets it. In header mode, where any token counts as a user, evicting the
-least recently used user entry under load (past 10,000 retained users) can reset it
-too. With several replicas each process counts on its own, so a user can make up
-to the limit per replica. A write call that fails input validation gives its slot
+The write cap (`YNAB_WRITE_LIMIT_PER_HOUR`) is by default the same kind of
+per-process, in-memory state, held per user next to the rate limiter, the
+circuit breaker and the caches, and shared by all of the user's requests and
+clients. A restart resets it. In header mode, where any token counts as a user,
+evicting the least recently used user entry under load (past 10,000 retained
+users) can reset it too. With several replicas each process counts on its own,
+so a user could make up to the limit per replica; `RATE_LIMIT_STORE=postgres`
+makes it one cap across the replicas (see "Several replicas: shared rate
+limits"). A write call that fails input validation gives its slot
 back; one that YNAB rejects keeps it. In OAuth mode every request looks up the user's YNAB grant and
 access token, refreshing the token when it expires. Once the user's YNAB grant
 is gone, or YNAB rejects its refresh token (`invalid_grant`), requests are
@@ -623,6 +634,93 @@ applies at once. The columns come with schema 6 (0.5.0): `encrypted_access_token
 `last_seen_at` on `users`, all nullable. 0.4.x ignores them, but don't run
 0.4.x and 0.5.0 replicas together (see "Encrypted YNAB tokens").
 
+### Several replicas: shared rate limits
+
+By default every limit lives in the process that enforces it. With several
+replicas behind a load balancer, each one counts on its own: a user could
+spend up to N times `RATE_LIMIT_PER_HOUR` YNAB requests an hour (YNAB itself
+allows 200 per token and answers `429` past that), and every
+authorization-server limit is N times as large. Set `MCP_REPLICAS` to the
+number of replicas and the server warns at startup while the limits are per
+process.
+
+`RATE_LIMIT_STORE=postgres` (0.5.0, #67) keeps these limits in the storage
+database instead, so every replica on it counts against one budget:
+
+- **The per-user YNAB budget** (`RATE_LIMIT_PER_HOUR`). One row per user in
+  `rate_limit_buckets`, changed by one statement under the row's lock on the
+  database's clock, so replicas never spend more than the budget between them.
+  The rules stay those of a single process: a call that finds the budget empty
+  fails at once with `rate_limited` and `retry_after_seconds`; it waits for a
+  token only when one is due within `RATE_LIMIT_MAX_WAIT_MS` and no other call
+  of that user is already waiting, now on any replica; a multi-request tool
+  reserves its whole fan-out in one statement, or refuses with the retry time.
+  A YNAB `429` is shared too, so no replica keeps sending into YNAB's window.
+- **The per-user write cap** (`YNAB_WRITE_LIMIT_PER_HOUR`). One row per user
+  in `rate_limit_writes` holding the admission times of the last hour, changed
+  by one statement under the row's lock, so the replicas admit at most the cap
+  between them. The window is the in-memory one, sliding: at most the cap in
+  any 60 minutes, and the next write is allowed once the oldest counted one is
+  an hour old. (A fixed window would have been one counter, but would let up to
+  twice the cap through across a window boundary.) The first refusal of an
+  episode is audited once, whichever replica refuses it, as `denied_write_limit`.
+  A write that fails input validation gives its slot back, as before.
+- **The authorization server's limits** on `/authorize`, `/token`, `/revoke`,
+  `/register` and the `/oauth` legs (see "What is limited, and by what key"),
+  and the **metadata-document fetch budget** (see "Client ID Metadata
+  Documents"). One row per limiter and key in `rate_limit_hits`: the same
+  windows as in memory (fixed, starting at a key's first request), counted
+  atomically. The key is stored as an HMAC-SHA256 of the limiter's name and
+  key under a key derived from the token pepper (`TOKEN_PEPPER`, or derived
+  from `ENCRYPTION_KEY`), so a copy of the database can't be turned back into
+  client addresses or `client_id`s without the pepper. Every replica has the
+  same pepper, so they agree on the keys. A row lasts only as long as its
+  window.
+
+It needs `AUTH_MODE=oauth` and `STORAGE_DRIVER=postgres`; any other driver,
+header mode, or a value other than `memory` or `postgres` refuses to start.
+Nothing turns it on by itself, `MCP_REPLICAS` included. The tables come with
+schema 8 (0.5.0) on every SQL driver; on SQLite they stay empty. The sweep
+removes windows that have ended, buckets that are full again and write caps
+with no write in the last hour, and erasing a user (see "Erasing inactive
+users") removes their bucket and write-cap row. A request still running at
+that moment may write them back; the sweep removes them once they limit
+nothing.
+
+**When the database can't answer, requests are refused, never let through.**
+The limiters use a small pool of their own (four connections) with short
+bounds: a statement is cancelled after 1 second, a reply is given up on after
+2 seconds, and a connection must open within 2 seconds. A limiter that can't
+answer within them refuses the request: a tool call gets `upstream_unavailable`
+with `retry_after_seconds: 5` (nothing is sent to YNAB; a refused write is
+recorded in the audit log as `error`, under the same bound of 20 per user per
+hour as read-only refusals), and a rate-limited
+authorization-server request gets its route's usual `429` with
+`Retry-After: 5`. There is no fallback to per-process limits, which would
+hand each replica the whole budget again. One stderr line every 30 seconds
+says the store is unavailable, without values. The storage driver's own
+requests keep their usual bounds; with the database down, signing in and
+`/mcp` fail anyway.
+
+`ynab_rate_limit_status` then reports `rate_limit.store: "postgres"`: the
+available and used requests are the shared budget, read from the database,
+and `usage` and `client_usage` count this replica's requests only.
+
+What stays per process, whatever the setting:
+
+- the in-flight caps (`MCP_MAX_INFLIGHT_PER_USER`, `MCP_MAX_INFLIGHT_PER_CLIENT`,
+  `MCP_MAX_INFLIGHT`), so N replicas allow N times as many requests in flight;
+- the circuit breaker, per user;
+- the response cache and the delta-sync snapshots;
+- the audit log's bound on recorded refusals (20 per user per hour, see "The
+  audit log");
+- the per-client usage counts in `ynab_rate_limit_status` (`client_usage`);
+- the Client ID Metadata Document caches (documents and failed URLs).
+
+The YNAB token refresh, the refresh-retry window and the replay detection
+(see "Refresh-token rotation and reuse detection") are in the database and
+work across replicas with either setting.
+
 ### Retention and the sweep
 
 Credentials and registrations expire on a schedule, and a background sweep
@@ -635,6 +733,7 @@ setting.
 | Connection, in total | 90 days after its sign-in, however often it is refreshed | `MCP_REFRESH_TOKEN_TTL_DAYS` (1-3650) |
 | Client that never completed a sign-in | 24 hours after registering | `MCP_ABANDONED_CLIENT_HOURS` (1-87600) |
 | Client with no live connection | 90 days after its last sign-in | `MCP_UNUSED_CLIENT_DAYS` (1-3650) |
+| Audit log entry | 90 days after it was written | `AUDIT_RETENTION_DAYS` (1-3650) |
 | Access token, authorization code, sign-in in progress | their own short lifetimes (`MCP_ACCESS_TOKEN_TTL_SEC`, `MCP_AUTH_CODE_TTL_SEC`) | not retention settings |
 | Spent codes and refresh tokens | kept 30 days after use so a replay can still revoke its grant | fixed |
 
@@ -656,12 +755,24 @@ others skip that pass. It deletes, in small batches:
 - expired connections once nothing is left under them;
 - abandoned and unused clients, once nothing refers to them.
 
+Then, as its own step (`audit-log`), it deletes audit log entries older than
+`AUDIT_RETENTION_DAYS`, in batches through the `(ts)` index. That step takes
+no lock: on Postgres a batch skips rows another replica's batch holds, so
+replicas pruning at once never wait on each other.
+
+Last (`rate-limit-rows`), it deletes the shared rate-limit rows
+(`RATE_LIMIT_STORE=postgres`) that limit nothing any more: windows that have
+ended, buckets that are full again, and write caps with no write in the last
+hour. It takes no lock either; its batches skip rows a limiter holds.
+
 It never deletes users: that is the opt-in "Erasing inactive users" below. A
 failed pass is logged and the next one runs on schedule. The log gives counts
 only, never a token, user or client id:
 
 ```text
 [Sweep] expired-rows: deleted accessTokens=12 refreshTokens=3 oauthAbandonedClients=1
+[Sweep] audit-log: deleted auditRows=240
+[Sweep] rate-limit-rows: deleted rateLimitWindows=40 rateLimitBuckets=2 rateLimitWrites=1
 ```
 
 ### Erasing inactive users
@@ -693,11 +804,13 @@ YNAB's settings.
 
 ### The audit log
 
-Every write tool call is recorded with how it ended (#60a). In OAuth mode the
-entries go to the storage driver's `audit_log` table, so with `sqlite` or
-`postgres` they survive restarts and every replica writes to one log. In
-header mode, which has no storage, and on stdio they are kept in memory, the
-newest 1,000 per user.
+Every write tool call is recorded with how it ended (#60a), and in OAuth mode
+so is every revoked connection (#60b). In OAuth mode the entries go to the
+storage driver's `audit_log` table, so with `sqlite` or `postgres` they
+survive restarts and every replica writes to one log; the sweep deletes them
+`AUDIT_RETENTION_DAYS` (default 90) after they were written. In header mode,
+which has no storage, and on stdio they are kept in memory, the newest 1,000
+per user.
 
 Each entry holds:
 
@@ -706,17 +819,24 @@ Each entry holds:
   mode) or `local` (stdio).
 - `client_id`, `family_id`: the MCP client and its grant (OAuth mode).
 - `request_id`: the HTTP request (on stdio, one per tool call).
-- `tool`, `operation` (`create`, `update`, `delete`, `move`, `import`, or
-  `audit_suppressed`, below), `resource_type`, `resource_id` and `budget_id`
-  (a UUID, `last-used` or `default`; anything else is left out).
+- `tool`, `operation` (`create`, `update`, `delete`, `move`, `import`,
+  `audit_suppressed` or `revoke`, below), `resource_type`, `resource_id` and
+  `budget_id` (a UUID, `last-used` or `default`; anything else is left out).
 - `outcome`: `success`; `denied_read_only` (`YNAB_READ_ONLY`, or
   `YNAB_OAUTH_ALLOW_WRITE` off); `denied_scope` (a read-only grant, on the
   token or the user's YNAB connection); `denied_write_limit` (the write cap,
   first refusal of each episode only); or `error` (YNAB refused it, or it
-  failed before reaching YNAB, for example rate-limited).
+  failed before reaching YNAB, for example rate-limited). A revocation has
+  its own outcomes, below.
 
-A bulk call is one entry, with no `resource_id` unless it touched one record.
-`ynab_move_money` adds one `move` entry beside its two category updates. A
+A bulk call (`ynab_create_transactions`, `ynab_update_transactions`) writes
+one entry per transaction YNAB saved, each with its `resource_id` and all with
+the call's `request_id`, as one insert (at most 100, the tools' own item
+limit). A duplicate YNAB skipped has no entry, and the ids come from YNAB's
+answer, never from an `import_id`. A bulk call that saved nothing, failed or
+was refused is one entry with no `resource_id`; a refused one counts once
+against the refusal cap below. `ynab_move_money` adds one `move` entry beside
+its two category updates. A
 call that fails input validation is not a write attempt and is not recorded,
 and neither is a successful call of the deprecated `ynab_import_transactions`,
 which does nothing. Refused writes are bounded so a looping client can't fill
@@ -729,7 +849,8 @@ So an `audit_suppressed` entry tells a reader of the log that entries are
 missing after it.
 
 Recording an entry never fails or holds up the write. A write waits at most 1
-second for its entry (less when its request is close to its deadline), so a
+second for its entries, a bulk call's included (less when its request is
+close to its deadline), so a
 slow database can't turn a write YNAB applied into a timeout; a slower insert
 finishes in the background. If the store can't be written (the database is
 unreachable, say), the write's own result stands, the entry is lost, and the
@@ -739,22 +860,63 @@ therefore succeed with no audit entry; watch for that log line.
 Entries hold ids only. There is no column for an amount or other financial
 value, a payee, account, category or memo text, or an error message: those
 stay in the tool's result and in the server's sanitized logs. The server also
-writes one stderr line per entry (`[AUDIT] <outcome>: <operation> on
-<resource type> (<id>) via <tool>`).
+writes one stderr line per write (`[AUDIT] <outcome>: <operation> on
+<resource type> (<id>) via <tool>`; a bulk call's line says `(<n> items)`),
+and one per revocation at the authorization server with no id (`[AUDIT]
+<outcome>: revoke on grant`); an account tool's revocation logs the write-style
+line, with the revoked grant's or client's id and the tool.
 
 Erasing an account (deleting it, or the inactive-user erase) erases its
 entries in the same transaction. A write that finishes after its account was
 erased, or erased and connected again, writes no entry: the insert checks the
 user row of the request's account generation, and on Postgres holds it, so an
 erase in flight either waits for the insert and deletes the entry or finds
-nothing to delete.
+nothing to delete. A bulk call's entries are one insert under the same check:
+all of them land or none.
+
+#### Revoked connections
+
+In OAuth mode each revocation of a connection (an MCP grant) is one entry,
+with `operation` `revoke`, `resource_type` `grant` and the revoked grant's id
+as `resource_id` (D-7a). Issuing and refreshing tokens is not recorded, so a
+connection's hourly refreshes add nothing. The outcomes:
+
+- `revoked`: the user or their client revoked it, at `/revoke` (with the
+  refresh token or the access token), or with the account tools
+  (`ynab_revoke_connection`; revoking every connection of one client is one
+  entry with `resource_type` `client` and the client id).
+- `revoked_reuse`: a spent refresh token or authorization code was presented
+  again (past #64a's 60-second retry window), or a client presented another
+  client's, so the connection was ended (RFC 9700).
+- `revoked_replay`: two requests spent the same refresh token or code at once,
+  and the second ended the connection.
+
+`client_id` is the client that made the request (for reuse, the client that
+presented the credential, which may not be the connection's own), and
+`family_id` its grant when known. `budget_id` is empty, and so is
+`request_id` except for the account tools, which record the tool's request
+and name. Each
+revocation is recorded once, by the request that deleted the connection's
+rows, so two requests revoking one connection at once write one entry, and
+revoking a connection already gone writes none. No entry holds a token, code
+or storage key. Erasing an account (`ynab_disconnect`, the inactive-user
+erase) is not recorded: it deletes the user's entries. Neither is a retry
+answered inside the refresh window, or YNAB refusing the user's YNAB token. A
+revocation entry is written at most 1 second after the response, in the
+background where the authorization server can't wait, and a failure is logged
+as `[AUDIT] could not record a revocation`; the OAuth response never changes.
+
+#### Reading the log
 
 `ynab_audit_log` shows the calling client's own entries in OAuth mode (another
 client of the same user can't read them), and the user's entries on stdio and
-in header mode, where there is one caller. It lists them newest first, filtered
-by operation, resource type, outcome or success. Entries are kept until the
-account is erased; a retention window and an option to see every client's
-entries come in a later release (#60b).
+in header mode, where there is one caller. `all_clients: true` shows the
+entries of all of the user's clients, never another user's; a read-only
+connection may use it, since it reads the same user's log. It lists entries
+newest first, filtered by operation, resource type, outcome or success
+(`success` filters write attempts; a revocation is neither and shows
+`success: null`). The summary counts revocations apart (`revocation_count`).
+
 
 The table comes with schema 7 (0.5.0): `audit_log` and two indexes,
 `(user_id, ts)` and `(ts)`, created on startup. Older releases ignore it.
@@ -1386,10 +1548,11 @@ any MCP client that supports the `prompts` capability:
   override.
 - Always run behind TLS; enable DNS-rebinding protection with an allowlist.
 - `memory` storage is for evaluation only — it is not durable and not shared across
-  replicas. For multiple replicas, use `postgres` (the in-flight caps, rate
-  limits, write cap and caches are currently in-process; a shared store would be a future
-  enhancement). YNAB token refreshes are coordinated through the database; see
-  "Several replicas: YNAB token refresh".
+  replicas. For multiple replicas, use `postgres` with `RATE_LIMIT_STORE=postgres`,
+  so the rate limits and the write cap are shared (the in-flight caps, circuit
+  breaker and caches stay per process); see "Several replicas: shared rate limits". YNAB
+  token refreshes are coordinated through the database; see "Several replicas:
+  YNAB token refresh".
 
 ## Interim header mode (single-user)
 
