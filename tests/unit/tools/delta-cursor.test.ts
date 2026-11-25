@@ -64,7 +64,7 @@ const parse = (s: string) => JSON.parse(s) as Record<string, any>;
 describe('ynab_list_accounts', () => {
   it('full: same call as before, plus server_knowledge', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse());
-    const out = parse(await handleListAccounts({}, mockClient as never));
+    const out = await handleListAccounts({}, mockClient as never);
     expect(mockClient.getAccounts).toHaveBeenCalledWith('test-budget-id');
     expect(out.server_knowledge).toBe(12345);
     expect(out.delta).toBeUndefined();
@@ -75,7 +75,7 @@ describe('ynab_list_accounts', () => {
     const [open, closedOne] = [mockAllAccounts[0]!, { ...mockAllAccounts[1]!, closed: true }];
     const gone = { ...mockAllAccounts[2]!, deleted: true };
     mockClient.getAccounts.mockResolvedValue({ data: { accounts: [open, closedOne, gone], server_knowledge: 200 } });
-    const out = parse(await handleListAccounts({ since_server_knowledge: 150 }, mockClient as never));
+    const out = await handleListAccounts({ since_server_knowledge: 150 }, mockClient as never);
     expect(mockClient.getAccounts).toHaveBeenCalledWith('test-budget-id', { lastKnowledgeOfServer: 150 });
     expect(out).toMatchObject({ delta: true, since_server_knowledge: 150, deleted_ids: [gone.id], server_knowledge: 200 });
     const ids = Object.values(out.accounts_by_type as Record<string, Array<{ id: string }>>).flat().map((a) => a.id);

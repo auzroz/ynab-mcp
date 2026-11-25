@@ -31,8 +31,17 @@ export const DELTA_SUMMARY_NOTE =
 
 /** The fields that mark a delta response. */
 export function deltaFields(since: number, deletedIds: string[]) {
-  return { delta: true, since_server_knowledge: since, deleted_ids: deletedIds };
+  return { delta: true as const, since_server_knowledge: since, deleted_ids: deletedIds };
 }
+
+const DELTA_ONLY = 'Present only on a delta response (since_server_knowledge given)';
+
+/** Output schema of deltaFields, for a tool's output schema (#45): present only on a delta response. */
+export const deltaOutputShape = {
+  delta: z.literal(true).exactOptional().describe(DELTA_ONLY),
+  since_server_knowledge: z.number().int().exactOptional().describe(`${DELTA_ONLY}: the cursor given`),
+  deleted_ids: z.array(z.string()).exactOptional().describe(`${DELTA_ONLY}: ids deleted since the cursor`),
+};
 
 /** Split a delta list into the entities still present and the ids of deleted ones. */
 export function splitDeleted<T extends { deleted?: boolean | undefined }>(

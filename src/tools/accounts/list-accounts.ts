@@ -14,9 +14,11 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
-import { accountDetailFields } from './account-fields.js';
+import { accountDetailFields, accountDetailFieldsShape } from './account-fields.js';
 import { budgetId } from '../../utils/schemas.js';
-import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
+import { DELTA_SUMMARY_NOTE, deltaFields, deltaOutputShape, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, money, serverKnowledge } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -31,6 +33,38 @@ const inputSchema = z.object({
 });
 
 // Tool definition
+const accountSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  balance: money(),
+  cleared_balance: money(),
+  uncleared_balance: money(),
+  ...accountDetailFieldsShape,
+});
+
+const FULL = 'Full list only';
+const DELTA = 'Delta (since_server_knowledge) only';
+
+/** What the tool returns (#45; rules in ../output-schema.ts). One object covers the full list and the delta. */
+export const listAccountsOutputSchema = z.object({
+  ...deltaOutputShape,
+  accounts_by_type: z.record(z.string(), z.array(accountSchema)).describe('Keyed by YNAB account type'),
+  summary: z.object({
+    total_accounts: count().exactOptional().describe(FULL),
+    total_assets: money().exactOptional().describe(FULL),
+    total_liabilities: money().exactOptional().describe(FULL),
+    liability_credits: money()
+      .exactOptional()
+      .describe(`${FULL}: positive balances on liability accounts, when there are any`),
+    net_worth: money().exactOptional().describe(FULL),
+    changed_count: count().exactOptional().describe(DELTA),
+    deleted_count: count().exactOptional().describe(DELTA),
+    note: z.string().exactOptional().describe(DELTA),
+  }),
+  server_knowledge: serverKnowledge(),
+});
+export type ListAccountsOutput = z.output<typeof listAccountsOutputSchema>;
+
 export const listAccountsTool: Tool = {
   name: 'ynab_list_accounts',
   description: `List all accounts in a budget with their current balances.
@@ -63,6 +97,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
       since_server_knowledge: sinceServerKnowledgeJsonSchema,
     },
   },
+  outputSchema: toOutputSchema(listAccountsOutputSchema),
 };
 
 // Handler function
@@ -72,7 +107,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleListAccounts(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<ListAccountsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -94,7 +129,7 @@ export async function handleListAccounts(
   }
 
   // Group by account type
-  const byType: Record<string, Array<Record<string, unknown>>> = {};
+  const byType: Record<string, Array<z.output<typeof accountSchema>>> = {};
 
   for (const account of accounts) {
     const type = account.type;
@@ -112,20 +147,16 @@ export async function handleListAccounts(
   }
 
   if (cursor !== undefined) {
-    return JSON.stringify(
-      {
-        ...deltaFields(cursor, deletedIds),
-        accounts_by_type: byType,
-        summary: {
-          changed_count: accounts.length,
-          deleted_count: deletedIds.length,
-          note: DELTA_SUMMARY_NOTE,
-        },
-        server_knowledge: response.data.server_knowledge,
+    return {
+      ...deltaFields(cursor, deletedIds),
+      accounts_by_type: byType,
+      summary: {
+        changed_count: accounts.length,
+        deleted_count: deletedIds.length,
+        note: DELTA_SUMMARY_NOTE,
       },
-      null,
-      2
-    );
+      server_knowledge: response.data.server_knowledge,
+    };
   }
 
   // Calculate totals
@@ -169,23 +200,19 @@ export async function handleListAccounts(
   // Since totalLiabilities is negative (or zero), we add it
   const netWorth = totalAssets + totalLiabilityCredits + totalLiabilities;
 
-  return JSON.stringify(
-    {
-      accounts_by_type: byType,
-      summary: {
-        total_accounts: accounts.length,
-        total_assets: money(totalAssets),
-        // Display liabilities as a positive number for readability
-        total_liabilities: money(Math.abs(totalLiabilities)),
-        // Show credits on liability accounts if any exist
-        ...(totalLiabilityCredits > 0 && {
-          liability_credits: money(totalLiabilityCredits),
-        }),
-        net_worth: money(netWorth),
-      },
-      server_knowledge: response.data.server_knowledge,
+  return {
+    accounts_by_type: byType,
+    summary: {
+      total_accounts: accounts.length,
+      total_assets: money(totalAssets),
+      // Display liabilities as a positive number for readability
+      total_liabilities: money(Math.abs(totalLiabilities)),
+      // Show credits on liability accounts if any exist
+      ...(totalLiabilityCredits > 0 && {
+        liability_credits: money(totalLiabilityCredits),
+      }),
+      net_worth: money(netWorth),
     },
-    null,
-    2
-  );
+    server_knowledge: response.data.server_knowledge,
+  };
 }

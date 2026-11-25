@@ -94,7 +94,7 @@ describe('amounts follow the budget currency format', () => {
   describe('ynab_list_accounts', () => {
     it('formats balances in EUR: symbol after, comma decimals, dot groups', async () => {
       client.getCurrencyFormat.mockResolvedValue(mockEurCurrencyFormat);
-      const parsed = JSON.parse(await handleListAccounts({}, client as never));
+      const parsed = await handleListAccounts({}, client as never);
       const checking = parsed.accounts_by_type.checking[0];
 
       expect(checking.balance).toMatch(/^-?\d{1,3}(\.\d{3})*,\d{2}€$/);
@@ -104,7 +104,7 @@ describe('amounts follow the budget currency format', () => {
 
     it('formats balances in JPY with no decimal places', async () => {
       client.getCurrencyFormat.mockResolvedValue(mockJpyCurrencyFormat);
-      const parsed = JSON.parse(await handleListAccounts({}, client as never));
+      const parsed = await handleListAccounts({}, client as never);
 
       expect(parsed.accounts_by_type.checking[0].balance).toMatch(/^-?¥\d{1,3}(,\d{3})*$/);
       expect(parsed.summary.total_assets).toMatch(/^¥[\d,]+$/);
@@ -112,21 +112,21 @@ describe('amounts follow the budget currency format', () => {
 
     it('formats balances with three decimal places (BHD)', async () => {
       client.getCurrencyFormat.mockResolvedValue(bhd);
-      const parsed = JSON.parse(await handleListAccounts({}, client as never));
+      const parsed = await handleListAccounts({}, client as never);
       expect(parsed.accounts_by_type.checking[0].balance).toMatch(/^-?BD\d{1,3}(,\d{3})*\.\d{3}$/);
     });
 
     it('drops the symbol when display_symbol is false', async () => {
       client.getCurrencyFormat.mockResolvedValue(eurNoSymbol);
-      const parsed = JSON.parse(await handleListAccounts({}, client as never));
+      const parsed = await handleListAccounts({}, client as never);
       expect(parsed.accounts_by_type.checking[0].balance).toMatch(/^-?\d{1,3}(\.\d{3})*,\d{2}$/);
     });
 
     it('keeps raw fields and the output shape: only strings change', async () => {
       client.getCurrencyFormat.mockResolvedValue(undefined);
-      const fallback = JSON.parse(await handleListAccounts({}, client as never));
+      const fallback = await handleListAccounts({}, client as never);
       client.getCurrencyFormat.mockResolvedValue(mockEurCurrencyFormat);
-      const eur = JSON.parse(await handleListAccounts({}, client as never));
+      const eur = await handleListAccounts({}, client as never);
 
       expect(skeleton(eur)).toEqual(skeleton(fallback));
       expect(eur).not.toEqual(fallback);
@@ -136,19 +136,19 @@ describe('amounts follow the budget currency format', () => {
   describe('fallback when the settings cannot be read', () => {
     it('formats in the USD style when the client has no format', async () => {
       client.getCurrencyFormat.mockResolvedValue(undefined);
-      const parsed = JSON.parse(await handleListAccounts({}, client as never));
+      const parsed = await handleListAccounts({}, client as never);
       expect(parsed.accounts_by_type.checking[0].balance).toMatch(/^-?\$\d+\.\d{2}$/);
     });
 
     it('formats in the USD style when the lookup throws', async () => {
       client.getCurrencyFormat.mockRejectedValue(new Error('settings unavailable'));
-      const parsed = JSON.parse(await handleListAccounts({}, client as never));
+      const parsed = await handleListAccounts({}, client as never);
       expect(parsed.accounts_by_type.checking[0].balance).toMatch(/^-?\$\d+\.\d{2}$/);
     });
 
     it('formats in the USD style for a malformed format', async () => {
       client.getCurrencyFormat.mockResolvedValue({ currency_symbol: '€' } as never);
-      const parsed = JSON.parse(await handleListAccounts({}, client as never));
+      const parsed = await handleListAccounts({}, client as never);
       expect(parsed.accounts_by_type.checking[0].balance).toMatch(/^-?\$\d+\.\d{2}$/);
     });
   });
@@ -159,9 +159,7 @@ describe('amounts follow the budget currency format', () => {
       client.getAccountById.mockResolvedValue(
         createAccountResponse({ ...mockCheckingAccount, balance: 3_000_000 })
       );
-      const parsed = JSON.parse(
-        await handleGetAccount({ account_id: mockCheckingAccount.id }, client as never)
-      );
+      const parsed = await handleGetAccount({ account_id: mockCheckingAccount.id }, client as never);
       expect(parsed.account.balance).toBe('$3,000.00');
     });
   });
@@ -178,9 +176,7 @@ describe('amounts follow the budget currency format', () => {
           debt_interest_rates: { '2024-01-01': 18_990 },
         } as never)
       );
-      const parsed = JSON.parse(
-        await handleGetAccount({ account_id: mockCheckingAccount.id }, client as never)
-      );
+      const parsed = await handleGetAccount({ account_id: mockCheckingAccount.id }, client as never);
 
       expect(parsed.account.debt_original_balance).toBe('-1.500,00€');
       expect(parsed.account.debt_minimum_payments_formatted['2024-01-01']).toBe('25,50€');

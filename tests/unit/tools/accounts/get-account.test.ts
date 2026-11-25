@@ -22,11 +22,10 @@ describe('handleGetAccount', () => {
   it('returns account details', async () => {
     mockClient.getAccountById.mockResolvedValue(createAccountResponse(mockCheckingAccount));
 
-    const result = await handleGetAccount(
+    const parsed = await handleGetAccount(
       { account_id: mockCheckingAccount.id },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.account.id).toBe(mockCheckingAccount.id);
     expect(parsed.account.name).toBe('Primary Checking');
@@ -52,11 +51,10 @@ describe('handleGetAccount', () => {
   it('formats debt_original_balance when present', async () => {
     mockClient.getAccountById.mockResolvedValue(createAccountResponse(mockMortgageAccount));
 
-    const result = await handleGetAccount(
+    const parsed = await handleGetAccount(
       { account_id: mockMortgageAccount.id },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.account.debt_original_balance).toContain('$');
     expect(parsed.account.type).toBe('mortgage');
@@ -69,7 +67,7 @@ describe('handleGetAccount', () => {
       { account_id: mockMortgageAccount.id },
       mockClient as never
     );
-    const account = JSON.parse(result).account;
+    const account = result.account;
 
     expect(account.debt_interest_rates).toEqual(mockMortgageAccount.debt_interest_rates);
     expect(account.debt_minimum_payments).toEqual(mockMortgageAccount.debt_minimum_payments);

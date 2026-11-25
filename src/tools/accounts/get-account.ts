@@ -11,7 +11,9 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
-import { accountDetailFields } from './account-fields.js';
+import { accountDetailFields, accountDetailFieldsShape } from './account-fields.js';
+import { toOutputSchema } from '../output-schema.js';
+import { money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -22,6 +24,20 @@ const inputSchema = z.object({
 });
 
 // Tool definition
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const getAccountOutputSchema = z.object({
+  account: z.object({
+    id: z.string(),
+    name: z.string(),
+    type: z.string().describe('YNAB account type'),
+    balance: money(),
+    cleared_balance: money(),
+    uncleared_balance: money(),
+    ...accountDetailFieldsShape,
+  }),
+});
+export type GetAccountOutput = z.output<typeof getAccountOutputSchema>;
+
 export const getAccountTool: Tool = {
   name: 'ynab_get_account',
   description: `Get details about a specific account including balance and recent activity.
@@ -55,6 +71,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['account_id'],
   },
+  outputSchema: toOutputSchema(getAccountOutputSchema),
 };
 
 // Handler function
@@ -64,7 +81,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleGetAccount(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetAccountOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -72,19 +89,15 @@ export async function handleGetAccount(
   const response = await client.getAccountById(budgetId, validated.account_id);
   const account = response.data.account;
 
-  return JSON.stringify(
-    {
-      account: {
-        id: account.id,
-        name: sanitizeName(account.name),
-        type: account.type,
-        balance: money(account.balance),
-        cleared_balance: money(account.cleared_balance),
-        uncleared_balance: money(account.uncleared_balance),
-        ...accountDetailFields(account, { includeEmptyMaps: true }, money),
-      },
+  return {
+    account: {
+      id: account.id,
+      name: sanitizeName(account.name),
+      type: account.type,
+      balance: money(account.balance),
+      cleared_balance: money(account.cleared_balance),
+      uncleared_balance: money(account.uncleared_balance),
+      ...accountDetailFields(account, { includeEmptyMaps: true }, money),
     },
-    null,
-    2
-  );
+  };
 }

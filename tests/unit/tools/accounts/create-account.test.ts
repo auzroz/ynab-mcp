@@ -17,11 +17,10 @@ describe('handleCreateAccount', () => {
   it('creates an account and returns success', async () => {
     mockClient.createAccount.mockResolvedValue(createAccountResponse());
 
-    const result = await handleCreateAccount(
+    const parsed = await handleCreateAccount(
       { name: 'New Checking', type: 'checking', balance: 1000.5 },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(true);
     expect(parsed.message).toContain('created successfully');

@@ -20,6 +20,9 @@ import { getUserOutputSchema } from '../../../src/tools/user/get-user.js';
 import { listBudgetsOutputSchema } from '../../../src/tools/budgets/list-budgets.js';
 import { getBudgetOutputSchema } from '../../../src/tools/budgets/get-budget.js';
 import { getBudgetSettingsOutputSchema } from '../../../src/tools/budgets/get-budget-settings.js';
+import { listAccountsOutputSchema } from '../../../src/tools/accounts/list-accounts.js';
+import { getAccountOutputSchema } from '../../../src/tools/accounts/get-account.js';
+import { createAccountOutputSchema } from '../../../src/tools/accounts/create-account.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
@@ -38,9 +41,6 @@ import { createMockClient } from './fixtures/index.js';
 const PENDING_OUTPUT_SCHEMA = [
   // User, budgets
   // Accounts
-  'ynab_list_accounts',
-  'ynab_get_account',
-  'ynab_create_account',
   // Categories
   'ynab_list_categories',
   'ynab_get_category',
@@ -118,6 +118,9 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_list_budgets: listBudgetsOutputSchema,
   ynab_get_budget: getBudgetOutputSchema,
   ynab_get_budget_settings: getBudgetSettingsOutputSchema,
+  ynab_list_accounts: listAccountsOutputSchema,
+  ynab_get_account: getAccountOutputSchema,
+  ynab_create_account: createAccountOutputSchema,
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,

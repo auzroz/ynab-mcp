@@ -17,8 +17,16 @@ import { getUserOutputSchema, handleGetUser } from '../../../src/tools/user/get-
 import { listBudgetsOutputSchema, handleListBudgets } from '../../../src/tools/budgets/list-budgets.js';
 import { getBudgetOutputSchema, handleGetBudget } from '../../../src/tools/budgets/get-budget.js';
 import { getBudgetSettingsOutputSchema, handleGetBudgetSettings } from '../../../src/tools/budgets/get-budget-settings.js';
+import { listAccountsOutputSchema, handleListAccounts } from '../../../src/tools/accounts/list-accounts.js';
+import { getAccountOutputSchema, handleGetAccount } from '../../../src/tools/accounts/get-account.js';
+import { createAccountOutputSchema, handleCreateAccount } from '../../../src/tools/accounts/create-account.js';
 import {
   createMockClient,
+  createAccountsResponse,
+  createAccountResponse,
+  mockAllAccounts,
+  mockMortgageAccount,
+  mockCreditCardWithOverpayment,
   createUserResponse,
   createBudgetsResponse,
   createBudgetResponse,
@@ -95,5 +103,33 @@ describe('core output schemas: user and budgets', () => {
     expectValid(getBudgetSettingsOutputSchema, await handleGetBudgetSettings({}, c()));
     client.getBudgetSettingsById.mockResolvedValue({ data: { settings: { date_format: null, currency_format: null } } });
     expectValid(getBudgetSettingsOutputSchema, await handleGetBudgetSettings({}, c()));
+  });
+});
+
+describe('core output schemas: accounts', () => {
+  it('ynab_list_accounts: full (with liability credits and debt maps), include_closed, and delta', async () => {
+    client.getAccounts.mockResolvedValue(createAccountsResponse([...mockAllAccounts, mockCreditCardWithOverpayment]));
+    const full = await handleListAccounts({ include_closed: true }, c());
+    expect(full.summary.liability_credits).toBeDefined();
+    expect(JSON.stringify(full)).toContain('debt_interest_rates_formatted');
+    expectValid(listAccountsOutputSchema, full);
+    expectValid(listAccountsOutputSchema, await handleListAccounts({}, c()));
+    client.getAccounts.mockResolvedValue({
+      data: { accounts: [mockAllAccounts[0]!, { ...mockAllAccounts[1]!, deleted: true }], server_knowledge: 20 },
+    });
+    const delta = await handleListAccounts({ since_server_knowledge: 10 }, c());
+    expect(delta.delta).toBe(true);
+    expectValid(listAccountsOutputSchema, delta);
+  });
+
+  it('ynab_get_account: a debt account', async () => {
+    client.getAccountById.mockResolvedValue(createAccountResponse(mockMortgageAccount));
+    expectValid(getAccountOutputSchema, await handleGetAccount({ account_id: mockMortgageAccount.id }, c()));
+  });
+
+  it('ynab_create_account', async () => {
+    client.isReadOnly.mockReturnValue(false);
+    client.createAccount.mockResolvedValue(createAccountResponse());
+    expectValid(createAccountOutputSchema, await handleCreateAccount({ name: 'A', type: 'checking', balance: 10 }, c()));
   });
 });
