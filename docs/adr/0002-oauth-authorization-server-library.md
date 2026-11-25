@@ -353,7 +353,7 @@ What an upgrading instance holds, and what happens to it:
 | #55 (P9) | Lands as planned. Its stages stay. #47-4 moves its consent-page hunk into the interaction route, and its phase-2 guard pre-validates the same parameters for the library. O acks. |
 | #59 (P7) | Its keys move from the SDK's internal limiters to D8's `route-limiter` stages in #47-4 |
 | #64a (P10) | **Re-scoped after the cut-over**, so it isn't built twice: D6's `refresh-guard`; `resource` required for new clients in `authorize-validation`; PKCE negative tests against the library; the library's `/revoke` owner check (the spike passed it); the grant level across clients (users, unchanged). Its own M4 is dropped. |
-| #46 | **Implemented** (see the addendum "#46: Client ID Metadata Documents"). CIMD through the library's `clientIdMetadataDocument` feature: off by default, an `ack` of draft-03, `allowFetch` as the policy, and our own `fetch`. That `fetch` resolves the host once, refuses private and loopback addresses, and connects to the address it checked (a pinned lookup, so DNS rebinding can't swap it). The library already refuses redirects for these fetches (`redirect: 'manual'`) and applies its body limits. It lands after the cut-over (O). |
+| #46 | **Implemented** (see the addendum "#46: Client ID Metadata Documents"). CIMD through the library's `clientIdMetadataDocument` feature: off by default, an `ack` of draft-03, `allowFetch` as the policy, and our own `fetch`. That `fetch` resolves the host once, refuses private and loopback addresses, and connects only to the addresses it checked (a pinned lookup, so DNS rebinding can't swap them). The library already refuses redirects for these fetches (`redirect: 'manual'`) and applies its body limits. It lands after the cut-over (O). |
 | #53b (P9) | `AccountStore` keeps its interface; #47-1 re-implements it over `oauth_rows` |
 | #54b (P10) | Lands first; #47-1 extends the sweep to `oauth_rows` |
 | #62a (merged) | No `release.yml` or `Dockerfile` change (no native dependencies). The audit gate covers the new packages. |
@@ -514,7 +514,7 @@ D14's #46 row as built (`src/auth/client-id-metadata.ts`, wired in `provider.ts`
 2. **`configuration.fetch` is ours,** and when the feature is off it refuses everything, so the library makes no outbound request except a metadata document fetch. The fetch:
    - takes https on the default port only;
    - resolves the host once and refuses it if any address is special-use (IPv4 and IPv6, IPv4-mapped forms included);
-   - connects to the checked address through a pinned `lookup`, with the URL's host as Host and SNI, and checks the peer address again once connected;
+   - connects only to the checked addresses through a pinned `lookup` that answers the checked set, with `autoSelectFamily` on so an unreachable address falls back to the next, with the URL's host as Host and SNI, and requires the peer address to be one of the checked set once connected;
    - refuses anything but 200;
    - caps the body at 16 KiB while it streams, and refuses a compressed body;
    - runs everything under one deadline: our 5 s, or the library's 2.5 s signal when that is shorter.

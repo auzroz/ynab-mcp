@@ -247,12 +247,17 @@ describe('fetchMetadataDocument: addresses (real policy, no connection)', () => 
     expect(request).not.toHaveBeenCalled();
   });
 
-  it('DNS rebinding: resolves once, and connects to the address it checked', async () => {
+  it('DNS rebinding: resolves once, and connects only to the addresses it checked', async () => {
     // A rebinding resolver: public on the first query, private on every later one.
     let queries = 0;
     const resolve = vi.fn(async (): Promise<LookupAddress[]> => {
       queries++;
-      return [{ address: queries === 1 ? '93.184.216.34' : '127.0.0.1', family: 4 }];
+      return queries === 1
+        ? [
+            { address: '93.184.216.34', family: 4 },
+            { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 },
+          ]
+        : [{ address: '127.0.0.1', family: 4 }];
     });
     let seen: RequestOptions | undefined;
     const request = vi.fn((options: RequestOptions) => {
@@ -267,12 +272,20 @@ describe('fetchMetadataDocument: addresses (real policy, no connection)', () => 
     expect(seen?.hostname).toBe('client.example');
     expect(seen?.servername).toBe('client.example');
     expect(seen?.agent).toBe(false);
-    // Whatever the name resolves to now, the connection's lookup answers the checked address.
+    // Each checked address is tried in turn, whatever the process-wide default.
+    expect((seen as { autoSelectFamily?: boolean } | undefined)?.autoSelectFamily).toBe(true);
+    // Whatever the name resolves to now, the connection's lookup answers the checked addresses.
     const lookup = seen?.lookup as NonNullable<RequestOptions['lookup']>;
     const one = await new Promise<unknown[]>((res) => lookup('client.example', {}, (...args: unknown[]) => res(args)));
     expect(one).toEqual([null, '93.184.216.34', 4]);
     const all = await new Promise<unknown[]>((res) => lookup('client.example', { all: true }, (...args: unknown[]) => res(args)));
-    expect(all).toEqual([null, [{ address: '93.184.216.34', family: 4 }]]);
+    expect(all).toEqual([
+      null,
+      [
+        { address: '93.184.216.34', family: 4 },
+        { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 },
+      ],
+    ]);
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 
@@ -281,6 +294,21 @@ describe('fetchMetadataDocument: addresses (real policy, no connection)', () => 
     // The resolver answers a public address, but the connection lands on 127.0.0.1.
     const transport: MetadataTransport = {
       resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+      request: (options, callback) => httpRequest({ ...options, lookup: undefined, hostname: '127.0.0.1', port }, callback),
+    };
+    expect(await reasonOf(fetchMetadataDocument(CLIENT_ID, transport))).toBe('address');
+    expect(hits()).toBe(0);
+  });
+
+  it('refuses a peer outside the checked set, even one the address policy would allow', async () => {
+    const { port, hits } = await serve(json({ client_id: CLIENT_ID }));
+    // Several checked addresses; the connection lands on 127.0.0.1, which this policy allows but nobody checked.
+    const transport: MetadataTransport = {
+      isAllowedAddress: () => true,
+      resolve: async () => [
+        { address: '93.184.216.34', family: 4 },
+        { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 },
+      ],
       request: (options, callback) => httpRequest({ ...options, lookup: undefined, hostname: '127.0.0.1', port }, callback),
     };
     expect(await reasonOf(fetchMetadataDocument(CLIENT_ID, transport))).toBe('address');
@@ -303,6 +331,22 @@ describe('fetchMetadataDocument: the response (local server)', () => {
     expect(seen[0]?.url).toBe('/oauth/client.json');
     expect(seen[0]?.method).toBe('GET');
     expect(seen[0]?.headers['accept-encoding']).toBeUndefined();
+  });
+
+  it('falls back from a checked address that refuses the connection to the next checked one', async () => {
+    const { port, hits } = await serve(json({ client_id: CLIENT_ID }));
+    // The server listens on 127.0.0.1 only, so ::1 refuses (or is unreachable, without IPv6): the
+    // connection must move on to 127.0.0.1 within the one deadline, not fail on the first address.
+    const transport = localTransport(port, {
+      resolve: async () => [
+        { address: '::1', family: 6 },
+        { address: '127.0.0.1', family: 4 },
+      ],
+      isAllowedAddress: (address) => address === '::1' || address === '127.0.0.1',
+    });
+    const doc = await fetchMetadataDocument(CLIENT_ID, transport);
+    expect(JSON.parse(doc.body.toString())).toEqual({ client_id: CLIENT_ID });
+    expect(hits()).toBe(1);
   });
 
   it.each([301, 302, 303, 307, 308])('refuses a %i redirect and does not follow it', async (status) => {

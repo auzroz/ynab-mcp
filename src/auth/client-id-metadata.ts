@@ -20,11 +20,12 @@
  *         public unicast ({@link isSpecialUseAddress}: private, loopback,
  *         link-local, CGNAT, multicast, unspecified, documentation and other
  *         reserved ranges are refused, IPv4 and IPv6, IPv4-mapped IPv6
- *         included). The connection then goes to the address that was checked
- *         (a pinned `lookup`), with the URL's host as Host and SNI, so a DNS
- *         answer that changes between the check and the connection (DNS
- *         rebinding) can't move it; the socket's peer address is checked
- *         again once connected;
+ *         included). The connection then goes only to the addresses that were
+ *         checked (a pinned `lookup` that answers the checked set, tried in
+ *         turn so an unreachable one falls back to the next), with the URL's
+ *         host as Host and SNI, so a DNS answer that changes between the check
+ *         and the connection (DNS rebinding) can't move it; the socket's peer
+ *         address must be one of the checked set once connected;
  *       - no redirect is followed: anything but 200 is refused;
  *       - the body is capped at {@link MAX_DOCUMENT_BYTES}, counted as it
  *         streams, and resolution, connection and body all share one deadline
@@ -343,18 +344,25 @@ export async function fetchMetadataDocument(
   if (!addresses.every((a) => typeof a.address === 'string' && allowed(a.address))) {
     throw new MetadataDocumentError('address');
   }
-  const pinned = addresses[0] as LookupAddress;
+  const checked = addresses.map(({ address, family }) => ({ address, family }));
+  const checkedPeers = new Set(checked.map((a) => normalizeAddress(a.address)));
+  const first = checked[0] as LookupAddress;
 
-  // The connection goes to `pinned`, whatever the name resolves to by then (DNS rebinding).
+  // The connection goes to the checked addresses only, whatever the name resolves to by then
+  // (DNS rebinding). Asked for every address, the lookup answers the whole checked set, so the
+  // connection can fall back from one that doesn't answer (an unreachable IPv6, say) to the next.
   const pinnedLookup: LookupFunction = (_hostname, options, callback) => {
     if (options.all === true) {
-      (callback as unknown as (err: null, addresses: LookupAddress[]) => void)(null, [{ ...pinned }]);
+      (callback as unknown as (err: null, addresses: LookupAddress[]) => void)(
+        null,
+        checked.map((a) => ({ ...a }))
+      );
     } else {
-      callback(null, pinned.address, pinned.family);
+      callback(null, first.address, first.family);
     }
   };
 
-  const requestOptions: RequestOptions = {
+  const requestOptions: RequestOptions & { autoSelectFamily: boolean } = {
     hostname: host,
     port: 443,
     path: `${url.pathname}${url.search}`,
@@ -364,6 +372,9 @@ export async function fetchMetadataDocument(
     headers: { host: url.host, accept: 'application/json', 'user-agent': USER_AGENT },
     agent: false,
     lookup: pinnedLookup,
+    // Try each checked address in turn (Happy Eyeballs), even if the process default is off:
+    // that is what makes the lookup ask for, and use, the whole set.
+    autoSelectFamily: true,
     ...(isIP(host) === 0 ? { servername: host } : {}),
     signal,
   };
@@ -428,11 +439,11 @@ export async function fetchMetadataDocument(
       return;
     }
     req.on('error', () => fail(signal.aborted ? 'timeout' : 'connect'));
-    // Defence in depth: the peer must be the address that was checked.
+    // Defence in depth: the peer must be one of the addresses that were checked.
     req.on('socket', (socket) => {
       const check = (): void => {
         const remote = socket.remoteAddress;
-        if (remote === undefined || normalizeAddress(remote) !== normalizeAddress(pinned.address)) fail('address');
+        if (remote === undefined || !checkedPeers.has(normalizeAddress(remote))) fail('address');
       };
       if (socket.remoteAddress !== undefined && !socket.connecting) check();
       else socket.once('connect', check);

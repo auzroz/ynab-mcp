@@ -330,9 +330,11 @@ fetch is our own, not the library's:
   An IP-address URL is checked the same way. NAT64 addresses (`64:ff9b::/96`)
   are refused too, so a server that reaches IPv4 only through NAT64/DNS64
   can't fetch metadata documents.
-- **No DNS rebinding.** The connection goes to the address that was checked,
-  with the URL's host as `Host` and TLS server name, and the peer address is
-  checked again once connected. A DNS answer that changes in between can't
+- **No DNS rebinding.** The connection goes only to the addresses that were
+  checked, trying each in turn so an unreachable one (an IPv6 address on a
+  server without IPv6, say) falls back to the next. It uses the URL's host as
+  `Host` and TLS server name, and once connected the peer address must be one
+  of the checked addresses. A DNS answer that changes in between can't
   redirect it.
 - **No redirects, small and quick.** Any status other than `200`, a redirect
   included, is refused. The body is capped at 16 KB as it streams; a
