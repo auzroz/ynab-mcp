@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetPayee } from '../../../../src/tools/payees/get-payee.js';
+import { handleGetPayee as rawHandleGetPayee, getPayeeOutputSchema } from '../../../../src/tools/payees/get-payee.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createPayeeResponse,
@@ -11,6 +12,9 @@ import {
   mockTransferPayees,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetPayee = validating(getPayeeOutputSchema, rawHandleGetPayee);
 
 const PAYEE_UUID = '11111111-1111-1111-1111-1111111111aa';
 
@@ -24,8 +28,7 @@ describe('handleGetPayee', () => {
   it('returns payee details with null transfer_account_id', async () => {
     mockClient.getPayeeById.mockResolvedValue(createPayeeResponse(mockPayees[0]));
 
-    const result = await handleGetPayee({ payee_id: PAYEE_UUID }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetPayee({ payee_id: PAYEE_UUID }, mockClient as never);
 
     expect(parsed.payee.id).toBe(mockPayees[0]!.id);
     expect(parsed.payee.name).toBe('Kroger');
@@ -36,8 +39,7 @@ describe('handleGetPayee', () => {
   it('returns transfer_account_id for transfer payees', async () => {
     mockClient.getPayeeById.mockResolvedValue(createPayeeResponse(mockTransferPayees[0]));
 
-    const result = await handleGetPayee({ payee_id: PAYEE_UUID }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetPayee({ payee_id: PAYEE_UUID }, mockClient as never);
 
     expect(parsed.payee.transfer_account_id).toBe(mockTransferPayees[0]!.transfer_account_id);
   });

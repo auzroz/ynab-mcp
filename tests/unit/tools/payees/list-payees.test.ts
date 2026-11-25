@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListPayees } from '../../../../src/tools/payees/list-payees.js';
+import { handleListPayees as rawHandleListPayees, listPayeesOutputSchema } from '../../../../src/tools/payees/list-payees.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createPayeesResponse,
@@ -12,6 +13,9 @@ import {
   mockTransferPayees,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListPayees = validating(listPayeesOutputSchema, rawHandleListPayees);
 
 describe('handleListPayees', () => {
   let mockClient: MockClient;
@@ -23,8 +27,7 @@ describe('handleListPayees', () => {
   it('separates regular and transfer payees, excludes deleted', async () => {
     mockClient.getPayees.mockResolvedValue(createPayeesResponse(mockAllPayees));
 
-    const result = await handleListPayees({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListPayees({}, mockClient as never);
 
     // Deleted payee excluded
     expect(parsed.summary.total_payees).toBe(mockPayees.length + mockTransferPayees.length);
@@ -37,8 +40,7 @@ describe('handleListPayees', () => {
   it('sorts payees by name', async () => {
     mockClient.getPayees.mockResolvedValue(createPayeesResponse(mockPayees));
 
-    const result = await handleListPayees({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListPayees({}, mockClient as never);
 
     const names = parsed.payees.map((p: { name: string }) => p.name);
     const sorted = [...names].sort((a, b) => a.localeCompare(b));
@@ -57,8 +59,7 @@ describe('handleListPayees', () => {
   it('handles empty payee list', async () => {
     mockClient.getPayees.mockResolvedValue(createPayeesResponse([]));
 
-    const result = await handleListPayees({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListPayees({}, mockClient as never);
 
     expect(parsed.summary.total_payees).toBe(0);
     expect(parsed.payees).toEqual([]);

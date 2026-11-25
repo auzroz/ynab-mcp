@@ -24,6 +24,7 @@ import { getCategoryOutputSchema, handleGetCategory } from '../../../src/tools/c
 import { getMonthCategoryOutputSchema, handleGetMonthCategory } from '../../../src/tools/categories/get-month-category.js';
 import { moveMoneyOutputSchema, handleMoveMoney } from '../../../src/tools/categories/move-money.js';
 import { AuditLog } from '../../../src/services/audit-log.js';
+import { listPayeesOutputSchema, handleListPayees } from '../../../src/tools/payees/list-payees.js';
 import {
   CircuitOpenError,
   errorResponseSchema,
@@ -40,6 +41,9 @@ import {
 } from '../../../src/utils/errors.js';
 import {
   createMockClient,
+  createPayeesResponse,
+  mockPayees,
+  mockTransferPayees,
   createCategoriesResponse,
   createCategoryResponse,
   mockBillsCategories,
@@ -232,5 +236,20 @@ describe('core output schemas: categories', () => {
       new Error('boom'),
     ];
     for (const error of errors) expectValid(errorResponseSchema, JSON.parse(formatErrorResponse(error)));
+  });
+});
+
+describe('core output schemas: payees', () => {
+  it('ynab_list_payees: full with transfer payees, and delta', async () => {
+    client.getPayees.mockResolvedValue(createPayeesResponse());
+    const full = await handleListPayees({}, c());
+    expect(full.transfer_payees.length).toBeGreaterThan(0);
+    expectValid(listPayeesOutputSchema, full);
+    client.getPayees.mockResolvedValue({
+      data: { payees: [mockPayees[0]!, mockTransferPayees[0]!, { ...mockPayees[1]!, deleted: true }], server_knowledge: 20 },
+    });
+    const delta = await handleListPayees({ since_server_knowledge: 10 }, c());
+    expect(delta.deleted_ids).toHaveLength(1);
+    expectValid(listPayeesOutputSchema, delta);
   });
 });

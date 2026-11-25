@@ -152,11 +152,11 @@ describe('ynab_list_months / ynab_list_payees / ynab_list_scheduled_transactions
 
   it('payees: delta separates deleted payees', async () => {
     mockClient.getPayees.mockResolvedValue(createPayeesResponse());
-    expect(parse(await handleListPayees({}, mockClient as never)).server_knowledge).toBe(12345);
+    expect((await handleListPayees({}, mockClient as never)).server_knowledge).toBe(12345);
 
     const gone = { ...mockPayees[1]!, deleted: true };
     mockClient.getPayees.mockResolvedValue({ data: { payees: [mockPayees[0]!, gone], server_knowledge: 3 } });
-    const out = parse(await handleListPayees({ since_server_knowledge: 1 }, mockClient as never));
+    const out = await handleListPayees({ since_server_knowledge: 1 }, mockClient as never);
     expect(out).toMatchObject({ delta: true, deleted_ids: [gone.id], summary: { changed_count: 1, deleted_count: 1 } });
     expect(out.summary.total_payees).toBeUndefined();
   });

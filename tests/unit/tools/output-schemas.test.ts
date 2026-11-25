@@ -32,6 +32,13 @@ import { updateCategoryDetailsOutputSchema } from '../../../src/tools/categories
 import { createCategoryOutputSchema } from '../../../src/tools/categories/create-category.js';
 import { createCategoryGroupOutputSchema } from '../../../src/tools/categories/create-category-group.js';
 import { updateCategoryGroupOutputSchema } from '../../../src/tools/categories/update-category-group.js';
+import { listPayeesOutputSchema } from '../../../src/tools/payees/list-payees.js';
+import { getPayeeOutputSchema } from '../../../src/tools/payees/get-payee.js';
+import { createPayeeOutputSchema } from '../../../src/tools/payees/create-payee.js';
+import { updatePayeeOutputSchema } from '../../../src/tools/payees/update-payee.js';
+import { listPayeeLocationsOutputSchema } from '../../../src/tools/payees/list-payee-locations.js';
+import { getPayeeLocationOutputSchema } from '../../../src/tools/payees/get-payee-location.js';
+import { listPayeeLocationsByPayeeOutputSchema } from '../../../src/tools/payees/list-payee-locations-by-payee.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
@@ -52,13 +59,6 @@ const PENDING_OUTPUT_SCHEMA = [
   // Accounts
   // Categories
   // Payees
-  'ynab_list_payees',
-  'ynab_get_payee',
-  'ynab_create_payee',
-  'ynab_update_payee',
-  'ynab_list_payee_locations',
-  'ynab_get_payee_location',
-  'ynab_list_payee_locations_by_payee',
   // Months
   'ynab_list_months',
   'ynab_get_month',
@@ -130,6 +130,13 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_create_category: createCategoryOutputSchema,
   ynab_create_category_group: createCategoryGroupOutputSchema,
   ynab_update_category_group: updateCategoryGroupOutputSchema,
+  ynab_list_payees: listPayeesOutputSchema,
+  ynab_get_payee: getPayeeOutputSchema,
+  ynab_create_payee: createPayeeOutputSchema,
+  ynab_update_payee: updatePayeeOutputSchema,
+  ynab_list_payee_locations: listPayeeLocationsOutputSchema,
+  ynab_get_payee_location: getPayeeLocationOutputSchema,
+  ynab_list_payee_locations_by_payee: listPayeeLocationsByPayeeOutputSchema,
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,

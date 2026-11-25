@@ -10,6 +10,7 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { PAYEE_NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -20,6 +21,14 @@ const inputSchema = z.object({
 });
 
 // Tool definition
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const createPayeeOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  payee: z.object({ id: z.string(), name: z.string() }),
+});
+export type CreatePayeeOutput = z.output<typeof createPayeeOutputSchema>;
+
 export const createPayeeTool: Tool = {
   name: 'ynab_create_payee',
   description: `Create a new payee.
@@ -52,6 +61,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['name'],
   },
+  outputSchema: toOutputSchema(createPayeeOutputSchema),
 };
 
 // Handler function
@@ -61,7 +71,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleCreatePayee(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<CreatePayeeOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -71,16 +81,12 @@ export async function handleCreatePayee(
 
   const payee = response.data.payee;
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Payee "${sanitizeName(payee.name)}" created successfully`,
-      payee: {
-        id: payee.id,
-        name: sanitizeName(payee.name),
-      },
+  return {
+    success: true,
+    message: `Payee "${sanitizeName(payee.name)}" created successfully`,
+    payee: {
+      id: payee.id,
+      name: sanitizeName(payee.name),
     },
-    null,
-    2
-  );
+  };
 }

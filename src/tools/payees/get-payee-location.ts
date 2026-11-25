@@ -9,6 +9,7 @@ import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeString } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -19,6 +20,17 @@ const inputSchema = z.object({
 });
 
 // Tool definition
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const getPayeeLocationOutputSchema = z.object({
+  payee_location: z.object({
+    id: z.string(),
+    payee_id: z.string(),
+    latitude: z.string(),
+    longitude: z.string(),
+  }),
+});
+export type GetPayeeLocationOutput = z.output<typeof getPayeeLocationOutputSchema>;
+
 export const getPayeeLocationTool: Tool = {
   name: 'ynab_get_payee_location',
   description: `Get a specific payee location by ID.
@@ -40,6 +52,7 @@ Returns the details of a single payee location including coordinates.`,
     },
     required: ['payee_location_id'],
   },
+  outputSchema: toOutputSchema(getPayeeLocationOutputSchema),
 };
 
 // Handler function
@@ -49,23 +62,19 @@ Returns the details of a single payee location including coordinates.`,
 export async function handleGetPayeeLocation(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetPayeeLocationOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   const response = await client.getPayeeLocationById(budgetId, validated.payee_location_id);
   const loc = response.data.payee_location;
 
-  return JSON.stringify(
-    {
-      payee_location: {
-        id: sanitizeString(loc.id) ?? '',
-        payee_id: sanitizeString(loc.payee_id) ?? '',
-        latitude: loc.latitude,
-        longitude: loc.longitude,
-      },
+  return {
+    payee_location: {
+      id: sanitizeString(loc.id) ?? '',
+      payee_id: sanitizeString(loc.payee_id) ?? '',
+      latitude: loc.latitude,
+      longitude: loc.longitude,
     },
-    null,
-    2
-  );
+  };
 }
