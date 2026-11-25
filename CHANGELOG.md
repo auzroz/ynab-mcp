@@ -409,9 +409,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps its 0.4.x shape: a key whose value is null is still left out, and the
   schema marks that key optional. The advertised schemas allow extra keys, so a
   field added in a later release can't make a validating client reject the
-  tool. Errors stay `isError` results with no `structuredContent`. This
-  release's first schemas are on `ynab_rate_limit_status`, `ynab_audit_log`
-  and `ynab_health_check`.
+  tool, and values copied as they are from YNAB (ids, dates, flags) are
+  advertised as optional and nullable, so a change on YNAB's side can't
+  either. Errors stay `isError` results with no `structuredContent`. Every
+  tool declares one.
 - **A durable, attributable audit log** (#60a). Every write tool call is
   recorded with how it ended: `success`, `denied_read_only`, `denied_scope`
   (a read-only grant), `denied_write_limit` or `error`. Refused writes are

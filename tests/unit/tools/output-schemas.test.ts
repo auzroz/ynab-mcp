@@ -98,24 +98,6 @@ import { MemoryAuditStore } from '../../../src/storage/audit-rows.js';
 import { createMockClient } from './fixtures/index.js';
 
 /**
- * Tools that don't declare an outputSchema yet. This list only shrinks: the
- * test fails when a listed tool gains a schema (take it off) or an unlisted
- * tool has none. 45b (core tools) and 45c (analytics) take it to zero.
- */
-const PENDING_OUTPUT_SCHEMA = [
-  // User, budgets
-  // Accounts
-  // Categories
-  // Payees
-  // Months
-  // Transactions
-  // Scheduled transactions
-  // Money movements
-  // Analytics (45c)
-  // Account tools (#53c, OAuth HTTP mode only; their own call path in server.ts)
-];
-
-/**
  * Each schema'd tool's Zod schema, for the closed check. A tool that gains
  * a schema adds it here (the test fails until it does).
  */
@@ -230,18 +212,10 @@ const schemaTools = tools.filter((t) => t.outputSchema !== undefined);
 const fixtureTools = schemaTools.filter((t) => !(ACCOUNT_TOOL_NAMES as readonly string[]).includes(t.name));
 
 describe('output schemas: coverage', () => {
-  it('lists only registered tools, once each', () => {
-    const names = new Set(tools.map((t) => t.name));
-    expect(PENDING_OUTPUT_SCHEMA.filter((n) => !names.has(n))).toEqual([]);
-    expect(new Set(PENDING_OUTPUT_SCHEMA).size).toBe(PENDING_OUTPUT_SCHEMA.length);
-  });
-
-  it('every tool has an outputSchema or is on the pending list, never both', () => {
-    const pending = new Set(PENDING_OUTPUT_SCHEMA);
-    const missing = tools.filter((t) => t.outputSchema === undefined && !pending.has(t.name)).map((t) => t.name);
-    const nowDone = tools.filter((t) => t.outputSchema !== undefined && pending.has(t.name)).map((t) => t.name);
-    expect(missing, 'tools without an outputSchema must be on PENDING_OUTPUT_SCHEMA').toEqual([]);
-    expect(nowDone, 'tools with an outputSchema must come off PENDING_OUTPUT_SCHEMA').toEqual([]);
+  it('every tool in the catalog declares an outputSchema (45a, 45b and 45c took the pending list to zero)', () => {
+    const missing = tools.filter((t) => t.outputSchema === undefined).map((t) => t.name);
+    expect(missing, 'every tool needs an outputSchema (see src/tools/output-schema.ts)').toEqual([]);
+    expect(tools.length).toBeGreaterThan(70);
   });
 
   it('every schema has its Zod source here, and the advertised schema is derived from it', () => {
