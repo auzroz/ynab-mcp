@@ -12,6 +12,7 @@ import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -28,6 +29,69 @@ const inputSchema = z.object({
     .optional()
     .describe('Include previous month for comparison (default false)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings, *_raw milliunits. */
+export const budgetVsActualsOutputSchema = z.object({
+  month: z.string(),
+  summary: z.object({
+    total_budgeted: z.string(),
+    total_activity: z.string(),
+    budget_usage_percent: z.number().int().describe('0 when nothing is budgeted'),
+    overspent_categories: z.number().int(),
+    warning_categories: z.number().int(),
+    on_track_categories: z.number().int(),
+    underspent_categories: z.number().int(),
+  }),
+  alerts: z.object({
+    overspent: z
+      .array(z.object({ category: z.string(), group: z.string(), overspent_by: z.string() }))
+      .describe('At most 5'),
+    warnings: z
+      .array(
+        z.object({
+          category: z.string(),
+          group: z.string(),
+          remaining: z.string(),
+          percent_used: z.number().int().nullable().describe('Null only for a category with nothing budgeted'),
+        })
+      )
+      .describe('At most 5'),
+  }),
+  by_group: z.array(
+    z.object({
+      group_name: z.string(),
+      total_budgeted: z.string(),
+      total_activity: z.string(),
+      total_available: z.string(),
+      categories: z.array(
+        z.object({
+          category_name: z.string(),
+          group_name: z.string(),
+          budgeted: z.string(),
+          activity: z.string(),
+          available: z.string(),
+          budgeted_raw: z.number().int(),
+          activity_raw: z.number().int(),
+          available_raw: z.number().int(),
+          variance: z.string(),
+          variance_percent: z.number().int().nullable().describe('Null when nothing is budgeted'),
+          status: z.enum(['on_track', 'warning', 'overspent', 'underspent']),
+        })
+      ),
+    })
+  ),
+  previous_month_comparison: z
+    .object({
+      month: z.string(),
+      total_budgeted: z.string(),
+      total_activity: z.string(),
+      activity_change: z.string(),
+      activity_change_percent: z.number().int().describe('0 when the previous month had no spending'),
+    })
+    .nullable()
+    .describe('Null unless include_previous is true'),
+});
+export type BudgetVsActualsOutput = z.output<typeof budgetVsActualsOutputSchema>;
 
 // Tool definition
 export const budgetVsActualsTool: Tool = {
@@ -63,6 +127,7 @@ Returns detailed budget vs actuals for all categories with variance analysis.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(budgetVsActualsOutputSchema),
 };
 
 interface CategoryReport {
@@ -94,7 +159,7 @@ interface GroupReport {
 export async function handleBudgetVsActuals(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<BudgetVsActualsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -268,37 +333,33 @@ export async function handleBudgetVsActuals(
     ? Math.round((totalActivity / totalBudgeted) * 100)
     : 0;
 
-  return JSON.stringify(
-    {
-      month,
-      summary: {
-        total_budgeted: money(totalBudgeted),
-        total_activity: money(totalActivity),
-        budget_usage_percent: budgetUsagePercent,
-        overspent_categories: overspentCount,
-        warning_categories: warningCount,
-        on_track_categories: onTrackCount,
-        underspent_categories: underspentCount,
-      },
-      alerts: {
-        overspent: overspentCategories.slice(0, 5).map((c) => ({
-          category: c.category_name,
-          group: c.group_name,
-          overspent_by: money(Math.abs(c.available_raw)),
-        })),
-        warnings: warningCategories.slice(0, 5).map((c) => ({
-          category: c.category_name,
-          group: c.group_name,
-          remaining: c.available,
-          percent_used: c.variance_percent !== null ? 100 - c.variance_percent : null,
-        })),
-      },
-      by_group: Array.from(groupReports.values()).sort((a, b) =>
-        a.group_name.localeCompare(b.group_name)
-      ),
-      previous_month_comparison: previousMonthComparison,
+  return {
+    month,
+    summary: {
+      total_budgeted: money(totalBudgeted),
+      total_activity: money(totalActivity),
+      budget_usage_percent: budgetUsagePercent,
+      overspent_categories: overspentCount,
+      warning_categories: warningCount,
+      on_track_categories: onTrackCount,
+      underspent_categories: underspentCount,
     },
-    null,
-    2
-  );
+    alerts: {
+      overspent: overspentCategories.slice(0, 5).map((c) => ({
+        category: c.category_name,
+        group: c.group_name,
+        overspent_by: money(Math.abs(c.available_raw)),
+      })),
+      warnings: warningCategories.slice(0, 5).map((c) => ({
+        category: c.category_name,
+        group: c.group_name,
+        remaining: c.available,
+        percent_used: c.variance_percent !== null ? 100 - c.variance_percent : null,
+      })),
+    },
+    by_group: Array.from(groupReports.values()).sort((a, b) =>
+      a.group_name.localeCompare(b.group_name)
+    ),
+    previous_month_comparison: previousMonthComparison,
+  };
 }

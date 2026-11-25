@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleUnusedCategories } from '../../../../src/tools/analytics/unused-categories.js';
+import { handleUnusedCategories as rawHandleUnusedCategories, unusedCategoriesOutputSchema } from '../../../../src/tools/analytics/unused-categories.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createTransactionsResponse,
@@ -11,6 +12,8 @@ import {
   mockCategoryGroups,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleUnusedCategories = validating(unusedCategoriesOutputSchema, rawHandleUnusedCategories);
 
 function tx(categoryId: string, date: string, id: string) {
   return {
@@ -40,8 +43,7 @@ describe('handleUnusedCategories', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([] as never));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleUnusedCategories({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleUnusedCategories({}, mockClient as never);
 
     expect(parsed.summary.total_categories).toBeGreaterThan(0);
     expect(parsed.summary.unused_categories).toBeGreaterThan(0);
@@ -60,8 +62,7 @@ describe('handleUnusedCategories', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleUnusedCategories({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleUnusedCategories({}, mockClient as never);
 
     const allUnusedNames = parsed.by_group.flatMap(
       (g: { categories: string[] }) => g.categories
@@ -90,8 +91,7 @@ describe('handleUnusedCategories', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([splitTxn] as never));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleUnusedCategories({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleUnusedCategories({}, mockClient as never);
 
     const allUnusedNames = parsed.by_group.flatMap(
       (g: { categories: string[] }) => g.categories
@@ -104,12 +104,8 @@ describe('handleUnusedCategories', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([] as never));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const withoutFunded = JSON.parse(
-      await handleUnusedCategories({}, mockClient as never)
-    );
-    const withFunded = JSON.parse(
-      await handleUnusedCategories({ include_funded: true }, mockClient as never)
-    );
+    const withoutFunded = await handleUnusedCategories({}, mockClient as never);
+    const withFunded = await handleUnusedCategories({ include_funded: true }, mockClient as never);
 
     // Including funded categories should report at least as many unused.
     expect(withFunded.summary.unused_categories).toBeGreaterThanOrEqual(
@@ -126,8 +122,7 @@ describe('handleUnusedCategories', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(txns as never));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleUnusedCategories({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleUnusedCategories({}, mockClient as never);
 
     expect(parsed.summary.unused_categories).toBe(0);
     expect(parsed.summary.percent_unused).toBe(0);
@@ -137,11 +132,10 @@ describe('handleUnusedCategories', () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([] as never));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleUnusedCategories(
+    const parsed = await handleUnusedCategories(
       { months: 3, budget_id: 'custom-budget' },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.period.months_checked).toBe(3);
     expect(mockClient.resolveBudgetId).toHaveBeenCalledWith('custom-budget');

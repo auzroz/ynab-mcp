@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleBudgetVsActuals } from '../../../../src/tools/analytics/budget-vs-actuals.js';
+import { handleBudgetVsActuals as rawHandleBudgetVsActuals, budgetVsActualsOutputSchema } from '../../../../src/tools/analytics/budget-vs-actuals.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createMonthResponse,
@@ -12,6 +13,8 @@ import {
   mockMonthDetail,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleBudgetVsActuals = validating(budgetVsActualsOutputSchema, rawHandleBudgetVsActuals);
 
 describe('handleBudgetVsActuals', () => {
   let mockClient: MockClient;
@@ -24,8 +27,7 @@ describe('handleBudgetVsActuals', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetVsActuals({ month: '2024-01-01' }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetVsActuals({ month: '2024-01-01' }, mockClient as never);
 
     expect(parsed.month).toBe('2024-01-01');
     expect(parsed.summary).toBeDefined();
@@ -40,8 +42,7 @@ describe('handleBudgetVsActuals', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetVsActuals({ month: '2024-01-01' }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetVsActuals({ month: '2024-01-01' }, mockClient as never);
 
     // Dining Out (-$75) and Subscriptions (-$15) have negative balances
     expect(parsed.summary.overspent_categories).toBeGreaterThan(0);
@@ -56,8 +57,7 @@ describe('handleBudgetVsActuals', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetVsActuals({ month: '2024-01-01' }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetVsActuals({ month: '2024-01-01' }, mockClient as never);
 
     const groupNames = parsed.by_group.map((g: { group_name: string }) => g.group_name);
     expect(groupNames).not.toContain('Internal Master Category');
@@ -68,11 +68,10 @@ describe('handleBudgetVsActuals', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetVsActuals(
+    const parsed = await handleBudgetVsActuals(
       { month: '2024-02-01', include_previous: true },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.previous_month_comparison).not.toBeNull();
     expect(parsed.previous_month_comparison.month).toBe('2024-01-01');
@@ -85,11 +84,10 @@ describe('handleBudgetVsActuals', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetVsActuals(
+    const parsed = await handleBudgetVsActuals(
       { month: '2024-01-01', include_previous: true },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.previous_month_comparison.month).toBe('2023-12-01');
   });
@@ -100,8 +98,7 @@ describe('handleBudgetVsActuals', () => {
     );
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleBudgetVsActuals({ month: '2024-01-01' }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleBudgetVsActuals({ month: '2024-01-01' }, mockClient as never);
 
     expect(parsed.by_group).toEqual([]);
     expect(parsed.summary.overspent_categories).toBe(0);

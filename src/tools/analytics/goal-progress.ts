@@ -14,6 +14,7 @@ import { budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
 import { GOAL_TYPE_LABELS, getGoalPeriod } from '../../utils/goals.js';
 import DecimalJS from 'decimal.js';
+import { toOutputSchema } from '../output-schema.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
 
@@ -27,6 +28,42 @@ const inputSchema = z.object({
     .optional()
     .describe('Filter goals by status (default: all)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings; nulls here are reported on purpose. */
+export const goalProgressOutputSchema = z.object({
+  status: z.enum(['healthy', 'attention_needed', 'critical']),
+  message: z.string(),
+  month: z.string(),
+  summary: z.object({
+    total_goals: z.number().int(),
+    complete: z.number().int(),
+    on_track: z.number().int(),
+    behind: z.number().int(),
+    underfunded: z.number().int(),
+    snoozed: z.number().int(),
+    total_underfunded: z.string().describe('Snoozed goals excluded'),
+  }),
+  goals: z.array(
+    z.object({
+      category: z.string(),
+      group: z.string(),
+      type: z.string().describe('Goal type label'),
+      target: z.string().nullable().describe('Null when the goal has no target amount'),
+      target_date: z.string().nullable().describe('Target date or month; null when the goal has none'),
+      balance: z.string(),
+      progress: z.string().nullable().describe('Percent of the target; null without a positive target'),
+      underfunded: z.string(),
+      period: z.string().nullable().describe('Repeat period label; null for a goal that does not repeat'),
+      monthly_equivalent: z.string().nullable().describe('Per-month share of a repeating MF, NEED or DEBT target; otherwise null'),
+      snoozed: z.boolean(),
+      status: z.enum(['on_track', 'behind', 'underfunded', 'complete', 'snoozed']),
+      status_message: z.string(),
+    })
+  ),
+  filter_applied: z.enum(['all', 'on_track', 'behind', 'underfunded', 'complete', 'snoozed']),
+  tips: z.array(z.string()),
+});
+export type GoalProgressOutput = z.output<typeof goalProgressOutputSchema>;
 
 // Tool definition
 export const goalProgressTool: Tool = {
@@ -57,6 +94,7 @@ Returns goal progress, funding status, and projections for each category with a 
     },
     required: [],
   },
+  outputSchema: toOutputSchema(goalProgressOutputSchema),
 };
 
 interface GoalInfo {
@@ -93,7 +131,7 @@ const PER_PERIOD_GOAL_TYPES = new Set(['MF', 'NEED', 'DEBT']);
 export async function handleGoalProgress(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GoalProgressOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -258,46 +296,42 @@ export async function handleGoalProgress(
     overallMessage = `${statusCounts.underfunded + statusCounts.behind} goals need attention`;
   }
 
-  return JSON.stringify(
-    {
-      status: overallStatus,
-      message: overallMessage,
-      month: currentMonth,
-      summary: {
-        total_goals: goalsInfo.length,
-        complete: statusCounts.complete,
-        on_track: statusCounts.on_track,
-        behind: statusCounts.behind,
-        underfunded: statusCounts.underfunded,
-        snoozed: statusCounts.snoozed,
-        total_underfunded: money(totalUnderfunded),
-      },
-      goals: filteredGoals.map((g) => ({
-        category: g.category_name,
-        group: g.group_name,
-        type: g.goal_type_label,
-        target: g.target_amount,
-        target_date: g.target_date,
-        balance: g.current_balance,
-        progress: g.percent_complete !== null ? `${g.percent_complete}%` : null,
-        underfunded: g.underfunded,
-        period: g.period,
-        monthly_equivalent: g.monthly_equivalent,
-        snoozed: g.snoozed,
-        status: g.status,
-        status_message: g.status_message,
-      })),
-      filter_applied: filter,
-      tips:
-        statusCounts.underfunded > 0
-          ? [
-              `Fund ${statusCounts.underfunded} underfunded goals to stay on track`,
-              'Consider adjusting goal targets if consistently underfunded',
-              'Use Ready to Assign to cover underfunded goals',
-            ]
-          : [],
+  return {
+    status: overallStatus,
+    message: overallMessage,
+    month: currentMonth,
+    summary: {
+      total_goals: goalsInfo.length,
+      complete: statusCounts.complete,
+      on_track: statusCounts.on_track,
+      behind: statusCounts.behind,
+      underfunded: statusCounts.underfunded,
+      snoozed: statusCounts.snoozed,
+      total_underfunded: money(totalUnderfunded),
     },
-    null,
-    2
-  );
+    goals: filteredGoals.map((g) => ({
+      category: g.category_name,
+      group: g.group_name,
+      type: g.goal_type_label,
+      target: g.target_amount,
+      target_date: g.target_date,
+      balance: g.current_balance,
+      progress: g.percent_complete !== null ? `${g.percent_complete}%` : null,
+      underfunded: g.underfunded,
+      period: g.period,
+      monthly_equivalent: g.monthly_equivalent,
+      snoozed: g.snoozed,
+      status: g.status,
+      status_message: g.status_message,
+    })),
+    filter_applied: filter,
+    tips:
+      statusCounts.underfunded > 0
+        ? [
+            `Fund ${statusCounts.underfunded} underfunded goals to stay on track`,
+            'Consider adjusting goal targets if consistently underfunded',
+            'Use Ready to Assign to cover underfunded goals',
+          ]
+        : [],
+  };
 }

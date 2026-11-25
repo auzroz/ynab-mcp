@@ -11,6 +11,7 @@ import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -25,6 +26,59 @@ const inputSchema = z.object({
     .optional()
     .describe('Number of months of history to analyze (default 3)'),
 });
+
+const confidenceSchema = z.enum(['high', 'medium', 'low']);
+const adjustmentSchema = {
+  category: z.string(),
+  group: z.string(),
+  current: z.string(),
+  suggested: z.string(),
+  average_spending: z.string(),
+};
+
+/**
+ * What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings.
+ * With no month of history it returns only error (false), message, analysis_period and tips.
+ */
+export const budgetSuggestionsOutputSchema = z.object({
+  error: z.literal(false).exactOptional().describe('Only on the insufficient-history result'),
+  message: z.string().exactOptional().describe('Only on the insufficient-history result'),
+  analysis_period: z.object({
+    months_requested: z.number().int(),
+    months_available: z.number().int(),
+    months: z.array(z.string()),
+  }),
+  summary: z
+    .object({
+      categories_analyzed: z.number().int(),
+      needs_increase: z.number().int(),
+      can_decrease: z.number().int(),
+      on_target: z.number().int(),
+      net_adjustment_needed: z.string(),
+    })
+    .exactOptional(),
+  needs_increase: z
+    .array(z.object({ ...adjustmentSchema, increase_by: z.string(), confidence: confidenceSchema }))
+    .exactOptional()
+    .describe('At most 10'),
+  can_decrease: z
+    .array(z.object({ ...adjustmentSchema, decrease_by: z.string(), confidence: confidenceSchema }))
+    .exactOptional()
+    .describe('At most 10'),
+  on_target: z
+    .array(
+      z.object({
+        category: z.string(),
+        group: z.string(),
+        current: z.string(),
+        average_spending: z.string(),
+      })
+    )
+    .exactOptional()
+    .describe('At most 5'),
+  tips: z.array(z.string()),
+});
+export type BudgetSuggestionsOutput = z.output<typeof budgetSuggestionsOutputSchema>;
 
 // Tool definition
 export const budgetSuggestionsTool: Tool = {
@@ -56,6 +110,7 @@ Returns suggested monthly budget amounts for each category based on actual spend
     },
     required: [],
   },
+  outputSchema: toOutputSchema(budgetSuggestionsOutputSchema),
 };
 
 interface CategorySuggestion {
@@ -77,7 +132,7 @@ interface CategorySuggestion {
 export async function handleBudgetSuggestions(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<BudgetSuggestionsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -124,24 +179,20 @@ export async function handleBudgetSuggestions(
 
   // If no historical data available, return early with helpful message
   if (historicalMonthResponses.length === 0) {
-    return JSON.stringify(
-      {
-        error: false,
-        message: 'Insufficient budget history for suggestions. This tool requires at least one month of historical data.',
-        analysis_period: {
-          months_requested: monthCount,
-          months_available: 0,
-          months: [],
-        },
-        tips: [
-          'Budget suggestions require historical spending data',
-          'Try again after using YNAB for at least one full month',
-          'You can also manually review your spending patterns in YNAB',
-        ],
+    return {
+      error: false,
+      message: 'Insufficient budget history for suggestions. This tool requires at least one month of historical data.',
+      analysis_period: {
+        months_requested: monthCount,
+        months_available: 0,
+        months: [],
       },
-      null,
-      2
-    );
+      tips: [
+        'Budget suggestions require historical spending data',
+        'Try again after using YNAB for at least one full month',
+        'You can also manually review your spending patterns in YNAB',
+      ],
+    };
   }
 
   // Build group lookup
@@ -261,52 +312,48 @@ export async function handleBudgetSuggestions(
     canDecrease.map((s) => s.current_budget - s.suggested_budget)
   );
 
-  return JSON.stringify(
-    {
-      analysis_period: {
-        months_requested: monthCount,
-        months_available: historicalMonthResponses.length,
-        months: successfulMonths,
-      },
-      summary: {
-        categories_analyzed: suggestions.length,
-        needs_increase: needsIncrease.length,
-        can_decrease: canDecrease.length,
-        on_target: onTarget.length,
-        net_adjustment_needed: money(totalIncrease - totalDecrease),
-      },
-      needs_increase: needsIncrease.slice(0, 10).map((s) => ({
-        category: s.category_name,
-        group: s.group_name,
-        current: money(s.current_budget),
-        suggested: money(s.suggested_budget),
-        average_spending: money(s.average_spending),
-        increase_by: money(s.suggested_budget - s.current_budget),
-        confidence: s.confidence,
-      })),
-      can_decrease: canDecrease.slice(0, 10).map((s) => ({
-        category: s.category_name,
-        group: s.group_name,
-        current: money(s.current_budget),
-        suggested: money(s.suggested_budget),
-        average_spending: money(s.average_spending),
-        decrease_by: money(s.current_budget - s.suggested_budget),
-        confidence: s.confidence,
-      })),
-      on_target: onTarget.slice(0, 5).map((s) => ({
-        category: s.category_name,
-        group: s.group_name,
-        current: money(s.current_budget),
-        average_spending: money(s.average_spending),
-      })),
-      tips: [
-        'Suggestions include a 10% buffer above average spending',
-        'High confidence means consistent spending patterns',
-        'Review low confidence suggestions more carefully',
-        'Consider seasonal variations not captured in recent months',
-      ],
+  return {
+    analysis_period: {
+      months_requested: monthCount,
+      months_available: historicalMonthResponses.length,
+      months: successfulMonths,
     },
-    null,
-    2
-  );
+    summary: {
+      categories_analyzed: suggestions.length,
+      needs_increase: needsIncrease.length,
+      can_decrease: canDecrease.length,
+      on_target: onTarget.length,
+      net_adjustment_needed: money(totalIncrease - totalDecrease),
+    },
+    needs_increase: needsIncrease.slice(0, 10).map((s) => ({
+      category: s.category_name,
+      group: s.group_name,
+      current: money(s.current_budget),
+      suggested: money(s.suggested_budget),
+      average_spending: money(s.average_spending),
+      increase_by: money(s.suggested_budget - s.current_budget),
+      confidence: s.confidence,
+    })),
+    can_decrease: canDecrease.slice(0, 10).map((s) => ({
+      category: s.category_name,
+      group: s.group_name,
+      current: money(s.current_budget),
+      suggested: money(s.suggested_budget),
+      average_spending: money(s.average_spending),
+      decrease_by: money(s.current_budget - s.suggested_budget),
+      confidence: s.confidence,
+    })),
+    on_target: onTarget.slice(0, 5).map((s) => ({
+      category: s.category_name,
+      group: s.group_name,
+      current: money(s.current_budget),
+      average_spending: money(s.average_spending),
+    })),
+    tips: [
+      'Suggestions include a 10% buffer above average spending',
+      'High confidence means consistent spending patterns',
+      'Review low confidence suggestions more carefully',
+      'Consider seasonal variations not captured in recent months',
+    ],
+  };
 }

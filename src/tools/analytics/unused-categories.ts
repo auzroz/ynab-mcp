@@ -11,6 +11,7 @@ import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { isInternalGroup } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -29,6 +30,42 @@ const inputSchema = z.object({
     .optional()
     .describe('Include categories that have funds but no spending (default false)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const unusedCategoriesOutputSchema = z.object({
+  period: z.object({
+    months_checked: z.number().int(),
+    since_date: z.string(),
+  }),
+  summary: z.object({
+    total_categories: z.number().int(),
+    unused_categories: z.number().int(),
+    percent_unused: z.number().int(),
+    safe_to_remove: z.number().int(),
+    needs_review: z.number().int(),
+  }),
+  categories: z.object({
+    safe_to_remove: z.array(z.object({ category: z.string(), group: z.string(), suggestion: z.string() })),
+    needs_review: z.array(
+      z.object({
+        category: z.string(),
+        group: z.string(),
+        balance: z.string(),
+        has_goal: z.boolean(),
+        suggestion: z.string(),
+      })
+    ),
+  }),
+  by_group: z.array(
+    z.object({
+      group: z.string(),
+      count: z.number().int(),
+      categories: z.array(z.string()),
+    })
+  ),
+  tips: z.array(z.string()),
+});
+export type UnusedCategoriesOutput = z.output<typeof unusedCategoriesOutputSchema>;
 
 // Tool definition
 export const unusedCategoriesTool: Tool = {
@@ -62,6 +99,7 @@ Helps identify categories that could be removed or consolidated.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(unusedCategoriesOutputSchema),
 };
 
 interface UnusedCategory {
@@ -83,7 +121,7 @@ interface UnusedCategory {
 export async function handleUnusedCategories(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<UnusedCategoriesOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -215,45 +253,41 @@ export async function handleUnusedCategories(
     (c) => c.balance_raw !== 0 || c.budgeted_raw !== 0 || c.has_goal
   );
 
-  return JSON.stringify(
-    {
-      period: {
-        months_checked: months,
-        since_date: sinceDateStr,
-      },
-      summary: {
-        total_categories: totalCategories,
-        unused_categories: unusedCategories.length,
-        percent_unused: totalCategories > 0 ? Math.round((unusedCategories.length / totalCategories) * 100) : 0,
-        safe_to_remove: safeToRemove.length,
-        needs_review: needsReview.length,
-      },
-      categories: {
-        safe_to_remove: safeToRemove.map((c) => ({
-          category: c.category_name,
-          group: c.group_name,
-          suggestion: c.suggestion,
-        })),
-        needs_review: needsReview.map((c) => ({
-          category: c.category_name,
-          group: c.group_name,
-          balance: c.balance,
-          has_goal: c.has_goal,
-          suggestion: c.suggestion,
-        })),
-      },
-      by_group: Array.from(byGroup.entries()).map(([group, cats]) => ({
-        group,
-        count: cats.length,
-        categories: cats.map((c) => c.category_name),
-      })),
-      tips: [
-        'Review categories before deleting to avoid losing historical data',
-        'Consider hiding categories instead of deleting to preserve history',
-        'Move any remaining funds to other categories before cleanup',
-      ],
+  return {
+    period: {
+      months_checked: months,
+      since_date: sinceDateStr,
     },
-    null,
-    2
-  );
+    summary: {
+      total_categories: totalCategories,
+      unused_categories: unusedCategories.length,
+      percent_unused: totalCategories > 0 ? Math.round((unusedCategories.length / totalCategories) * 100) : 0,
+      safe_to_remove: safeToRemove.length,
+      needs_review: needsReview.length,
+    },
+    categories: {
+      safe_to_remove: safeToRemove.map((c) => ({
+        category: c.category_name,
+        group: c.group_name,
+        suggestion: c.suggestion,
+      })),
+      needs_review: needsReview.map((c) => ({
+        category: c.category_name,
+        group: c.group_name,
+        balance: c.balance,
+        has_goal: c.has_goal,
+        suggestion: c.suggestion,
+      })),
+    },
+    by_group: Array.from(byGroup.entries()).map(([group, cats]) => ({
+      group,
+      count: cats.length,
+      categories: cats.map((c) => c.category_name),
+    })),
+    tips: [
+      'Review categories before deleting to avoid losing historical data',
+      'Consider hiding categories instead of deleting to preserve history',
+      'Move any remaining funds to other categories before cleanup',
+    ],
+  };
 }

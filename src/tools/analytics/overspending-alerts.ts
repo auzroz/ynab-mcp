@@ -12,6 +12,7 @@ import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Threshold for minor vs significant overspending (in milliunits, $50 = 50000)
 const MINOR_OVERSPEND_THRESHOLD_MILLIS = 50000;
@@ -26,6 +27,39 @@ const inputSchema = z.object({
     .optional()
     .describe('Minimum overspend amount to report in dollars (default 0)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const overspendingAlertsOutputSchema = z.object({
+  status: z.enum(['all_clear', 'minor_overspend', 'significant_overspend']),
+  message: z.string(),
+  month: z.string(),
+  summary: z.object({
+    overspent_categories: z.number().int(),
+    total_overspent: z.string(),
+    total_budgeted_in_overspent: z.string(),
+    total_spent_in_overspent: z.string(),
+  }),
+  alerts: z.array(
+    z.object({
+      category: z.string(),
+      group: z.string(),
+      budgeted: z.string(),
+      spent: z.string(),
+      over_by: z.string(),
+      percent_over: z.string().describe('Overspend as a percent of the budgeted amount; 100% when nothing was budgeted'),
+    })
+  ),
+  by_group: z.array(
+    z.object({
+      group: z.string(),
+      count: z.number().int(),
+      total_over: z.string(),
+      categories: z.array(z.string()),
+    })
+  ),
+  suggestions: z.array(z.string()),
+});
+export type OverspendingAlertsOutput = z.output<typeof overspendingAlertsOutputSchema>;
 
 // Tool definition
 export const overspendingAlertsTool: Tool = {
@@ -55,6 +89,7 @@ Returns a quick list of all overspent categories with amounts.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(overspendingAlertsOutputSchema),
 };
 
 interface OverspentCategory {
@@ -73,7 +108,7 @@ interface OverspentCategory {
 export async function handleOverspendingAlerts(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<OverspendingAlertsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -148,41 +183,37 @@ export async function handleOverspendingAlerts(
     byGroup.get(cat.group_name)!.push(cat);
   }
 
-  return JSON.stringify(
-    {
-      status,
-      message,
-      month: currentMonth,
-      summary: {
-        overspent_categories: overspent.length,
-        total_overspent: money(totalOverspent),
-        total_budgeted_in_overspent: money(totalBudgeted),
-        total_spent_in_overspent: money(totalSpending),
-      },
-      alerts: overspent.map((c) => ({
-        category: c.category_name,
-        group: c.group_name,
-        budgeted: money(c.budgeted),
-        spent: money(c.activity),
-        over_by: money(c.overspent),
-        percent_over: `${Math.round(c.percent_over)}%`,
-      })),
-      by_group: Array.from(byGroup.entries()).map(([group, cats]) => ({
-        group,
-        count: cats.length,
-        total_over: money(cats.reduce((sum, c) => sum + c.overspent, 0)),
-        categories: cats.map((c) => c.category_name),
-      })),
-      suggestions:
-        overspent.length > 0
-          ? [
-              'Move funds from other categories to cover overspending',
-              'Check if overspending can be offset by underspending elsewhere',
-              'Consider adjusting future budgets based on actual needs',
-            ]
-          : [],
+  return {
+    status,
+    message,
+    month: currentMonth,
+    summary: {
+      overspent_categories: overspent.length,
+      total_overspent: money(totalOverspent),
+      total_budgeted_in_overspent: money(totalBudgeted),
+      total_spent_in_overspent: money(totalSpending),
     },
-    null,
-    2
-  );
+    alerts: overspent.map((c) => ({
+      category: c.category_name,
+      group: c.group_name,
+      budgeted: money(c.budgeted),
+      spent: money(c.activity),
+      over_by: money(c.overspent),
+      percent_over: `${Math.round(c.percent_over)}%`,
+    })),
+    by_group: Array.from(byGroup.entries()).map(([group, cats]) => ({
+      group,
+      count: cats.length,
+      total_over: money(cats.reduce((sum, c) => sum + c.overspent, 0)),
+      categories: cats.map((c) => c.category_name),
+    })),
+    suggestions:
+      overspent.length > 0
+        ? [
+            'Move funds from other categories to cover overspending',
+            'Check if overspending can be offset by underspending elsewhere',
+            'Consider adjusting future budgets based on actual needs',
+          ]
+        : [],
+  };
 }
