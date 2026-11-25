@@ -12,7 +12,14 @@
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../services/ynab-client.js';
 import { fanOutFor } from './fan-out.js';
-import { TOOL_METADATA } from './annotations.js';
+import { ACCOUNT_TOOL_METADATA, TOOL_METADATA } from './annotations.js';
+import { ACCOUNT_TOOL_NAMES, type AccountToolName } from './connections/policy.js';
+import type { AccountToolContext, AccountToolHandler } from './connections/context.js';
+
+// Account tools (OAuth HTTP mode only, #53c)
+import { listConnectionsTool, handleListConnections } from './connections/list-connections.js';
+import { revokeConnectionTool, handleRevokeConnection } from './connections/revoke-connection.js';
+import { disconnectTool, handleDisconnect } from './connections/disconnect.js';
 
 // User tools
 import { getUserTool, handleGetUser } from './user/get-user.js';
@@ -297,8 +304,12 @@ const toolDefinitions: Tool[] = [
   healthCheckTool,
 ];
 
-// Tool handler mapping
-type ToolHandler = (args: Record<string, unknown>, client: YnabClient) => Promise<string>;
+// Tool handler mapping. A tool with an outputSchema returns its output object
+// (serialized here); every other tool returns its JSON text (#45).
+type ToolHandler = (
+  args: Record<string, unknown>,
+  client: YnabClient
+) => Promise<string | Record<string, unknown>>;
 
 const handlers = {
   // User
@@ -409,14 +420,105 @@ function withMetadata(tool: Tool): Tool {
 // Export all tool definitions with titles and annotations applied
 export const tools: Tool[] = toolDefinitions.map(withMetadata);
 
+// ---- Account tools (#53c) ---------------------------------------------------
+// Registered only in OAuth HTTP mode, where a user has connections: stdio and
+// header mode never list them, and a call by name there is an unknown tool.
+// They run with an AccountToolContext instead of a YnabClient, and make no
+// YNAB request.
+
+const accountHandlers = {
+  ynab_list_connections: handleListConnections,
+  ynab_revoke_connection: handleRevokeConnection,
+  ynab_disconnect: handleDisconnect,
+} satisfies Record<AccountToolName, AccountToolHandler>;
+
+const accountToolDefinitions: Tool[] = [listConnectionsTool, revokeConnectionTool, disconnectTool];
+
+/** The account tools with titles and annotations, in ACCOUNT_TOOL_NAMES order. */
+export const accountTools: Tool[] = accountToolDefinitions.map((tool) => {
+  if (!isAccountToolName(tool.name)) throw new Error(`Tool ${tool.name} has no account handler or annotation entry`);
+  const { title, annotations } = ACCOUNT_TOOL_METADATA[tool.name];
+  return { ...tool, title, annotations: { title, ...annotations } };
+});
+
+/** Every tool the server can register in some mode: the docs and the site count these. */
+export const toolCatalog: Tool[] = [...tools, ...accountTools];
+
+export function isAccountToolName(name: string): name is AccountToolName {
+  return (ACCOUNT_TOOL_NAMES as readonly string[]).includes(name);
+}
+
+/** Run an account tool. The caller has already applied its policy (src/tools/connections/policy.ts). */
+export async function handleAccountToolCall(
+  toolName: AccountToolName,
+  args: Record<string, unknown>,
+  ctx: AccountToolContext
+): Promise<string> {
+  const handler: AccountToolHandler = accountHandlers[toolName];
+  return handler(args, ctx);
+}
+
+const toolsByName = new Map(tools.map((t) => [t.name, t]));
+
+/** The advertised definition of a registered tool (the object tools/list sends). */
+export function getTool(name: string): Tool | undefined {
+  return toolsByName.get(name);
+}
+
 /**
- * Route a tool call to the appropriate handler.
+ * A tool call's result: the text block, and for a tool with an outputSchema
+ * the object that text was serialized from (its `structuredContent`).
+ */
+export interface ToolCallOutput {
+  text: string;
+  structured?: Record<string, unknown>;
+}
+
+/**
+ * Route a tool call to its handler and return its text and, for a tool with
+ * an outputSchema, its structured output. The text is serialized from the
+ * structured object itself (never the reverse), so the two always agree, and
+ * a tool with a schema never answers without it.
+ */
+export async function runToolCall(
+  toolName: string,
+  args: Record<string, unknown>,
+  client: YnabClient
+): Promise<ToolCallOutput> {
+  return toolCallOutput(toolsByName.get(toolName), await dispatch(toolName, args, client));
+}
+
+/** A handler's return value as a tool call's output, by the tool's definition (see runToolCall). */
+export function toolCallOutput(tool: Tool | undefined, result: string | Record<string, unknown>): ToolCallOutput {
+  const toolName = tool?.name ?? 'unknown';
+  const hasSchema = tool?.outputSchema !== undefined;
+  if (typeof result === 'string') {
+    // A v2 client rejects a non-error result without structuredContent from a
+    // tool that has a schema, so this is a bug, reported as a tool error.
+    if (hasSchema) throw new Error(`Tool ${toolName} has an output schema but returned text only`);
+    return { text: result };
+  }
+  const text = JSON.stringify(result, null, 2);
+  return hasSchema ? { text, structured: result } : { text };
+}
+
+/**
+ * Route a tool call to the appropriate handler and return its text block
+ * (the JSON the tool has always returned).
  */
 export async function handleToolCall(
   toolName: string,
   args: Record<string, unknown>,
   client: YnabClient
 ): Promise<string> {
+  return (await runToolCall(toolName, args, client)).text;
+}
+
+async function dispatch(
+  toolName: string,
+  args: Record<string, unknown>,
+  client: YnabClient
+): Promise<string | Record<string, unknown>> {
   // Guard against prototype pollution - only allow own properties
   if (!isToolName(toolName)) {
     const safeName = toolName.slice(0, 100).replace(/[\r\n]/g, '');

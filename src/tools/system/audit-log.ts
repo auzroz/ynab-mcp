@@ -20,6 +20,7 @@ import {
   type AuditRecord,
 } from '../../storage/audit-rows.js';
 import { sanitizeString } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
 
 /**
  * Every write outcome but success: what `success: false` selects. A
@@ -41,6 +42,51 @@ const inputSchema = z
     summary_only: z.boolean().optional().describe('Return only summary statistics'),
   })
   .strict();
+
+const count = () => z.number().int();
+
+/** A stored value: known values listed, but any string accepted (rows a newer release wrote still list). */
+const stored = (known: readonly string[]) =>
+  z.string().nullable().describe(`Known values: ${known.join(', ')}`);
+
+const entrySchema = z.object({
+  timestamp: z.string(),
+  tool: z.string().nullable(),
+  operation: stored(AUDIT_OPERATIONS),
+  resource_type: stored(AUDIT_RESOURCE_TYPES),
+  resource_id: z.string().nullable(),
+  budget_id: z.string().nullable(),
+  outcome: stored(AUDIT_OUTCOMES),
+  success: z.boolean().nullable().describe('Null for a revocation entry (operation revoke): not a write attempt'),
+  client_id: z.string().nullable(),
+  family_id: z.string().nullable(),
+  request_id: z.string().nullable(),
+});
+type AuditEntryOutput = z.output<typeof entrySchema>;
+
+const summarySchema = z.object({
+  total_operations: count(),
+  success_count: count(),
+  failure_count: count().describe('Write attempts that did not succeed (revocations not included)'),
+  revocation_count: count().describe('Revocation entries (#60b): revoked, revoked_reuse, revoked_replay'),
+  by_outcome: z.record(z.string(), count()).describe(`Count per outcome. Known outcomes: ${AUDIT_OUTCOMES.join(', ')}`),
+});
+
+/**
+ * What the tool returns (#45; rules in ../output-schema.ts): one object for
+ * both modes. With summary_only, `entries` and `count` are absent and
+ * `filters_applied` is present when a filter was given. `all_clients` echoes
+ * the option when it was set (#60b).
+ */
+export const auditLogOutputSchema = z.object({
+  entries: z.array(entrySchema).optional().describe('Absent with summary_only'),
+  count: count().optional().describe('Absent with summary_only'),
+  summary: summarySchema,
+  all_clients: z.literal(true).optional().describe("Present when all_clients was asked for: every connection of this user's entries"),
+  filters_applied: z.literal(true).optional().describe('summary_only with a filter'),
+  message: z.string(),
+});
+export type AuditLogOutput = z.output<typeof auditLogOutputSchema>;
 
 // Tool definition
 export const auditLogTool: Tool = {
@@ -102,16 +148,11 @@ Entries hold ids only, never amounts, names, memos or tokens. On a server with O
     required: [],
     additionalProperties: false,
   },
+  outputSchema: toOutputSchema(auditLogOutputSchema),
 };
 
 /** Count totals from per-outcome counts. */
-function summarize(counts: Record<string, number>): {
-  total_operations: number;
-  success_count: number;
-  failure_count: number;
-  revocation_count: number;
-  by_outcome: Record<string, number>;
-} {
+function summarize(counts: Record<string, number>): z.output<typeof summarySchema> {
   let total = 0;
   let revocations = 0;
   for (const [outcome, n] of Object.entries(counts)) {
@@ -129,7 +170,7 @@ function summarize(counts: Record<string, number>): {
 }
 
 /** An entry as the tool shows it (ids sanitized; they are ours or YNAB's, never user text). */
-function present(e: AuditRecord): Record<string, unknown> {
+function present(e: AuditRecord): AuditEntryOutput {
   const text = (v: string | undefined): string | null => (v === undefined ? null : sanitizeString(v, 200));
   return {
     timestamp: new Date(e.ts).toISOString(),
@@ -152,7 +193,7 @@ function present(e: AuditRecord): Record<string, unknown> {
  * Handler for the ynab_audit_log tool. Reads the caller's own user's log
  * through the client (per user, per request in HTTP mode).
  */
-export async function handleAuditLog(args: Record<string, unknown>, client: YnabClient): Promise<string> {
+export async function handleAuditLog(args: Record<string, unknown>, client: YnabClient): Promise<AuditLogOutput> {
   const validated = inputSchema.parse(args);
   const auditLog = client.getAuditLog();
 
@@ -182,37 +223,28 @@ export async function handleAuditLog(args: Record<string, unknown>, client: Ynab
 
   if (validated.summary_only) {
     const summary = summarize(await auditLog.counts(query));
-    return JSON.stringify(
-      {
-        summary,
-        ...(validated.all_clients === true ? { all_clients: true } : {}),
-        ...(hasFilters ? { filters_applied: true } : {}),
-        message:
-          summary.total_operations === 0
-            ? hasFilters
-              ? 'No matching audit log entries found'
-              : 'No write operations have been attempted yet'
-            : `${summary.total_operations} operations logged${hasFilters ? ' (filtered)' : ''}`,
-      },
-      null,
-      2
-    );
+    return {
+      summary,
+      ...(validated.all_clients === true ? { all_clients: true as const } : {}),
+      ...(hasFilters ? { filters_applied: true as const } : {}),
+      message:
+        summary.total_operations === 0
+          ? hasFilters
+            ? 'No matching audit log entries found'
+            : 'No write operations have been attempted yet'
+          : `${summary.total_operations} operations logged${hasFilters ? ' (filtered)' : ''}`,
+    };
   }
 
   const entries = (await auditLog.list(query, validated.limit ?? 20)).map(present);
   // The caller's whole log's totals for context (unfiltered).
   const summary = summarize(await auditLog.counts(scope));
 
-  return JSON.stringify(
-    {
-      entries,
-      count: entries.length,
-      ...(validated.all_clients === true ? { all_clients: true } : {}),
-      summary,
-
-      message: entries.length === 0 ? 'No matching audit log entries found' : `Showing ${entries.length} most recent entries`,
-    },
-    null,
-    2
-  );
+  return {
+    entries,
+    count: entries.length,
+    ...(validated.all_clients === true ? { all_clients: true as const } : {}),
+    summary,
+    message: entries.length === 0 ? 'No matching audit log entries found' : `Showing ${entries.length} most recent entries`,
+  };
 }

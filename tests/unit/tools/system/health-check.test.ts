@@ -27,8 +27,7 @@ describe('handleHealthCheck', () => {
   });
 
   it('reports healthy when all checks pass (read-only mode)', async () => {
-    const result = await handleHealthCheck({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleHealthCheck({}, mockClient as never);
 
     expect(parsed.status).toBe('healthy');
     expect(parsed.message).toBe('All systems operational');
@@ -47,8 +46,7 @@ describe('handleHealthCheck', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     mockClient.getUser.mockRejectedValue(new Error('network down'));
 
-    const result = await handleHealthCheck({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleHealthCheck({}, mockClient as never);
 
     expect(parsed.status).toBe('unhealthy');
     expect(parsed.message).toContain('check(s) failed');
@@ -62,8 +60,7 @@ describe('handleHealthCheck', () => {
   it('reports write operations enabled when not read-only', async () => {
     mockClient.isReadOnly.mockReturnValue(false);
 
-    const result = await handleHealthCheck({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleHealthCheck({}, mockClient as never);
 
     const writeCheck = parsed.checks.find((c: HealthCheckCheck) => c.name === 'write_operations');
     expect(writeCheck.message).toContain('ENABLED');
@@ -80,8 +77,7 @@ describe('handleHealthCheck', () => {
       resetTimeMs: 3600000,
     });
 
-    const result = await handleHealthCheck({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleHealthCheck({}, mockClient as never);
 
     const rateCheck = parsed.checks.find((c: HealthCheckCheck) => c.name === 'rate_limiter');
     expect(rateCheck.status).toBe('fail');
@@ -92,8 +88,7 @@ describe('handleHealthCheck', () => {
   it('masks a configured default budget id', async () => {
     mockClient.getDefaultBudgetId.mockReturnValue('abcdefgh-1234-5678-9012-zzzzzzzzzzzz');
 
-    const result = await handleHealthCheck({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleHealthCheck({}, mockClient as never);
 
     const budgetCheck = parsed.checks.find((c: HealthCheckCheck) => c.name === 'default_budget');
     expect(budgetCheck.message).toContain('abcd...zzzz');
@@ -103,8 +98,7 @@ describe('handleHealthCheck', () => {
   it('reports last-used when default budget is not set', async () => {
     mockClient.getDefaultBudgetId.mockReturnValue('last-used');
 
-    const result = await handleHealthCheck({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleHealthCheck({}, mockClient as never);
 
     const budgetCheck = parsed.checks.find((c: HealthCheckCheck) => c.name === 'default_budget');
     expect(budgetCheck.message).toContain('last-used');

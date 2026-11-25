@@ -22,7 +22,8 @@ export const BREAKER_OPEN_MS = 30_000;
 /** What a request refused during a half-open probe is told to wait. */
 const PROBE_RETRY_MS = 1000;
 
-export type BreakerState = 'closed' | 'open' | 'half_open';
+export const BREAKER_STATES = ['closed', 'open', 'half_open'] as const;
+export type BreakerState = (typeof BREAKER_STATES)[number];
 
 export interface CircuitBreakerOptions {
   threshold?: number;
