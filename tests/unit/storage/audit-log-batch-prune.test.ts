@@ -140,6 +140,16 @@ for (const driver of testDrivers) {
       expect(await s.pruneAuditLog({ now, batchSize: 2 })).toBe(0);
     });
 
+    it('the prune refuses a batch size that is not a positive integer, before any statement', async () => {
+      const h = await driver.open();
+      const s = h.storage;
+      await s.appendAuditEntry(row({ ts: 0, resourceId: 'old' }));
+      for (const batchSize of [0, -1, 1.5, Number.NaN]) {
+        await expect(s.pruneAuditLog({ batchSize })).rejects.toThrow(/positive integer/);
+      }
+      expect((await s.listAuditEntries('u1', {}, 10)).map((e) => e.resourceId)).toEqual(['old']);
+    });
+
     it('the default window is 90 days', async () => {
       const h = await driver.open();
       const s = h.storage;

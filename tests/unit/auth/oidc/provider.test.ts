@@ -26,6 +26,8 @@ import { createClientSchemaValidator } from '../../../../src/auth/oidc/client-sc
 import { isClientSecretHash } from '../../../../src/auth/token-hash.js';
 import type { AuditRecord, ConsumeOutcome, Storage } from '../../../../src/storage/types.js';
 import { createRevocationRecorder } from '../../../../src/auth/revocation-audit.js';
+import { OWNER_LOOKUP_MAX_WAIT_MS } from '../../../../src/auth/oidc/adapter.js';
+
 
 import { REFRESH_TOKEN_IDLE_DAYS } from '../../../../src/auth/retention-defaults.js';
 import { testDrivers, cleanupDrivers, type DriverHandle } from '../../helpers/storage-drivers.js';
@@ -495,6 +497,35 @@ for (const driver of testDrivers) {
       expect(rows[0]).toMatchObject({ operation: 'revoke', resourceType: 'grant', outcome: 'revoked_reuse', clientId });
       expect(rows[0]?.resourceId).toBe(rows[0]?.familyId);
       expect(JSON.stringify(rows)).not.toContain(spent);
+    });
+
+    it.each([
+      ['fails', () => Promise.reject(new Error('lookup failed Bearer abc.def'))],
+      ['never answers', () => new Promise<never>(() => undefined)],
+    ])('#60b: when the audit owner lookup %s, /revoke still ends the grant, within the bound, with no audit row', async (_name, fault) => {
+      let armed = false;
+      const faulty = new Proxy(handle.storage, {
+        get(target, prop) {
+          if (prop === 'findOAuthRow') {
+            return (key: string) => (armed && key.startsWith('Grant:') ? fault() : target.findOAuthRow(key));
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+        },
+      });
+      await setup({ providerStore: faulty, revocations: createRevocationRecorder(handle.storage) });
+      const { tokens } = await signIn(t, clientId);
+      armed = true;
+      const started = Date.now();
+      const res = await request(t.app).post('/revoke').type('form').send({ token: tokens['refresh_token'], client_id: clientId });
+      expect(res.status).toBe(200);
+      expect(Date.now() - started).toBeLessThan(OWNER_LOOKUP_MAX_WAIT_MS + 1500);
+      armed = false;
+      await expect(t.verifier.verifyAccessToken(tokens['access_token'] as string)).rejects.toMatchObject({ code: 'invalid_token' });
+      expect((await refresh(t.app, { clientId, refreshToken: tokens['refresh_token'] as string })).body.error).toBe('invalid_grant');
+      expect((await oauthRowsOf(handle)).filter((r) => r.model === 'AccessToken' || r.model === 'RefreshToken' || r.model === 'Grant')).toEqual([]);
+      await new Promise((r) => setTimeout(r, 150));
+      expect(await handle.storage.listAuditEntries('ynab-user-1', {}, 10)).toEqual([]);
     });
 
     it('#60b: the forced race records exactly one revoked_replay row, and no reuse row', async () => {

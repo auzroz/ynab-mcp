@@ -46,8 +46,9 @@
  *
  * Errors thrown into the library are the library's own (`errors.InvalidGrant`)
  * where a client error is meant (D9); a refused code is a plain error, which
- * the library answers as `server_error`. Nothing here logs, and no error
- * carries an id, a key or a payload.
+ * the library answers as `server_error`. The one log line (a revocation
+ * whose audit row was skipped) carries no value, and no error carries an id,
+ * a key or a payload.
  */
 
 import Provider, { errors } from 'oidc-provider';
@@ -125,8 +126,22 @@ export interface OidcAdapterDeps {
   /** The adapter's clock (epoch ms) for expiry; defaults to `Date.now`. */
   now?: () => number;
   /** #60b: where revocations are audited (src/auth/revocation-audit.ts); absent, nothing is recorded. */
-  revocations?: { tracker: GrantRevocationTracker; recorder: RevocationRecorder } | undefined;
+  revocations?:
+    | {
+        tracker: GrantRevocationTracker;
+        recorder: RevocationRecorder;
+        /** Bound on the owner lookup before a revocation (default OWNER_LOOKUP_MAX_WAIT_MS); tests only. */
+        ownerLookupMaxWaitMs?: number;
+      }
+    | undefined;
 }
+
+/**
+ * Longest a revocation waits to read its grant's owner for the audit row
+ * (ms). Past it, or when the read fails, the grant is deleted anyway and the
+ * revocation goes unrecorded: the audit row never holds up a revocation.
+ */
+export const OWNER_LOOKUP_MAX_WAIT_MS = 250;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -260,14 +275,46 @@ export class OidcAdapter implements Adapter {
    * Delete a grant with everything under it. When this call deleted rows,
    * the request is marked for #60b's audit row (see GrantRevocationTracker):
    * the library's `grant.revoked` event records a marked grant only, once.
+   *
+   * The owner lookup for that row is best-effort and bounded: a lookup that
+   * fails or takes longer than OWNER_LOOKUP_MAX_WAIT_MS never blocks or
+   * delays the revocation past the bound; the grant is deleted anyway and
+   * no audit row is written for it (logged, without a value).
    */
   private async revokeGrant(grantId: string): Promise<void> {
     const revocations = this.deps.revocations;
     // Who the grant belonged to, read before it goes (a revocation is rare; a refresh never gets here).
-    const before = revocations === undefined ? undefined : await this.deps.store.findOAuthRow(plainRowKey('Grant', grantId));
+    const before =
+      revocations === undefined
+        ? undefined
+        : await this.ownerOf(grantId, revocations.ownerLookupMaxWaitMs ?? OWNER_LOOKUP_MAX_WAIT_MS);
     const deleted = await this.deps.store.revokeOAuthGrant(grantId);
     if (revocations !== undefined && deleted > 0) {
+      if (before === 'unknown') {
+        console.error('[AUDIT] a revocation was not recorded: its grant owner could not be read');
+        return;
+      }
       revocations.tracker.deleted(grantId, { accountId: before?.accountId, clientId: before?.clientId });
+    }
+  }
+
+  /** The grant row, or `unknown` when the lookup failed or ran past `maxWaitMs` (it then settles unobserved). */
+  private async ownerOf(grantId: string, maxWaitMs: number): Promise<OAuthRowRecord | undefined | 'unknown'> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<'unknown'>((resolve) => {
+      timer = setTimeout(() => resolve('unknown'), maxWaitMs);
+      timer.unref();
+    });
+    let lookup: Promise<OAuthRowRecord | undefined | 'unknown'>;
+    try {
+      lookup = this.deps.store.findOAuthRow(plainRowKey('Grant', grantId)).catch(() => 'unknown' as const);
+    } catch {
+      lookup = Promise.resolve('unknown');
+    }
+    try {
+      return await Promise.race([lookup, timeout]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 

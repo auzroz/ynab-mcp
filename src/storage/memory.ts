@@ -42,7 +42,7 @@ import type {
   RefreshedAccessToken,
   InactiveUserCondition,
 } from './types.js';
-import { MemoryAuditStore, batchUser, type AuditGuard, type AuditQuery, type AuditRecord } from './audit-rows.js';
+import { MemoryAuditStore, assertPruneBatchSize, batchUser, type AuditGuard, type AuditQuery, type AuditRecord } from './audit-rows.js';
 import { assertFloorAllows, compareKeyCheck, isBelowFloor, keyCheckMetaKey, signInCiphertext } from './encryption-meta.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 import {
@@ -942,6 +942,8 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   }
 
   async pruneAuditLog(options: SweepOptions = {}): Promise<number> {
+    // No batches in memory; the size is still checked, as the SQL drivers do.
+    if (options.batchSize !== undefined) assertPruneBatchSize(options.batchSize);
     return this.audit.prune((options.now ?? Date.now()) - this.retention.auditRetentionMs);
   }
 

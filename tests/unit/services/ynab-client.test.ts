@@ -1117,6 +1117,18 @@ describe('createTransaction (write)', () => {
     expect((await auditEntries()).map((e) => e.resourceId)).toEqual(['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2_2026-06-01']);
   });
 
+  it('#60b: takes the ids from transaction_ids when transactions is empty, and from both lists without duplicates', async () => {
+    const client = makeClient(false);
+    const A = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1';
+    const B = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc2';
+    setResolve(mockApi.transactions.createTransaction, { data: { transactions: [], transaction_ids: [A, B] } });
+    await client.createTransaction(BUDGET, { transactions: [] } as never);
+    expect((await auditEntries()).map((e) => e.resourceId).sort()).toEqual([A, B]);
+    setResolve(mockApi.transactions.updateTransactions, { data: { transactions: [{ id: A }], transaction_ids: [A, B] } });
+    await client.updateTransactions(BUDGET, { transactions: [] } as never);
+    expect((await auditEntries()).slice(2).map((e) => e.resourceId).sort()).toEqual([A, B]);
+  });
+
   it('omits resourceId when the created transaction id is absent', async () => {
     const client = makeClient(false);
     setResolve(mockApi.transactions.createTransaction, { data: {} });

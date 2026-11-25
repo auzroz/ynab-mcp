@@ -277,7 +277,8 @@ function savedTransactionIds(response: ynab.SaveTransactionsResponse): string[] 
   const ids =
     data.transaction !== undefined && data.transaction !== null
       ? [data.transaction.id]
-      : (data.transactions?.map((t) => t.id) ?? data.transaction_ids ?? []);
+      : // Both lists: either may be empty or absent (recordMany drops the duplicates).
+        [...(data.transactions?.map((t) => t.id) ?? []), ...(data.transaction_ids ?? [])];
   return ids.filter((v): v is string => typeof v === 'string' && YNAB_TRANSACTION_ID.test(v));
 }
 

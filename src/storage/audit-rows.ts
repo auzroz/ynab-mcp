@@ -316,6 +316,16 @@ export function auditPruneSql(dialect: Dialect): string {
 }
 
 /**
+ * Refuse a prune batch size that is not a positive safe integer: a batch of 0
+ * would never come back short, and SQLite reads a negative LIMIT as none.
+ */
+export function assertPruneBatchSize(batchSize: number): void {
+  if (!Number.isSafeInteger(batchSize) || batchSize <= 0) {
+    throw new Error('The audit prune batch size must be a positive integer');
+  }
+}
+
+/**
  * Run the prune in batches of `batchSize`, each its own statement (so its own
  * short transaction), until one comes back short. Returns the rows deleted.
  */
@@ -325,6 +335,7 @@ export async function runAuditPrune(
   before: number,
   batchSize: number
 ): Promise<number> {
+  assertPruneBatchSize(batchSize);
   const sql = auditPruneSql(dialect);
   let total = 0;
   for (;;) {
