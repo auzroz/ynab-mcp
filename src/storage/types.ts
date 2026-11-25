@@ -456,6 +456,14 @@ export interface Storage extends OAuthRowStore, CiphertextStore, AuditStore {
    * same abandoned and unused windows, on `created_at` and `authorized_at`.
    */
   sweepExpired(options?: SweepOptions): Promise<SweepResult>;
+  /**
+   * #60b: delete audit log rows older than the policy's `auditRetentionMs`
+   * (`AUDIT_RETENTION_DAYS`), in batches of `batchSize` (default
+   * `SWEEP_BATCH_SIZE`), each its own statement, through the `(ts)` index. On
+   * Postgres a batch skips rows another transaction holds, so concurrent
+   * pruners (replicas) never wait on each other. Returns the rows deleted.
+   */
+  pruneAuditLog(options?: SweepOptions): Promise<number>;
 
   // MCP clients (Dynamic Client Registration). saveClient stamps created_at on insert.
   getClient(clientId: string): Promise<OAuthClientInformationFull | undefined>;

@@ -22,12 +22,16 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import {
+  AUDIT_REVOKE_OPERATION,
+  MAX_AUDIT_ROWS_PER_CALL,
   MemoryAuditStore,
   type AuditOperation,
   type AuditOutcome,
   type AuditQuery,
   type AuditRecord,
   type AuditResourceType,
+  type AuditRevocationOutcome,
+  type AuditRevokedResourceType,
   type AuditStore,
 } from '../storage/audit-rows.js';
 import { sanitizeErrorMessage, sanitizeString } from '../utils/sanitize.js';
@@ -138,32 +142,100 @@ export class AuditLog {
    * background.
    */
   async record(event: AuditEvent): Promise<void> {
+    await this.write([this.entry(event, event.resourceId)]);
+  }
+
+  /**
+   * Record one write attempt that touched several records (a bulk write): one
+   * row per id, all with the call's request id, written as one batched insert
+   * under one bounded wait (as {@link record}), at most
+   * MAX_AUDIT_ROWS_PER_CALL. With no id (nothing was written, or YNAB named
+   * none) it records one row without a resource id. The ids must come from
+   * YNAB's response, never from tool input.
+   */
+  async recordMany(event: Omit<AuditEvent, 'resourceId'>, resourceIds: readonly string[]): Promise<void> {
+    const ids = [...new Set(resourceIds.map(id).filter((v): v is string => v !== undefined))];
+    if (ids.length > MAX_AUDIT_ROWS_PER_CALL) {
+      console.error(`[AUDIT] ${ids.length} items in one call; recording the first ${MAX_AUDIT_ROWS_PER_CALL}`);
+      ids.length = MAX_AUDIT_ROWS_PER_CALL;
+    }
+    const entries = ids.length === 0 ? [this.entry(event, undefined)] : ids.map((r) => this.entry(event, r));
+    await this.write(entries);
+  }
+
+  /**
+   * Record a revocation this caller made (#60b, D-7a): the account tools'
+   * (src/storage/account-store.ts), only when the revoke removed something.
+   * The row's client, grant and request are the caller's; `resourceId` names
+   * what was revoked (a grant id, or a client id for every grant of a client).
+   */
+  async recordRevocation(event: {
+    resourceType: AuditRevokedResourceType;
+    resourceId: string;
+    outcome: AuditRevocationOutcome;
+  }): Promise<void> {
+    await this.write([
+      {
+        ...this.caller(),
+        tool: this.calls.getStore()?.tool,
+        operation: AUDIT_REVOKE_OPERATION,
+        resourceType: event.resourceType,
+        resourceId: id(event.resourceId),
+        budgetId: undefined,
+        outcome: event.outcome,
+      },
+    ]);
+  }
+
+  /** Who and when, for a row of this log. */
+  private caller(): Pick<AuditRecord, 'ts' | 'userId' | 'clientId' | 'familyId' | 'requestId'> {
     const scope = this.calls.getStore();
-    if (scope) scope.recorded = true;
-    const entry: AuditRecord = {
+    return {
       ts: this.now(),
       userId: this.context.userId,
       clientId: id(this.context.clientId),
       familyId: id(this.context.familyId),
       requestId: id(scope?.requestId ?? this.context.requestId),
-      tool: scope?.tool ?? event.tool,
+    };
+  }
+
+  /** One write row. */
+  private entry(event: Omit<AuditEvent, 'resourceId'>, resourceId: string | undefined): AuditRecord {
+    return {
+      ...this.caller(),
+      tool: this.calls.getStore()?.tool ?? event.tool,
       operation: event.operation,
       resourceType: event.resourceType,
-      resourceId: id(event.resourceId),
+      resourceId: id(resourceId),
       budgetId: budgetIdOf(event.budgetId),
       outcome: event.outcome,
     };
+  }
+
+  /** Append the rows (one statement), waiting a bounded time; never throws. */
+  private async write(entries: AuditRecord[]): Promise<void> {
+    const scope = this.calls.getStore();
+    if (scope) scope.recorded = true;
+    const first = entries[0] as AuditRecord;
     const guard = this.context.generation === undefined ? undefined : { generation: this.context.generation };
-    const append = this.store.appendAuditEntry(entry, guard).then(
-      () => undefined,
-      (error: unknown) => {
-        console.error('[AUDIT] could not record an entry:', sanitizeErrorMessage(error));
-      }
+    let append: Promise<unknown>;
+    try {
+      append = entries.length === 1 ? this.store.appendAuditEntry(first, guard) : this.store.appendAuditEntries(entries, guard);
+    } catch (error) {
+      append = Promise.reject(error);
+    }
+    await this.boundedWait(
+      append.then(
+        () => undefined,
+        (error: unknown) => {
+          console.error('[AUDIT] could not record an entry:', sanitizeErrorMessage(error));
+        }
+      )
     );
-    await this.boundedWait(append);
-    // Server-side visibility: ids and vocabulary only, as the row.
-    const resource = entry.resourceId ? ` (${entry.resourceId})` : '';
-    console.error(`[AUDIT] ${entry.outcome}: ${entry.operation} on ${entry.resourceType}${resource} via ${entry.tool}`);
+    // Server-side visibility: ids and vocabulary only, as the rows.
+    const resource =
+      entries.length > 1 ? ` (${entries.length} items)` : first.resourceId ? ` (${first.resourceId})` : '';
+    console.error(`[AUDIT] ${first.outcome}: ${first.operation} on ${first.resourceType}${resource} via ${first.tool ?? 'oauth'}`);
   }
 
   /**

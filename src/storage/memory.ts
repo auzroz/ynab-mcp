@@ -41,7 +41,7 @@ import type {
   RefreshedAccessToken,
   InactiveUserCondition,
 } from './types.js';
-import { MemoryAuditStore, type AuditGuard, type AuditQuery, type AuditRecord } from './audit-rows.js';
+import { MemoryAuditStore, batchUser, type AuditGuard, type AuditQuery, type AuditRecord } from './audit-rows.js';
 import { assertFloorAllows, compareKeyCheck, isBelowFloor, keyCheckMetaKey, signInCiphertext } from './encryption-meta.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 import {
@@ -378,6 +378,16 @@ export class MemoryStorage implements Storage, OAuthRowStore {
       if (!user || (user.createdAt ?? 0) !== guard.generation) return false;
     }
     this.audit.append(entry);
+    return true;
+  }
+
+  async appendAuditEntries(entries: readonly AuditRecord[], guard?: AuditGuard): Promise<boolean> {
+    const userId = batchUser(entries);
+    if (guard !== undefined) {
+      const user = this.users.get(userId);
+      if (!user || (user.createdAt ?? 0) !== guard.generation) return false;
+    }
+    for (const e of entries) this.audit.append(e);
     return true;
   }
 
@@ -924,6 +934,10 @@ export class MemoryStorage implements Storage, OAuthRowStore {
       createdAt: existing?.createdAt ?? now,
       authorizedAt: existing?.authorizedAt,
     });
+  }
+
+  async pruneAuditLog(options: SweepOptions = {}): Promise<number> {
+    return this.audit.prune((options.now ?? Date.now()) - this.retention.auditRetentionMs);
   }
 
   async sweepExpired(options: SweepOptions = {}): Promise<SweepResult> {

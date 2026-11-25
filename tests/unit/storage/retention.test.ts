@@ -656,6 +656,7 @@ describe('retentionPolicy', () => {
       refreshTokenTtlMs: 90 * DAY,
       abandonedClientMs: DAY,
       unusedClientMs: 90 * DAY,
+      auditRetentionMs: 90 * DAY,
     });
   });
 

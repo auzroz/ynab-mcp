@@ -87,7 +87,11 @@ async function rawRows(h: DriverHandle, userId: string): Promise<unknown[]> {
 
 for (const driver of testDrivers) {
   describe.skipIf(!driver.enabled)(`the audit write path (#60a): ${driver.name}`, () => {
-    async function requestServer(h: DriverHandle, overrides: Partial<UserContext> = {}) {
+    async function requestServer(
+      h: DriverHandle,
+      overrides: Partial<UserContext> = {},
+      auditStore: RequestContext['auditStore'] = h.storage
+    ) {
       await h.storage.upsertUser({ userId: 'u1', grantedScope: 'read-write', encryptedRefreshToken: 'enc', updatedAt: Date.now() });
       const generation = (await h.storage.getUser('u1'))?.createdAt ?? 0;
       const user: UserContext = {
@@ -106,7 +110,7 @@ for (const driver of testDrivers) {
         userKey: 'u1',
         clientId: 'client-a',
         familyId: 'grant-a',
-        auditStore: h.storage,
+        auditStore,
         user,
         components: createUserComponents(user),
         toolCalls: { deadline: Date.now() + 60_000, run: (work) => work() },
@@ -230,6 +234,109 @@ for (const driver of testDrivers) {
       await client.callTool(SENTINEL_CALLS[2]!);
       expect(await h.storage.listAuditEntries('u1', {}, 100)).toEqual([]);
     });
+
+    describe('bulk calls (#60b): one row per item', () => {
+      const IDS = [
+        '55555555-5555-4555-8555-555555555501',
+        '55555555-5555-4555-8555-555555555502',
+        '55555555-5555-4555-8555-555555555503',
+      ];
+      /** YNAB's answer to a bulk save: every item echoed with the sentinels, and a skipped duplicate. */
+      function ynabBulk(): Response {
+        const txn = (id: string) => ({
+          id,
+          amount: -123450,
+          payee_name: 'Sentinel Payee Qx',
+          memo: 'Sentinel Memo Qx',
+          date: '2026-01-01',
+          account_id: ACCOUNT,
+          import_id: 'Sentinel-import-Qx',
+          subtransactions: [],
+        });
+        const body = {
+          data: { transaction_ids: IDS, transactions: IDS.map(txn), duplicate_import_ids: ['Sentinel-dup-Qx'], server_knowledge: 2 },
+        };
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      const item = { account_id: ACCOUNT, date: '2026-01-01', amount: -123.45, payee_name: 'Sentinel Payee Qx', memo: 'Sentinel Memo Qx', import_id: 'Sentinel-import-Qx' };
+      const BULK_CALLS = [
+        { name: 'ynab_create_transactions', arguments: { budget_id: BUDGET, transactions: [item, item, item, { ...item, import_id: 'Sentinel-dup-Qx' }] } },
+        { name: 'ynab_update_transactions', arguments: { budget_id: BUDGET, transactions: IDS.map((id) => ({ id, memo: 'Sentinel Memo Qx', amount: 987.65 })) } },
+      ];
+
+      it('writes one row per saved item, all with the call request id, as one insert; no amount, name or memo', async () => {
+        const h = await driver.open();
+        vi.stubGlobal('fetch', vi.fn(async () => ynabBulk()));
+        const one = vi.spyOn(h.storage, 'appendAuditEntry');
+        const many = vi.spyOn(h.storage, 'appendAuditEntries');
+        for (const call of BULK_CALLS) {
+          one.mockClear();
+          many.mockClear();
+          const { client, requestId } = await requestServer(h);
+          const result = await client.callTool(call);
+          expect(result.isError, `${call.name}: ${textOf(result)}`).toBeFalsy();
+          expect(many).toHaveBeenCalledTimes(1);
+          expect(one).not.toHaveBeenCalled();
+          const rows = (await h.storage.listAuditEntries('u1', {}, 100)).filter((r) => r.tool === call.name);
+          expect(rows.map((r) => r.resourceId).sort()).toEqual(IDS);
+          for (const r of rows) {
+            expect(r).toMatchObject({ requestId, clientId: 'client-a', familyId: 'grant-a', budgetId: BUDGET, outcome: 'success', ...WRITE_TOOL_AUDIT_TARGETS[call.name] });
+          }
+          await client.close();
+        }
+        const stored = JSON.stringify(await rawRows(h, 'u1'));
+        for (const sentinel of SENTINELS) expect(stored, sentinel).not.toContain(sentinel);
+      });
+
+      it('a failed or refused bulk call is one row without a resource id (one against the refusal cap)', async () => {
+        const h = await driver.open();
+        vi.stubGlobal('fetch', vi.fn(async () => ynabError()));
+        const failed = await requestServer(h);
+        expect((await failed.client.callTool(BULK_CALLS[0]!)).isError).toBe(true);
+        const refused = await requestServer(h, { readOnly: true, readOnlyReason: 'scope' });
+        expect((await refused.client.callTool(BULK_CALLS[1]!)).isError).toBe(true);
+        const rows = (await h.storage.listAuditEntries('u1', {}, 100)).reverse();
+        expect(rows.map((r) => [r.tool, r.outcome, r.resourceId, r.requestId])).toEqual([
+          ['ynab_create_transactions', 'error', undefined, failed.requestId],
+          ['ynab_update_transactions', 'denied_scope', undefined, refused.requestId],
+        ]);
+      });
+
+      it('a never-responding store holds the bulk call one bounded wait, not one per item', async () => {
+        const h = await driver.open();
+        vi.stubGlobal('fetch', vi.fn(async () => ynabBulk()));
+        const stalled = new Promise<boolean>(() => undefined);
+        const hanging = {
+          appendAuditEntry: vi.fn(() => stalled),
+          appendAuditEntries: vi.fn(() => stalled),
+          listAuditEntries: vi.fn(async () => []),
+          countAuditEntries: vi.fn(async () => ({})),
+        };
+        const { client } = await requestServer(h, {}, hanging);
+        const started = Date.now();
+        const result = await client.callTool(BULK_CALLS[1]!);
+        expect(result.isError, textOf(result)).toBeFalsy();
+        expect(Date.now() - started).toBeLessThan(2500);
+        expect(hanging.appendAuditEntries).toHaveBeenCalledTimes(1);
+        expect(hanging.appendAuditEntry).not.toHaveBeenCalled();
+      });
+
+      it('an erase while the bulk write is at YNAB leaves no row', async () => {
+        const h = await driver.open();
+        const { client } = await requestServer(h);
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async () => {
+            await h.storage.deleteUserData('u1');
+            return ynabBulk();
+          })
+        );
+        expect((await client.callTool(BULK_CALLS[0]!)).isError).toBeFalsy();
+        expect(await h.storage.listAuditEntries('u1', {}, 100)).toEqual([]);
+        expect(JSON.stringify(await rawRows(h, 'u1'))).toBe('[]');
+      });
+    });
+
   });
 }
 

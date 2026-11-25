@@ -57,7 +57,9 @@ import { resolveStorageTimeouts } from './timeouts.js';
 import {
   auditCountSql,
   auditInsert,
+  auditInsertMany,
   auditListSql,
+  runAuditPrune,
   auditRecordFromRow,
   type AuditGuard,
   type AuditQuery,
@@ -67,7 +69,7 @@ import {
 import { applyMigrations, MIGRATION_PLAN, type MigrationDeps, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
-import { retentionPolicy, type RetentionPolicy } from '../auth/retention-defaults.js';
+import { retentionPolicy, SWEEP_BATCH_SIZE, type RetentionPolicy } from '../auth/retention-defaults.js';
 import {
   CONSUMABLE_MODELS,
   GRANT_TOKEN_MODELS,
@@ -991,6 +993,22 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     const { sql, params } = auditInsert('postgres', entry, guard);
     return ((await this.db.query(sql, params)).rowCount ?? 0) === 1;
   }
+
+  async appendAuditEntries(entries: readonly AuditRecord[], guard?: AuditGuard): Promise<boolean> {
+    // One statement: the guard (FOR KEY SHARE of the user row) and every row, so a batch lands whole or not at all.
+    const { sql, params } = auditInsertMany('postgres', entries, guard);
+    return ((await this.db.query(sql, params)).rowCount ?? 0) === entries.length;
+  }
+
+  async pruneAuditLog(options: SweepOptions = {}): Promise<number> {
+    return runAuditPrune(
+      async (sql, params) => (await this.db.query(sql, [...params])).rowCount ?? 0,
+      'postgres',
+      (options.now ?? Date.now()) - this.retention.auditRetentionMs,
+      options.batchSize ?? SWEEP_BATCH_SIZE
+    );
+  }
+
 
   async listAuditEntries(userId: string, query: AuditQuery, limit: number): Promise<AuditRecord[]> {
     const { sql, params } = auditListSql('postgres', userId, query, limit);
