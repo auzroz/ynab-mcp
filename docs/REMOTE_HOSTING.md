@@ -46,7 +46,7 @@ Set these environment variables (see `.env.example`):
 | `ENCRYPTION_KEY_PREVIOUS` | no | Older keys, as `<id>:<key>` separated by commas (e.g. `1:<old key>`), used only to read tokens stored under them while the rekey job moves those to the current key. Requires `TOKEN_PEPPER`. See "Rotating ENCRYPTION_KEY" |
 | `TOKEN_PEPPER` | no | 32-byte secret (base64 or 64 hex characters) keying the hashes of stored MCP tokens, codes and state — `openssl rand -base64 32`. Default: derived from `ENCRYPTION_KEY`. Set it **before the first 0.5.0 start** if you want one; see "Hashed tokens and the pepper" |
 | `YNAB_OAUTH_ALLOW_WRITE` | no | Allow writes (default `false`). Checked on every request, not only at consent: unless `true`, no connection can write, including one granted read-write earlier, so setting it back to `false` is an instant switch. Writes also need `YNAB_READ_ONLY=false`. `YNAB_ACCESS_TOKEN` and `YNAB_BUDGET_ID` must not be set in OAuth mode |
-| `YNAB_READ_ONLY` | no | `false` to allow writes at all (default `true`). With `true`, every write tool is hidden and refused, whatever `YNAB_OAUTH_ALLOW_WRITE` says. A value that isn't `true` or `false` refuses to start |
+| `YNAB_READ_ONLY` | no | `false` to allow writes at all (default `true`). With `true`, every write tool is hidden and refused, whatever `YNAB_OAUTH_ALLOW_WRITE` says. Accepts `true`/`false`, `1`/`0` or `yes`/`no` (any case); anything else refuses to start |
 | `STORAGE_DRIVER` | no | `memory` (default, **non-durable**), `sqlite`, or `postgres` |
 | `SQLITE_PATH` | if sqlite | e.g. `/data/ynab-mcp.db` |
 | `DATABASE_URL` | if postgres | `postgres://user:pass@host:5432/db` |
