@@ -30,6 +30,15 @@
  *     semantics: the client still registered, the staged sign-in applied, the
  *     code inserted, in one step. Otherwise nothing is written and the library
  *     answers `server_error`.
+ *   - **Metadata-document clients (#46).** A client whose `client_id` is a
+ *     Client ID Metadata Document URL has no registration, but storage saves a
+ *     code only for a client with a row (the `authorizedAt` stamp, the
+ *     client sweep's lock). So before its code is saved, an anchor row is
+ *     inserted if absent: `{ client_id, client_id_metadata_document: true }`,
+ *     keyed as a client. `find` never returns a `Client` for a URL-form id, so
+ *     the library always resolves such a client from its document (and its
+ *     cache), never from the anchor. The client sweeps remove an unused anchor
+ *     like any client; the next sign-in writes it again.
  *   - **Retention (D6).** Consumed codes and refresh tokens, and grants, are
  *     returned whatever their age (the library checks expiry itself, and
  *     `grant-guard` looks them up with `ignoreExpiration`); every other model
@@ -48,6 +57,7 @@ import type { LibraryKeyDeriver, TokenKind } from '../token-hash.js';
 import { isClientSecretHash, hashClientSecret } from '../token-hash.js';
 import type { OAuthModel, OAuthRowRecord, OAuthRowStore, OAuthRowWrite } from '../../storage/types.js';
 import { CONSUMABLE_MODELS, GRANT_TOKEN_MODELS, plainRowKey } from '../../storage/oauth-rows.js';
+import { isMetadataDocumentClientId, METADATA_DOCUMENT_ANCHOR_FIELD } from '../client-id-url.js';
 
 /** How the adapter treats one model. */
 interface ModelSpec {
@@ -151,6 +161,7 @@ export class OidcAdapter implements Adapter {
     switch (this.spec.model) {
       case 'AuthorizationCode': {
         this.requireGrantColumns(row);
+        if (isMetadataDocumentClientId(row.clientId)) await this.ensureMetadataDocumentAnchor(row.clientId as string);
         const outcome = await this.deps.store.saveAuthorizationCode(row);
         if (outcome !== 'saved') throw new AuthorizationNotCompletedError(outcome);
         return;
@@ -167,6 +178,8 @@ export class OidcAdapter implements Adapter {
   }
 
   async find(id: string): Promise<AdapterPayload | undefined> {
+    // #46: a URL-form client is its metadata document's, never a stored row's (its anchor included).
+    if (this.spec.model === 'Client' && isMetadataDocumentClientId(id)) return undefined;
     const key = this.keyFor(id);
     if (key === undefined) return undefined;
     const row = await this.deps.store.findOAuthRow(key);
@@ -278,6 +291,25 @@ export class OidcAdapter implements Adapter {
     }
 
     return { key, model, payload: JSON.stringify(stored), grantId, accountId, clientId, uid, expiresAt };
+  }
+
+  /**
+   * #46: the anchor row a metadata-document client's code needs (see the file
+   * comment). Inserted only while no row has its key; an existing one is left
+   * as it is.
+   */
+  private async ensureMetadataDocumentAnchor(clientId: string): Promise<void> {
+    const key = plainRowKey('Client', clientId);
+    await this.deps.store.compareAndSetOAuthRow(undefined, {
+      key,
+      model: 'Client',
+      payload: JSON.stringify({ client_id: clientId, [METADATA_DOCUMENT_ANCHOR_FIELD]: true }),
+      grantId: undefined,
+      accountId: undefined,
+      clientId,
+      uid: undefined,
+      expiresAt: undefined,
+    });
   }
 
   /** A token or code always belongs to a grant, an account and a client. */

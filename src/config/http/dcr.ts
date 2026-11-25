@@ -1,7 +1,9 @@
 /**
  * Client registration and authorization-request policy (#55):
  * `MCP_VERIFIED_REDIRECT_URIS`, `MCP_DCR_PRIVATE_USE_SCHEMES` and
- * `MCP_TRUST_LOOPBACK_REDIRECTS`.
+ * `MCP_TRUST_LOOPBACK_REDIRECTS`; and whether clients may use Client ID
+ * Metadata Documents instead of registering (#46,
+ * `MCP_CLIENT_ID_METADATA_DOCUMENTS`).
  *
  * - **Verified redirect URIs.** An authorization error is redirected back to
  *   the client (RFC 6749 section 4.1.2.1) only when the request's redirect URI
@@ -16,6 +18,10 @@
  * - **Loopback redirects** (`http://localhost`, `127.0.0.1`, `[::1]`): trusted
  *   for error redirects by default, since they can only reach the user's own
  *   device. The consent page still labels them.
+ * - **Client ID Metadata Documents**: a client may use an https URL as its
+ *   `client_id`, and the server fetches its metadata from there, held to the
+ *   same rules as a registration (src/auth/client-id-metadata.ts). Off by
+ *   default: it makes the server fetch URLs a client names.
  *
  * Errors name the variable only, never its value.
  */
@@ -30,6 +36,8 @@ export interface DcrSettings {
   privateUseSchemes: readonly string[];
   /** `MCP_TRUST_LOOPBACK_REDIRECTS`: loopback redirect URIs receive error redirects. */
   trustLoopbackRedirects: boolean;
+  /** `MCP_CLIENT_ID_METADATA_DOCUMENTS`: URL-form client_ids are resolved from their metadata document (#46). */
+  clientIdMetadataDocuments: boolean;
 }
 
 /**
@@ -46,6 +54,9 @@ export const DEFAULT_PRIVATE_USE_SCHEMES: readonly string[] = [];
 
 /** Batch-3 default (#55): loopback redirect URIs are trusted for error redirects. */
 export const DEFAULT_TRUST_LOOPBACK_REDIRECTS = true;
+
+/** #46 default: Client ID Metadata Documents are off until an operator turns them on. */
+export const DEFAULT_CLIENT_ID_METADATA_DOCUMENTS = false;
 
 /** The longest redirect URI a registration (or the verified list) may hold. */
 export const MAX_REDIRECT_URI_LENGTH = 512;
@@ -132,6 +143,18 @@ export const loadDcrSettings: HttpLoader<DcrSettings> = ({ env, problems }) => (
   trustLoopbackRedirects: problems.capture(
     'MCP_TRUST_LOOPBACK_REDIRECTS',
     () => parseBoolean(env['MCP_TRUST_LOOPBACK_REDIRECTS'], DEFAULT_TRUST_LOOPBACK_REDIRECTS, 'MCP_TRUST_LOOPBACK_REDIRECTS'),
+    false
+  ),
+  clientIdMetadataDocuments: problems.capture(
+    'MCP_CLIENT_ID_METADATA_DOCUMENTS',
+    () =>
+      parseBoolean(
+        env['MCP_CLIENT_ID_METADATA_DOCUMENTS'],
+        DEFAULT_CLIENT_ID_METADATA_DOCUMENTS,
+        'MCP_CLIENT_ID_METADATA_DOCUMENTS'
+      ),
+    // A bad value (`ture`) is a recorded problem, so loadHttpConfig refuses to start and names
+    // only the variable. `false` is the fallback the other settings' checks see meanwhile.
     false
   ),
 });

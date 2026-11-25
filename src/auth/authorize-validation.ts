@@ -198,6 +198,10 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
       next();
       return;
     }
+    // #64a: `resource` becomes required for clients registered on 0.5.0 or later. A client resolved
+    // from a Client ID Metadata Document (#46) counts as one (lead decision): it has no
+    // `client_id_issued_at`, so tell it by isMetadataDocumentClientId(clientId)
+    // (client-id-metadata.ts), never by the registration date alone.
 
     // 1. Grandfathered clients (registered before these rules).
     const stored = checkStoredClient(client, policy);

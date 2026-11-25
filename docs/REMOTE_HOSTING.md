@@ -68,6 +68,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_VERIFIED_REDIRECT_URIS` | no | Comma-separated redirect URIs of trusted clients. Default: Claude's connector callbacks, `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`. An authorization error at `/authorize` is redirected back only to these (and to loopback, see below); for any other client it is shown on this server's own page with a "Return to" link, so the server can't be used as an open redirector. The consent page names a verified client plainly and any other as "calls itself". `none` empties the list. Each entry must be https (http only for loopback), at most 512 characters, with no userinfo or fragment |
 | `MCP_DCR_PRIVATE_USE_SCHEMES` | no | Comma-separated private-use URI schemes (RFC 8252, e.g. `com.example.app`) a registering native app may use for its redirect URI. Default: none, so registrations need `https://` or `http://` to `localhost`, `127.0.0.1` or `[::1]` |
 | `MCP_TRUST_LOOPBACK_REDIRECTS` | no | Redirect authorization errors back to loopback redirect URIs (default `true`). The consent page labels a loopback address either way |
+| `MCP_CLIENT_ID_METADATA_DOCUMENTS` | no | `true` to accept Client ID Metadata Documents: an https URL as `client_id`, with the client's metadata fetched from it instead of registered at `/register` (default `false`). It makes the server fetch URLs that clients name. See "Client ID Metadata Documents" |
 | `MCP_INACTIVE_USER_DAYS` | no | Erase users inactive for this many days who have no live connection (integer 30-3650). Default: off. See "Erasing inactive users" |
 | `MCP_REFRESH_TOKEN_IDLE_DAYS` | no | A refresh token not used for this many days expires (integer 1-3650, default `30`). Must not exceed `MCP_REFRESH_TOKEN_TTL_DAYS`. See "Retention and the sweep" |
 | `MCP_REFRESH_TOKEN_TTL_DAYS` | no | A connection ends this many days after its sign-in, however often it is refreshed (integer 1-3650, default `90`) |
@@ -262,6 +263,10 @@ callback type:
   the client's registered callback with `access_denied` through the resume
   route, for any registered callback, including private-use and unverified
   `https://` ones. A client must handle `access_denied` there.
+- **Clients that use a Client ID Metadata Document** (an https URL as
+  `client_id`) instead of registering. They are refused until you set
+  `MCP_CLIENT_ID_METADATA_DOCUMENTS=true`; see "Client ID Metadata Documents"
+  below. Their callbacks then get the same treatment as above.
 
 Rules for the two lists:
 
@@ -284,6 +289,76 @@ Rules for the two lists:
   scheme) is refused with `invalid_redirect_uri`.
 - A malformed value in either variable refuses to start, naming the variable
   and never its value.
+
+### Client ID Metadata Documents
+
+The MCP specification of 2026-07-28 deprecates Dynamic Client Registration
+(`/register`) in favour of Client ID Metadata Documents: the client publishes
+a JSON document at an https URL and uses that URL as its `client_id`. The
+server fetches the document when the client first appears and holds it to the
+same rules as a registration. Support is experimental in the OAuth library
+(draft 03 of the specification) and **off by default**. Set
+`MCP_CLIENT_ID_METADATA_DOCUMENTS=true` to turn it on. The discovery document
+then advertises `client_id_metadata_document_supported: true`.
+
+A document is accepted when:
+- it is served at the `client_id` URL itself with `200`, as a JSON object of
+  at most 16 KB, and its `client_id` equals that URL character for character;
+- its redirect URIs, client name and other fields pass the `/register` rules
+  above: 1 to 5 redirect URIs, `https://`, loopback `http://` or a scheme on
+  `MCP_DCR_PRIVATE_USE_SCHEMES`. Fields a registration would drop are dropped
+  here too;
+- it describes a public client: `token_endpoint_auth_method` absent or `none`,
+  with no `client_secret`.
+
+From there it is treated like a registered client. `MCP_VERIFIED_REDIRECT_URIS`
+and `MCP_TRUST_LOOPBACK_REDIRECTS` decide where authorization errors go, and
+the consent page shows the name as "calls itself" unless the redirect URI is
+verified. A document is cached for its `Cache-Control: max-age`, at least 5
+minutes and at most 24 hours. A document that couldn't be fetched or was
+refused is not fetched again for a minute. Every refusal is the same
+`400 invalid_client`, and the response never includes the document or any
+address. The server log records the reason and the URL's host.
+
+Fetching a URL a client chooses is a server-side request forgery risk, so the
+fetch is our own, not the library's:
+- **https only**, on the default port, with no userinfo or fragment.
+- **Public addresses only.** The host is resolved once. If any address it
+  resolves to is private, loopback, link-local (cloud metadata endpoints such
+  as `169.254.169.254` included), CGNAT, multicast, unspecified or otherwise
+  reserved, the fetch is refused. That covers IPv4, IPv6 and IPv4-mapped IPv6.
+  An IP-address URL is checked the same way. NAT64 addresses (`64:ff9b::/96`)
+  are refused too, so a server that reaches IPv4 only through NAT64/DNS64
+  can't fetch metadata documents.
+- **No DNS rebinding.** The connection goes only to the addresses that were
+  checked, trying each in turn so an unreachable one (an IPv6 address on a
+  server without IPv6, say) falls back to the next. It uses the URL's host as
+  `Host` and TLS server name, and once connected the peer address must be one
+  of the checked addresses. A DNS answer that changes in between can't
+  redirect it.
+- **No redirects, small and quick.** Any status other than `200`, a redirect
+  included, is refused. The body is capped at 16 KB as it streams; a
+  compressed body is refused rather than inflated. The whole fetch must finish
+  within 2.5 seconds (the library's limit).
+- **A fetch budget.** Each client address (an IPv6 /64) may cause 20
+  document fetches per 15 minutes. A cached document costs nothing. Past the
+  budget the request is refused without a fetch.
+
+The caches and the budget are in memory, so each replica fetches on its own.
+A client using a metadata document gets one row in storage when its first
+sign-in completes (it has no registration), which the unused-client cleanup
+removes like any other client.
+
+Turning the setting off again stops new authorizations and token requests from
+these clients at once. Access tokens already issued keep working until they
+expire (`MCP_ACCESS_TOKEN_TTL_SEC`).
+
+**`/register` stays.** Clients that still use Dynamic Client Registration keep
+working, whether or not metadata documents are on. `/register` can be
+removed once the MCP clients people connect with (Claude's connector among
+them) use metadata documents. That would happen in a later release, after this
+setting has been on by default for at least one release, and the CHANGELOG
+would announce it first.
 
 ### Access level per connection
 

@@ -53,6 +53,7 @@ import { retentionPolicyFromSettings } from './config/http/retention.js';
 import { TokenHasher } from './auth/token-hash.js';
 import type { GrantedScope, Storage } from './storage/types.js';
 import { mountAuthorizationServer, type AuthorizationServer } from './auth/as-router.js';
+import type { MetadataTransport } from './auth/client-id-metadata.js';
 import { YnabTokenResolver, YnabTokenUnavailableError } from './auth/user-session.js';
 import { deriveOriginsFromHosts, hostValidation, originValidation } from './middleware/origin-validation.js';
 import {
@@ -201,6 +202,8 @@ export interface HttpAppOptions {
   observeStage?: StageObserver | undefined;
   /** The SDK's SSE keepalive interval (default 15 s), shortened by tests of a stream that times out. */
   mcpKeepAliveMs?: number;
+  /** Tests only: how Client ID Metadata Documents are fetched (#46), so nothing reaches the network. */
+  clientIdMetadataTransport?: MetadataTransport | undefined;
 }
 
 /**
@@ -290,6 +293,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
         tokenHasher,
         ynab,
         observeStage: options.observeStage,
+        clientIdMetadataTransport: options.clientIdMetadataTransport,
       }),
       resolver: new YnabTokenResolver(storage, keyring, ynab),
     };
