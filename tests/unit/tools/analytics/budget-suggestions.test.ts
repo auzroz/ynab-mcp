@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { handleBudgetSuggestions } from '../../../../src/tools/analytics/budget-suggestions.js';
+import { handleBudgetSuggestions as rawHandleBudgetSuggestions, budgetSuggestionsOutputSchema } from '../../../../src/tools/analytics/budget-suggestions.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createCategoriesResponse,
@@ -11,6 +12,8 @@ import {
   mockMonthDetail,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleBudgetSuggestions = validating(budgetSuggestionsOutputSchema, rawHandleBudgetSuggestions);
 
 // Build a month detail whose categories carry the given activity/budgeted values.
 // Category ids are reused from mockCategoryGroups so groupLookup resolves them.
@@ -54,9 +57,7 @@ describe('handleBudgetSuggestions', () => {
       return Promise.reject(new Error('not found'));
     });
 
-    const result = JSON.parse(
-      await handleBudgetSuggestions({ months: 3 }, mockClient as never)
-    );
+    const result = await handleBudgetSuggestions({ months: 3 }, mockClient as never);
 
     expect(result.message).toContain('Insufficient budget history');
     expect(result.analysis_period.months_available).toBe(0);
@@ -75,9 +76,7 @@ describe('handleBudgetSuggestions', () => {
       );
     });
 
-    const result = JSON.parse(
-      await handleBudgetSuggestions({ months: 3 }, mockClient as never)
-    );
+    const result = await handleBudgetSuggestions({ months: 3 }, mockClient as never);
 
     expect(result.analysis_period.months_available).toBe(3);
     expect(result.summary.needs_increase).toBeGreaterThan(0);
@@ -98,9 +97,7 @@ describe('handleBudgetSuggestions', () => {
       );
     });
 
-    const result = JSON.parse(
-      await handleBudgetSuggestions({ months: 2 }, mockClient as never)
-    );
+    const result = await handleBudgetSuggestions({ months: 2 }, mockClient as never);
 
     expect(result.summary.can_decrease).toBeGreaterThan(0);
     const dining = result.can_decrease.find((s: { category: string }) => s.category === 'Dining Out');
@@ -120,9 +117,7 @@ describe('handleBudgetSuggestions', () => {
       );
     });
 
-    const result = JSON.parse(
-      await handleBudgetSuggestions({ months: 1 }, mockClient as never)
-    );
+    const result = await handleBudgetSuggestions({ months: 1 }, mockClient as never);
 
     expect(result.summary.on_target).toBeGreaterThan(0);
     const gas = result.on_target.find((s: { category: string }) => s.category === 'Gas');
@@ -142,9 +137,7 @@ describe('handleBudgetSuggestions', () => {
       );
     });
 
-    const result = JSON.parse(
-      await handleBudgetSuggestions({ months: 1 }, mockClient as never)
-    );
+    const result = await handleBudgetSuggestions({ months: 1 }, mockClient as never);
 
     expect(result.summary.categories_analyzed).toBe(0);
   });
@@ -152,7 +145,7 @@ describe('handleBudgetSuggestions', () => {
   it('defaults to 3 months when months arg omitted', async () => {
     mockClient.getBudgetMonth.mockResolvedValue(monthWith([]));
 
-    const result = JSON.parse(await handleBudgetSuggestions({}, mockClient as never));
+    const result = await handleBudgetSuggestions({}, mockClient as never);
 
     expect(result.analysis_period.months_requested).toBe(3);
   });

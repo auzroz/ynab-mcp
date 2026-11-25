@@ -12,6 +12,7 @@ import { moneyFormatterFor, sumMilliunits, toMilliunits } from '../../utils/mill
 import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { DATE_TEXT_MAX_LENGTH, NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -61,6 +62,38 @@ const inputSchema = z.object({
     .optional()
     .describe('Maximum results to return (default 25)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const transactionSearchOutputSchema = z.object({
+  search: z.object({
+    criteria: z.string(),
+    date_range: z.object({
+      from: z.string().describe('YYYY-MM-DD, or a note that YNAB applied its 12-month default'),
+      to: z.string().describe('YYYY-MM-DD, or "now"'),
+    }),
+    note: z.string().exactOptional().describe('How since_date was chosen when it was not given'),
+  }),
+  summary: z.object({
+    total_matches: z.number().int(),
+    showing: z.number().int(),
+    total_amount: z.string(),
+    total_outflow: z.string(),
+    total_inflow: z.string(),
+  }),
+  transactions: z.array(
+    z.object({
+      date: z.string(),
+      payee: z.string(),
+      category: z.string().nullable().describe('Null when uncategorized or the category is unknown'),
+      amount: z.string(),
+      memo: z.string().nullable(),
+      account: z.string(),
+      cleared: z.string().describe('cleared, uncleared or reconciled'),
+    })
+  ),
+  has_more: z.boolean(),
+});
+export type TransactionSearchOutput = z.output<typeof transactionSearchOutputSchema>;
 
 // Tool definition
 export const transactionSearchTool: Tool = {
@@ -137,6 +170,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(transactionSearchOutputSchema),
 };
 
 interface SearchResult {
@@ -157,7 +191,7 @@ interface SearchResult {
 export async function handleTransactionSearch(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<TransactionSearchOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -308,41 +342,37 @@ export async function handleTransactionSearch(
   if (untilDate) searchCriteria.push(`to: ${untilDate}`);
   if (type !== 'all') searchCriteria.push(`type: ${type}`);
 
-  return JSON.stringify(
-    {
-      search: {
-        criteria: searchCriteria.length > 0 ? searchCriteria.join(', ') : 'all transactions',
-        date_range: {
-          from: sinceDate ?? 'last 12 months (YNAB default)',
-          to: untilDate ?? 'now',
-        },
-        ...(sinceDate === undefined
-          ? {
-              note: 'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass since_date to search older history.',
-            }
-          : sinceDateDerived
-            ? { note: "since_date was derived from the budget's first month because only until_date was given." }
-            : {}),
+  return {
+    search: {
+      criteria: searchCriteria.length > 0 ? searchCriteria.join(', ') : 'all transactions',
+      date_range: {
+        from: sinceDate ?? 'last 12 months (YNAB default)',
+        to: untilDate ?? 'now',
       },
-      summary: {
-        total_matches: transactions.length,
-        showing: results.length,
-        total_amount: money(totalAmount),
-        total_outflow: money(totalOutflow),
-        total_inflow: money(totalInflow),
-      },
-      transactions: results.map((r) => ({
-        date: r.date,
-        payee: r.payee,
-        category: r.category,
-        amount: r.amount,
-        memo: r.memo,
-        account: r.account,
-        cleared: r.cleared,
-      })),
-      has_more: transactions.length > limit,
+      ...(sinceDate === undefined
+        ? {
+            note: 'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass since_date to search older history.',
+          }
+        : sinceDateDerived
+          ? { note: "since_date was derived from the budget's first month because only until_date was given." }
+          : {}),
     },
-    null,
-    2
-  );
+    summary: {
+      total_matches: transactions.length,
+      showing: results.length,
+      total_amount: money(totalAmount),
+      total_outflow: money(totalOutflow),
+      total_inflow: money(totalInflow),
+    },
+    transactions: results.map((r) => ({
+      date: r.date,
+      payee: r.payee,
+      category: r.category,
+      amount: r.amount,
+      memo: r.memo,
+      account: r.account,
+      cleared: r.cleared,
+    })),
+    has_more: transactions.length > limit,
+  };
 }

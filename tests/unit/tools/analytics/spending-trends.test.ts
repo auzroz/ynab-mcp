@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleSpendingTrends } from '../../../../src/tools/analytics/spending-trends.js';
+import { handleSpendingTrends as rawHandleSpendingTrends, spendingTrendsOutputSchema } from '../../../../src/tools/analytics/spending-trends.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createMonthResponse,
@@ -12,6 +13,8 @@ import {
   mockMonthDetail,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleSpendingTrends = validating(spendingTrendsOutputSchema, rawHandleSpendingTrends);
 
 describe('handleSpendingTrends', () => {
   let mockClient: MockClient;
@@ -24,8 +27,7 @@ describe('handleSpendingTrends', () => {
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
 
-    const result = await handleSpendingTrends({ months: 6 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingTrends({ months: 6 }, mockClient as never);
 
     expect(parsed.period.months_analyzed).toBe(6);
     expect(parsed.overall).toBeDefined();
@@ -58,8 +60,7 @@ describe('handleSpendingTrends', () => {
       });
     });
 
-    const result = await handleSpendingTrends({ months: 4 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingTrends({ months: 4 }, mockClient as never);
 
     expect(parsed.overall.trend).toBe('increasing');
     expect(parsed.summary.increasing).toBeGreaterThan(0);
@@ -85,8 +86,7 @@ describe('handleSpendingTrends', () => {
       });
     });
 
-    const result = await handleSpendingTrends({ months: 4 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingTrends({ months: 4 }, mockClient as never);
 
     expect(parsed.overall.trend).toBe('decreasing');
     expect(parsed.summary.decreasing).toBeGreaterThan(0);
@@ -118,11 +118,10 @@ describe('handleSpendingTrends', () => {
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(groupsWithUuidCat as never));
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(monthWithUuidCat));
 
-    const result = await handleSpendingTrends(
+    const parsed = await handleSpendingTrends(
       { months: 4, category_id: targetId },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     // Only the requested category should appear in trends.
     expect(parsed.summary.categories_analyzed).toBe(1);
@@ -137,8 +136,7 @@ describe('handleSpendingTrends', () => {
       createMonthResponse({ ...mockMonthDetail, categories: noSpend })
     );
 
-    const result = await handleSpendingTrends({ months: 3 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleSpendingTrends({ months: 3 }, mockClient as never);
 
     expect(parsed.summary.categories_analyzed).toBe(0);
     expect(parsed.all_trends).toEqual([]);

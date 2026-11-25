@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { handleCategoryBalances } from '../../../../src/tools/analytics/category-balances.js';
+import { handleCategoryBalances as rawHandleCategoryBalances, categoryBalancesOutputSchema } from '../../../../src/tools/analytics/category-balances.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createCategoriesResponse,
@@ -11,6 +12,8 @@ import {
   mockMonthDetail,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleCategoryBalances = validating(categoryBalancesOutputSchema, rawHandleCategoryBalances);
 
 function monthWith(
   categories: Array<{ id: string; name: string; balance: number; budgeted: number; activity: number; hidden?: boolean }>
@@ -52,7 +55,7 @@ describe('handleCategoryBalances', () => {
   it('returns all categories by default with totals', async () => {
     mockClient.getBudgetMonth.mockResolvedValue(monthWith(sampleCategories));
 
-    const result = JSON.parse(await handleCategoryBalances({}, mockClient as never));
+    const result = await handleCategoryBalances({}, mockClient as never);
 
     expect(result.filter).toBe('none');
     expect(result.summary.categories_shown).toBe(3);
@@ -62,9 +65,7 @@ describe('handleCategoryBalances', () => {
   it('filters to negative balances', async () => {
     mockClient.getBudgetMonth.mockResolvedValue(monthWith(sampleCategories));
 
-    const result = JSON.parse(
-      await handleCategoryBalances({ filter: 'negative' }, mockClient as never)
-    );
+    const result = await handleCategoryBalances({ filter: 'negative' }, mockClient as never);
 
     expect(result.summary.categories_shown).toBe(1);
     expect(result.negative_balances[0].category).toBe('Dining Out');
@@ -74,9 +75,7 @@ describe('handleCategoryBalances', () => {
   it('filters to positive balances', async () => {
     mockClient.getBudgetMonth.mockResolvedValue(monthWith(sampleCategories));
 
-    const result = JSON.parse(
-      await handleCategoryBalances({ filter: 'positive' }, mockClient as never)
-    );
+    const result = await handleCategoryBalances({ filter: 'positive' }, mockClient as never);
 
     expect(result.summary.categories_shown).toBe(1);
     expect(result.top_balances[0].category).toBe('Groceries');
@@ -85,9 +84,7 @@ describe('handleCategoryBalances', () => {
   it('filters to funded categories (budgeted > 0)', async () => {
     mockClient.getBudgetMonth.mockResolvedValue(monthWith(sampleCategories));
 
-    const result = JSON.parse(
-      await handleCategoryBalances({ filter: 'funded' }, mockClient as never)
-    );
+    const result = await handleCategoryBalances({ filter: 'funded' }, mockClient as never);
 
     expect(result.summary.categories_shown).toBe(2); // Groceries + Dining
   });
@@ -95,9 +92,7 @@ describe('handleCategoryBalances', () => {
   it('filters to unfunded categories (balance 0 and budgeted 0)', async () => {
     mockClient.getBudgetMonth.mockResolvedValue(monthWith(sampleCategories));
 
-    const result = JSON.parse(
-      await handleCategoryBalances({ filter: 'unfunded' }, mockClient as never)
-    );
+    const result = await handleCategoryBalances({ filter: 'unfunded' }, mockClient as never);
 
     expect(result.summary.categories_shown).toBe(1); // Hobbies
   });
@@ -105,9 +100,7 @@ describe('handleCategoryBalances', () => {
   it('searches category names (partial match)', async () => {
     mockClient.getBudgetMonth.mockResolvedValue(monthWith(sampleCategories));
 
-    const result = JSON.parse(
-      await handleCategoryBalances({ search: 'din' }, mockClient as never)
-    );
+    const result = await handleCategoryBalances({ search: 'din' }, mockClient as never);
 
     expect(result.summary.categories_shown).toBe(1);
     expect(result.top_balances[0].category).toBe('Dining Out');
@@ -118,9 +111,7 @@ describe('handleCategoryBalances', () => {
     mockClient.getBudgetMonth.mockResolvedValue(monthWith(sampleCategories));
 
     // Groceries and Dining belong to 'Everyday Expenses' group via groupLookup
-    const result = JSON.parse(
-      await handleCategoryBalances({ group: 'everyday' }, mockClient as never)
-    );
+    const result = await handleCategoryBalances({ group: 'everyday' }, mockClient as never);
 
     expect(result.summary.categories_shown).toBe(2);
     expect(result.filter).toContain('group:');
@@ -134,7 +125,7 @@ describe('handleCategoryBalances', () => {
       ])
     );
 
-    const result = JSON.parse(await handleCategoryBalances({}, mockClient as never));
+    const result = await handleCategoryBalances({}, mockClient as never);
 
     expect(result.summary.categories_shown).toBe(0);
   });

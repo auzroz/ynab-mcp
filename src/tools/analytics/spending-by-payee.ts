@@ -10,6 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -37,6 +38,38 @@ const inputSchema = z.object({
     .optional()
     .describe('Minimum transactions to include payee (default 1)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const spendingByPayeeOutputSchema = z.object({
+  period: z.object({
+    months_analyzed: z.number().int(),
+    since_date: z.string(),
+  }),
+  summary: z.object({
+    total_spending: z.string(),
+    unique_payees: z.number().int(),
+    payees_shown: z.number().int(),
+    top_5_concentration: z.string().describe('Percent of spending at the top 5 payees shown'),
+    transaction_count: z.number().int(),
+  }),
+  top_payees: z.array(
+    z.object({
+      payee: z.string(),
+      total: z.string(),
+      transactions: z.number().int(),
+      average: z.string(),
+      percent: z.string(),
+      category: z.string().nullable().describe('Most common category; null when none of the payee\'s transactions has one'),
+      last_transaction: z.string(),
+    })
+  ),
+  insights: z.object({
+    highest_spender: z.string().nullable().describe('Null when no payee is shown'),
+    most_frequent: z.string().nullable().describe('Null when no payee qualifies'),
+    highest_average: z.string().nullable().describe('Among payees with 3 or more transactions; null when there are none'),
+  }),
+});
+export type SpendingByPayeeOutput = z.output<typeof spendingByPayeeOutputSchema>;
 
 // Tool definition
 export const spendingByPayeeTool: Tool = {
@@ -79,6 +112,7 @@ Returns top payees ranked by total spending with transaction counts and averages
     },
     required: [],
   },
+  outputSchema: toOutputSchema(spendingByPayeeOutputSchema),
 };
 
 interface PayeeSpending {
@@ -100,7 +134,7 @@ interface PayeeSpending {
 export async function handleSpendingByPayee(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<SpendingByPayeeOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -211,49 +245,45 @@ export async function handleSpendingByPayee(
   const top5Total = sumMilliunits(topPayees.slice(0, 5).map((p) => p.total_spent_raw));
   const top5Percent = totalSpending > 0 ? (top5Total / totalSpending) * 100 : 0;
 
-  return JSON.stringify(
-    {
-      period: {
-        months_analyzed: months,
-        since_date: sinceDateStr,
-      },
-      summary: {
-        total_spending: money(totalSpending),
-        unique_payees: byPayee.size,
-        payees_shown: topPayees.length,
-        top_5_concentration: `${Math.round(top5Percent)}%`,
-        transaction_count: transactions.length,
-      },
-      top_payees: topPayees.map((p) => ({
-        payee: p.payee_name,
-        total: p.total_spent,
-        transactions: p.transaction_count,
-        average: p.average_transaction,
-        percent: `${p.percent_of_total}%`,
-        category: p.most_common_category,
-        last_transaction: p.last_transaction,
-      })),
-      insights: {
-        highest_spender: topPayees[0]?.payee_name ?? null,
-        most_frequent: payeeSpending.length > 0
-          ? payeeSpending.reduce((max, p) =>
-              p.transaction_count > max.transaction_count ? p : max
-            ).payee_name
-          : null,
-        highest_average: (() => {
-          const qualified = payeeSpending.filter((p) => p.transaction_count >= 3);
-          if (qualified.length === 0) return null;
-          return qualified.reduce(
-            (max, p) =>
-              p.total_spent_raw / p.transaction_count >
-              max.total_spent_raw / max.transaction_count
-                ? p
-                : max
-          ).payee_name;
-        })(),
-      },
+  return {
+    period: {
+      months_analyzed: months,
+      since_date: sinceDateStr,
     },
-    null,
-    2
-  );
+    summary: {
+      total_spending: money(totalSpending),
+      unique_payees: byPayee.size,
+      payees_shown: topPayees.length,
+      top_5_concentration: `${Math.round(top5Percent)}%`,
+      transaction_count: transactions.length,
+    },
+    top_payees: topPayees.map((p) => ({
+      payee: p.payee_name,
+      total: p.total_spent,
+      transactions: p.transaction_count,
+      average: p.average_transaction,
+      percent: `${p.percent_of_total}%`,
+      category: p.most_common_category,
+      last_transaction: p.last_transaction,
+    })),
+    insights: {
+      highest_spender: topPayees[0]?.payee_name ?? null,
+      most_frequent: payeeSpending.length > 0
+        ? payeeSpending.reduce((max, p) =>
+            p.transaction_count > max.transaction_count ? p : max
+          ).payee_name
+        : null,
+      highest_average: (() => {
+        const qualified = payeeSpending.filter((p) => p.transaction_count >= 3);
+        if (qualified.length === 0) return null;
+        return qualified.reduce(
+          (max, p) =>
+            p.total_spent_raw / p.transaction_count >
+            max.total_spent_raw / max.transaction_count
+              ? p
+              : max
+        ).payee_name;
+      })(),
+    },
+  };
 }

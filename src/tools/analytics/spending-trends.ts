@@ -11,6 +11,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -28,6 +29,70 @@ const inputSchema = z.object({
     .optional()
     .describe('Specific category UUID to analyze (optional)'),
 });
+
+const trendSchema = z.enum(['increasing', 'decreasing', 'stable']);
+const notableSchema = z.object({
+  category: z.string(),
+  group: z.string(),
+  average: z.string(),
+  trend_percent: z.string(),
+});
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const spendingTrendsOutputSchema = z.object({
+  period: z.object({
+    months_analyzed: z.number().int(),
+    date_range: z.string(),
+  }),
+  overall: z.object({
+    trend: trendSchema,
+    message: z.string(),
+    change_percent: z.number().int(),
+  }),
+  monthly_totals: z.array(z.object({ month: z.string(), total: z.string() })),
+  summary: z.object({
+    categories_analyzed: z.number().int(),
+    increasing: z.number().int(),
+    decreasing: z.number().int(),
+    stable: z.number().int(),
+  }),
+  notable_increases: z.array(notableSchema).describe('At most 5'),
+  notable_decreases: z.array(notableSchema).describe('At most 5'),
+  all_trends: z
+    .array(
+      z.union([
+        z
+          .object({
+            category: z.string(),
+            group: z.string(),
+            monthly_spending: z.array(z.object({ month: z.string(), amount: z.string() })),
+            average: z.string(),
+            trend: trendSchema,
+            trend_percent: z.string(),
+          })
+          .describe('Without category_id: the top 15 categories, formatted'),
+        z
+          .object({
+            category_name: z.string(),
+            group_name: z.string(),
+            monthly_data: z.array(
+              z.object({
+                month: z.string(),
+                spending: z.number().int().describe('Milliunits'),
+                formatted: z.string(),
+              })
+            ),
+            average: z.string(),
+            trend: trendSchema,
+            trend_percent: z.number().int(),
+            total: z.string(),
+            total_raw: z.number().int().describe('Milliunits'),
+          })
+          .describe('With category_id: that category, with raw values'),
+      ])
+    ),
+});
+export type SpendingTrendsOutput = z.output<typeof spendingTrendsOutputSchema>;
 
 // Tool definition
 export const spendingTrendsTool: Tool = {
@@ -62,6 +127,7 @@ Returns month-by-month spending data with trend analysis.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(spendingTrendsOutputSchema),
 };
 
 interface MonthData {
@@ -88,7 +154,7 @@ interface CategoryTrend {
 export async function handleSpendingTrends(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<SpendingTrendsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -254,54 +320,50 @@ export async function handleSpendingTrends(
     overallMessage = 'Overall spending has been relatively stable';
   }
 
-  return JSON.stringify(
-    {
-      period: {
-        months_analyzed: monthCount,
-        date_range: `${months[0]} to ${months[months.length - 1]}`,
-      },
-      overall: {
-        trend: overallTrend,
-        message: overallMessage,
-        change_percent: Math.round(overallChange),
-      },
-      monthly_totals: monthlyTotals.map((m) => ({
-        month: m.month,
-        total: m.total,
-      })),
-      summary: {
-        categories_analyzed: trends.length,
-        increasing: increasing.length,
-        decreasing: decreasing.length,
-        stable: stable.length,
-      },
-      notable_increases: increasing.slice(0, 5).map((t) => ({
-        category: t.category_name,
-        group: t.group_name,
-        average: t.average,
-        trend_percent: `+${t.trend_percent}%`,
-      })),
-      notable_decreases: decreasing.slice(0, 5).map((t) => ({
-        category: t.category_name,
-        group: t.group_name,
-        average: t.average,
-        trend_percent: `${t.trend_percent}%`,
-      })),
-      all_trends: validated.category_id
-        ? trends
-        : trends.slice(0, 15).map((t) => ({
-            category: t.category_name,
-            group: t.group_name,
-            monthly_spending: t.monthly_data.map((m) => ({
-              month: m.month,
-              amount: m.formatted,
-            })),
-            average: t.average,
-            trend: t.trend,
-            trend_percent: `${t.trend_percent > 0 ? '+' : ''}${t.trend_percent}%`,
-          })),
+  return {
+    period: {
+      months_analyzed: monthCount,
+      date_range: `${months[0]} to ${months[months.length - 1]}`,
     },
-    null,
-    2
-  );
+    overall: {
+      trend: overallTrend,
+      message: overallMessage,
+      change_percent: Math.round(overallChange),
+    },
+    monthly_totals: monthlyTotals.map((m) => ({
+      month: m.month,
+      total: m.total,
+    })),
+    summary: {
+      categories_analyzed: trends.length,
+      increasing: increasing.length,
+      decreasing: decreasing.length,
+      stable: stable.length,
+    },
+    notable_increases: increasing.slice(0, 5).map((t) => ({
+      category: t.category_name,
+      group: t.group_name,
+      average: t.average,
+      trend_percent: `+${t.trend_percent}%`,
+    })),
+    notable_decreases: decreasing.slice(0, 5).map((t) => ({
+      category: t.category_name,
+      group: t.group_name,
+      average: t.average,
+      trend_percent: `${t.trend_percent}%`,
+    })),
+    all_trends: validated.category_id
+      ? trends
+      : trends.slice(0, 15).map((t) => ({
+          category: t.category_name,
+          group: t.group_name,
+          monthly_spending: t.monthly_data.map((m) => ({
+            month: m.month,
+            amount: m.formatted,
+          })),
+          average: t.average,
+          trend: t.trend,
+          trend_percent: `${t.trend_percent > 0 ? '+' : ''}${t.trend_percent}%`,
+        })),
+  };
 }

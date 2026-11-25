@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { handleMonthlyComparison } from '../../../../src/tools/analytics/monthly-comparison.js';
+import { handleMonthlyComparison as rawHandleMonthlyComparison, monthlyComparisonOutputSchema } from '../../../../src/tools/analytics/monthly-comparison.js';
+import { validating } from './output.js';
 import { createMockClient, type MockClient } from '../fixtures/mock-client.js';
+
+const handleMonthlyComparison = validating(monthlyComparisonOutputSchema, rawHandleMonthlyComparison);
 
 describe('handleMonthlyComparison', () => {
   let mockClient: MockClient;
@@ -62,7 +65,7 @@ describe('handleMonthlyComparison', () => {
       },
     });
 
-    const result = JSON.parse(await handleMonthlyComparison({}, mockClient as any));
+    const result = await handleMonthlyComparison({}, mockClient as any);
 
     expect(result.message).toContain('from $0');
     expect(result.insights.new_categories).toBe(1);
@@ -115,7 +118,7 @@ describe('handleMonthlyComparison', () => {
       },
     });
 
-    const result = JSON.parse(await handleMonthlyComparison({}, mockClient as any));
+    const result = await handleMonthlyComparison({}, mockClient as any);
 
     expect(result.status).toBe('worse');
     expect(result.comparison.spending.direction).toBe('up');
@@ -168,7 +171,7 @@ describe('handleMonthlyComparison', () => {
       },
     });
 
-    const result = JSON.parse(await handleMonthlyComparison({}, mockClient as any));
+    const result = await handleMonthlyComparison({}, mockClient as any);
 
     expect(result.status).toBe('better');
     expect(result.comparison.spending.direction).toBe('down');
@@ -221,7 +224,7 @@ describe('handleMonthlyComparison', () => {
       },
     });
 
-    const result = JSON.parse(await handleMonthlyComparison({}, mockClient as any));
+    const result = await handleMonthlyComparison({}, mockClient as any);
 
     expect(result.status).toBe('similar');
   });
@@ -296,7 +299,7 @@ describe('handleMonthlyComparison', () => {
       },
     });
 
-    const result = JSON.parse(await handleMonthlyComparison({}, mockClient as any));
+    const result = await handleMonthlyComparison({}, mockClient as any);
 
     // Only the visible category spending should be counted
     expect(result.comparison.spending.this_month).toBe('$25.00');
@@ -379,7 +382,7 @@ describe('handleMonthlyComparison', () => {
       },
     });
 
-    const result = JSON.parse(await handleMonthlyComparison({}, mockClient as any));
+    const result = await handleMonthlyComparison({}, mockClient as any);
 
     // Only the regular category spending should be counted
     expect(result.comparison.spending.this_month).toBe('$25.00');
@@ -430,7 +433,7 @@ describe('handleMonthlyComparison', () => {
       },
     });
 
-    const result = JSON.parse(await handleMonthlyComparison({}, mockClient as any));
+    const result = await handleMonthlyComparison({}, mockClient as any);
 
     expect(result.status).toBe('similar');
     expect(result.message).toBe('No spending in either month');
@@ -506,7 +509,7 @@ describe('handleMonthlyComparison', () => {
       },
     });
 
-    const result = JSON.parse(await handleMonthlyComparison({}, mockClient as any));
+    const result = await handleMonthlyComparison({}, mockClient as any);
 
     expect(result.notable_changes.biggest_increases.length).toBeGreaterThan(0);
     expect(result.notable_changes.biggest_decreases.length).toBeGreaterThan(0);
@@ -537,7 +540,7 @@ describe('handleMonthlyComparison', () => {
       },
     });
 
-    const result = JSON.parse(await handleMonthlyComparison({}, mockClient as any));
+    const result = await handleMonthlyComparison({}, mockClient as any);
 
     expect(result.months.current).toBe('2026-01-01');
     expect(result.months.previous).toBe('2025-12-01');

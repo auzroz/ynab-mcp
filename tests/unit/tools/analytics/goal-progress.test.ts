@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { handleGoalProgress } from '../../../../src/tools/analytics/goal-progress.js';
+import { handleGoalProgress as rawHandleGoalProgress, goalProgressOutputSchema } from '../../../../src/tools/analytics/goal-progress.js';
+import { validating } from './output.js';
 import { createMockClient, type MockClient } from '../fixtures/mock-client.js';
+
+const handleGoalProgress = validating(goalProgressOutputSchema, rawHandleGoalProgress);
 
 describe('handleGoalProgress', () => {
   let mockClient: MockClient;
@@ -30,7 +33,7 @@ describe('handleGoalProgress', () => {
       },
     });
 
-    const result = JSON.parse(await handleGoalProgress({}, mockClient as any));
+    const result = await handleGoalProgress({}, mockClient as any);
 
     expect(result.goals).toEqual([]);
     expect(result.summary.total_goals).toBe(0);
@@ -68,7 +71,7 @@ describe('handleGoalProgress', () => {
       },
     });
 
-    const result = JSON.parse(await handleGoalProgress({}, mockClient as any));
+    const result = await handleGoalProgress({}, mockClient as any);
 
     expect(result.goals[0].status).toBe('complete');
     expect(result.goals[0].progress).toBe('100%');
@@ -107,7 +110,7 @@ describe('handleGoalProgress', () => {
       },
     });
 
-    const result = JSON.parse(await handleGoalProgress({}, mockClient as any));
+    const result = await handleGoalProgress({}, mockClient as any);
 
     expect(result.goals[0].status).toBe('underfunded');
     expect(result.goals[0].status_message).toContain('$50.00');
@@ -162,7 +165,7 @@ describe('handleGoalProgress', () => {
       },
     });
 
-    const result = JSON.parse(await handleGoalProgress({ filter: 'underfunded' }, mockClient as any));
+    const result = await handleGoalProgress({ filter: 'underfunded' }, mockClient as any);
 
     expect(result.goals.length).toBe(1);
     expect(result.goals[0].category).toBe('Vacation');
@@ -201,7 +204,7 @@ describe('handleGoalProgress', () => {
       },
     });
 
-    const result = JSON.parse(await handleGoalProgress({}, mockClient as any));
+    const result = await handleGoalProgress({}, mockClient as any);
 
     expect(result.goals.length).toBe(0);
   });
@@ -238,7 +241,7 @@ describe('handleGoalProgress', () => {
       },
     });
 
-    const result = JSON.parse(await handleGoalProgress({}, mockClient as any));
+    const result = await handleGoalProgress({}, mockClient as any);
 
     expect(result.goals.length).toBe(0);
   });
@@ -275,7 +278,7 @@ describe('handleGoalProgress', () => {
       },
     });
 
-    const result = JSON.parse(await handleGoalProgress({}, mockClient as any));
+    const result = await handleGoalProgress({}, mockClient as any);
 
     expect(result.goals[0].progress).toBe('25%');
   });
@@ -329,7 +332,7 @@ describe('handleGoalProgress', () => {
       },
     });
 
-    const result = JSON.parse(await handleGoalProgress({}, mockClient as any));
+    const result = await handleGoalProgress({}, mockClient as any);
 
     expect(result.status).toBe('healthy');
     expect(result.message).toBe('All goals are on track or complete');
@@ -371,7 +374,7 @@ describe('handleGoalProgress', () => {
           }],
         },
       });
-      return JSON.parse(await handleGoalProgress({}, mockClient as any));
+      return await handleGoalProgress({}, mockClient as any);
     }
 
     it('uses goal_target_date when only it is set', async () => {
@@ -427,7 +430,7 @@ describe('handleGoalProgress', () => {
           }],
         },
       });
-      return JSON.parse(await handleGoalProgress({}, mockClient as any));
+      return await handleGoalProgress({}, mockClient as any);
     }
 
     it('reports a weekly target and normalises it to a month with 52/12 weeks', async () => {
@@ -535,7 +538,7 @@ describe('handleGoalProgress', () => {
       expect(result.summary.complete).toBe(1);
       expect(result.summary.snoozed).toBe(0);
 
-      const filtered = JSON.parse(await handleGoalProgress({ filter: 'complete' }, mockClient as any));
+      const filtered = await handleGoalProgress({ filter: 'complete' }, mockClient as any);
       expect(filtered.goals).toHaveLength(1);
     });
 
@@ -574,7 +577,7 @@ describe('handleGoalProgress', () => {
           }],
         },
       });
-      const result = JSON.parse(await handleGoalProgress({}, mockClient as any));
+      const result = await handleGoalProgress({}, mockClient as any);
       expect(result.goals.find((g: { category: string }) => g.category === 'Gifts')?.status).toBe('on_track');
       // The only active goal is underfunded, so more than half of the active goals are.
       expect(result.status).toBe('critical');
@@ -586,7 +589,7 @@ describe('handleGoalProgress', () => {
       expect(active.goals[0].status).toBe('underfunded');
       expect(active.summary.total_underfunded).toBe('$50.00');
 
-      const filtered = JSON.parse(await handleGoalProgress({ filter: 'snoozed' }, mockClient as any));
+      const filtered = await handleGoalProgress({ filter: 'snoozed' }, mockClient as any);
       expect(filtered.goals).toEqual([]);
       expect(filtered.filter_applied).toBe('snoozed');
     });
