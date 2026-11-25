@@ -26,6 +26,7 @@ export function createMockClient() {
     isReadOnly: vi.fn(() => true),
     getRateLimitStatus: vi.fn(() => ({ ...defaultRateLimitStatus })),
     getUpstreamStatus: vi.fn((): ReturnType<YnabClient['getUpstreamStatus']> => ({ circuit: undefined, cache: undefined })),
+    getClientUsage: vi.fn((): ReturnType<YnabClient['getClientUsage']> => undefined),
     getServerKnowledge: vi.fn((): number | undefined => undefined),
     updateServerKnowledge: vi.fn(),
 

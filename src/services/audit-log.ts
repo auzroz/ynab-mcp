@@ -1,226 +1,203 @@
 /**
- * Audit Log Service
+ * Audit Log Service (#60a)
  *
- * Logs all write operations for security and debugging purposes.
- * Logs are stored in memory and can be retrieved via the audit log tool.
+ * Records every write attempt and how it ended, through an AuditStore: the
+ * storage driver's `audit_log` table in oauth mode (memory, SQLite or
+ * Postgres), and a per-user memory store on stdio and in header mode
+ * (D-7c). Read back by the ynab_audit_log tool.
  *
- * SECURITY: Audit log entries are accessible via the ynab_audit_log tool.
- * Callers must NOT include sensitive data in the `details` or `error` fields:
- * - No PII (names, addresses, account numbers)
- * - No authentication tokens or credentials
- * - No full payee names or memo contents (use has_payee, has_memo flags instead)
+ * One AuditLog is bound to one caller: the user, and in HTTP the MCP client,
+ * its grant and the request (built per request, ADR-0001). On stdio one
+ * serves the process and each tools/call gets its own request id.
  *
- * Design Decision: The `details` field is NOT sanitized at read time.
- * We rely on callers following the documented contract above. Rationale:
- * 1. All current callers in ynab-client.ts comply (using has_memo, has_name flags)
- * 2. Sanitizing arbitrary nested objects is complex and error-prone
- * 3. Generic sanitization risks false positives (redacting non-sensitive data)
- * 4. The contract is well-documented at both the service and interface level
+ * A row holds ids and fixed vocabulary only (see src/storage/audit-rows.ts):
+ * no amounts or other financial values, no payee, account, category or memo
+ * text, and no error message. The input type below has no field that could
+ * carry one.
  *
- * Note: Error messages ARE defensively sanitized (sensitive patterns redacted, then truncated).
+ * Recording never throws: a store failure is logged (sanitized) and the
+ * write's own result stands.
  */
 
-import { sanitizeErrorMessage } from '../utils/sanitize.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
+import {
+  MemoryAuditStore,
+  type AuditOperation,
+  type AuditOutcome,
+  type AuditQuery,
+  type AuditRecord,
+  type AuditResourceType,
+  type AuditStore,
+} from '../storage/audit-rows.js';
+import { sanitizeErrorMessage, sanitizeString } from '../utils/sanitize.js';
+import { isBudgetIdSentinel } from '../utils/schemas.js';
 
-/** Maximum length for error messages in audit entries */
-const MAX_ERROR_LENGTH = 500;
+/** The user key stdio records under (one user per process). */
+export const LOCAL_AUDIT_USER = 'local';
+
+/** Longest id kept in a row; YNAB and MCP ids are far shorter. */
+const MAX_ID_LENGTH = 200;
 
 /**
- * Represents a single audit log entry.
- *
- * @property details - Metadata about the operation. MUST NOT contain sensitive data (PII, tokens, credentials).
- * @property error - Error message if operation failed. May be exposed via audit log tool.
+ * Longest a write waits for its audit row (ms). A write YNAB has applied must
+ * not wait on a slow store until the request's deadline fires and the client
+ * is told its outcome is unknown (and retries into a duplicate): past this,
+ * the append finishes in the background, a failure logged as any other.
  */
-export interface AuditLogEntry {
-  timestamp: string;
-  operation: string;
+export const AUDIT_APPEND_MAX_WAIT_MS = 1000;
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A budget id as YNAB names one (a UUID, `last-used` or `default`), else nothing: never free text. */
+function budgetIdOf(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return UUID.test(value) || isBudgetIdSentinel(value) ? value : undefined;
+}
+
+/** Who the entries of one AuditLog belong to. */
+export interface AuditContext {
+  /** The registry user key (see AuditRecord.userId). */
+  userId: string;
+  clientId?: string | undefined;
+  /** The client's grant (the oidc-provider grant id). */
+  familyId?: string | undefined;
+  /** The HTTP request; on stdio each tools/call gets one (see runCall). */
+  requestId?: string | undefined;
+  /**
+   * oauth mode: the account generation the request resolved. Entries are
+   * then written only while that user row exists (AuditGuard), so a write
+   * settling after the account was erased leaves no row (D-7b).
+   */
+  generation?: number | undefined;
+  /**
+   * The tool call's deadline (epoch ms, HTTP). A write waits for its row at
+   * most half the time left before it, and never more than
+   * AUDIT_APPEND_MAX_WAIT_MS.
+   */
+  deadline?: number | undefined;
+}
+
+/** One write attempt, as a caller reports it. */
+export interface AuditEvent {
+  operation: AuditOperation;
+  resourceType: AuditResourceType;
+  /** The tool this write belongs to when no tools/call is in progress (the call's tool wins). */
   tool: string;
-  budgetId: string;
-  resourceType: string;
-  resourceId?: string;
-  /** Operation metadata. MUST NOT contain PII, tokens, or other sensitive data. */
-  details: Record<string, unknown>;
-  success: boolean;
-  /** Error message if failed. Avoid including sensitive information. */
-  error?: string;
+  resourceId?: string | undefined;
+  budgetId?: string | undefined;
+  outcome: AuditOutcome;
+}
+
+/** The tools/call in progress (see runCall). */
+interface CallScope {
+  tool: string;
+  requestId: string | undefined;
+  recorded: boolean;
+}
+
+function id(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const clean = sanitizeString(value, MAX_ID_LENGTH);
+  return clean === null || clean === '' ? undefined : clean;
 }
 
 export class AuditLog {
-  private readonly entries: AuditLogEntry[] = [];
-  private readonly maxEntries: number;
+  private readonly calls = new AsyncLocalStorage<CallScope>();
 
-  constructor(maxEntries: number = 1000) {
-    this.maxEntries = maxEntries;
+  /**
+   * `store` defaults to a memory store of this log's own (tests); stdio and
+   * HTTP pass theirs. `context` defaults to the stdio user.
+   */
+  constructor(
+    private readonly store: AuditStore = new MemoryAuditStore(),
+    private readonly context: AuditContext = { userId: LOCAL_AUDIT_USER },
+    private readonly now: () => number = Date.now,
+    private readonly maxWaitMs: number = AUDIT_APPEND_MAX_WAIT_MS
+  ) {}
+
+  /**
+   * Run one tools/call. Entries recorded inside it (in the client's write
+   * methods, however deep) name this tool, so a bulk or composite tool
+   * (ynab_create_transactions, ynab_move_money) is recorded as itself, and
+   * carry the request id: the context's (HTTP), else a fresh one (stdio).
+   */
+  runCall<T>(tool: string, work: () => Promise<T>): Promise<T> {
+    const scope: CallScope = { tool, requestId: this.context.requestId ?? randomUUID(), recorded: false };
+    return this.calls.run(scope, work);
+  }
+
+  /** Whether the tools/call in progress has recorded an entry yet. */
+  callRecorded(): boolean {
+    return this.calls.getStore()?.recorded ?? false;
   }
 
   /**
-   * Log a write operation.
-   *
-   * SECURITY: The `details` field MUST NOT contain sensitive data (PII, tokens,
-   * full payee names, memo contents). Use boolean flags like `has_payee` instead.
-   * This data is accessible via the ynab_audit_log tool.
+   * Record one write attempt. Never throws, and waits for the store a bounded
+   * time only (see AUDIT_APPEND_MAX_WAIT_MS): a slower append completes in the
+   * background.
    */
-  log(entry: Omit<AuditLogEntry, 'timestamp'>): void {
-    // Defensively sanitize error messages: redact sensitive patterns and truncate
-    let sanitizedError: string | undefined;
-    if (entry.error !== undefined) {
-      sanitizedError = sanitizeErrorMessage(entry.error, MAX_ERROR_LENGTH);
-    }
-
-    const fullEntry: AuditLogEntry = {
-      ...entry,
-      timestamp: new Date().toISOString(),
+  async record(event: AuditEvent): Promise<void> {
+    const scope = this.calls.getStore();
+    if (scope) scope.recorded = true;
+    const entry: AuditRecord = {
+      ts: this.now(),
+      userId: this.context.userId,
+      clientId: id(this.context.clientId),
+      familyId: id(this.context.familyId),
+      requestId: id(scope?.requestId ?? this.context.requestId),
+      tool: scope?.tool ?? event.tool,
+      operation: event.operation,
+      resourceType: event.resourceType,
+      resourceId: id(event.resourceId),
+      budgetId: budgetIdOf(event.budgetId),
+      outcome: event.outcome,
     };
-    // Only set error if it exists (exactOptionalPropertyTypes compliance)
-    if (sanitizedError !== undefined) {
-      fullEntry.error = sanitizedError;
-    }
-
-    this.entries.push(fullEntry);
-
-    // Trim old entries if over limit
-    if (this.entries.length > this.maxEntries) {
-      this.entries.shift();
-    }
-
-    // Also log to stderr for server-side visibility
-    const status = entry.success ? 'SUCCESS' : 'FAILED';
-    const resourceInfo = entry.resourceId ? ` (${entry.resourceId})` : '';
-    console.error(
-      `[AUDIT] ${status}: ${entry.operation} on ${entry.resourceType}${resourceInfo} via ${entry.tool}`
-    );
-  }
-
-  /**
-   * Get all log entries.
-   */
-  getAll(): AuditLogEntry[] {
-    return [...this.entries];
-  }
-
-  /**
-   * Get entries filtered by criteria.
-   */
-  getFiltered(options: {
-    operation?: string;
-    tool?: string;
-    budgetId?: string;
-    resourceType?: string;
-    success?: boolean;
-    since?: string;
-    limit?: number;
-  }): AuditLogEntry[] {
-    // Create shallow copy immediately to avoid mutating internal state
-    let filtered = [...this.entries];
-
-    if (options.operation) {
-      filtered = filtered.filter((e) => e.operation === options.operation);
-    }
-    if (options.tool) {
-      filtered = filtered.filter((e) => e.tool === options.tool);
-    }
-    if (options.budgetId) {
-      filtered = filtered.filter((e) => e.budgetId === options.budgetId);
-    }
-    if (options.resourceType) {
-      filtered = filtered.filter((e) => e.resourceType === options.resourceType);
-    }
-    if (options.success !== undefined) {
-      filtered = filtered.filter((e) => e.success === options.success);
-    }
-    if (options.since !== undefined) {
-      const sinceDate = options.since;
-      filtered = filtered.filter((e) => e.timestamp >= sinceDate);
-    }
-
-    // Return most recent first
-    filtered.reverse();
-
-    if (options.limit !== undefined) {
-      filtered = filtered.slice(0, options.limit);
-    }
-
-    return filtered;
-  }
-
-  /**
-   * Get summary statistics.
-   */
-  getSummary(): {
-    totalOperations: number;
-    successCount: number;
-    failureCount: number;
-    byOperation: Record<string, number>;
-    byResourceType: Record<string, number>;
-    oldestEntry?: string;
-    newestEntry?: string;
-  } {
-    const byOperation: Record<string, number> = {};
-    const byResourceType: Record<string, number> = {};
-    let successCount = 0;
-    let failureCount = 0;
-
-    for (const entry of this.entries) {
-      byOperation[entry.operation] = (byOperation[entry.operation] ?? 0) + 1;
-      byResourceType[entry.resourceType] = (byResourceType[entry.resourceType] ?? 0) + 1;
-      if (entry.success) {
-        successCount++;
-      } else {
-        failureCount++;
+    const guard = this.context.generation === undefined ? undefined : { generation: this.context.generation };
+    const append = this.store.appendAuditEntry(entry, guard).then(
+      () => undefined,
+      (error: unknown) => {
+        console.error('[AUDIT] could not record an entry:', sanitizeErrorMessage(error));
       }
-    }
-
-    const result: {
-      totalOperations: number;
-      successCount: number;
-      failureCount: number;
-      byOperation: Record<string, number>;
-      byResourceType: Record<string, number>;
-      oldestEntry?: string;
-      newestEntry?: string;
-    } = {
-      totalOperations: this.entries.length,
-      successCount,
-      failureCount,
-      byOperation,
-      byResourceType,
-    };
-
-    const oldest = this.entries[0]?.timestamp;
-    const newest = this.entries[this.entries.length - 1]?.timestamp;
-    if (oldest !== undefined) result.oldestEntry = oldest;
-    if (newest !== undefined) result.newestEntry = newest;
-
-    return result;
+    );
+    await this.boundedWait(append);
+    // Server-side visibility: ids and vocabulary only, as the row.
+    const resource = entry.resourceId ? ` (${entry.resourceId})` : '';
+    console.error(`[AUDIT] ${entry.outcome}: ${entry.operation} on ${entry.resourceType}${resource} via ${entry.tool}`);
   }
 
   /**
-   * Clear all entries.
+   * The MCP client this log records for (oauth mode); undefined on stdio and
+   * in header mode, where the user is the only caller.
    */
-  clear(): number {
-    const count = this.entries.length;
-    this.entries.length = 0;
-    return count;
+  get clientId(): string | undefined {
+    return id(this.context.clientId);
   }
-}
 
-// Singleton instance
-let auditLogInstance: AuditLog | null = null;
-
-export function getAuditLog(): AuditLog {
-  if (!auditLogInstance) {
-    auditLogInstance = new AuditLog();
+  /** Wait for `work`, or until the cap (and half the time left before the deadline) has passed. */
+  private async boundedWait(work: Promise<void>): Promise<void> {
+    const deadline = this.context.deadline;
+    const left = deadline === undefined ? Infinity : Math.max(0, (deadline - Date.now()) / 2);
+    const waitMs = Math.min(this.maxWaitMs, left);
+    let timer: NodeJS.Timeout | undefined;
+    const capped = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, waitMs);
+      timer.unref();
+    });
+    try {
+      await Promise.race([work, capped]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
-  return auditLogInstance;
-}
 
-/**
- * Reset the singleton instance for testing isolation.
- * @internal - Only use in test code
- */
-export function _resetAuditLogForTesting(): void {
-  if (process.env['NODE_ENV'] === 'production') {
-    throw new Error('_resetAuditLogForTesting cannot be called in production');
+  /** This user's entries matching `query`, newest first. */
+  list(query: AuditQuery, limit: number): Promise<AuditRecord[]> {
+    return this.store.listAuditEntries(this.context.userId, query, limit);
   }
-  auditLogInstance = null;
+
+  /** The number of this user's entries matching `query`, per outcome. */
+  counts(query: AuditQuery): Promise<Record<string, number>> {
+    return this.store.countAuditEntries(this.context.userId, query);
+  }
 }

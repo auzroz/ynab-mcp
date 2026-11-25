@@ -490,6 +490,10 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     // writes off cannot write), a read-write grant on this token (per client grant, not the user's latest consent), and
     // a read-write YNAB token for the user (YNAB enforces that one anyway).
     const tokenScope = auth === undefined ? 'read-only' : tokenAccessLevel(auth);
+    // The audit log (#60a) says why a write was refused: the operator's
+    // setting wins over the grant, as the error the caller gets names it.
+    const operatorReadOnly = config.readOnly || !config.allowWrite;
+    const grantReadOnly = tokenScope === 'read-only' || grantedScope === 'read-only';
     return {
       user: {
         ...limits,
@@ -497,8 +501,10 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
         accessToken: resolver.accessTokenFor(userId, generation),
         // A token YNAB rejects is dropped on every replica; the call is not retried.
         onUnauthorized: (rejected: string) => resolver.invalidate(userId, rejected),
-        readOnly:
-          config.readOnly || !config.allowWrite || tokenScope === 'read-only' || grantedScope === 'read-only',
+        readOnly: operatorReadOnly || grantReadOnly,
+        readOnlyReason: operatorReadOnly ? 'read_only' : 'scope',
+        // Audit rows are written only while this account generation exists.
+        generation,
       },
     };
   };
@@ -527,10 +533,15 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     }
     const lease = registry.acquire(identity.userKey);
     if (!lifetime.hold(() => lease.release())) return;
+    const grantId = req.auth?.extra?.['grantId'];
     const ctx: RequestContext = Object.freeze({
       requestId: randomUUID(),
       userKey: identity.userKey,
       clientId: identity.clientId,
+      // The token's grant (oauth mode), for the audit log; not part of the caps' identity.
+      familyId: oauth && typeof grantId === 'string' ? grantId : undefined,
+      // Durable storage in oauth mode; header mode has none and keeps the user's rows in memory.
+      auditStore: storage ?? lease.components.auditStore,
       user: resolved.user,
       components: lease.components,
       toolCalls: Object.freeze({

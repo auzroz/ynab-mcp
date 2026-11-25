@@ -133,6 +133,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `ynab_audit_log` changes (#60a):
+  - Entry fields are snake_case: `timestamp`, `tool`, `operation`,
+    `resource_type` (was `resourceType`), `resource_id` (was `resourceId`),
+    `budget_id` (was `budgetId`), `outcome`, `success`, `client_id`,
+    `family_id` and `request_id`.
+  - Entries no longer carry `details` (amounts, dates, presence flags) or
+    `error` text.
+  - New `outcome` filter. The `operation` and `resource_type` filters accept
+    every value the log records (`move`, `import`, `audit_suppressed`;
+    `category_group`, `payee`, `scheduled_transaction`).
+  - `success: false` now matches every outcome but `success`, refusals
+    included.
+  - In OAuth mode it shows only the calling client's entries; another client
+    of the same user no longer sees them.
+  - The summary adds `by_outcome`.
 - **What operators see after the authorization server move** (#47):
   - The consent page is now at `/oauth/interaction/<id>`, reached by a
     redirect from `/authorize`. Its choices go to `.../start`, and Cancel to
@@ -247,6 +262,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notes carry the note.
 ### Security
 
+- Audit entries hold ids only (#60a): no amount or other financial value, no
+  payee, account, category or memo text, and no error message, by
+  construction (the table has no column for one). Before, an entry's details
+  could carry a transaction's amount and date.
 - Stored YNAB refresh tokens are bound to their user and column, and carry a
   key id (#57). The new format is `v2.<kid>.<iv>.<tag>.<ct>`, with AAD
   `ynab-mcp|<column>|v2|<user id>`, so a ciphertext copied into another user's
@@ -331,13 +350,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails instead of recreating the user, and the user reconnects (#93).
 ### Added
 
+- **A durable, attributable audit log** (#60a). Every write tool call is
+  recorded with how it ended: `success`, `denied_read_only`, `denied_scope`
+  (a read-only grant), `denied_write_limit` or `error`. Refused writes are
+  recorded too, up to 20 read-only or scope refusals per user per hour, then
+  one `audit_suppressed` entry marks that later ones are missing; a call that
+  fails input validation is not. Recording never fails a write and holds it up
+  for at most 1 second: a slower insert finishes in the background, and if the
+  store can't be written the write stands and the entry is lost (logged). Each entry names
+  the user, the MCP client, its grant and the request, the tool, the operation,
+  and the resource and budget ids. In OAuth mode entries go to the storage
+  driver, so with `sqlite` or `postgres` they survive restarts and are shared
+  by replicas. In header mode and on stdio they stay in memory, newest 1,000
+  per user. Erasing an account erases its entries. This needs schema 7: one
+  `audit_log` table with two indexes, added on startup.
+  See "The audit log" in docs/REMOTE_HOSTING.md.
+- `ynab_rate_limit_status` reports the calling client's share of the user's
+  requests and refusals in the last hour, under `client_usage` (#58).
+  `client_id` is `null` on stdio and in header mode.
 - `YNAB_WRITE_LIMIT_PER_HOUR`: a per-user write cap on every transport (#61c).
   One write tool call is one write request, so a bulk call such as
   `ynab_create_transactions` counts as 1. It is checked once, before the tool
   runs, so a refused write takes no YNAB request and changes nothing. The error
   names the limit and when the next write is allowed. A call that fails input
   validation gives its slot back; one YNAB rejects keeps it. The first refusal of
-  each episode is recorded in the audit log as `write_limit_refused`. It is separate
+  each episode is recorded in the audit log as `denied_write_limit`. It is separate
   from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests.
 - Retention windows are settings, and a sweep enforces them (#54): a
   background job deletes expired credentials and clients every 15 minutes.

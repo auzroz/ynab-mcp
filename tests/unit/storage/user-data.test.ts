@@ -1,6 +1,6 @@
 /**
  * deleteUserData's catalog (src/storage/user-data.ts): every table that holds
- * a user's id is in it, so a new one (#60b's audit_log in M5) can't be missed,
+ * a user's id is in it, so a new one (as #60a's audit_log, schema 7) can't be missed,
  * and the drivers erase the oidc-provider rows by account and by grant.
  */
 

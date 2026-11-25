@@ -11,8 +11,11 @@ import type { Config } from './config/environment.js';
 // the project root in both dev (src/) and the compiled build (dist/).
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version: string };
-import { YnabClient, type AccessTokenSource } from './services/ynab-client.js';
+import { YnabClient, type AccessTokenSource, type ReadOnlyReason } from './services/ynab-client.js';
 import { createUserComponents, type UserComponents } from './services/user-registry.js';
+import { AuditLog, LOCAL_AUDIT_USER } from './services/audit-log.js';
+import type { AuditOutcome, AuditStore } from './storage/audit-rows.js';
+import { WRITE_TOOL_AUDIT_TARGETS } from './tools/audit-targets.js';
 import { tools, handleToolCall } from './tools/index.js';
 import { UNTRUSTED_TEXT_NOTE } from './tools/untrusted-note.js';
 import {
@@ -23,7 +26,7 @@ import {
   InvalidPromptArgumentsError,
 } from './prompts/index.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
-import { formatErrorResponse, isInputValidationError, ReadOnlyModeError } from './utils/errors.js';
+import { formatErrorResponse, isInputValidationError, ReadOnlyModeError, WriteLimitError } from './utils/errors.js';
 import { assertSafeToolInput } from './utils/input-guard.js';
 
 /**
@@ -42,6 +45,17 @@ export interface UserContext {
   onUnauthorized?: ((rejectedAccessToken: string) => Promise<void>) | undefined;
   defaultBudgetId?: string | undefined;
   readOnly: boolean;
+  /**
+   * Why `readOnly` is set (#60a): the operator's setting (`read_only`, the
+   * default) or the caller's grant (`scope`). Audited as the refused write's
+   * outcome.
+   */
+  readOnlyReason?: ReadOnlyReason | undefined;
+  /**
+   * oauth mode: the account generation this request resolved (the user row's
+   * `createdAt`). Audit rows are written only while it exists (AuditGuard).
+   */
+  generation?: number | undefined;
   rateLimitPerHour: number;
   /** Longest wait for a rate-limit token in ms (default 2000; 0 = never wait). */
   rateLimitMaxWaitMs?: number | undefined;
@@ -76,12 +90,19 @@ export interface ToolCallBounds {
  * under one key of `AuthInfo.extra`; not the SDK's McpRequestContext.
  */
 export interface RequestContext {
-  /** Unique per request (for logs and #60's audit context). */
+  /** Unique per request (for logs and the audit log's request id, #60a). */
   readonly requestId: string;
   /** The user's registry key: the YNAB user id (oauth), or the YNAB token's digest (header). */
   readonly userKey: string;
   /** The authenticated MCP client (oauth mode); undefined in header mode. */
   readonly clientId: string | undefined;
+  /** The client's grant (oauth mode: the access token's oidc-provider grant id), for the audit log. */
+  readonly familyId: string | undefined;
+  /**
+   * Where this request's audit rows go: the storage driver (oauth mode), or
+   * the user's memory store (header mode, which has no storage).
+   */
+  readonly auditStore: AuditStore;
   /** The settings this request's YnabClient is built with, its read-only flag computed for this request. */
   readonly user: UserContext;
   /** The user's components, held by this request's registry lease. */
@@ -89,16 +110,25 @@ export interface RequestContext {
   readonly toolCalls: ToolCallBounds;
 }
 
+/** Per-request parts of a YnabClient (HTTP); stdio and tests leave them out. */
+export interface ClientBuildOptions {
+  /** The request's absolute deadline: no YNAB call outlives it (#58). */
+  deadline?: number | undefined;
+  /** The request's audit log; default: the user's memory store, as the stdio user. */
+  auditLog?: AuditLog | undefined;
+  /** The calling MCP client, for the per-client usage report (#58). */
+  clientId?: string | undefined;
+}
+
 /**
  * Build a YnabClient on the given per-user components (rate limiter, cache,
- * delta snapshots, audit log, feed state). Without them it gets its own set
- * (stdio, tests).
+ * delta snapshots, memory audit store, feed state). Without them it gets its
+ * own set (stdio, tests).
  */
 export function buildYnabClient(
   ctx: UserContext,
   components: UserComponents = createUserComponents(ctx),
-  // The request's absolute deadline (HTTP): no YNAB call outlives it (#58).
-  deadline?: number
+  options: ClientBuildOptions = {}
 ): YnabClient {
   return new YnabClient(
     ctx.accessToken,
@@ -106,10 +136,19 @@ export function buildYnabClient(
     components.rateLimiter,
     components.cache,
     ctx.readOnly,
-    components.auditLog,
+    options.auditLog ?? new AuditLog(components.auditStore, { userId: LOCAL_AUDIT_USER }),
     components.deltaCache,
     components.feedState,
-    { breaker: components.breaker, deadline, writeLimiter: components.writeLimiter, onUnauthorized: ctx.onUnauthorized }
+    {
+      breaker: components.breaker,
+      deadline: options.deadline,
+      writeLimiter: components.writeLimiter,
+      onUnauthorized: ctx.onUnauthorized,
+      clientId: options.clientId,
+      clientUsage: components.clientUsage,
+      auditedDenials: components.auditedDenials,
+      readOnlyReason: ctx.readOnlyReason,
+    }
   );
 }
 
@@ -201,17 +240,31 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
     return { tools };
   });
 
-  server.setRequestHandler('tools/call', async (request) => {
-    const { name, arguments: args } = request.params;
+  // How a refused or failed write is audited (#60a): the tool's operation and
+  // resource type, no resource id (the arguments are not trusted for one).
+  const auditLog = ynabClient.getAuditLog();
+  const recordWrite = async (name: string, outcome: AuditOutcome, suppressed = false): Promise<void> => {
+    const target = WRITE_TOOL_AUDIT_TARGETS[name];
+    if (target === undefined) return;
+    await auditLog.record({ ...target, ...(suppressed ? { operation: 'audit_suppressed' as const } : {}), tool: name, outcome });
+  };
 
+  const callTool = async (name: string, args: Record<string, unknown>) => {
+    const isWrite = writeToolNames.has(name);
     try {
       // Reject oversized/deeply nested arguments before any zod parsing
       // (defense in depth against resource exhaustion).
-      assertSafeToolInput(args ?? {});
+      assertSafeToolInput(args);
       // A tool hidden from a read-only caller's list is rejected here too, so
       // calling it by name gets the same read-only error even when its handler
       // would not reach the client's write guard (the deprecated no-op import).
-      if (ynabClient.isReadOnly() && writeToolNames.has(name)) {
+      // Recorded while the user's hourly budget of audited refusals lasts (a
+      // refusal costs no write slot, so a looping client is bounded here).
+      if (ynabClient.isReadOnly() && isWrite) {
+        const outcome = ynabClient.getReadOnlyReason() === 'scope' ? 'denied_scope' : 'denied_read_only';
+        const audit = ynabClient.admitDeniedAudit();
+        // Past the budget: one marker row says later refusals this hour are not recorded.
+        if (audit !== 'skip') await recordWrite(name, outcome, audit === 'mark');
         throw new ReadOnlyModeError(name);
       }
       // The per-user write cap (#61c, D-8): checked here, once per write tool
@@ -219,12 +272,27 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
       // handler and so before any YNAB request. A bulk call counts as one.
       // A call that fails Zod input validation never reaches YNAB, so it gives
       // its slot back; a call YNAB rejects still used quota and keeps it.
-      const releaseSlot = writeToolNames.has(name) ? ynabClient.admitWrite(name) : undefined;
+      // The first refusal of an episode is audited, so a looping agent adds one row.
+      let releaseSlot: (() => void) | undefined;
+      if (isWrite) {
+        try {
+          releaseSlot = ynabClient.admitWrite(name);
+        } catch (error) {
+          if (error instanceof WriteLimitError && error.firstRefusal) await recordWrite(name, 'denied_write_limit');
+          throw error;
+        }
+      }
       const call = async (): Promise<string> => {
         try {
-          return await handleToolCall(name, args ?? {}, ynabClient);
+          return await handleToolCall(name, args, ynabClient);
         } catch (error) {
           if (releaseSlot !== undefined && isInputValidationError(error)) releaseSlot();
+          // A write that failed before its client method recorded it (rate
+          // limited, a budget lookup) is recorded here. Input validation
+          // failures are not write attempts.
+          if (isWrite && !isInputValidationError(error) && !auditLog.callRecorded()) {
+            await recordWrite(name, 'error');
+          }
           throw error;
         }
       };
@@ -236,11 +304,15 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
         // timeout like any tool error, over JSON or either era's SSE (D6, Q8).
         const outcome = await runWithin(toolCalls, call);
         if (!outcome.done) {
-          const outcomeUnknown = outcome.started && writeToolNames.has(name);
+          const outcomeUnknown = outcome.started && isWrite;
           // The handler never ran (deadline already passed, or the request had
           // ended): nothing reached YNAB, so the slot goes back. A write that
-          // started and timed out keeps it, since it may have reached YNAB.
-          if (!outcome.started) releaseSlot?.();
+          // started and timed out keeps it, since it may have reached YNAB
+          // (it is audited when it settles).
+          if (!outcome.started) {
+            releaseSlot?.();
+            if (isWrite) await recordWrite(name, 'error');
+          }
           if (outcome.started) {
             console.error(`[Request] tools/call reached its deadline${outcomeUnknown ? ' (write; outcome unknown)' : ''}`);
           }
@@ -249,14 +321,21 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
         result = outcome.value;
       }
       return {
-        content: [{ type: 'text', text: result }],
+        content: [{ type: 'text' as const, text: result }],
       };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: formatErrorResponse(error) }],
-        isError: true,
+        content: [{ type: 'text' as const, text: formatErrorResponse(error) }],
+        isError: true as const,
       };
     }
+  };
+
+  server.setRequestHandler('tools/call', async (request) => {
+    const { name, arguments: args } = request.params;
+    // A write tool runs as one audited call: every row it records names it and the request (#60a).
+    if (writeToolNames.has(name)) return auditLog.runCall(name, () => callTool(name, args ?? {}));
+    return callTool(name, args ?? {});
   });
 
   server.setRequestHandler('prompts/list', async () => {
@@ -296,7 +375,22 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
  * everything that can fail was resolved before the factory runs.
  */
 export function createServerForRequest(ctx: RequestContext): Server {
-  return createServerFromClient(buildYnabClient(ctx.user, ctx.components, ctx.toolCalls.deadline), ctx.toolCalls);
+  // The request's audit log: its user, client, grant and request id (#60a).
+  const auditLog = new AuditLog(ctx.auditStore, {
+    userId: ctx.userKey,
+    clientId: ctx.clientId,
+    familyId: ctx.familyId,
+    requestId: ctx.requestId,
+    generation: ctx.user.generation,
+    // A write never waits on its audit row past this call's deadline.
+    deadline: ctx.toolCalls.deadline,
+  });
+  const client = buildYnabClient(ctx.user, ctx.components, {
+    deadline: ctx.toolCalls.deadline,
+    auditLog,
+    clientId: ctx.clientId,
+  });
+  return createServerFromClient(client, ctx.toolCalls);
 }
 
 /**

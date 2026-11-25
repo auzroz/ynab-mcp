@@ -28,7 +28,8 @@ describe('UserRegistry sharing and isolation', () => {
     expect(b.components.rateLimiter).toBe(a.components.rateLimiter);
     expect(b.components.cache).toBe(a.components.cache);
     expect(b.components.deltaCache).toBe(a.components.deltaCache);
-    expect(b.components.auditLog).toBe(a.components.auditLog);
+    expect(b.components.auditStore).toBe(a.components.auditStore);
+    expect(b.components.clientUsage).toBe(a.components.clientUsage);
     expect(registry.size).toBe(1);
   });
 
@@ -39,21 +40,29 @@ describe('UserRegistry sharing and isolation', () => {
     expect(bob.rateLimiter).not.toBe(alice.rateLimiter);
     expect(bob.cache).not.toBe(alice.cache);
     expect(bob.deltaCache).not.toBe(alice.deltaCache);
-    expect(bob.auditLog).not.toBe(alice.auditLog);
+    expect(bob.auditStore).not.toBe(alice.auditStore);
+    expect(bob.clientUsage).not.toBe(alice.clientUsage);
 
     await alice.rateLimiter.acquire();
     alice.cache.set('k', 'alice-data');
-    alice.auditLog.log({
-      operation: 'create',
+    await alice.auditStore.appendAuditEntry({
+      ts: 1,
+      userId: 'local',
+      clientId: undefined,
+      familyId: undefined,
+      requestId: undefined,
       tool: 'ynab_create_payee',
-      budgetId: 'b',
+      operation: 'create',
       resourceType: 'payee',
-      details: {},
-      success: true,
+      resourceId: undefined,
+      budgetId: 'b',
+      outcome: 'success',
     });
+    alice.clientUsage.sent('client-a');
     expect(bob.rateLimiter.getStatus().used).toBe(0);
     expect(bob.cache.get('k')).toBeUndefined();
-    expect(bob.auditLog.getFiltered({})).toHaveLength(0);
+    expect(bob.auditStore.countFor('local')).toBe(0);
+    expect(bob.clientUsage.status('client-a').sentLastHour).toBe(0);
   });
 
   it('keys header-mode users by a SHA-256 digest, never the raw token', () => {
