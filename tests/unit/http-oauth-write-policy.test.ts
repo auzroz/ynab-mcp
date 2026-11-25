@@ -36,7 +36,8 @@ vi.mock('../../src/storage/index.js', async () => {
 
 import { buildHttpApp, type HttpApp } from '../../src/http.js';
 import { exchangeCode, getYnabUserId, refreshAccessToken } from '../../src/auth/ynab-oauth.js';
-import { tools } from '../../src/tools/index.js';
+// OAuth mode also registers the account tools (#53c): the catalog is what it lists.
+import { isAccountToolName, toolCatalog as tools } from '../../src/tools/index.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import {
   CookieJar,
@@ -51,7 +52,11 @@ import {
 const PUBLIC_URL = 'https://mcp.example.com';
 const RESOURCE = `${PUBLIC_URL}/mcp`;
 const ACCEPT = 'application/json, text/event-stream';
-const READ_TOOLS = tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name);
+// A read-only session's list: the read tools, and all three account tools,
+// which any connection may call (#53c, maintainer decision 2026-11-25).
+const READ_TOOLS = tools
+  .filter((t) => t.annotations?.readOnlyHint === true || isAccountToolName(t.name))
+  .map((t) => t.name);
 const ALL_TOOLS = tools.map((t) => t.name);
 const encryptionKey = randomBytes(32).toString('base64');
 

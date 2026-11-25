@@ -14,7 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { Ajv } from 'ajv';
 import type { z } from 'zod';
-import { tools, runToolCall, toolCallOutput } from '../../../src/tools/index.js';
+// The catalog: every transport's tools plus the OAuth-only account tools (#53c).
+import { toolCatalog as tools, runToolCall, toolCallOutput } from '../../../src/tools/index.js';
 import { closedOutputSchema, toOutputSchema } from '../../../src/tools/output-schema.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
@@ -107,6 +108,10 @@ const PENDING_OUTPUT_SCHEMA = [
   'ynab_credit_card_status',
   'ynab_age_of_money',
   'ynab_preview_scheduled_transaction',
+  // Account tools (#53c, OAuth HTTP mode only; their own call path in server.ts)
+  'ynab_list_connections',
+  'ynab_revoke_connection',
+  'ynab_disconnect',
 ];
 
 /**

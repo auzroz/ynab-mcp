@@ -382,6 +382,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails instead of recreating the user, and the user reconnects (#93).
 ### Added
 
+- **Manage connections from a client** (#53), in OAuth HTTP mode only, as
+  three tools (72 in all). `ynab_list_connections` lists the user's own
+  connected clients: the name each declared, the host of a metadata-document
+  client, when it was connected, last used and expires, its access level, and
+  which entry is the caller. `ynab_revoke_connection { family_id }` revokes
+  one. Another user's id gets the same `not_found` as an unknown one, and a
+  client may revoke itself. `ynab_disconnect { confirm: "DISCONNECT" }` erases
+  the user's account on the server: their stored YNAB tokens, every connection
+  and the audit log. It also drops what the replica holds in memory for them,
+  and the reply says how to revoke the server at YNAB too. Any connection may
+  use all three, read-only ones included, whatever the instance's write
+  settings, and they don't count against the write cap. So a read-only client
+  can end the user's other connections or erase their account on this server
+  (never budget data, and not YNAB's own authorization). Stdio and header mode
+  don't have these tools. See "Managing connections" in
+  docs/REMOTE_HOSTING.md.
 - **Structured tool output** (#45). A tool can declare an `outputSchema` and
   return its result as `structuredContent`, alongside the same JSON in a text
   block. Clients that don't read `structuredContent` see no change. The output

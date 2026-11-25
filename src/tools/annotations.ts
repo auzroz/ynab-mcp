@@ -35,6 +35,7 @@
 
 import type { ToolAnnotations } from '@modelcontextprotocol/server';
 import type { ToolName } from './index.js';
+import type { AccountToolName } from './connections/policy.js';
 
 export interface ToolMetadata {
   title: string;
@@ -191,3 +192,16 @@ export const TOOL_METADATA = {
   ynab_audit_log: { title: 'View Audit Log', annotations: READ },
   ynab_health_check: { title: 'Health Check', annotations: READ },
 } as const satisfies Record<ToolName, ToolMetadata>;
+
+/**
+ * The account tools (#53c), registered only in OAuth HTTP mode, so they are
+ * kept apart from the table above. Listing reads. Revoking and disconnecting
+ * remove grants, tokens and stored data that can't be restored, so they are
+ * destructive. Repeating either leaves the same state, so they are idempotent.
+ * They act only on the caller's own account on this server (closed world).
+ */
+export const ACCOUNT_TOOL_METADATA = {
+  ynab_list_connections: { title: 'List Connections', annotations: READ },
+  ynab_revoke_connection: { title: 'Revoke Connection', annotations: DELETE },
+  ynab_disconnect: { title: 'Disconnect and Erase Account', annotations: DELETE },
+} as const satisfies Record<AccountToolName, ToolMetadata>;
