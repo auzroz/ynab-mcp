@@ -568,8 +568,10 @@ database instead, so every replica on it counts against one budget:
   and the **metadata-document fetch budget** (see "Client ID Metadata
   Documents"). One row per limiter and key in `rate_limit_hits`: the same
   windows as in memory (fixed, starting at a key's first request), counted
-  atomically. The key is stored as its SHA-256, so no client address or
-  `client_id` is kept in the clear.
+  atomically. The key is stored as its SHA-256, which bounds its size and
+  keeps addresses and `client_id`s out of plain view; it is not a secret
+  (an IPv4 address can be recovered by trying them all), and a row lasts only
+  as long as its window.
 
 It needs `AUTH_MODE=oauth` and `STORAGE_DRIVER=postgres`; any other driver,
 header mode, or a value other than `memory` or `postgres` refuses to start.

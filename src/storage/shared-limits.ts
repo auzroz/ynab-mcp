@@ -10,8 +10,10 @@
  *  - `rate_limit_hits`: express-rate-limit's fixed windows (#67b), one row per
  *    (limiter, key). `limiter` is the limiter's name (rate-limiters.ts), `key`
  *    the SHA-256 of the limiter's key (a client address, a (client_id,
- *    address) pair, a redirect host), so no address or client_id is stored in
- *    the clear and a long key can't exceed an index entry. A hit is one
+ *    address) pair, a redirect host): a long key can't exceed an index entry,
+ *    and addresses and client_ids are out of plain view (not secret: the
+ *    digest is unkeyed, so an IPv4 address can be recovered by trying them
+ *    all; a row lasts only as long as its window). A hit is one
  *    `INSERT ... ON CONFLICT DO UPDATE` that starts a new window when the old
  *    one has ended: atomic across replicas.
  *  - `rate_limit_buckets`: the per-user YNAB request budget (#67c), one row
@@ -250,7 +252,7 @@ export async function runRateLimitSweep(
   return counts;
 }
 
-/** The stored form of a limiter key: its SHA-256, so no address or client_id is kept in the clear. */
+/** The stored form of a limiter key: its SHA-256 (bounded size, out of plain view; unkeyed, so not a secret). */
 export function limiterKeyDigest(key: string): string {
   return createHash('sha256').update(key).digest('hex');
 }

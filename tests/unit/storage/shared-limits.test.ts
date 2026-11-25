@@ -26,6 +26,7 @@ import { SharedWindowStore } from '../../../src/middleware/shared-limiter-store.
 import { RateLimitError, RateLimitStoreUnavailableError } from '../../../src/utils/errors.js';
 import type { Storage } from '../../../src/storage/types.js';
 import type { Options } from 'express-rate-limit';
+import { runSweepPass, SWEEP_STEPS } from '../../../src/auth/sweep-job.js';
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -38,7 +39,7 @@ describe('schema 8 (M7)', () => {
   it('is the current schema, and the bucket table is in the account erase', () => {
     expect(SCHEMA_VERSION).toBe(8);
     expect(USER_DATA_TABLES.at(-1)).toEqual({ table: 'rate_limit_buckets', column: 'user_id' });
-    // Neither table can hold a raw address or client_id: the window key is a digest.
+    // The window key is stored as a digest, never as the raw address or client_id.
     expect(limiterKeyDigest('client:abc|ip:203.0.113.5')).toMatch(/^[0-9a-f]{64}$/);
     for (const table of [RATE_LIMIT_HITS_TABLE, RATE_LIMIT_BUCKETS_TABLE]) {
       expect(Object.keys(table.sql).sort()).toEqual(['postgres', 'sqlite']);
@@ -104,6 +105,17 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
         'draining',
         'u2',
       ]);
+    });
+
+    it('the sweep job runs the step on the real driver and logs counts only', async () => {
+      const h = await driver.open();
+      const sql = h.sql as Sql;
+      await sql("INSERT INTO rate_limit_hits (limiter, key, hits, reset_at) VALUES ('l', 'ended', 5, 1000)");
+      await sql("INSERT INTO rate_limit_buckets (user_id, tat, blocked_until) VALUES ('full-user', 1000, 0)");
+      const log = vi.fn();
+      const step = SWEEP_STEPS.find((s) => s.name === 'rate-limit-rows')!;
+      expect(await runSweepPass(h.storage, { steps: [step], log })).toEqual({ deleted: 2, failed: 0 });
+      expect(log.mock.calls.map((c) => String(c[0]))).toEqual(['[Sweep] rate-limit-rows: deleted rateLimitWindows=1 rateLimitBuckets=1']);
     });
   });
 }
@@ -228,10 +240,11 @@ describe.skipIf(!postgres.enabled)('shared limits across two replicas (Postgres)
 
   it('the waiter cap: one caller per user waits for its token, on any replica; the next is refused with the time after it', async () => {
     const { a, b } = await twoReplicas();
-    // 36,000 an hour: a token every 100 ms. Drain the bucket in one reservation.
-    const onA = limiter(a, 'u1', 36_000, 1_000);
-    const onB = limiter(b, 'u1', 36_000, 1_000);
-    expect(await onA.acquireMany(36_000)).toBe(36_000);
+    // 7,200 an hour: a token every 500 ms (wide enough that the two calls land
+    // within one interval on a loaded runner). Drain the bucket in one reservation.
+    const onA = limiter(a, 'u1', 7_200, 2_000);
+    const onB = limiter(b, 'u1', 7_200, 2_000);
+    expect(await onA.acquireMany(7_200)).toBe(7_200);
     const startedAt = Date.now();
     const [first, second] = await Promise.allSettled([onA.acquire(), onB.acquire()]);
     const outcomes = [first, second];
@@ -240,14 +253,15 @@ describe.skipIf(!postgres.enabled)('shared limits across two replicas (Postgres)
     expect(waited).toHaveLength(1);
     expect(refused).toHaveLength(1);
     expect(refused[0]!.reason).toBeInstanceOf(RateLimitError);
-    // The refused caller's token comes after the waiter's: about 200 ms out.
+    // The refused caller's token comes after the waiter's: about a second out.
     const retry = (refused[0]!.reason as RateLimitError).retryAfterMs!;
-    expect(retry).toBeGreaterThan(100);
-    expect(retry).toBeLessThanOrEqual(200);
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(50);
+    expect(retry).toBeGreaterThan(500);
+    expect(retry).toBeLessThanOrEqual(1_000);
+    // The waiter slept for its token.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(250);
     // RATE_LIMIT_MAX_WAIT_MS=0 never waits, and a wait longer than the cap is refused.
-    await expect(limiter(b, 'u1', 36_000, 0).acquire()).rejects.toBeInstanceOf(RateLimitError);
-    await expect(limiter(b, 'u1', 36_000, 10).acquire()).rejects.toBeInstanceOf(RateLimitError);
+    await expect(limiter(b, 'u1', 7_200, 0).acquire()).rejects.toBeInstanceOf(RateLimitError);
+    await expect(limiter(b, 'u1', 7_200, 10).acquire()).rejects.toBeInstanceOf(RateLimitError);
   });
 
   it("YNAB's 429 on one replica pauses the user's requests on the other", async () => {
