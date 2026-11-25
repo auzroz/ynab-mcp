@@ -19,6 +19,7 @@ import { closedOutputSchema, toOutputSchema } from '../../../src/tools/output-sc
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
+import { detectRecurringOutputSchema } from '../../../src/tools/analytics/detect-recurring.js';
 import { spendingAnalysisOutputSchema } from '../../../src/tools/analytics/spending-analysis.js';
 import { budgetHealthOutputSchema } from '../../../src/tools/analytics/budget-health.js';
 import { savingsOpportunitiesOutputSchema } from '../../../src/tools/analytics/savings-opportunities.js';
@@ -29,11 +30,13 @@ import { spendingByPayeeOutputSchema } from '../../../src/tools/analytics/spendi
 import { unusedCategoriesOutputSchema } from '../../../src/tools/analytics/unused-categories.js';
 import { monthlyComparisonOutputSchema } from '../../../src/tools/analytics/monthly-comparison.js';
 import { spendingTrendsOutputSchema } from '../../../src/tools/analytics/spending-trends.js';
+import { cashFlowForecastOutputSchema } from '../../../src/tools/analytics/cash-flow-forecast.js';
 import { budgetSuggestionsOutputSchema } from '../../../src/tools/analytics/budget-suggestions.js';
 import { overspendingAlertsOutputSchema } from '../../../src/tools/analytics/overspending-alerts.js';
 import { transactionSearchOutputSchema } from '../../../src/tools/analytics/transaction-search.js';
 import { spendingPaceOutputSchema } from '../../../src/tools/analytics/spending-pace.js';
 import { categoryBalancesOutputSchema } from '../../../src/tools/analytics/category-balances.js';
+import { previewScheduledTransactionOutputSchema } from '../../../src/tools/analytics/preview-scheduled.js';
 import { AuditLog } from '../../../src/services/audit-log.js';
 import { YnabClient } from '../../../src/services/ynab-client.js';
 import { RateLimiter } from '../../../src/services/rate-limiter.js';
@@ -99,14 +102,11 @@ const PENDING_OUTPUT_SCHEMA = [
   'ynab_list_money_movements',
   'ynab_list_money_movement_groups',
   // Analytics (45c)
-  'ynab_detect_recurring',
   'ynab_quick_summary',
   'ynab_net_worth',
-  'ynab_cash_flow_forecast',
   'ynab_reconciliation_helper',
   'ynab_credit_card_status',
   'ynab_age_of_money',
-  'ynab_preview_scheduled_transaction',
 ];
 
 /**
@@ -117,6 +117,7 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,
+  ynab_detect_recurring: detectRecurringOutputSchema,
   ynab_spending_analysis: spendingAnalysisOutputSchema,
   ynab_budget_health: budgetHealthOutputSchema,
   ynab_savings_opportunities: savingsOpportunitiesOutputSchema,
@@ -127,11 +128,13 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_unused_categories: unusedCategoriesOutputSchema,
   ynab_monthly_comparison: monthlyComparisonOutputSchema,
   ynab_spending_trends: spendingTrendsOutputSchema,
+  ynab_cash_flow_forecast: cashFlowForecastOutputSchema,
   ynab_budget_suggestions: budgetSuggestionsOutputSchema,
   ynab_overspending_alerts: overspendingAlertsOutputSchema,
   ynab_transaction_search: transactionSearchOutputSchema,
   ynab_spending_pace: spendingPaceOutputSchema,
   ynab_category_balances: categoryBalancesOutputSchema,
+  ynab_preview_scheduled_transaction: previewScheduledTransactionOutputSchema,
 };
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/null-output-0.4.1.json', import.meta.url));

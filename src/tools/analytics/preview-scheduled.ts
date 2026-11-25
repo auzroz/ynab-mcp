@@ -14,6 +14,7 @@ import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { validateScheduledDate } from '../../utils/date-validation.js';
 import { frequencies, flagColors } from '../../utils/scheduled-constants.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -50,6 +51,45 @@ const inputSchema = z.object({
   message: 'Either payee_id or payee_name must be provided',
   path: ['payee_id'],
 });
+
+/**
+ * What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings.
+ * An invalid preview (an unknown account, category or payee, or a bad date) is an
+ * ordinary result: valid is false and validation_errors lists why.
+ */
+export const previewScheduledTransactionOutputSchema = z.object({
+  valid: z.boolean(),
+  preview: z.object({
+    account_name: z.string(),
+    payee_name: z.string(),
+    category_name: z.string().nullable().describe('Null when no category_id was given or it was not found'),
+    amount_display: z.string(),
+    frequency_display: z.string(),
+    start_date: z.string(),
+    next_occurrences: z.array(z.string()).describe('Up to 3 dates, starting with start_date'),
+  }),
+  estimated_costs: z.object({
+    monthly: z.string(),
+    annual: z.string(),
+  }),
+  validation_errors: z.array(z.string()).exactOptional().describe('Present only when valid is false'),
+  api_payload: z
+    .object({
+      account_id: z.string(),
+      date: z.string(),
+      // Typed after the SDK's SaveScheduledTransaction: the tool always sets amount and
+      // frequency, and sets the others (never null) only when they were given.
+      amount: z.number().int().exactOptional().describe('Milliunits'),
+      payee_id: z.string().nullable().exactOptional(),
+      payee_name: z.string().nullable().exactOptional(),
+      category_id: z.string().nullable().exactOptional(),
+      memo: z.string().nullable().exactOptional(),
+      flag_color: z.string().nullable().exactOptional(),
+      frequency: z.string().exactOptional(),
+    })
+    .describe('The request body ynab_create_scheduled_transaction would send'),
+});
+export type PreviewScheduledTransactionOutput = z.output<typeof previewScheduledTransactionOutputSchema>;
 
 // Tool definition
 export const previewScheduledTransactionTool: Tool = {
@@ -119,6 +159,7 @@ Does NOT create anything - use ynab_create_scheduled_transaction to actually cre
     },
     required: ['account_id', 'amount', 'frequency'],
   },
+  outputSchema: toOutputSchema(previewScheduledTransactionOutputSchema),
 };
 
 /**
@@ -330,7 +371,7 @@ function getFrequencyDisplay(frequency: string): string {
 export async function handlePreviewScheduledTransaction(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<PreviewScheduledTransactionOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -397,26 +438,22 @@ export async function handlePreviewScheduledTransaction(
 
   const isValid = validationErrors.length === 0;
 
-  return JSON.stringify(
-    {
-      valid: isValid,
-      preview: {
-        account_name: sanitizeName(accountName),
-        payee_name: sanitizeName(payeeName),
-        category_name: categoryName ? sanitizeName(categoryName) : null,
-        amount_display: money(amountMilliunits),
-        frequency_display: getFrequencyDisplay(validated.frequency),
-        start_date: startDate,
-        next_occurrences: nextOccurrences,
-      },
-      estimated_costs: {
-        monthly: money(Math.round(costs.monthly)),
-        annual: money(Math.round(costs.annual)),
-      },
-      ...(validationErrors.length > 0 && { validation_errors: validationErrors }),
-      api_payload: apiPayload,
+  return {
+    valid: isValid,
+    preview: {
+      account_name: sanitizeName(accountName),
+      payee_name: sanitizeName(payeeName),
+      category_name: categoryName ? sanitizeName(categoryName) : null,
+      amount_display: money(amountMilliunits),
+      frequency_display: getFrequencyDisplay(validated.frequency),
+      start_date: startDate,
+      next_occurrences: nextOccurrences,
     },
-    null,
-    2
-  );
+    estimated_costs: {
+      monthly: money(Math.round(costs.monthly)),
+      annual: money(Math.round(costs.annual)),
+    },
+    ...(validationErrors.length > 0 && { validation_errors: validationErrors }),
+    api_payload: apiPayload,
+  };
 }

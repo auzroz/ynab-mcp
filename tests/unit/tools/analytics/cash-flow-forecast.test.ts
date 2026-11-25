@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { handleCashFlowForecast } from '../../../../src/tools/analytics/cash-flow-forecast.js';
+import { handleCashFlowForecast as rawHandleCashFlowForecast, cashFlowForecastOutputSchema } from '../../../../src/tools/analytics/cash-flow-forecast.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createAccountsResponse,
@@ -11,6 +12,8 @@ import {
   mockAllAccounts,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleCashFlowForecast = validating(cashFlowForecastOutputSchema, rawHandleCashFlowForecast);
 
 // Format a Date as a local YYYY-MM-DD string (matches handler's parseLocalDate).
 function localDateStr(d: Date): string {
@@ -81,8 +84,7 @@ describe('handleCashFlowForecast', () => {
       createScheduledTransactionsResponse(scheds as never)
     );
 
-    const result = await handleCashFlowForecast({ days: 30 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleCashFlowForecast({ days: 30 }, mockClient as never);
 
     expect(parsed.status).toMatch(/healthy|caution|warning/);
     expect(parsed.forecast_period.days).toBe(30);
@@ -104,8 +106,7 @@ describe('handleCashFlowForecast', () => {
       createScheduledTransactionsResponse(scheds as never)
     );
 
-    const result = await handleCashFlowForecast({ days: 30 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleCashFlowForecast({ days: 30 }, mockClient as never);
 
     // ~30 days / 7 day interval => multiple occurrences
     expect(parsed.scheduled_transaction_count).toBeGreaterThan(1);
@@ -117,8 +118,7 @@ describe('handleCashFlowForecast', () => {
       createScheduledTransactionsResponse([] as never)
     );
 
-    const result = await handleCashFlowForecast({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleCashFlowForecast({}, mockClient as never);
 
     expect(parsed.scheduled_transaction_count).toBe(0);
     expect(parsed.status).toBe('healthy');
@@ -140,8 +140,7 @@ describe('handleCashFlowForecast', () => {
       createScheduledTransactionsResponse(scheds as never)
     );
 
-    const result = await handleCashFlowForecast({ days: 30 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleCashFlowForecast({ days: 30 }, mockClient as never);
 
     expect(parsed.status).toBe('warning');
     expect(parsed.message).toContain('negative');
@@ -158,8 +157,7 @@ describe('handleCashFlowForecast', () => {
       createScheduledTransactionsResponse(scheds as never)
     );
 
-    const result = await handleCashFlowForecast({ days: 30 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleCashFlowForecast({ days: 30 }, mockClient as never);
 
     // Only the in-range, non-deleted one-time item counts.
     expect(parsed.scheduled_transaction_count).toBe(1);
@@ -171,8 +169,7 @@ describe('handleCashFlowForecast', () => {
       createScheduledTransactionsResponse([] as never)
     );
 
-    const result = await handleCashFlowForecast({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleCashFlowForecast({}, mockClient as never);
 
     // mockAllAccounts: 4 budget accounts on_budget + not closed (checking, savings, 2 credit cards)
     expect(parsed.current_position.budget_accounts).toBe(4);

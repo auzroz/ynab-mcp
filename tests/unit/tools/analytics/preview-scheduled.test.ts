@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { handlePreviewScheduledTransaction } from '../../../../src/tools/analytics/preview-scheduled.js';
+import { handlePreviewScheduledTransaction as rawHandlePreviewScheduledTransaction, previewScheduledTransactionOutputSchema } from '../../../../src/tools/analytics/preview-scheduled.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createAccountResponse,
@@ -14,6 +15,9 @@ import {
   mockPayees,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+import { frequencies } from '../../../../src/utils/scheduled-constants.js';
+
+const handlePreviewScheduledTransaction = validating(previewScheduledTransactionOutputSchema, rawHandlePreviewScheduledTransaction);
 
 const ACCOUNT_ID = '11111111-1111-1111-1111-111111111111';
 const CATEGORY_ID = '22222222-2222-2222-2222-222222222222';
@@ -35,8 +39,7 @@ describe('handlePreviewScheduledTransaction', () => {
   });
 
   it('produces a valid monthly preview with payee_name', async () => {
-    const result = JSON.parse(
-      await handlePreviewScheduledTransaction(
+    const result = await handlePreviewScheduledTransaction(
         {
           account_id: ACCOUNT_ID,
           amount: -50,
@@ -45,8 +48,7 @@ describe('handlePreviewScheduledTransaction', () => {
           start_date: FUTURE_DATE,
         },
         mockClient as never
-      )
-    );
+      );
 
     expect(result.valid).toBe(true);
     expect(result.preview.account_name).toBe('Primary Checking');
@@ -61,8 +63,7 @@ describe('handlePreviewScheduledTransaction', () => {
   });
 
   it('computes annual cost for a yearly subscription', async () => {
-    const result = JSON.parse(
-      await handlePreviewScheduledTransaction(
+    const result = await handlePreviewScheduledTransaction(
         {
           account_id: ACCOUNT_ID,
           amount: -120,
@@ -71,8 +72,7 @@ describe('handlePreviewScheduledTransaction', () => {
           start_date: FUTURE_DATE,
         },
         mockClient as never
-      )
-    );
+      );
 
     // yearly: monthly = amount/12, annual = amount
     expect(result.estimated_costs.annual).toBe('$120.00');
@@ -80,8 +80,7 @@ describe('handlePreviewScheduledTransaction', () => {
   });
 
   it('treats "never" frequency as one-time with a single occurrence', async () => {
-    const result = JSON.parse(
-      await handlePreviewScheduledTransaction(
+    const result = await handlePreviewScheduledTransaction(
         {
           account_id: ACCOUNT_ID,
           amount: -200,
@@ -90,8 +89,7 @@ describe('handlePreviewScheduledTransaction', () => {
           start_date: FUTURE_DATE,
         },
         mockClient as never
-      )
-    );
+      );
 
     expect(result.preview.frequency_display).toBe('One-time');
     expect(result.preview.next_occurrences).toEqual([FUTURE_DATE]);
@@ -103,8 +101,7 @@ describe('handlePreviewScheduledTransaction', () => {
     mockClient.getCategoryById.mockResolvedValue(createCategoryResponse(mockBillsCategories[0]!));
     mockClient.getPayeeById.mockResolvedValue(createPayeeResponse(mockPayees[0]!));
 
-    const result = JSON.parse(
-      await handlePreviewScheduledTransaction(
+    const result = await handlePreviewScheduledTransaction(
         {
           account_id: ACCOUNT_ID,
           amount: -75,
@@ -114,8 +111,7 @@ describe('handlePreviewScheduledTransaction', () => {
           start_date: FUTURE_DATE,
         },
         mockClient as never
-      )
-    );
+      );
 
     expect(result.valid).toBe(true);
     expect(result.preview.category_name).toBe(mockBillsCategories[0]!.name);
@@ -127,8 +123,7 @@ describe('handlePreviewScheduledTransaction', () => {
   it('records a validation error when the account is not found', async () => {
     mockClient.getAccountById.mockRejectedValue(new Error('404'));
 
-    const result = JSON.parse(
-      await handlePreviewScheduledTransaction(
+    const result = await handlePreviewScheduledTransaction(
         {
           account_id: ACCOUNT_ID,
           amount: -50,
@@ -137,8 +132,7 @@ describe('handlePreviewScheduledTransaction', () => {
           start_date: FUTURE_DATE,
         },
         mockClient as never
-      )
-    );
+      );
 
     expect(result.valid).toBe(false);
     expect(result.validation_errors).toContain('Account not found');
@@ -148,8 +142,7 @@ describe('handlePreviewScheduledTransaction', () => {
     mockClient.getCategoryById.mockRejectedValue(new Error('404'));
     mockClient.getPayeeById.mockRejectedValue(new Error('404'));
 
-    const result = JSON.parse(
-      await handlePreviewScheduledTransaction(
+    const result = await handlePreviewScheduledTransaction(
         {
           account_id: ACCOUNT_ID,
           amount: -50,
@@ -159,8 +152,7 @@ describe('handlePreviewScheduledTransaction', () => {
           start_date: FUTURE_DATE,
         },
         mockClient as never
-      )
-    );
+      );
 
     expect(result.valid).toBe(false);
     expect(result.validation_errors).toContain('Category not found');
@@ -168,8 +160,7 @@ describe('handlePreviewScheduledTransaction', () => {
   });
 
   it('flags a past start_date as a date validation error', async () => {
-    const result = JSON.parse(
-      await handlePreviewScheduledTransaction(
+    const result = await handlePreviewScheduledTransaction(
         {
           account_id: ACCOUNT_ID,
           amount: -50,
@@ -178,16 +169,14 @@ describe('handlePreviewScheduledTransaction', () => {
           start_date: '2020-01-01',
         },
         mockClient as never
-      )
-    );
+      );
 
     expect(result.valid).toBe(false);
     expect(result.validation_errors).toContain('Date must be in the future');
   });
 
   it('defaults the start date based on frequency when omitted', async () => {
-    const result = JSON.parse(
-      await handlePreviewScheduledTransaction(
+    const result = await handlePreviewScheduledTransaction(
         {
           account_id: ACCOUNT_ID,
           amount: -50,
@@ -195,8 +184,7 @@ describe('handlePreviewScheduledTransaction', () => {
           payee_name: 'Netflix',
         },
         mockClient as never
-      )
-    );
+      );
 
     // monthly default = today + 1 month from 2026-06-30 => 2026-07-30
     expect(result.preview.start_date).toBe('2026-07-30');
@@ -210,5 +198,27 @@ describe('handlePreviewScheduledTransaction', () => {
         mockClient as never
       )
     ).rejects.toThrow();
+  });
+
+  it('matches its output schema with every optional payload field, for every frequency', async () => {
+    mockClient.getCategoryById.mockResolvedValue(createCategoryResponse(mockBillsCategories[0]!));
+    mockClient.getPayeeById.mockResolvedValue(createPayeeResponse(mockPayees[0]!));
+    for (const frequency of frequencies) {
+      const result = await handlePreviewScheduledTransaction(
+        {
+          account_id: ACCOUNT_ID,
+          amount: 12.345,
+          frequency,
+          payee_id: PAYEE_ID,
+          payee_name: 'Gym',
+          category_id: CATEGORY_ID,
+          memo: 'membership',
+          flag_color: 'blue',
+        },
+        mockClient as never
+      );
+      expect(result.api_payload.memo).toBe('membership');
+      expect(result.api_payload.flag_color).toBe('blue');
+    }
   });
 });

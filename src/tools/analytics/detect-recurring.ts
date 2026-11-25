@@ -13,6 +13,7 @@ import { sanitizeName } from '../../utils/sanitize.js';
 import type { ScheduledFrequency } from '../../utils/scheduled-constants.js';
 import DecimalJS from 'decimal.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
 
@@ -36,6 +37,51 @@ const inputSchema = z.object({
     .optional()
     .describe('Minimum occurrences to consider recurring (default 3)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings; nulls here are reported on purpose. */
+export const detectRecurringOutputSchema = z.object({
+  recurring_transactions: z.array(
+    z.object({
+      payee_name: z.string(),
+      category_name: z.string().nullable().describe('Category of the payee\'s first transaction; null when it has none'),
+      frequency: z.enum(['weekly', 'biweekly', 'monthly', 'quarterly', 'annual', 'irregular']),
+      average_amount: z.string(),
+      last_date: z.string(),
+      next_expected: z.string().nullable().describe('Null when neither of the next two predicted dates is in the future'),
+      occurrence_count: z.number().int(),
+      total_spent: z.string(),
+      monthly_cost: z.string(),
+      confidence: z.enum(['high', 'medium', 'low']),
+      payee_id: z.string(),
+      account_id: z.string().describe('The account most of the transactions use'),
+      category_id: z.string().nullable().describe('The category most of the transactions use; null when none has one'),
+      average_amount_milliunits: z.number().int().describe('Positive: the average outflow'),
+      suggested_frequency: z
+        .string()
+        .nullable()
+        .describe('YNAB scheduled frequency (weekly, everyOtherWeek, monthly, every3Months, yearly); null for irregular'),
+      can_convert: z.boolean(),
+      conversion_notes: z.string().nullable().describe('Null for a high-confidence pattern'),
+    })
+  ),
+  summary: z.object({
+    total_recurring_found: z.number().int(),
+    high_confidence_count: z.number().int(),
+    medium_confidence_count: z.number().int(),
+    estimated_monthly_total: z.string(),
+    analysis_period: z.string(),
+    since_date: z.string(),
+  }),
+  by_frequency: z.object({
+    weekly: z.number().int(),
+    biweekly: z.number().int(),
+    monthly: z.number().int(),
+    quarterly: z.number().int(),
+    annual: z.number().int(),
+    irregular: z.number().int(),
+  }),
+});
+export type DetectRecurringOutput = z.output<typeof detectRecurringOutputSchema>;
 
 // Tool definition
 export const detectRecurringTool: Tool = {
@@ -68,6 +114,7 @@ Analyzes transaction history to find patterns and estimates monthly costs.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(detectRecurringOutputSchema),
 };
 
 // Use shared type from scheduled-constants
@@ -101,7 +148,7 @@ interface RecurringTransaction {
 export async function handleDetectRecurring(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<DetectRecurringOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -265,29 +312,25 @@ export async function handleDetectRecurring(
   const highConfidence = recurring.filter((r) => r.confidence === 'high');
   const mediumConfidence = recurring.filter((r) => r.confidence === 'medium');
 
-  return JSON.stringify(
-    {
-      recurring_transactions: recurring,
-      summary: {
-        total_recurring_found: recurring.length,
-        high_confidence_count: highConfidence.length,
-        medium_confidence_count: mediumConfidence.length,
-        estimated_monthly_total: money(totalMonthly),
-        analysis_period: `${months} months`,
-        since_date: sinceDateStr,
-      },
-      by_frequency: {
-        weekly: recurring.filter((r) => r.frequency === 'weekly').length,
-        biweekly: recurring.filter((r) => r.frequency === 'biweekly').length,
-        monthly: recurring.filter((r) => r.frequency === 'monthly').length,
-        quarterly: recurring.filter((r) => r.frequency === 'quarterly').length,
-        annual: recurring.filter((r) => r.frequency === 'annual').length,
-        irregular: recurring.filter((r) => r.frequency === 'irregular').length,
-      },
+  return {
+    recurring_transactions: recurring,
+    summary: {
+      total_recurring_found: recurring.length,
+      high_confidence_count: highConfidence.length,
+      medium_confidence_count: mediumConfidence.length,
+      estimated_monthly_total: money(totalMonthly),
+      analysis_period: `${months} months`,
+      since_date: sinceDateStr,
     },
-    null,
-    2
-  );
+    by_frequency: {
+      weekly: recurring.filter((r) => r.frequency === 'weekly').length,
+      biweekly: recurring.filter((r) => r.frequency === 'biweekly').length,
+      monthly: recurring.filter((r) => r.frequency === 'monthly').length,
+      quarterly: recurring.filter((r) => r.frequency === 'quarterly').length,
+      annual: recurring.filter((r) => r.frequency === 'annual').length,
+      irregular: recurring.filter((r) => r.frequency === 'irregular').length,
+    },
+  };
 }
 
 function classifyFrequency(

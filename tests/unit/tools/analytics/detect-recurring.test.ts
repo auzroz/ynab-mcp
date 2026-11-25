@@ -3,9 +3,12 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleDetectRecurring } from '../../../../src/tools/analytics/detect-recurring.js';
+import { handleDetectRecurring as rawHandleDetectRecurring, detectRecurringOutputSchema } from '../../../../src/tools/analytics/detect-recurring.js';
+import { validating } from './output.js';
 import { createMockClient, createTransactionsResponse } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleDetectRecurring = validating(detectRecurringOutputSchema, rawHandleDetectRecurring);
 
 // Build a transaction object with the fields the handler reads.
 function txn(overrides: {
@@ -69,8 +72,7 @@ describe('handleDetectRecurring', () => {
       createTransactionsResponse(monthlyPattern('payee-netflix', 'Netflix', -15990, 5) as never)
     );
 
-    const result = await handleDetectRecurring({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleDetectRecurring({}, mockClient as never);
 
     expect(parsed.recurring_transactions.length).toBe(1);
     const r = parsed.recurring_transactions[0];
@@ -94,8 +96,7 @@ describe('handleDetectRecurring', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(weekly as never));
 
-    const result = await handleDetectRecurring({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleDetectRecurring({}, mockClient as never);
 
     expect(parsed.recurring_transactions.length).toBe(1);
     const r = parsed.recurring_transactions[0];
@@ -111,8 +112,7 @@ describe('handleDetectRecurring', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(few as never));
 
-    const result = await handleDetectRecurring({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleDetectRecurring({}, mockClient as never);
 
     // min_occurrences defaults to 3, so 2 transactions are skipped
     expect(parsed.recurring_transactions.length).toBe(0);
@@ -126,8 +126,7 @@ describe('handleDetectRecurring', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(two as never));
 
-    const result = await handleDetectRecurring({ min_occurrences: 2 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleDetectRecurring({ min_occurrences: 2 }, mockClient as never);
 
     expect(parsed.recurring_transactions.length).toBe(1);
     expect(parsed.recurring_transactions[0].frequency).toBe('monthly');
@@ -141,8 +140,7 @@ describe('handleDetectRecurring', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(noPayee as never));
 
-    const result = await handleDetectRecurring({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleDetectRecurring({}, mockClient as never);
 
     expect(parsed.recurring_transactions.length).toBe(0);
   });
@@ -159,8 +157,7 @@ describe('handleDetectRecurring', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mixed as never));
 
-    const result = await handleDetectRecurring({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleDetectRecurring({}, mockClient as never);
 
     // Only the real outflow subscription should be detected
     expect(parsed.recurring_transactions.length).toBe(1);
@@ -170,8 +167,7 @@ describe('handleDetectRecurring', () => {
   it('handles empty transaction list', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([] as never));
 
-    const result = await handleDetectRecurring({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleDetectRecurring({}, mockClient as never);
 
     expect(parsed.recurring_transactions).toEqual([]);
     expect(parsed.summary.total_recurring_found).toBe(0);
@@ -182,8 +178,7 @@ describe('handleDetectRecurring', () => {
       createTransactionsResponse(monthlyPattern('p1', 'P1', -1000, 4) as never)
     );
 
-    const result = await handleDetectRecurring({ months: 12 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleDetectRecurring({ months: 12 }, mockClient as never);
 
     expect(parsed.summary.analysis_period).toBe('12 months');
   });
@@ -204,8 +199,7 @@ describe('handleDetectRecurring', () => {
     ];
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(quarterly as never));
 
-    const result = await handleDetectRecurring({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleDetectRecurring({}, mockClient as never);
 
     expect(parsed.recurring_transactions.length).toBe(1);
     expect(parsed.recurring_transactions[0].frequency).toBe('quarterly');
@@ -231,7 +225,7 @@ describe('handleDetectRecurring', () => {
       ] as never)
     );
 
-    const parsed = JSON.parse(await handleDetectRecurring({ months: 12 }, mockClient as never));
+    const parsed = await handleDetectRecurring({ months: 12 }, mockClient as never);
 
     expect(parsed.recurring_transactions.map((r: { payee_name: string }) => r.payee_name)).toEqual(['Rent', 'Small']);
     expect(parsed.recurring_transactions[0].monthly_cost).toBe('1.250,00€');
