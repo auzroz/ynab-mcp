@@ -671,7 +671,9 @@ value, a payee, account, category or memo text, or an error message: those
 stay in the tool's result and in the server's sanitized logs. The server also
 writes one stderr line per write (`[AUDIT] <outcome>: <operation> on
 <resource type> (<id>) via <tool>`; a bulk call's line says `(<n> items)`),
-and one per revocation with no id (`[AUDIT] <outcome>: revoke on grant`).
+and one per revocation at the authorization server with no id (`[AUDIT]
+<outcome>: revoke on grant`); an account tool's revocation logs the write-style
+line, with the revoked grant's or client's id and the tool.
 
 Erasing an account (deleting it, or the inactive-user erase) erases its
 entries in the same transaction. A write that finishes after its account was
