@@ -20,6 +20,7 @@ vi.mock('../../../../src/auth/ynab-oauth.js', async () => {
 import * as ynabOauth from '../../../../src/auth/ynab-oauth.js';
 import type { GrantedScope, Storage } from '../../../../src/storage/types.js';
 import { createAccountStore } from '../../../../src/storage/account-store.js';
+import { AuditLog } from '../../../../src/services/audit-log.js';
 import type { AccountToolContext } from '../../../../src/tools/connections/context.js';
 import { handleListConnections } from '../../../../src/tools/connections/list-connections.js';
 import { handleRevokeConnection } from '../../../../src/tools/connections/revoke-connection.js';
@@ -102,7 +103,7 @@ for (const driver of testDrivers) {
     /** The context http.ts builds for a request on `c`. */
     function contextFor(c: Connection, afterDisconnect = vi.fn(async () => undefined)): AccountToolContext {
       return {
-        accounts: createAccountStore(storage),
+        accounts: createAccountStore(storage, new AuditLog(storage, { userId: c.userId })),
         userId: c.userId,
         currentFamilyId: c.grantId,
         grantScope: c.scope,
@@ -196,7 +197,7 @@ for (const driver of testDrivers) {
       it('refuses a malformed family_id before reading storage', async () => {
         const a = await connect('u1', 'read-write', 'App');
         const revoke = vi.fn(async () => true);
-        const ctx = { ...contextFor(a), accounts: { ...createAccountStore(storage), revokeUserFamily: revoke } };
+        const ctx = { ...contextFor(a), accounts: { ...createAccountStore(storage, new AuditLog(storage, { userId: a.userId })), revokeUserFamily: revoke } };
         for (const family_id of ['', 'x', 'A'.repeat(44), `${'A'.repeat(42)}!`, "' OR 1=1 --", 42, undefined]) {
           const res = await outcome(handleRevokeConnection({ family_id }, ctx));
           expect(res.ok, String(family_id)).toBe(false);

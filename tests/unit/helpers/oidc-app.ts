@@ -20,6 +20,7 @@ import { expect } from 'vitest';
 import type { OAuthRowRecord, Storage } from '../../../src/storage/types.js';
 import type { DriverHandle } from './storage-drivers.js';
 import type { RetentionPolicy } from '../../../src/auth/retention-defaults.js';
+import type { RevocationRecorder } from '../../../src/auth/revocation-audit.js';
 import { createOidcProvider, asLibraryHandler, type OidcProvider } from '../../../src/auth/oidc/provider.js';
 import { interactionRouter, type InteractionStore } from '../../../src/auth/oidc/interaction.js';
 import { createAccessTokenVerifier } from '../../../src/auth/oidc/verifier.js';
@@ -59,6 +60,8 @@ export interface OidcTestAppOptions {
   clientIdMetadata?: ClientIdMetadataDocuments;
   /** Retention windows the provider is built with (#54b). */
   retention?: Partial<RetentionPolicy>;
+  /** #60b: where the provider records revocations; none when absent. */
+  revocations?: RevocationRecorder;
 }
 
 /** The paths D8 mounts the library on (`as-library`). */
@@ -83,7 +86,9 @@ export function buildOidcTestApp(storage: Storage, options: OidcTestAppOptions =
     authCodeTtlSec: options.authCodeTtlSec ?? 600,
     clientIdMetadata: options.clientIdMetadata,
     retention: options.retention,
+    revocations: options.revocations,
   });
+
   const encryptor = options.encryptor ?? new Encryptor(encryptionKey);
   const app = express();
   app.set('trust proxy', options.trustProxy ?? 0);

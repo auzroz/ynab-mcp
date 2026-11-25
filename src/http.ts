@@ -575,7 +575,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
       const setup: AccountToolSetup = {
         // The account tools' only handle on storage, scoped to the user each
         // call names, opened on the request's audit log (#60b records revocations).
-        openAccounts: (_auditLog) => createAccountStore(accountStorage),
+        openAccounts: (auditLog) => createAccountStore(accountStorage, auditLog),
         userId: userKey,
         currentFamilyId: familyId,
         grantScope: resolved.access.grantScope,

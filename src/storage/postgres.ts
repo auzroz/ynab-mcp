@@ -35,6 +35,7 @@ import type {
   StagedSignIn,
   CodeSaveOutcome,
   ConsumeOutcome,
+  ReplayedGrant,
   KeyCheckOutcome,
   KeyFloors,
   StoredUserCiphertext,
@@ -57,7 +58,9 @@ import { resolveStorageTimeouts } from './timeouts.js';
 import {
   auditCountSql,
   auditInsert,
+  auditInsertMany,
   auditListSql,
+  runAuditPrune,
   auditRecordFromRow,
   type AuditGuard,
   type AuditQuery,
@@ -67,7 +70,7 @@ import {
 import { applyMigrations, MIGRATION_PLAN, type MigrationDeps, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
-import { retentionPolicy, type RetentionPolicy } from '../auth/retention-defaults.js';
+import { retentionPolicy, SWEEP_BATCH_SIZE, type RetentionPolicy } from '../auth/retention-defaults.js';
 import {
   CONSUMABLE_MODELS,
   GRANT_TOKEN_MODELS,
@@ -992,6 +995,22 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     return ((await this.db.query(sql, params)).rowCount ?? 0) === 1;
   }
 
+  async appendAuditEntries(entries: readonly AuditRecord[], guard?: AuditGuard): Promise<boolean> {
+    // One statement: the guard (FOR KEY SHARE of the user row) and every row, so a batch lands whole or not at all.
+    const { sql, params } = auditInsertMany('postgres', entries, guard);
+    return ((await this.db.query(sql, params)).rowCount ?? 0) === entries.length;
+  }
+
+  async pruneAuditLog(options: SweepOptions = {}): Promise<number> {
+    return runAuditPrune(
+      async (sql, params) => (await this.db.query(sql, [...params])).rowCount ?? 0,
+      'postgres',
+      (options.now ?? Date.now()) - this.retention.auditRetentionMs,
+      options.batchSize ?? SWEEP_BATCH_SIZE
+    );
+  }
+
+
   async listAuditEntries(userId: string, query: AuditQuery, limit: number): Promise<AuditRecord[]> {
     const { sql, params } = auditListSql('postgres', userId, query, limit);
     return (await this.db.query<AuditRow & QueryResultRow>(sql, params)).rows.map(auditRecordFromRow);
@@ -1252,8 +1271,10 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     return row && oauthRowFromRow(row);
   }
 
-  async consumeOAuthRow(key: string): Promise<ConsumeOutcome> {
-    return this.inTransaction<ConsumeOutcome>(async (client) => {
+  async consumeOAuthRow(key: string, onReplay?: (grant: ReplayedGrant) => void): Promise<ConsumeOutcome> {
+    let replayed: ReplayedGrant | undefined;
+    const outcome = await this.inTransaction<ConsumeOutcome>(async (client) => {
+      replayed = undefined;
       // Compare-and-set: under READ COMMITTED a concurrent second UPDATE waits
       // for this row's lock, rechecks consumed_at IS NULL against the committed
       // version and matches nothing.
@@ -1263,10 +1284,12 @@ export class PostgresStorage implements Storage, OAuthRowStore {
         [key, Date.now()]
       );
       if (won.rowCount === 1) return 'consumed';
-      const found = await client.query<{ model: OAuthModel; grant_id: string | null }>(
-        'SELECT model, grant_id FROM oauth_rows WHERE key = $1',
-        [key]
-      );
+      const found = await client.query<{
+        model: OAuthModel;
+        grant_id: string | null;
+        account_id: string | null;
+        client_id: string | null;
+      }>('SELECT model, grant_id, account_id, client_id FROM oauth_rows WHERE key = $1', [key]);
       const row = found.rows[0];
       if (!row) return 'missing';
       if (!CONSUMABLE_MODELS.has(row.model)) throw new Error(`consumeOAuthRow cannot consume a ${row.model} row`);
@@ -1275,11 +1298,19 @@ export class PostgresStorage implements Storage, OAuthRowStore {
         await client.query('DELETE FROM oauth_rows WHERE key = $1', [key]);
       } else {
         await client.query(LOCK_FAMILY, [row.grant_id]);
-        await client.query('DELETE FROM oauth_rows WHERE grant_id = $1', [row.grant_id]);
+        // A second loser (another replica) waited on the lock and deletes nothing: it reports nothing.
+        const deleted = await client.query('DELETE FROM oauth_rows WHERE grant_id = $1', [row.grant_id]);
+        if ((deleted.rowCount ?? 0) > 0) {
+          replayed = { grantId: row.grant_id, accountId: row.account_id ?? undefined, clientId: row.client_id ?? undefined };
+        }
       }
       return 'replayed';
     });
+    // After the commit: the report is of a revocation that happened.
+    if (replayed !== undefined) onReplay?.(replayed);
+    return outcome;
   }
+
 
   async destroyOAuthRow(key: string): Promise<boolean> {
     // One statement: the row and, when it is a client, its registration access

@@ -1756,6 +1756,7 @@
         "total_operations": 0,
         "success_count": 0,
         "failure_count": 0,
+        "revocation_count": 0,
         "by_outcome": {}
       },
       "message": "No matching audit log entries found"

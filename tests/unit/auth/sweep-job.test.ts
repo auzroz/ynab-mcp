@@ -26,9 +26,13 @@ afterEach(() => {
 const SECRET = 'sentinel-refresh-token-0123456789abcdef';
 const PATH_LEAK = '/private/var/db/ynab/secret.sqlite';
 
-function storageWith(sweepExpired: () => Promise<SweepResult>): { storage: Storage; sweepExpired: ReturnType<typeof vi.fn> } {
+function storageWith(
+  sweepExpired: () => Promise<SweepResult>,
+  pruneAuditLog: () => Promise<number> = async () => 0
+): { storage: Storage; sweepExpired: ReturnType<typeof vi.fn>; pruneAuditLog: ReturnType<typeof vi.fn> } {
   const fn = vi.fn(sweepExpired);
-  return { storage: { sweepExpired: fn } as unknown as Storage, sweepExpired: fn };
+  const prune = vi.fn(pruneAuditLog);
+  return { storage: { sweepExpired: fn, pruneAuditLog: prune } as unknown as Storage, sweepExpired: fn, pruneAuditLog: prune };
 }
 
 const ranWith = (deleted: Partial<ReturnType<typeof emptySweepCounts>>): SweepResult => ({
@@ -71,7 +75,40 @@ describe('one pass', () => {
     expect(logged).not.toContain('hunter2');
   });
 
-  it('runs extra steps after the sweep (the seam #60b appends to)', async () => {
+  it('then prunes the audit log (#60b), logging its count, also when the sweep failed', async () => {
+    const { storage, pruneAuditLog } = storageWith(
+      async () => {
+        throw new Error('sweep failed');
+      },
+      async () => 7
+    );
+    const log = vi.fn();
+    expect(SWEEP_STEPS.map((s) => s.name)).toEqual(['expired-rows', 'audit-log']);
+    const result = await runSweepPass(storage, { log });
+    expect(pruneAuditLog).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ deleted: 7, failed: 1 });
+    expect(log.mock.calls.map((c) => String(c[0]))).toContain('[Sweep] audit-log: deleted auditRows=7');
+  });
+
+  it('a failed prune is logged sanitized and counted; the sweep before it still ran', async () => {
+    const { storage, sweepExpired } = storageWith(
+      async () => ranWith({ accessTokens: 1 }),
+      async () => {
+        throw new Error(`prune failed at ${PATH_LEAK}: Bearer ${SECRET}`);
+      }
+    );
+    const log = vi.fn();
+    const result = await runSweepPass(storage, { log });
+    expect(sweepExpired).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ deleted: 1, failed: 1 });
+    const logged = log.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('audit-log failed');
+    expect(logged).not.toContain(SECRET);
+    expect(logged).not.toContain(PATH_LEAK);
+  });
+
+  it('runs extra steps in order', async () => {
+
     const { storage } = storageWith(async () => ranWith({}));
     const order: string[] = [];
     const steps: SweepStep[] = [

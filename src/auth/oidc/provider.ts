@@ -107,6 +107,7 @@ import { retentionPolicy, YNAB_CALLBACK_DEADLINE_MS, type RetentionPolicy } from
 import { sanitizeErrorMessage } from '../../utils/sanitize.js';
 import { MAX_DOCUMENT_BYTES, refuseFetch, type ClientIdMetadataDocuments } from '../client-id-metadata.js';
 import { createOidcAdapter } from './adapter.js';
+import { GrantRevocationTracker, onGrantRevoked, type RevocationRecorder } from '../revocation-audit.js';
 import { routePath } from './route-path.js';
 import { CLIENT_SCHEMA_CONFIGURATION, ephemeralSigningKeys } from './client-schema.js';
 
@@ -168,6 +169,8 @@ export interface OidcProviderOptions {
   now?: (() => number) | undefined;
   /** Client ID Metadata Documents (#46): the feature's hooks; absent, the feature is off. */
   clientIdMetadata?: ClientIdMetadataDocuments | undefined;
+  /** #60b: records revocations in the audit log (src/auth/revocation-audit.ts); absent, none are. */
+  revocations?: RevocationRecorder | undefined;
 }
 
 export interface OidcProvider {
@@ -334,13 +337,24 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
     accessTokenTTL: accessTokenTtlSec,
   };
 
+  // #60b: the adapter marks a grant its call deleted; the grant.revoked listener records marked ones.
+  const tracker = new GrantRevocationTracker();
+  const revocations = options.revocations === undefined ? undefined : { tracker, recorder: options.revocations };
+
   const configuration: Configuration = {
     ...CLIENT_SCHEMA_CONFIGURATION,
     adapter: createOidcAdapter({
       store: options.store,
       keys: options.keys,
       ...(options.now !== undefined ? { now: options.now } : {}),
+      ...(revocations !== undefined ? { revocations } : {}),
     }),
+    // Every revocation ends the whole grant: the adapter's revokeByGrantId
+    // already deletes the Grant row too (adapter.ts), so this changes no
+    // outcome. It makes the library emit `grant.revoked` for an access
+    // token's revocation at /revoke as well, which #60b's audit row needs
+    // (the library's default skips the event there).
+    revokeGrantPolicy: () => true,
     jwks: ephemeralSigningKeys(),
     routes: { ...OIDC_ROUTES },
     // OIDC's own scope only (resource scopes come from the resource server); D7 drops it from requests.
@@ -424,6 +438,9 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
   provider.on('server_error', (_ctx: unknown, err: unknown) => {
     console.error('[OAuth] Authorization server error:', sanitizeErrorMessage(err));
   });
+  // #60b: a revocation (/revoke, or the library's reuse check on /token) as one audit row.
+  if (revocations !== undefined) provider.on('grant.revoked', onGrantRevoked(tracker, revocations.recorder));
+
   return { provider, issuer, resource };
 }
 

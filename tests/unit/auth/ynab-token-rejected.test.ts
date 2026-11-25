@@ -122,6 +122,8 @@ for (const driver of testDrivers) {
         expect(value).not.toContain('rt-secret-value');
         expect(value).not.toContain(rw);
       }
+      // #60b: the marker is not a revocation of an MCP grant, so the audit log has no row for it.
+      expect(await h.storage.listAuditEntries('u1', {}, 10)).toEqual([]);
     });
 
     it.each([

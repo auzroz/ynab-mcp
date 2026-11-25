@@ -35,6 +35,7 @@ import type {
   StagedSignIn,
   CodeSaveOutcome,
   ConsumeOutcome,
+  ReplayedGrant,
   KeyCheckOutcome,
   KeyFloors,
   StoredUserCiphertext,
@@ -57,7 +58,9 @@ import { resolveStorageTimeouts } from './timeouts.js';
 import {
   auditCountSql,
   auditInsert,
+  auditInsertMany,
   auditListSql,
+  runAuditPrune,
   auditRecordFromRow,
   type AuditGuard,
   type AuditQuery,
@@ -67,7 +70,7 @@ import {
 import { applyMigrations, MIGRATION_PLAN, type MigrationDeps, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
-import { retentionPolicy, type RetentionPolicy } from '../auth/retention-defaults.js';
+import { retentionPolicy, SWEEP_BATCH_SIZE, type RetentionPolicy } from '../auth/retention-defaults.js';
 import {
   CONSUMABLE_MODELS,
   GRANT_TOKEN_MODELS,
@@ -818,6 +821,23 @@ export class SqliteStorage implements Storage, OAuthRowStore {
     return this.database.prepare(toPositional(sql)).run(...params).changes === 1;
   }
 
+  async appendAuditEntries(entries: readonly AuditRecord[], guard?: AuditGuard): Promise<boolean> {
+    // One statement: the guard and every row, so a batch lands whole or not at all.
+    const { sql, params } = auditInsertMany('sqlite', entries, guard);
+    return this.database.prepare(toPositional(sql)).run(...params).changes === entries.length;
+  }
+
+  async pruneAuditLog(options: SweepOptions = {}): Promise<number> {
+    const db = this.database;
+    return runAuditPrune(
+      async (sql, params) => db.prepare(toPositional(sql)).run(...params).changes,
+      'sqlite',
+      (options.now ?? Date.now()) - this.retention.auditRetentionMs,
+      options.batchSize ?? SWEEP_BATCH_SIZE
+    );
+  }
+
+
   async listAuditEntries(userId: string, query: AuditQuery, limit: number): Promise<AuditRecord[]> {
     const { sql, params } = auditListSql('sqlite', userId, query, limit);
     return (this.database.prepare(toPositional(sql)).all(...params) as AuditRow[]).map(auditRecordFromRow);
@@ -1075,9 +1095,10 @@ export class SqliteStorage implements Storage, OAuthRowStore {
     return row && oauthRowFromRow(row);
   }
 
-  async consumeOAuthRow(key: string): Promise<ConsumeOutcome> {
+  async consumeOAuthRow(key: string, onReplay?: (grant: ReplayedGrant) => void): Promise<ConsumeOutcome> {
     const now = Date.now();
-    return this.database
+    let replayed: ReplayedGrant | undefined;
+    const outcome = this.database
       .transaction((): ConsumeOutcome => {
         const db = this.database;
         const won = db
@@ -1087,18 +1108,25 @@ export class SqliteStorage implements Storage, OAuthRowStore {
           )
           .run(now, key);
         if (won.changes === 1) return 'consumed';
-        const row = db.prepare('SELECT model, grant_id FROM oauth_rows WHERE key = ?').get(key) as
-          | { model: OAuthModel; grant_id: string | null }
+        const row = db.prepare('SELECT model, grant_id, account_id, client_id FROM oauth_rows WHERE key = ?').get(key) as
+          | { model: OAuthModel; grant_id: string | null; account_id: string | null; client_id: string | null }
           | undefined;
         if (!row) return 'missing';
         if (!CONSUMABLE_MODELS.has(row.model)) throw new Error(`consumeOAuthRow cannot consume a ${row.model} row`);
         // Lost the compare-and-set: someone consumed it first. That is reuse.
-        if (row.grant_id !== null) db.prepare('DELETE FROM oauth_rows WHERE grant_id = ?').run(row.grant_id);
-        else db.prepare('DELETE FROM oauth_rows WHERE key = ?').run(key);
+        if (row.grant_id !== null) {
+          if (db.prepare('DELETE FROM oauth_rows WHERE grant_id = ?').run(row.grant_id).changes > 0) {
+            replayed = { grantId: row.grant_id, accountId: row.account_id ?? undefined, clientId: row.client_id ?? undefined };
+          }
+        } else db.prepare('DELETE FROM oauth_rows WHERE key = ?').run(key);
         return 'replayed';
       })
       .immediate();
+    // After the commit: the report is of a revocation that happened.
+    if (replayed !== undefined) onReplay?.(replayed);
+    return outcome;
   }
+
 
   async destroyOAuthRow(key: string): Promise<boolean> {
     return this.database

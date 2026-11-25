@@ -67,6 +67,8 @@ import { retentionPolicyFromSettings } from '../config/http/retention.js';
 import { authorizeValidation } from './authorize-validation.js';
 import { authorizeGuard, authorizeRedirectGuard } from './authorize-guard.js';
 import { grantGuard } from './grant-guard.js';
+import { createRevocationRecorder } from './revocation-audit.js';
+
 import { resourceCheck } from './resource-required.js';
 import { refreshGraceRecorder, refreshGuard, successorFirstUse } from './refresh-grace.js';
 import { methodCheck } from './method-check.js';
@@ -253,7 +255,10 @@ export function mountAuthorizationServer(
       })
     : undefined;
 
+  // #60b: each revocation of an MCP grant is one audit row (src/auth/revocation-audit.ts).
+  const revocations = createRevocationRecorder(storage);
   const oidc = createOidcProvider({
+    revocations,
     store: storage,
     keys: tokenHasher,
     publicUrl,
@@ -474,7 +479,7 @@ export function mountAuthorizationServer(
         clientAuth(),
         // #64a: an identical retry of a refresh inside 60 s gets its unused successor pair again.
         stage('refresh-guard', refreshGuard({ store: storage, keys: tokenHasher, resource })),
-        stage('grant-guard', grantGuard({ provider, store: storage })),
+        stage('grant-guard', grantGuard({ provider, store: storage, revocations })),
         // #64a: a resource that is sent must be the grant's, refused before anything is spent
         // (after grant-guard, so a replay still revokes). A missing one gets the grant's.
         stage('resource-check', resourceCheck({ resource })),

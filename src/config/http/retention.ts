@@ -1,7 +1,10 @@
 /**
  * Retention windows of MCP grants and registrations (#54b):
  * `MCP_REFRESH_TOKEN_IDLE_DAYS`, `MCP_REFRESH_TOKEN_TTL_DAYS`,
- * `MCP_ABANDONED_CLIENT_HOURS` and `MCP_UNUSED_CLIENT_DAYS`.
+ * `MCP_ABANDONED_CLIENT_HOURS` and `MCP_UNUSED_CLIENT_DAYS`; and the audit
+ * log's (#60b), `AUDIT_RETENTION_DAYS`. 0 is refused, as for every window
+ * here: there is no "keep nothing" setting, and the upper bound (ten years)
+ * stands in for "keep forever".
  *
  * Unset or empty keeps the maintainer-approved default (src/auth/retention-defaults.ts).
  * Each is a whole number within its bounds (days up to {@link MAX_RETENTION_DAYS}); anything
@@ -13,6 +16,7 @@
 import { parseBoundedInteger } from '../parse.js';
 import {
   ABANDONED_CLIENT_HOURS,
+  AUDIT_RETENTION_DAYS,
   MIN_ABANDONED_CLIENT_MS,
   REFRESH_TOKEN_IDLE_DAYS,
   REFRESH_TOKEN_TTL_DAYS,
@@ -37,6 +41,8 @@ export interface RetentionSettings {
   abandonedClientHours: number;
   /** `MCP_UNUSED_CLIENT_DAYS` (1-3650, default 90). */
   unusedClientDays: number;
+  /** `AUDIT_RETENTION_DAYS` (1-3650, default 90): audit log rows older than this are pruned by the sweep. */
+  auditRetentionDays: number;
 }
 
 export const loadRetentionSettings: HttpLoader<RetentionSettings> = ({ env, problems }) => {
@@ -47,6 +53,12 @@ export const loadRetentionSettings: HttpLoader<RetentionSettings> = ({ env, prob
     refreshTokenTtlDays: read('MCP_REFRESH_TOKEN_TTL_DAYS', REFRESH_TOKEN_TTL_DAYS, 1, MAX_RETENTION_DAYS),
     abandonedClientHours: read('MCP_ABANDONED_CLIENT_HOURS', ABANDONED_CLIENT_HOURS, MIN_ABANDONED_CLIENT_HOURS, MAX_ABANDONED_CLIENT_HOURS),
     unusedClientDays: read('MCP_UNUSED_CLIENT_DAYS', UNUSED_CLIENT_DAYS, 1, MAX_RETENTION_DAYS),
+    // Read by its literal name, so the docs check (tests/unit/site.test.ts) finds it: it is on install.html.
+    auditRetentionDays: problems.capture(
+      'AUDIT_RETENTION_DAYS',
+      () => parseBoundedInteger(env['AUDIT_RETENTION_DAYS'], AUDIT_RETENTION_DAYS, 'AUDIT_RETENTION_DAYS', 1, MAX_RETENTION_DAYS),
+      AUDIT_RETENTION_DAYS
+    ),
   };
 };
 
@@ -58,5 +70,7 @@ export function retentionPolicyFromSettings(settings: RetentionSettings): Retent
     refreshTokenTtlMs: settings.refreshTokenTtlDays * DAY,
     abandonedClientMs: settings.abandonedClientHours * 3_600_000,
     unusedClientMs: settings.unusedClientDays * DAY,
+    auditRetentionMs: settings.auditRetentionDays * DAY,
+
   });
 }

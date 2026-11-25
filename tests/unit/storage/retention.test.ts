@@ -17,6 +17,7 @@ import type {
   StorageDriverOptions,
 } from '../../../src/storage/types.js';
 import { createAccountStore } from '../../../src/storage/account-store.js';
+import { AuditLog } from '../../../src/services/audit-log.js';
 import {
   ADDED_COLUMNS,
   ADDED_INDEXES,
@@ -473,7 +474,7 @@ for (const driver of testDrivers) {
       it('the AccountStore exposes only the user-scoped methods', async () => {
         await seedUser(s, 'u');
         const g = await grant(s, 'u', 'c');
-        const account = createAccountStore(s);
+        const account = createAccountStore(s, new AuditLog(s, { userId: 'u' }));
         expect(Object.keys(account).sort()).toEqual([
           'deleteTokenFamiliesForClient',
           'deleteUserData',
@@ -656,6 +657,7 @@ describe('retentionPolicy', () => {
       refreshTokenTtlMs: 90 * DAY,
       abandonedClientMs: DAY,
       unusedClientMs: 90 * DAY,
+      auditRetentionMs: 90 * DAY,
     });
   });
 
