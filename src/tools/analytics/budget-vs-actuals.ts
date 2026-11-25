@@ -13,6 +13,7 @@ import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { indexCategoryGroups } from '../../utils/categories.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -70,9 +71,9 @@ export const budgetVsActualsOutputSchema = z.object({
           budgeted: z.string(),
           activity: z.string(),
           available: z.string(),
-          budgeted_raw: z.number().int(),
+          budgeted_raw: fromYnab(z.number().int()),
           activity_raw: z.number().int(),
-          available_raw: z.number().int(),
+          available_raw: fromYnab(z.number().int()),
           variance: z.string(),
           variance_percent: z.number().int().nullable().describe('Null when nothing is budgeted'),
           status: z.enum(['on_track', 'warning', 'overspent', 'underspent']),

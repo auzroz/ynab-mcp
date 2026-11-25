@@ -87,8 +87,10 @@ describe('fromYnab fields: advertised optional and nullable, closed required (ru
     expect([...SCHEMAS.keys()].sort()).toEqual(schemaTools.sort());
   });
 
-  it('core tools mark their verbatim YNAB fields', () => {
+  it('core and analytics tools mark their verbatim YNAB fields', () => {
     expect(markedPaths(SCHEMAS.get('ynab_get_transaction')!)).toContain('$.transaction.date');
+    expect(markedPaths(SCHEMAS.get('ynab_transaction_search')!)).toContain('$.transactions[].date');
+    expect(markedPaths(SCHEMAS.get('ynab_detect_recurring')!).size).toBe(2);
     const marked = [...SCHEMAS.values()].reduce((n, s) => n + markedPaths(s).size, 0);
     expect(marked).toBeGreaterThan(50);
   });

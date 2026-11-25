@@ -11,6 +11,7 @@ import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -41,7 +42,7 @@ export const netWorthOutputSchema = z.object({
     z.object({
       type: z.string().describe('YNAB account type, such as checking or creditCard'),
       total: z.string(),
-      accounts: z.array(z.object({ name: z.string(), balance: z.string(), on_budget: z.boolean() })),
+      accounts: z.array(z.object({ name: z.string(), balance: z.string(), on_budget: fromYnab(z.boolean()) })),
     })
   ),
   account_count: z.object({

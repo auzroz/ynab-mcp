@@ -12,6 +12,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -48,7 +49,7 @@ export const reconciliationHelperOutputSchema = z.object({
         transactions: z
           .array(
             z.object({
-              date: z.string(),
+              date: fromYnab(z.string()),
               payee: z.string(),
               category: z.string().nullable().describe('Null when uncategorized or the category is unknown'),
               amount: z.string(),

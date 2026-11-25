@@ -14,6 +14,7 @@ import type { ScheduledFrequency } from '../../utils/scheduled-constants.js';
 import DecimalJS from 'decimal.js';
 import { budgetId } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
 
@@ -46,14 +47,14 @@ export const detectRecurringOutputSchema = z.object({
       category_name: z.string().nullable().describe('Category of the payee\'s first transaction; null when it has none'),
       frequency: z.enum(['weekly', 'biweekly', 'monthly', 'quarterly', 'annual', 'irregular']),
       average_amount: z.string(),
-      last_date: z.string(),
+      last_date: fromYnab(z.string()),
       next_expected: z.string().nullable().describe('Null when neither of the next two predicted dates is in the future'),
       occurrence_count: z.number().int(),
       total_spent: z.string(),
       monthly_cost: z.string(),
       confidence: z.enum(['high', 'medium', 'low']),
       payee_id: z.string(),
-      account_id: z.string().describe('The account most of the transactions use'),
+      account_id: fromYnab(z.string().describe('The account most of the transactions use')),
       category_id: z.string().nullable().describe('The category most of the transactions use; null when none has one'),
       average_amount_milliunits: z.number().int().describe('Positive: the average outflow'),
       suggested_frequency: z
