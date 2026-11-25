@@ -30,18 +30,39 @@ function tsFilesUnder(dir: string): string[] {
  * Environment variables the server reads: everything under src/config (at any
  * depth) plus the entry points that hold the transport switch (src/index.ts,
  * and src/entry.ts once it exists). Matches process.env['X'], process.env["X"]
- * and process.env.X.
+ * and process.env.X. With `withLiterals`, also every setting name a config
+ * file spells as a string (see settingLiteralsIn): for "install.html
+ * documents every setting", which must see a variable read through a helper.
+ * The "is read by the server" checks use the env reads alone, so a name that
+ * is only a label never counts as read.
  */
-function configEnvVars(): Set<string> {
+function configEnvVars({ withLiterals = false }: { withLiterals?: boolean } = {}): Set<string> {
   const files = [
     ...tsFilesUnder(join(root, 'src/config')),
     ...['src/index.ts', 'src/entry.ts'].map((f) => join(root, f)).filter((f) => existsSync(f)),
   ];
   const names = new Set<string>();
   for (const file of files) {
-    for (const name of envReadsIn(readFileSync(file, 'utf8'))) names.add(name);
+    const source = readFileSync(file, 'utf8');
+    for (const name of [...envReadsIn(source), ...(withLiterals ? settingLiteralsIn(source) : [])]) names.add(name);
   }
   return names;
+}
+
+/** Upper-snake string literals in src/config that name no setting (labels for config problems). */
+const NOT_SETTINGS = new Set(['OAUTH_VARIABLES']);
+
+/**
+ * Setting names a config file spells out as a whole string literal, such as
+ * `read('MCP_UNUSED_CLIENT_DAYS', ...)` or `problems.capture('PORT', ...)`.
+ * This catches a variable read through a helper (`env[name]`), which
+ * envReadsIn cannot see. Labels that aren't settings are listed in
+ * {@link NOT_SETTINGS}.
+ */
+function settingLiteralsIn(source: string): string[] {
+  return [...source.matchAll(/(['"])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\1/g)]
+    .map((m) => m[2] as string)
+    .filter((n) => !NOT_SETTINGS.has(n));
 }
 
 /** Names read from process.env in a source text, in any of the three access forms. */
@@ -92,6 +113,15 @@ describe('site content matches the code', () => {
     expect(configEnvVars()).toContain('MCP_TRANSPORT');
   });
 
+  it('finds setting names read through a helper', () => {
+    expect(
+      settingLiteralsIn(
+        `read('MCP_A_DAYS', 30, 1, 3650); problems.capture("B_C", f); problems.add('OAUTH_VARIABLES', m); 'A_B=1 is refused'; 'lower_case'`
+      )
+    ).toEqual(['MCP_A_DAYS', 'B_C']);
+    expect(configEnvVars({ withLiterals: true })).toContain('MCP_UNUSED_CLIENT_DAYS');
+  });
+
   it('has the expected pages', () => {
     expect(pages.sort()).toEqual(
       ['examples.html', 'index.html', 'install.html', 'security.html', 'self-hosting.html', 'tools.html'].sort()
@@ -137,7 +167,7 @@ describe('site content matches the code', () => {
 
   it('install.html documents every environment variable in src/config', () => {
     const named = envNamesOn(read('install.html'));
-    expect([...configEnvVars()].filter((n) => !named.has(n))).toEqual([]);
+    expect([...configEnvVars({ withLiterals: true })].filter((n) => !named.has(n))).toEqual([]);
   });
 
   it('every environment variable named on any page is read by the server', () => {

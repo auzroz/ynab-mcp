@@ -14,6 +14,7 @@ vi.mock('../../src/server.js', () => ({
 vi.mock('@modelcontextprotocol/server/stdio', () => ({ serveStdio }));
 
 import { main, proxyWarnings, resolveTransport, shutdownWithDeadline, SHUTDOWN_DEADLINE_MS } from '../../src/entry.js';
+import { getLogLevel, setLogLevel } from '../../src/utils/log.js';
 
 describe('resolveTransport', () => {
   it('defaults to stdio when unset or empty', () => {
@@ -87,6 +88,30 @@ describe('main', () => {
     vi.restoreAllMocks();
     startHttpServer.mockReset();
     serveStdio.mockClear();
+    setLogLevel('info');
+  });
+
+  it('applies LOG_LEVEL in both modes, before the startup lines', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    startHttpServer.mockResolvedValue({ close: vi.fn() });
+    await main({ MCP_TRANSPORT: 'http', AUTH_MODE: 'header', LOG_LEVEL: 'DEBUG' });
+    expect(getLogLevel()).toBe('debug');
+
+    const prior = { token: process.env['YNAB_ACCESS_TOKEN'], level: process.env['LOG_LEVEL'] };
+    process.env['YNAB_ACCESS_TOKEN'] = 'dummy-token';
+    process.env['LOG_LEVEL'] = 'Warn';
+    try {
+      errorSpy.mockClear();
+      await main({});
+      expect(getLogLevel()).toBe('warn');
+      // The informational started line is hidden at warn.
+      expect(errorSpy.mock.calls.flat().map(String).join('\n')).not.toContain('YNAB MCP Server started');
+    } finally {
+      for (const [key, value] of [['YNAB_ACCESS_TOKEN', prior.token], ['LOG_LEVEL', prior.level]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it('refuses an unknown MCP_TRANSPORT before starting anything', async () => {

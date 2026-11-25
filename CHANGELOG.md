@@ -568,6 +568,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed or late sign-in no longer replaces the user's stored YNAB refresh
   token, and the retention sweep can no longer remove the client between the
   callback's last check and the code being saved.
+- `LOG_LEVEL` now does something, in both modes (#56). It was parsed but
+  never applied. `warn` and `error` hide the informational startup and
+  shutdown lines; warnings, errors, the write-policy line and audit lines are
+  always logged. Both modes accept the value in any case and treat an empty
+  value as `info`; before, stdio refused `LOG_LEVEL=DEBUG` and
+  `LOG_LEVEL=`, which HTTP mode accepted.
 
 ## [0.4.3] - 2026-11-23
 

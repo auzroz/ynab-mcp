@@ -25,6 +25,7 @@
 import type { Storage } from '../storage/types.js';
 import type { JobExtension, JobHandle } from '../http/extensions.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
+import { logInfo } from '../utils/log.js';
 
 const DAY_MS = 24 * 3_600_000;
 
@@ -130,7 +131,7 @@ export const inactiveUserJob: JobExtension = {
   start(ctx) {
     const days = ctx.config.inactiveUserDays;
     if (!ctx.storage || days === undefined) return undefined;
-    console.error(`[InactiveUsers] erasing users not seen for ${days} days and with no live grant`);
+    logInfo(`[InactiveUsers] erasing users not seen for ${days} days and with no live grant`);
     return startInactiveUserJob(ctx.storage, days);
   },
 };
