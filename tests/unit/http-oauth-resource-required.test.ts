@@ -179,6 +179,31 @@ describe('a client registered on 0.5.0 (MCP_REQUIRE_RESOURCE on, the default)', 
     expect((await mcpInitialize(on, bearer(ok.body.access_token as string))).status).toBe(200);
   });
 
+  it('the code exchange with a non-string resource member: invalid_target, and the code is not spent', async () => {
+    const on = await app();
+    const { clientId } = await registerClient(on);
+    const { verifier, challenge } = pkcePair();
+    const flow = await browserFlow(on, new CookieJar(), { clientId, challenge });
+    const code = flow.params.get('code') as string;
+    // /token parses JSON too, so a list can carry a member that isn't a string.
+    const refused = await request(on)
+      .post('/token')
+      .type('json')
+      .send({
+        grant_type: 'authorization_code',
+        code,
+        code_verifier: verifier,
+        redirect_uri: REDIRECT_URI,
+        client_id: clientId,
+        resource: [RESOURCE, 5],
+      });
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual(FOREIGN);
+    expect(refused.text).not.toContain(code);
+    const ok = await exchangeCode(on, { clientId, code, verifier });
+    expect(ok.status).toBe(200);
+  });
+
   it('a refresh with a foreign resource: invalid_target, and the refresh token is not spent', async () => {
     const on = await app();
     const { clientId } = await registerClient(on);

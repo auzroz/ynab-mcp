@@ -41,6 +41,7 @@
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import { z } from 'zod';
 import { InvalidTargetError, sendOAuthError } from './errors.js';
 import { isSameResource } from './resource.js';
 
@@ -68,10 +69,23 @@ export function clientMustSendResource(clientId: string, requireResource: boolea
   return requireResource && !registeredBefore050(clientId);
 }
 
+/** One `resource` value that counts as sent. */
+const NON_EMPTY_RESOURCE = z.string().min(1);
+
+/**
+ * An `/authorize` `resource` parameter that carries at least one value: a
+ * non-empty string, or a list (a repeated parameter) with at least one. Other
+ * members of a list don't make it missing; whether each value is this
+ * server's is authorize-guard's check, not this one's.
+ */
+const AUTHORIZE_RESOURCE_SENT = z.union([
+  NON_EMPTY_RESOURCE,
+  z.array(z.unknown()).refine((values) => values.some((v) => NON_EMPTY_RESOURCE.safeParse(v).success)),
+]);
+
 /** Whether a request parameter carries at least one `resource` value. */
 export function hasResource(value: unknown): boolean {
-  if (typeof value === 'string') return value !== '';
-  return Array.isArray(value) && value.some((v) => typeof v === 'string' && v !== '');
+  return AUTHORIZE_RESOURCE_SENT.safeParse(value).success;
 }
 
 export interface ResourceCheckOptions {
@@ -79,12 +93,22 @@ export interface ResourceCheckOptions {
   resource: string;
 }
 
-/** The grant types whose `/token` request may name the resource (every one this server serves). */
-const TOKEN_GRANTS = new Set(['authorization_code', 'refresh_token']);
+/**
+ * A `/token` request of a grant type that may name the resource (every one
+ * this server serves). Anything else (another grant type, no body) is the
+ * library's to refuse.
+ */
+const TOKEN_GRANT_REQUEST = z.object({
+  grant_type: z.enum(['authorization_code', 'refresh_token']),
+  resource: z.unknown().optional(),
+});
 
-function fieldsOf(body: unknown): Record<string, unknown> {
-  return body !== null && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
-}
+/**
+ * A `/token` `resource` that was sent: one string, or a list of strings (a
+ * repeated parameter, or a JSON array). Anything else, a non-string member
+ * included, can't be this server's resource.
+ */
+const TOKEN_RESOURCE = z.union([z.string(), z.array(z.string())]);
 
 /**
  * The `resource-check` stage on `/token`: a `resource` that is sent must be
@@ -100,15 +124,17 @@ export function resourceCheck({ resource }: ResourceCheckOptions): RequestHandle
       next();
       return;
     }
-    const body = fieldsOf(req.body);
-    const grantType = body['grant_type'];
-    const requested = body['resource'];
-    if (typeof grantType !== 'string' || !TOKEN_GRANTS.has(grantType) || requested === undefined) {
+    // The grant type and the resource are parsed apart: a malformed resource
+    // must be refused here, never passed on to the library (which would spend
+    // the code first).
+    const grant = TOKEN_GRANT_REQUEST.safeParse(req.body);
+    if (!grant.success || grant.data.resource === undefined) {
       next();
       return;
     }
-    const values = Array.isArray(requested) ? requested : [requested];
-    if (values.some((r) => typeof r !== 'string' || !isSameResource(r, resource))) {
+    const requested = TOKEN_RESOURCE.safeParse(grant.data.resource);
+    const values = requested.success ? (Array.isArray(requested.data) ? requested.data : [requested.data]) : undefined;
+    if (values === undefined || values.some((r) => !isSameResource(r, resource))) {
       sendOAuthError(res, new InvalidTargetError(FOREIGN_RESOURCE_DESCRIPTION));
       return;
     }
