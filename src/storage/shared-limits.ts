@@ -250,11 +250,17 @@ const PEEK_SQL = `SELECT n.ms AS now, b.tat AS tat, b.blocked_until AS blocked_u
  * The write admission, in one statement under the row's lock: prune the
  * admissions older than the window, then admit (append now) while fewer than
  * the limit remain. Parameters: $1 user, $2 the limit, $3 the window.
+ *
+ * `n.ms` is the statement's start, taken before it waits for the row lock, so
+ * an admission that waited can commit after a later-starting one. The stored
+ * times are only ever read as a set (pruned, counted, the oldest found by
+ * sorting), and `last_admitted_at`, the sweep's clock, never moves back, so a
+ * row is never swept while a newer admission is in the window.
  */
 const ADMIT_WRITE_SQL = `UPDATE rate_limit_writes AS t SET
     admitted = CASE WHEN cardinality(k.kept) < $2::int THEN k.kept || n.ms ELSE k.kept END,
     refused_since_admit = (cardinality(k.kept) >= $2::int),
-    last_admitted_at = CASE WHEN cardinality(k.kept) < $2::int THEN n.ms ELSE o.last_admitted_at END
+    last_admitted_at = CASE WHEN cardinality(k.kept) < $2::int THEN GREATEST(o.last_admitted_at, n.ms) ELSE o.last_admitted_at END
   FROM (SELECT admitted, refused_since_admit, last_admitted_at FROM rate_limit_writes WHERE user_id = $1 FOR UPDATE) AS o
     CROSS JOIN (SELECT ${DB_NOW} AS ms) AS n
     CROSS JOIN LATERAL (

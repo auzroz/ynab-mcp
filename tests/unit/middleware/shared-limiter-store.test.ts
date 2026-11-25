@@ -156,6 +156,18 @@ describe('the per-user YNAB limiter with the shared store down', () => {
     expect(() => new SharedWriteLimiter(store, 'u1', -1)).toThrow(/non-negative/);
   });
 
+  it('a booked waiter whose recheck of the shared pause fails gives its token back and refuses (fail closed)', async () => {
+    const store = downStore();
+    // The take books a token 20 ms out; the recheck after the wait can't reach the store.
+    store.take = async () => ({ previousTat: 1_000, tat: 1_000 + 3_600_000 + 20, blockedUntil: 0, now: 1_000 });
+    const limiter = new SharedRateLimiter(store, 'u1', 7_200, Date.now, 2_000);
+    const refused = await limiter.acquire().catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(RateLimitStoreUnavailableError);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(store.calls).toEqual(['peek', 'give']);
+    expect(limiter.getStatus().sentLastHour).toBe(0);
+  });
+
   it('refuses an invalid count before calling the store', async () => {
     const store = downStore();
     const limiter = new SharedRateLimiter(store, 'u1', 180);

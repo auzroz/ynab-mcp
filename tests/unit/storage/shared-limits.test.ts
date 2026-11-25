@@ -326,6 +326,61 @@ describe.skipIf(!postgres.enabled)('shared limits across two replicas (Postgres)
     await expect(onB.acquireMany(2)).rejects.toBeInstanceOf(RateLimitError);
   });
 
+  it("a booked waiter re-reads the shared pause after its wait: another replica's 429 refuses it, and the token goes back", async () => {
+    const { a, b, sql } = await twoReplicas();
+    // 7,200 an hour: a token every 500 ms. Drain, then book a wait on A.
+    const onA = limiter(a, 'u1', 7_200, 2_000);
+    expect(await onA.acquireMany(7_200)).toBe(7_200);
+    const waiting = onA.acquire().catch((e: unknown) => e);
+    // While A sleeps, B notes YNAB's 429 for the user.
+    await vi.waitFor(async () => {
+      const [row] = await sql('SELECT tat FROM rate_limit_buckets');
+      expect(Number(row?.['tat']) - Date.now()).toBeGreaterThan(3_600_000);
+    });
+    await b.sharedLimits!().block('u1', 60_000);
+    const refused = await waiting;
+    expect(refused).toBeInstanceOf(RateLimitError);
+    expect((refused as RateLimitError).retryAfterMs).toBeGreaterThan(55_000);
+    expect(onA.getStatus().sentLastHour).toBe(7_200);
+    // The booked token was given back: no debt left past a drained bucket.
+    await vi.waitFor(async () => {
+      const [row] = await sql('SELECT tat FROM rate_limit_buckets');
+      expect(Number(row?.['tat']) - Date.now()).toBeLessThanOrEqual(3_600_000);
+    });
+  });
+
+  it('the write cap keeps last_admitted_at at the newest admission when admissions commit out of order', async () => {
+    const h = await postgres.open();
+    const sql = h.sql as Sql;
+    const cap = new SharedWriteLimiter(h.storage.sharedLimits!(), 'u1', 20);
+    expect((await cap.tryAcquire()).allowed).toBe(true);
+    const pg = (await import('pg')).default;
+    const locker = new pg.Client({ connectionString: h.connectionString });
+    await locker.connect();
+    try {
+      // Hold the row, start an admission (its clock is now), then commit a later one first.
+      await locker.query('BEGIN');
+      await locker.query("SELECT 1 FROM rate_limit_writes WHERE user_id = 'u1' FOR UPDATE");
+      const earlier = cap.tryAcquire();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const later = Date.now() + 60_000;
+      await locker.query(
+        "UPDATE rate_limit_writes SET admitted = admitted || $1::bigint, last_admitted_at = $1 WHERE user_id = 'u1'",
+        [later]
+      );
+      await locker.query('COMMIT');
+      expect((await earlier).allowed).toBe(true);
+      const [row] = await sql("SELECT last_admitted_at, cardinality(admitted) AS n FROM rate_limit_writes WHERE user_id = 'u1'");
+      expect(Number(row?.['last_admitted_at'])).toBe(later);
+      expect(Number(row?.['n'])).toBe(3);
+      // So the sweep keeps it while the newest admission is in the window.
+      expect((await h.storage.sweepRateLimitRows()).rateLimitWrites).toBe(0);
+    } finally {
+      await locker.query('ROLLBACK').catch(() => undefined);
+      await locker.end();
+    }
+  });
+
   it('the write cap is one cap: two replicas admit exactly the limit between them, atomically', async () => {
     const { a, b, sql } = await twoReplicas();
     const onA = new SharedWriteLimiter(a.sharedLimits!(), 'u1', 5);

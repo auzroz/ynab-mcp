@@ -13,7 +13,9 @@
  *    (with the time until they are free); n above the bucket size is refused.
  *  - release(n) gives tokens back for requests that were never sent.
  *  - A YNAB 429 is shared too (`blocked_until`), so no replica keeps sending
- *    into YNAB's window; this replica also refuses at once, as before.
+ *    into YNAB's window; this replica also refuses at once, as before. A
+ *    caller that waited for a booked token reads the shared pause again
+ *    before sending, and refuses (giving the token back) if one began.
  *
  * The budget lives in `rate_limit_buckets` (src/storage/shared-limits.ts), one
  * row per user, changed by one statement per call on the database's clock.
@@ -68,9 +70,14 @@ export class SharedRateLimiter extends RateLimiter {
     if (waitMs > 0) {
       await this.sleep(waitMs);
       try {
-        // The wait can span a 429 noted by another request.
+        // The wait can span a 429 noted by another request, here or on
+        // another replica: read the shared pause again before sending.
+        this.throwIfExhaustedByYnab();
+        this.observe(await this.shared(() => this.store.peek(this.userId)));
         this.throwIfExhaustedByYnab();
       } catch (error) {
+        // Not sent: the booked token goes back, and the caller gets the
+        // pause's retry time (or the store's, when it can't be read).
         this.giveBack(1);
         throw error;
       }
