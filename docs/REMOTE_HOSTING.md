@@ -678,7 +678,7 @@ tokens, codes and audit log.
   ```
 
 An erased user who comes back signs in again as a new account. The YNAB grant
-itself is not revoked at YNAB: the user can remove it under "Connected Apps" in
+itself is not revoked at YNAB: the user can remove it under "Authorized Applications" in
 YNAB's settings.
 
 ### The audit log
