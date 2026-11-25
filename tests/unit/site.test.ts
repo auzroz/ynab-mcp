@@ -30,7 +30,8 @@ function tsFilesUnder(dir: string): string[] {
  * Environment variables the server reads: everything under src/config (at any
  * depth) plus the entry points that hold the transport switch (src/index.ts,
  * and src/entry.ts once it exists). Matches process.env['X'], process.env["X"]
- * and process.env.X.
+ * and process.env.X, and a setting name passed as a string to a helper that
+ * reads it (see settingLiteralsIn).
  */
 function configEnvVars(): Set<string> {
   const files = [
@@ -39,9 +40,26 @@ function configEnvVars(): Set<string> {
   ];
   const names = new Set<string>();
   for (const file of files) {
-    for (const name of envReadsIn(readFileSync(file, 'utf8'))) names.add(name);
+    const source = readFileSync(file, 'utf8');
+    for (const name of [...envReadsIn(source), ...settingLiteralsIn(source)]) names.add(name);
   }
   return names;
+}
+
+/** Upper-snake string literals in src/config that name no setting (labels for config problems). */
+const NOT_SETTINGS = new Set(['OAUTH_VARIABLES']);
+
+/**
+ * Setting names a config file spells out as a whole string literal, such as
+ * `read('MCP_UNUSED_CLIENT_DAYS', ...)` or `problems.capture('PORT', ...)`.
+ * This catches a variable read through a helper (`env[name]`), which
+ * envReadsIn cannot see. Labels that aren't settings are listed in
+ * {@link NOT_SETTINGS}.
+ */
+function settingLiteralsIn(source: string): string[] {
+  return [...source.matchAll(/(['"])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\1/g)]
+    .map((m) => m[2] as string)
+    .filter((n) => !NOT_SETTINGS.has(n));
 }
 
 /** Names read from process.env in a source text, in any of the three access forms. */
@@ -90,6 +108,15 @@ describe('site content matches the code', () => {
       'F_G',
     ]);
     expect(configEnvVars()).toContain('MCP_TRANSPORT');
+  });
+
+  it('finds setting names read through a helper', () => {
+    expect(
+      settingLiteralsIn(
+        `read('MCP_A_DAYS', 30, 1, 3650); problems.capture("B_C", f); problems.add('OAUTH_VARIABLES', m); 'A_B=1 is refused'; 'lower_case'`
+      )
+    ).toEqual(['MCP_A_DAYS', 'B_C']);
+    expect(configEnvVars()).toContain('MCP_UNUSED_CLIENT_DAYS');
   });
 
   it('has the expected pages', () => {
