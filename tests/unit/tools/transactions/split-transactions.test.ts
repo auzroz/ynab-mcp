@@ -75,9 +75,7 @@ describe('ynab_create_transaction splits', () => {
   it('sends subtransactions in milliunits and returns sanitized splits', async () => {
     mockClient.createTransaction.mockResolvedValue(createdWithSplits());
 
-    const parsed = JSON.parse(
-      await handleCreateTransaction({ ...base, subtransactions: twoSplits }, mockClient as never)
-    );
+    const parsed = await handleCreateTransaction({ ...base, subtransactions: twoSplits }, mockClient as never);
 
     expect(mockClient.createTransaction).toHaveBeenCalledWith('test-budget-id', {
       transaction: {
@@ -118,7 +116,7 @@ describe('ynab_create_transaction splits', () => {
     mockClient.createTransaction.mockResolvedValue({
       data: { transaction: { ...createdWithSplits().data.transaction, subtransactions: [] } },
     });
-    const parsed = JSON.parse(await handleCreateTransaction(base, mockClient as never));
+    const parsed = await handleCreateTransaction(base, mockClient as never);
     expect('subtransactions' in parsed.transaction).toBe(false);
   });
 
@@ -144,7 +142,7 @@ describe('ynab_create_transaction splits', () => {
         },
         mockClient as never
       )
-    ).resolves.toBeTypeOf('string');
+    ).resolves.toBeTypeOf('object');
   });
 
   it('rejects splits that do not sum to the parent amount', async () => {
@@ -202,8 +200,7 @@ describe('ynab_create_transactions splits', () => {
       },
     });
 
-    const parsed = JSON.parse(
-      await handleCreateTransactions(
+    const parsed = await handleCreateTransactions(
         {
           transactions: [
             { ...base, subtransactions: twoSplits },
@@ -211,8 +208,7 @@ describe('ynab_create_transactions splits', () => {
           ],
         },
         mockClient as never
-      )
-    );
+      );
 
     const sent = mockClient.createTransaction.mock.calls[0]![1] as { transactions: Array<Record<string, unknown>> };
     expect(sent.transactions[0]!.subtransactions).toEqual([

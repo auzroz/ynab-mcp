@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetTransaction } from '../../../../src/tools/transactions/get-transaction.js';
+import { handleGetTransaction as rawHandleGetTransaction, getTransactionOutputSchema } from '../../../../src/tools/transactions/get-transaction.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createTransactionResponse,
@@ -11,6 +12,9 @@ import {
   mockSplitTransaction,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetTransaction = validating(getTransactionOutputSchema, rawHandleGetTransaction);
 
 const TXN_ID = '99999999-9999-9999-9999-999999999999';
 
@@ -26,8 +30,7 @@ describe('handleGetTransaction', () => {
       createTransactionResponse(mockGroceryTransactions[0])
     );
 
-    const result = await handleGetTransaction({ transaction_id: TXN_ID }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetTransaction({ transaction_id: TXN_ID }, mockClient as never);
 
     expect(parsed.transaction.id).toBe(mockGroceryTransactions[0]!.id);
     expect(parsed.transaction.amount).toBe('-$85.00');
@@ -41,7 +44,7 @@ describe('handleGetTransaction', () => {
       createTransactionResponse({ ...mockGroceryTransactions[0]!, import_id: 'YNAB:\u0000-8500:\u200b2024' })
     );
 
-    const parsed = JSON.parse(await handleGetTransaction({ transaction_id: TXN_ID }, mockClient as never));
+    const parsed = await handleGetTransaction({ transaction_id: TXN_ID }, mockClient as never);
 
     expect(parsed.transaction.import_id).not.toMatch(/[\u0000\u200b]/);
     expect(parsed.transaction.import_id).toContain('YNAB:');
@@ -52,8 +55,7 @@ describe('handleGetTransaction', () => {
       createTransactionResponse(mockSplitTransaction)
     );
 
-    const result = await handleGetTransaction({ transaction_id: TXN_ID }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetTransaction({ transaction_id: TXN_ID }, mockClient as never);
 
     expect(parsed.transaction.subtransactions.length).toBe(2);
     expect(parsed.transaction.subtransactions[0].amount).toBe('-$100.00');

@@ -3,9 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleCreateTransaction } from '../../../../src/tools/transactions/create-transaction.js';
+import { handleCreateTransaction as rawHandleCreateTransaction, createTransactionOutputSchema } from '../../../../src/tools/transactions/create-transaction.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleCreateTransaction = validating(createTransactionOutputSchema, rawHandleCreateTransaction);
 
 const ACCOUNT_ID = '11111111-1111-1111-1111-111111111111';
 const PAYEE_ID = '22222222-2222-2222-2222-222222222222';
@@ -40,11 +44,10 @@ describe('handleCreateTransaction', () => {
   it('creates a transaction converting dollars to milliunits', async () => {
     mockClient.createTransaction.mockResolvedValue(createdTxnResponse());
 
-    const result = await handleCreateTransaction(
+    const parsed = await handleCreateTransaction(
       { account_id: ACCOUNT_ID, date: '2024-02-01', amount: -42.5 },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(mockClient.createTransaction).toHaveBeenCalledWith('test-budget-id', {
       transaction: {
@@ -152,12 +155,10 @@ describe('handleCreateTransaction', () => {
         data: { transactions: [createdTxnResponse().data.transaction], duplicate_import_ids: [] },
       });
 
-      const parsed = JSON.parse(
-        await handleCreateTransaction(
+      const parsed = await handleCreateTransaction(
           { account_id: ACCOUNT_ID, date: '2024-02-01', amount: -42.5, import_id: 'abc' },
           mockClient as never
-        )
-      );
+        );
 
       expect(parsed.success).toBe(true);
       expect(parsed.transaction.id).toBe('new-txn-001');
@@ -178,7 +179,7 @@ describe('handleCreateTransaction', () => {
       ).rejects.toThrow();
       await expect(
         handleCreateTransaction({ ...args, import_id: 'x'.repeat(36) }, mockClient as never)
-      ).resolves.toBeTypeOf('string');
+      ).resolves.toBeTypeOf('object');
     });
 
     it('reports a duplicate import_id as a result, not an error', async () => {
@@ -186,12 +187,10 @@ describe('handleCreateTransaction', () => {
         data: { transactions: [], duplicate_import_ids: ['dup-1'] },
       });
 
-      const parsed = JSON.parse(
-        await handleCreateTransaction(
+      const parsed = await handleCreateTransaction(
           { account_id: ACCOUNT_ID, date: '2024-02-01', amount: -1, import_id: 'dup-1' },
           mockClient as never
-        )
-      );
+        );
 
       expect(parsed.success).toBe(false);
       expect(parsed.duplicate_import_ids).toEqual(['dup-1']);

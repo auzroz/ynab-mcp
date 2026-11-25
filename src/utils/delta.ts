@@ -78,14 +78,38 @@ export function transactionDeltaResult(
   cursor: number | undefined,
   serverKnowledge: number | undefined,
   truncated: boolean
-): { summary: Record<string, unknown>; cursor: Record<string, unknown> } {
-  if (cursor === undefined) return { summary: {}, cursor: { server_knowledge: serverKnowledge } };
+): { summary: TransactionDeltaSummary; cursor: TransactionCursor } {
+  // YNAB's hybrid (category, payee) transaction responses may lack server_knowledge.
+  const latest = serverKnowledge === undefined ? {} : { server_knowledge: serverKnowledge };
+  if (cursor === undefined) return { summary: {}, cursor: latest };
   return {
     summary: {
       note: DELTA_SUMMARY_NOTE,
       filter_note: TRANSACTION_DELTA_FILTER_NOTE,
       ...(truncated ? { truncation_note: TRUNCATED_DELTA_NOTE } : {}),
     },
-    cursor: truncated ? { server_knowledge: cursor, cursor_withheld: true } : { server_knowledge: serverKnowledge },
+    cursor: truncated ? { server_knowledge: cursor, cursor_withheld: true } : latest,
   };
 }
+
+/** Output schema of transactionDeltaResult's summary fields (#45): present only on a delta. */
+export const transactionDeltaSummaryShape = {
+  note: z.string().exactOptional().describe(DELTA_ONLY),
+  filter_note: z.string().exactOptional().describe(DELTA_ONLY),
+  truncation_note: z.string().exactOptional().describe(`${DELTA_ONLY}, when limit cut it short`),
+};
+type TransactionDeltaSummary = z.output<z.ZodObject<typeof transactionDeltaSummaryShape>>;
+
+/** Output schema of transactionDeltaResult's cursor fields (#45). */
+export const transactionCursorShape = {
+  server_knowledge: z
+    .number()
+    .int()
+    .exactOptional()
+    .describe('The cursor for the next delta. Omitted only when YNAB sends none'),
+  cursor_withheld: z
+    .literal(true)
+    .exactOptional()
+    .describe('On a delta cut short by limit: server_knowledge is the cursor given, so no change is skipped'),
+};
+type TransactionCursor = z.output<z.ZodObject<typeof transactionCursorShape>>;

@@ -13,6 +13,8 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
+import { toOutputSchema } from '../output-schema.js';
+import { money } from '../schemas/common.js';
 
 // Cleared status options
 const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
@@ -62,6 +64,25 @@ const inputSchema = z
   .refine((d) => !(d.payee_id !== undefined && d.payee_name !== undefined), {
     message: 'Provide either payee_id or payee_name, not both',
   });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const updateTransactionOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  transaction: z.object({
+    id: z.string(),
+    date: z.string(),
+    amount: money(),
+    payee_name: z.string(),
+    category_name: z.string(),
+    account_name: z.string(),
+    memo: z.string().nullable(),
+    cleared: z.string().describe('YNAB cleared status'),
+    approved: z.boolean(),
+    flag_color: z.string().exactOptional().describe('YNAB flag colour; omitted when unflagged'),
+  }),
+});
+export type UpdateTransactionOutput = z.output<typeof updateTransactionOutputSchema>;
 
 // Tool definition
 export const updateTransactionTool: Tool = {
@@ -146,6 +167,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['transaction_id'],
   },
+  outputSchema: toOutputSchema(updateTransactionOutputSchema),
 };
 
 // Handler function
@@ -164,7 +186,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleUpdateTransaction(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<UpdateTransactionOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -193,24 +215,20 @@ export async function handleUpdateTransaction(
   const money = await moneyFormatterFor(client, budgetId);
   const txn = response.data.transaction;
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Transaction updated: ${money(txn.amount)} at ${sanitizeName(txn.payee_name)}`,
-      transaction: {
-        id: txn.id,
-        date: txn.date,
-        amount: money(txn.amount),
-        payee_name: sanitizeName(txn.payee_name),
-        category_name: sanitizeName(txn.category_name),
-        account_name: sanitizeName(txn.account_name),
-        memo: sanitizeMemo(txn.memo),
-        cleared: txn.cleared,
-        approved: txn.approved,
-        ...omitNull({ flag_color: txn.flag_color }),
-      },
+  return {
+    success: true,
+    message: `Transaction updated: ${money(txn.amount)} at ${sanitizeName(txn.payee_name)}`,
+    transaction: {
+      id: txn.id,
+      date: txn.date,
+      amount: money(txn.amount),
+      payee_name: sanitizeName(txn.payee_name),
+      category_name: sanitizeName(txn.category_name),
+      account_name: sanitizeName(txn.account_name),
+      memo: sanitizeMemo(txn.memo),
+      cleared: txn.cleared,
+      approved: txn.approved,
+      ...omitNull({ flag_color: txn.flag_color }),
     },
-    null,
-    2
-  );
+  };
 }

@@ -11,11 +11,11 @@ import { closedOutputSchema } from '../../../src/tools/output-schema.js';
 const ajv = new Ajv2020({ strict: true, allErrors: true });
 const validators = new Map<z.ZodObject, ReturnType<typeof ajv.compile>>();
 
-/** Whether any key anywhere in `value` holds `undefined` (structuredContent is the object itself). */
-function hasUndefinedValue(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(hasUndefinedValue);
-  if (value === null || typeof value !== 'object') return false;
-  return Object.values(value).some((v) => v === undefined || hasUndefinedValue(v));
+/** The path of every key in `value` that holds `undefined` (structuredContent is the object itself). */
+function undefinedPaths(value: unknown, path = '$'): string[] {
+  if (Array.isArray(value)) return value.flatMap((v, i) => undefinedPaths(v, `${path}[${i}]`));
+  if (value === null || typeof value !== 'object') return [];
+  return Object.entries(value).flatMap(([k, v]) => (v === undefined ? [`${path}.${k}`] : undefinedPaths(v, `${path}.${k}`)));
 }
 
 /** Validate a handler's output as it travels (JSON) against the closed form of `schema`. */
@@ -25,7 +25,7 @@ export function expectValidOutput(schema: z.ZodObject, value: unknown): void {
     validate = ajv.compile(closedOutputSchema(schema));
     validators.set(schema, validate);
   }
-  expect(hasUndefinedValue(value), 'an undefined-valued key (output-schema.ts rule 6)').toBe(false);
+  expect(undefinedPaths(value), 'undefined-valued keys (output-schema.ts rule 6)').toEqual([]);
   const ok = validate(JSON.parse(JSON.stringify(value)));
   expect(ok, ajv.errorsText(validate.errors)).toBe(true);
 }

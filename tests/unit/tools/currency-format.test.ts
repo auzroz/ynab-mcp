@@ -225,7 +225,7 @@ describe('amounts follow the budget currency format', () => {
     it('formats amounts and split lines', async () => {
       client.getCurrencyFormat.mockResolvedValue(mockEurCurrencyFormat);
       client.getTransactions.mockResolvedValue(createTransactionsResponse([mockSplitTransaction]));
-      const parsed = JSON.parse(await handleListTransactions({}, client as never));
+      const parsed = await handleListTransactions({}, client as never);
       const txn = parsed.transactions[0];
 
       expect(txn.amount).toBe('-150,00€');

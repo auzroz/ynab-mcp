@@ -183,7 +183,7 @@ describe('transaction list tools', () => {
 
   it('ynab_list_transactions: full output unchanged apart from server_knowledge', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse());
-    const out = parse(await handleListTransactions({ since_date: '2024-01-01' }, mockClient as never));
+    const out = await handleListTransactions({ since_date: '2024-01-01' }, mockClient as never);
     expect(mockClient.getTransactions).toHaveBeenCalledWith('test-budget-id', { sinceDate: '2024-01-01' });
     expect(out.server_knowledge).toBe(12345);
     expect(out.delta).toBeUndefined();
@@ -192,9 +192,7 @@ describe('transaction list tools', () => {
 
   it('ynab_list_transactions: delta passes the cursor with the filters and drops totals', async () => {
     mockClient.getTransactions.mockResolvedValue(deltaResponse);
-    const out = parse(
-      await handleListTransactions({ since_date: '2024-01-01', type: 'unapproved', since_server_knowledge: 500 }, mockClient as never)
-    );
+    const out = await handleListTransactions({ since_date: '2024-01-01', type: 'unapproved', since_server_knowledge: 500 }, mockClient as never);
     expect(mockClient.getTransactions).toHaveBeenCalledWith('test-budget-id', {
       sinceDate: '2024-01-01',
       type: 'unapproved',
@@ -222,7 +220,7 @@ describe('transaction list tools', () => {
       ],
     };
     mockClient.getTransactions.mockResolvedValue({ data: { transactions: [split], server_knowledge: 2 } });
-    const out = parse(await handleListTransactions({ since_server_knowledge: 1 }, mockClient as never));
+    const out = await handleListTransactions({ since_server_knowledge: 1 }, mockClient as never);
     expect(out.transactions[0].subtransactions.map((s: { id: string }) => s.id)).toEqual(['s1']);
   });
 
@@ -233,13 +231,13 @@ describe('transaction list tools', () => {
   ] as const)('ynab_list_%s_transactions: full adds server_knowledge; delta marks and drops totals', async (_n, handler, method, args, id, total) => {
     const fn = mockClient[method];
     fn.mockResolvedValue(createTransactionsResponse());
-    const full = parse(await handler({ ...args }, mockClient as never));
+    const full = await handler({ ...args }, mockClient as never);
     expect(fn).toHaveBeenLastCalledWith('test-budget-id', id, { sinceDate: undefined, untilDate: undefined, type: undefined });
     expect(full.server_knowledge).toBe(12345);
     expect(full.summary[total]).toBeDefined();
 
     fn.mockResolvedValue(deltaResponse);
-    const out = parse(await handler({ ...args, since_server_knowledge: 500 }, mockClient as never));
+    const out = await handler({ ...args, since_server_knowledge: 500 }, mockClient as never);
     expect(fn).toHaveBeenLastCalledWith('test-budget-id', id, {
       sinceDate: undefined,
       untilDate: undefined,
@@ -263,7 +261,7 @@ describe('transaction deltas larger than limit', () => {
     ['payee', handleListPayeeTransactions, 'getPayeeTransactions', { payee_id: PAYEE }],
   ] as const)('%s: a truncated delta keeps the caller cursor so no change is skipped', async (_n, handler, method, args) => {
     mockClient[method].mockResolvedValue(big);
-    const out = parse(await handler({ ...args, limit: 2, since_server_knowledge: 800 }, mockClient as never));
+    const out = await handler({ ...args, limit: 2, since_server_knowledge: 800 }, mockClient as never);
     expect(out.transactions).toHaveLength(2);
     expect(out).toMatchObject({ delta: true, deleted_ids: ['gone'], server_knowledge: 800, cursor_withheld: true });
     expect(out.summary).toMatchObject({ truncated: true, total_count: 3 });
@@ -271,14 +269,14 @@ describe('transaction deltas larger than limit', () => {
     expect(out.summary.filter_note).toMatch(/no longer matches/);
 
     // Within the limit: the new cursor, nothing withheld.
-    const fits = parse(await handler({ ...args, limit: 3, since_server_knowledge: 800 }, mockClient as never));
+    const fits = await handler({ ...args, limit: 3, since_server_knowledge: 800 }, mockClient as never);
     expect(fits).toMatchObject({ server_knowledge: 900, summary: { truncated: false } });
     expect(fits.cursor_withheld).toBeUndefined();
     expect(fits.summary.truncation_note).toBeUndefined();
 
     // A full (non-cursor) response keeps its server_knowledge even when truncated.
     mockClient[method].mockResolvedValue({ data: { transactions: rows, server_knowledge: 900 } });
-    const full = parse(await handler({ ...args, limit: 2 }, mockClient as never));
+    const full = await handler({ ...args, limit: 2 }, mockClient as never);
     expect(full).toMatchObject({ server_knowledge: 900, summary: { truncated: true } });
     expect(full.cursor_withheld).toBeUndefined();
   });
@@ -295,20 +293,18 @@ describe('end to end: the returned server_knowledge is the next cursor', () => {
     fake.putTransaction(txn('t2', '2026-01-02', -200));
     const client = new YnabClient('t', FAKE_BUDGET, new RateLimiter(1000), new Cache(300000), true, new AuditLog(), new DeltaCache());
 
-    const full = parse(await handleListTransactions({ since_date: '2025-01-01' }, client));
+    const full = await handleListTransactions({ since_date: '2025-01-01' }, client);
     expect(full.transactions).toHaveLength(2);
     expect(full.server_knowledge).toBe(fake.knowledge);
 
     fake.putTransaction(txn('t2', '2026-01-02', -250));
     fake.transactions.remove('t1');
-    const delta = parse(
-      await handleListTransactions({ since_date: '2025-01-01', since_server_knowledge: full.server_knowledge }, client)
-    );
+    const delta = await handleListTransactions({ since_date: '2025-01-01', since_server_knowledge: full.server_knowledge }, client);
     expect(delta).toMatchObject({ delta: true, deleted_ids: ['t1'], server_knowledge: fake.knowledge });
     expect(delta.transactions.map((t: { id: string; amount: string }) => [t.id, t.amount])).toEqual([['t2', '-$0.25']]);
 
     // And a plain call afterwards is the full, current list again.
-    const again = parse(await handleListTransactions({ since_date: '2025-01-01' }, client));
+    const again = await handleListTransactions({ since_date: '2025-01-01' }, client);
     expect(again.delta).toBeUndefined();
     expect(again.transactions.map((t: { id: string }) => t.id)).toEqual(['t2']);
   });

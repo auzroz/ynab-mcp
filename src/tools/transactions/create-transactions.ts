@@ -14,11 +14,14 @@ import { moneyFormatterFor, toMilliunits, sumMilliunits } from '../../utils/mill
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import {
   checkSplitRules,
-  formatSubtransactions,
+  createdSubtransactionSchema,
+  subtransactionsField,
   subtransactionsJsonSchema,
   subtransactionsSchema,
   toSaveSubTransactions,
 } from './subtransactions.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, money } from '../schemas/common.js';
 
 // Transaction schema for bulk creation
 const transactionSchema = z
@@ -54,6 +57,28 @@ const inputSchema = z.object({
     .max(100)
     .describe('Array of transactions to create (max 100)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const createTransactionsOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  summary: z.object({ created_count: count(), duplicate_count: count(), total_amount: money() }),
+  transactions: z.array(
+    z.object({
+      id: z.string(),
+      date: z.string(),
+      amount: money(),
+      payee_name: z.string(),
+      category_name: z.string(),
+      subtransactions: z.array(createdSubtransactionSchema).exactOptional().describe('The splits; omitted when none'),
+    })
+  ),
+  duplicate_import_ids: z
+    .array(z.string())
+    .exactOptional()
+    .describe('import_ids that already existed, so those transactions were skipped; omitted when none'),
+});
+export type CreateTransactionsOutput = z.output<typeof createTransactionsOutputSchema>;
 
 // Tool definition
 export const createTransactionsTool: Tool = {
@@ -108,6 +133,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['transactions'],
   },
+  outputSchema: toOutputSchema(createTransactionsOutputSchema),
 };
 
 // Handler function
@@ -126,7 +152,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleCreateTransactions(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<CreateTransactionsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -164,29 +190,24 @@ export async function handleCreateTransactions(
   const amounts = created.map((t) => t.amount);
   const totalAmount = created.length > 0 ? sumMilliunits(amounts) : 0;
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Created ${created.length} transactions`,
-      summary: {
-        created_count: created.length,
-        duplicate_count: duplicates.length,
-        total_amount: money(totalAmount),
-      },
-      transactions: created.map((t) => ({
-        id: t.id,
-        date: t.date,
-        amount: money(t.amount),
-        payee_name: sanitizeName(t.payee_name),
-        category_name: sanitizeName(t.category_name),
-        subtransactions: formatSubtransactions(t.subtransactions, money),
-      })),
-      duplicate_import_ids:
-        duplicates.length > 0
-          ? duplicates.map((id) => sanitizeString(id, 100) ?? '')
-          : undefined,
+  return {
+    success: true,
+    message: `Created ${created.length} transactions`,
+    summary: {
+      created_count: created.length,
+      duplicate_count: duplicates.length,
+      total_amount: money(totalAmount),
     },
-    null,
-    2
-  );
+    transactions: created.map((t) => ({
+      id: t.id,
+      date: t.date,
+      amount: money(t.amount),
+      payee_name: sanitizeName(t.payee_name),
+      category_name: sanitizeName(t.category_name),
+      ...subtransactionsField(t.subtransactions, money),
+    })),
+    ...(duplicates.length > 0
+      ? { duplicate_import_ids: duplicates.map((id) => sanitizeString(id, 100) ?? '') }
+      : {}),
+  };
 }

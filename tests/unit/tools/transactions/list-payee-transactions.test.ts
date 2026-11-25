@@ -3,15 +3,19 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListPayeeTransactions } from '../../../../src/tools/transactions/list-payee-transactions.js';
+import { handleListPayeeTransactions as rawHandleListPayeeTransactions, listPayeeTransactionsOutputSchema } from '../../../../src/tools/transactions/list-payee-transactions.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
-  createTransactionsResponse,
+  createHybridTransactionsResponse,
   mockAllTransactions,
   mockGroceryTransactions,
   mockIncomeTransactions,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListPayeeTransactions = validating(listPayeeTransactionsOutputSchema, rawHandleListPayeeTransactions);
 
 const PAYEE_ID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 
@@ -24,14 +28,13 @@ describe('handleListPayeeTransactions', () => {
 
   it('lists payee transactions with outflow/inflow split and top categories', async () => {
     mockClient.getPayeeTransactions.mockResolvedValue(
-      createTransactionsResponse(mockGroceryTransactions)
+      createHybridTransactionsResponse(mockGroceryTransactions)
     );
 
-    const result = await handleListPayeeTransactions(
+    const parsed = await handleListPayeeTransactions(
       { payee_id: PAYEE_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.payee_id).toBe(PAYEE_ID);
     expect(parsed.summary.outflow_count).toBe(mockGroceryTransactions.length);
@@ -43,14 +46,13 @@ describe('handleListPayeeTransactions', () => {
 
   it('counts inflows separately', async () => {
     mockClient.getPayeeTransactions.mockResolvedValue(
-      createTransactionsResponse(mockIncomeTransactions)
+      createHybridTransactionsResponse(mockIncomeTransactions)
     );
 
-    const result = await handleListPayeeTransactions(
+    const parsed = await handleListPayeeTransactions(
       { payee_id: PAYEE_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.summary.inflow_count).toBe(mockIncomeTransactions.length);
     expect(parsed.summary.outflow_count).toBe(0);
@@ -59,14 +61,13 @@ describe('handleListPayeeTransactions', () => {
 
   it('applies limit and passes parsed since_date', async () => {
     mockClient.getPayeeTransactions.mockResolvedValue(
-      createTransactionsResponse(mockAllTransactions)
+      createHybridTransactionsResponse(mockAllTransactions)
     );
 
-    const result = await handleListPayeeTransactions(
+    const parsed = await handleListPayeeTransactions(
       { payee_id: PAYEE_ID, since_date: '2024-01-01', limit: 3 },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.transactions.length).toBe(3);
     expect(mockClient.getPayeeTransactions).toHaveBeenCalledWith('test-budget-id', PAYEE_ID, {
@@ -77,20 +78,19 @@ describe('handleListPayeeTransactions', () => {
   });
 
   it('handles empty results', async () => {
-    mockClient.getPayeeTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getPayeeTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
-    const result = await handleListPayeeTransactions(
+    const parsed = await handleListPayeeTransactions(
       { payee_id: PAYEE_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.summary.count).toBe(0);
     expect(parsed.summary.top_categories).toEqual([]);
   });
 
   it('respects budget_id parameter', async () => {
-    mockClient.getPayeeTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getPayeeTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
     await handleListPayeeTransactions(
       { payee_id: PAYEE_ID, budget_id: 'custom-budget' },
@@ -101,14 +101,12 @@ describe('handleListPayeeTransactions', () => {
   });
 
   it('passes parsed until_date through and omits the default-range note', async () => {
-    mockClient.getPayeeTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getPayeeTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
-    const parsed = JSON.parse(
-      await handleListPayeeTransactions(
+    const parsed = await handleListPayeeTransactions(
         { payee_id: PAYEE_ID, since_date: '2023-01-01', until_date: '2023-12-31' },
         mockClient as never
-      )
-    );
+      );
 
     expect(mockClient.getPayeeTransactions).toHaveBeenCalledWith('test-budget-id', PAYEE_ID, {
       sinceDate: '2023-01-01',
@@ -119,17 +117,15 @@ describe('handleListPayeeTransactions', () => {
   });
 
   it('notes the 12-month YNAB default when since_date is omitted', async () => {
-    mockClient.getPayeeTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getPayeeTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
-    const parsed = JSON.parse(
-      await handleListPayeeTransactions({ payee_id: PAYEE_ID }, mockClient as never)
-    );
+    const parsed = await handleListPayeeTransactions({ payee_id: PAYEE_ID }, mockClient as never);
 
     expect(parsed.summary.date_range_note).toContain('last 12 months');
   });
 
   it('passes the type filter through to the client', async () => {
-    mockClient.getPayeeTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getPayeeTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
     await handleListPayeeTransactions(
       { payee_id: PAYEE_ID, type: 'unapproved' },

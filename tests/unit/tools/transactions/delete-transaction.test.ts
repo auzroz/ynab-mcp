@@ -3,9 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleDeleteTransaction } from '../../../../src/tools/transactions/delete-transaction.js';
+import { handleDeleteTransaction as rawHandleDeleteTransaction, deleteTransactionOutputSchema } from '../../../../src/tools/transactions/delete-transaction.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleDeleteTransaction = validating(deleteTransactionOutputSchema, rawHandleDeleteTransaction);
 
 const TXN_ID = '99999999-9999-9999-9999-999999999999';
 
@@ -34,8 +38,7 @@ describe('handleDeleteTransaction', () => {
   it('deletes a transaction and returns success', async () => {
     mockClient.deleteTransaction.mockResolvedValue(deletedTxnResponse());
 
-    const result = await handleDeleteTransaction({ transaction_id: TXN_ID }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleDeleteTransaction({ transaction_id: TXN_ID }, mockClient as never);
 
     expect(mockClient.deleteTransaction).toHaveBeenCalledWith('test-budget-id', TXN_ID);
     expect(parsed.success).toBe(true);

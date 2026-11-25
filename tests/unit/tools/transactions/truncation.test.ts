@@ -24,34 +24,28 @@ const cases: [string, Run][] = [
     'ynab_list_transactions',
     async (c, limit) => {
       c.getTransactions.mockResolvedValue(createTransactionsResponse());
-      return JSON.parse(await handleListTransactions(limit ? { limit } : {}, c as never));
+      return await handleListTransactions(limit ? { limit } : {}, c as never);
     },
   ],
   [
     'ynab_list_account_transactions',
     async (c, limit) => {
       c.getAccountTransactions.mockResolvedValue(createTransactionsResponse());
-      return JSON.parse(
-        await handleListAccountTransactions({ account_id: UUID, ...(limit ? { limit } : {}) }, c as never)
-      );
+      return await handleListAccountTransactions({ account_id: UUID, ...(limit ? { limit } : {}) }, c as never);
     },
   ],
   [
     'ynab_list_category_transactions',
     async (c, limit) => {
       c.getCategoryTransactions.mockResolvedValue(createTransactionsResponse());
-      return JSON.parse(
-        await handleListCategoryTransactions({ category_id: UUID, ...(limit ? { limit } : {}) }, c as never)
-      );
+      return await handleListCategoryTransactions({ category_id: UUID, ...(limit ? { limit } : {}) }, c as never);
     },
   ],
   [
     'ynab_list_payee_transactions',
     async (c, limit) => {
       c.getPayeeTransactions.mockResolvedValue(createTransactionsResponse());
-      return JSON.parse(
-        await handleListPayeeTransactions({ payee_id: UUID, ...(limit ? { limit } : {}) }, c as never)
-      );
+      return await handleListPayeeTransactions({ payee_id: UUID, ...(limit ? { limit } : {}) }, c as never);
     },
   ],
 ];

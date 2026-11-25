@@ -27,6 +27,21 @@ import { AuditLog } from '../../../src/services/audit-log.js';
 import { listPayeesOutputSchema, handleListPayees } from '../../../src/tools/payees/list-payees.js';
 import { listMonthsOutputSchema, handleListMonths } from '../../../src/tools/months/list-months.js';
 import { getMonthOutputSchema, handleGetMonth } from '../../../src/tools/months/get-month.js';
+import { listTransactionsOutputSchema, handleListTransactions } from '../../../src/tools/transactions/list-transactions.js';
+import { getTransactionOutputSchema, handleGetTransaction } from '../../../src/tools/transactions/get-transaction.js';
+import { createTransactionOutputSchema, handleCreateTransaction } from '../../../src/tools/transactions/create-transaction.js';
+import {
+  listAccountTransactionsOutputSchema,
+  handleListAccountTransactions,
+} from '../../../src/tools/transactions/list-account-transactions.js';
+import {
+  listCategoryTransactionsOutputSchema,
+  handleListCategoryTransactions,
+} from '../../../src/tools/transactions/list-category-transactions.js';
+import {
+  listPayeeTransactionsOutputSchema,
+  handleListPayeeTransactions,
+} from '../../../src/tools/transactions/list-payee-transactions.js';
 import {
   CircuitOpenError,
   errorResponseSchema,
@@ -43,6 +58,12 @@ import {
 } from '../../../src/utils/errors.js';
 import {
   createMockClient,
+  createTransactionsResponse,
+  createHybridTransactionsResponse,
+  createTransactionResponse,
+  mockAllTransactions,
+  mockSplitTransaction,
+  mockFlaggedTransaction,
   createMonthsResponse,
   createMonthResponse,
   mockMonthSummaries,
@@ -277,5 +298,88 @@ describe('core output schemas: months', () => {
     const out = await handleGetMonth({ month: '2024-01-01' }, c());
     expect(out.summary.age_of_money).toBeDefined();
     expectValid(getMonthOutputSchema, out);
+  });
+});
+
+describe('core output schemas: transactions', () => {
+  const deleted = { ...mockAllTransactions[0]!, deleted: true };
+  const delta = (rows: unknown[]) => ({ data: { transactions: rows, server_knowledge: 900 } });
+  const listTools = [
+    ['ynab_list_transactions', handleListTransactions, listTransactionsOutputSchema, 'getTransactions', {}, false],
+    [
+      'ynab_list_account_transactions',
+      handleListAccountTransactions,
+      listAccountTransactionsOutputSchema,
+      'getAccountTransactions',
+      { account_id: UUID },
+      false,
+    ],
+    [
+      'ynab_list_category_transactions',
+      handleListCategoryTransactions,
+      listCategoryTransactionsOutputSchema,
+      'getCategoryTransactions',
+      { category_id: UUID },
+      true,
+    ],
+    [
+      'ynab_list_payee_transactions',
+      handleListPayeeTransactions,
+      listPayeeTransactionsOutputSchema,
+      'getPayeeTransactions',
+      { payee_id: UUID },
+      true,
+    ],
+  ] as const;
+
+  it.each(listTools)('%s: full, filtered, delta, and a delta truncated by limit', async (_name, handler, schema, method, args, hybrid) => {
+    const response = hybrid ? createHybridTransactionsResponse : createTransactionsResponse;
+    const rows = response([...mockAllTransactions, mockSplitTransaction]).data.transactions;
+    client[method].mockResolvedValue(response([...mockAllTransactions, mockSplitTransaction]));
+    expectValid(schema, await handler({ ...args }, c()));
+    expectValid(schema, await handler({ ...args, since_date: '2024-01-01', until_date: '2024-12-31', type: 'unapproved', limit: 2 }, c()));
+    client[method].mockResolvedValue(delta([...rows.slice(0, 3), deleted]));
+    const changed = (await handler({ ...args, since_server_knowledge: 800 }, c())) as Record<string, unknown>;
+    expect(changed['delta']).toBe(true);
+    expectValid(schema, changed);
+    const cut = (await handler({ ...args, since_server_knowledge: 800, limit: 1 }, c())) as Record<string, unknown>;
+    expect(cut['cursor_withheld']).toBe(true);
+    expectValid(schema, cut);
+  });
+
+  it('ynab_list_category_transactions and ynab_list_payee_transactions: without server_knowledge (hybrid responses may lack it)', async () => {
+    const rows = createHybridTransactionsResponse().data.transactions;
+    client.getCategoryTransactions.mockResolvedValue({ data: { transactions: rows } });
+    const out = await handleListCategoryTransactions({ category_id: UUID }, c());
+    expect(out).not.toHaveProperty('server_knowledge');
+    expectValid(listCategoryTransactionsOutputSchema, out);
+    client.getPayeeTransactions.mockResolvedValue({ data: { transactions: rows } });
+    expectValid(listPayeeTransactionsOutputSchema, await handleListPayeeTransactions({ payee_id: UUID }, c()));
+  });
+
+  it('ynab_list_transactions: by month', async () => {
+    client.getTransactionsByMonth.mockResolvedValue(createTransactionsResponse());
+    expectValid(listTransactionsOutputSchema, await handleListTransactions({ month: '2024-01-01' }, c()));
+  });
+
+  it('ynab_get_transaction: a split, and a flagged transaction', async () => {
+    client.getTransactionById.mockResolvedValue(createTransactionResponse(mockSplitTransaction));
+    const split = await handleGetTransaction({ transaction_id: UUID }, c());
+    expect(split.transaction.subtransactions.length).toBeGreaterThan(0);
+    expectValid(getTransactionOutputSchema, split);
+    client.getTransactionById.mockResolvedValue(createTransactionResponse(mockFlaggedTransaction));
+    expectValid(getTransactionOutputSchema, await handleGetTransaction({ transaction_id: UUID }, c()));
+  });
+
+  it('ynab_create_transaction: a split, and the in-band duplicate import_id result', async () => {
+    client.isReadOnly.mockReturnValue(false);
+    client.createTransaction.mockResolvedValue(createTransactionResponse(mockSplitTransaction));
+    const created = await handleCreateTransaction({ account_id: UUID, date: '2024-01-20', amount: -150 }, c());
+    expect(created.transaction?.subtransactions).toBeDefined();
+    expectValid(createTransactionOutputSchema, created);
+    client.createTransaction.mockResolvedValue({ data: { transactions: [], duplicate_import_ids: ['dup-1'] } });
+    const dup = await handleCreateTransaction({ account_id: UUID, date: '2024-01-20', amount: -1, import_id: 'dup-1' }, c());
+    expect(dup.success).toBe(false);
+    expectValid(createTransactionOutputSchema, dup);
   });
 });

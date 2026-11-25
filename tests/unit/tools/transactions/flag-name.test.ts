@@ -47,33 +47,33 @@ describe('flag_name in transaction read tools', () => {
 
   it('ynab_list_transactions', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([flagged, unflagged]));
-    expectNames(JSON.parse(await handleListTransactions({}, mockClient as never)).transactions);
+    expectNames((await handleListTransactions({}, mockClient as never)).transactions);
   });
 
   it('ynab_list_account_transactions', async () => {
     mockClient.getAccountTransactions.mockResolvedValue(createTransactionsResponse([flagged, unflagged]));
     expectNames(
-      JSON.parse(await handleListAccountTransactions({ account_id: UUID }, mockClient as never)).transactions
+      (await handleListAccountTransactions({ account_id: UUID }, mockClient as never)).transactions
     );
   });
 
   it('ynab_list_category_transactions', async () => {
     mockClient.getCategoryTransactions.mockResolvedValue(createTransactionsResponse([flagged, unflagged]));
     expectNames(
-      JSON.parse(await handleListCategoryTransactions({ category_id: UUID }, mockClient as never)).transactions
+      (await handleListCategoryTransactions({ category_id: UUID }, mockClient as never)).transactions
     );
   });
 
   it('ynab_list_payee_transactions', async () => {
     mockClient.getPayeeTransactions.mockResolvedValue(createTransactionsResponse([flagged, unflagged]));
     expectNames(
-      JSON.parse(await handleListPayeeTransactions({ payee_id: UUID }, mockClient as never)).transactions
+      (await handleListPayeeTransactions({ payee_id: UUID }, mockClient as never)).transactions
     );
   });
 
   it('ynab_get_transaction', async () => {
     mockClient.getTransactionById.mockResolvedValue(createTransactionResponse(flagged));
-    const parsed = JSON.parse(await handleGetTransaction({ transaction_id: UUID }, mockClient as never));
+    const parsed = await handleGetTransaction({ transaction_id: UUID }, mockClient as never);
     expect(parsed.transaction.flag_color).toBe('red');
     expect(parsed.transaction.flag_name).toBe('Needs receipt');
   });
@@ -83,7 +83,7 @@ describe('flag_name in transaction read tools', () => {
     const long = { ...flagged, id: 'long', flag_name: 'x'.repeat(500) };
     const blank = { ...flagged, id: 'blank', flag_name: '   ' };
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([dirty, long, blank]));
-    const txns = JSON.parse(await handleListTransactions({}, mockClient as never)).transactions;
+    const txns = (await handleListTransactions({}, mockClient as never)).transactions;
     const by = (id: string) => txns.find((t: { id: string }) => t.id === id).flag_name;
     expect(by('dirty')).toBe('Review me');
     expect(by('long')).toHaveLength(100);
@@ -153,9 +153,7 @@ describe('ynab SDK response parsing keeps flag_name and chaining ids', () => {
 
   it('getTransactionById', async () => {
     fetchMock.mockImplementation(async () => json({ data: { transaction: wireTxn } }));
-    const parsed = JSON.parse(
-      await handleGetTransaction({ transaction_id: UUID }, client() as never)
-    );
+    const parsed = await handleGetTransaction({ transaction_id: UUID }, client() as never);
     expect(parsed.transaction.flag_name).toBe('Needs receipt');
     expect(parsed.transaction.matched_transaction_id).toBe('txn-m');
     expect(parsed.transaction.import_id).toBe('YNAB:-85000:2024-01-05:1');
@@ -166,12 +164,10 @@ describe('ynab SDK response parsing keeps flag_name and chaining ids', () => {
     fetchMock.mockImplementation(async () =>
       json({ data: { transactions: [wireTxn], server_knowledge: 5 } })
     );
-    const parsed = JSON.parse(
-      await handleListAccountTransactions(
+    const parsed = await handleListAccountTransactions(
         { account_id: UUID, type: 'unapproved' },
         client() as never
-      )
-    );
+      );
     const url = new URL(String(dataCalls()[0]![0]));
     expect(url.pathname).toMatch(/\/accounts\/.+\/transactions$/);
     expect(url.searchParams.get('type')).toBe('unapproved');
@@ -188,18 +184,14 @@ describe('ynab SDK response parsing keeps flag_name and chaining ids', () => {
         },
       })
     );
-    const cat = JSON.parse(
-      await handleListCategoryTransactions(
+    const cat = await handleListCategoryTransactions(
         { category_id: UUID, type: 'uncategorized' },
         client() as never
-      )
-    );
-    const payee = JSON.parse(
-      await handleListPayeeTransactions(
+      );
+    const payee = await handleListPayeeTransactions(
         { payee_id: UUID, type: 'unapproved' },
         client() as never
-      )
-    );
+      );
     expect(new URL(String(dataCalls()[0]![0])).searchParams.get('type')).toBe('uncategorized');
     expect(new URL(String(dataCalls()[1]![0])).searchParams.get('type')).toBe('unapproved');
     for (const out of [cat, payee]) {

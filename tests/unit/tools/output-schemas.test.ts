@@ -41,6 +41,17 @@ import { getPayeeLocationOutputSchema } from '../../../src/tools/payees/get-paye
 import { listPayeeLocationsByPayeeOutputSchema } from '../../../src/tools/payees/list-payee-locations-by-payee.js';
 import { listMonthsOutputSchema } from '../../../src/tools/months/list-months.js';
 import { getMonthOutputSchema } from '../../../src/tools/months/get-month.js';
+import { listTransactionsOutputSchema } from '../../../src/tools/transactions/list-transactions.js';
+import { getTransactionOutputSchema } from '../../../src/tools/transactions/get-transaction.js';
+import { createTransactionOutputSchema } from '../../../src/tools/transactions/create-transaction.js';
+import { updateTransactionOutputSchema } from '../../../src/tools/transactions/update-transaction.js';
+import { deleteTransactionOutputSchema } from '../../../src/tools/transactions/delete-transaction.js';
+import { createTransactionsOutputSchema } from '../../../src/tools/transactions/create-transactions.js';
+import { updateTransactionsOutputSchema } from '../../../src/tools/transactions/update-transactions.js';
+import { listAccountTransactionsOutputSchema } from '../../../src/tools/transactions/list-account-transactions.js';
+import { listCategoryTransactionsOutputSchema } from '../../../src/tools/transactions/list-category-transactions.js';
+import { listPayeeTransactionsOutputSchema } from '../../../src/tools/transactions/list-payee-transactions.js';
+import { importTransactionsOutputSchema } from '../../../src/tools/transactions/import-transactions.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
@@ -63,17 +74,6 @@ const PENDING_OUTPUT_SCHEMA = [
   // Payees
   // Months
   // Transactions
-  'ynab_list_transactions',
-  'ynab_get_transaction',
-  'ynab_create_transaction',
-  'ynab_update_transaction',
-  'ynab_delete_transaction',
-  'ynab_create_transactions',
-  'ynab_update_transactions',
-  'ynab_list_account_transactions',
-  'ynab_list_category_transactions',
-  'ynab_list_payee_transactions',
-  'ynab_import_transactions',
   // Scheduled transactions
   'ynab_list_scheduled_transactions',
   'ynab_get_scheduled_transaction',
@@ -139,6 +139,17 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_list_payee_locations_by_payee: listPayeeLocationsByPayeeOutputSchema,
   ynab_list_months: listMonthsOutputSchema,
   ynab_get_month: getMonthOutputSchema,
+  ynab_list_transactions: listTransactionsOutputSchema,
+  ynab_get_transaction: getTransactionOutputSchema,
+  ynab_create_transaction: createTransactionOutputSchema,
+  ynab_update_transaction: updateTransactionOutputSchema,
+  ynab_delete_transaction: deleteTransactionOutputSchema,
+  ynab_create_transactions: createTransactionsOutputSchema,
+  ynab_update_transactions: updateTransactionsOutputSchema,
+  ynab_list_account_transactions: listAccountTransactionsOutputSchema,
+  ynab_list_category_transactions: listCategoryTransactionsOutputSchema,
+  ynab_list_payee_transactions: listPayeeTransactionsOutputSchema,
+  ynab_import_transactions: importTransactionsOutputSchema,
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,

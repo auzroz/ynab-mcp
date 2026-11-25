@@ -69,7 +69,7 @@ describe('transaction list/get outputs carry chaining ids', () => {
 
   it('ynab_list_transactions', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([full]));
-    const parsed = JSON.parse(await handleListTransactions({}, mockClient as never));
+    const parsed = await handleListTransactions({}, mockClient as never);
     expectFull(parsed.transactions[0]);
     // existing fields are kept
     expect(parsed.transactions[0].payee_name).toBe('Kroger');
@@ -78,7 +78,7 @@ describe('transaction list/get outputs carry chaining ids', () => {
 
   it('ynab_list_transactions includes split ids', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([mockSplitTransaction]));
-    const parsed = JSON.parse(await handleListTransactions({}, mockClient as never));
+    const parsed = await handleListTransactions({}, mockClient as never);
     const subs = parsed.transactions[0].subtransactions;
     expect(subs).toHaveLength(2);
     expect(subs[0]).toMatchObject({
@@ -97,7 +97,7 @@ describe('transaction list/get outputs carry chaining ids', () => {
     mockClient.getTransactions.mockResolvedValue(
       createTransactionsResponse([mockGroceryTransactions[0]!, { ...full, id: 'x', import_id: undefined } as never])
     );
-    const parsed = JSON.parse(await handleListTransactions({}, mockClient as never));
+    const parsed = await handleListTransactions({}, mockClient as never);
     for (const txn of parsed.transactions) {
       for (const key of CHAIN_KEYS) expect(txn).toHaveProperty(key);
     }
@@ -109,9 +109,7 @@ describe('transaction list/get outputs carry chaining ids', () => {
     mockClient.getAccountTransactions.mockResolvedValue(
       createTransactionsResponse([full, mockSplitTransaction])
     );
-    const parsed = JSON.parse(
-      await handleListAccountTransactions({ account_id: UUID }, mockClient as never)
-    );
+    const parsed = await handleListAccountTransactions({ account_id: UUID }, mockClient as never);
     const byId = Object.fromEntries(parsed.transactions.map((t: { id: string }) => [t.id, t]));
     expectFull(byId['txn-full']);
     expect(byId['txn-full'].subtransactions).toBeUndefined();
@@ -129,9 +127,7 @@ describe('transaction list/get outputs carry chaining ids', () => {
     mockClient.getCategoryTransactions.mockResolvedValue(
       createTransactionsResponse([full, hybridSub as never])
     );
-    const parsed = JSON.parse(
-      await handleListCategoryTransactions({ category_id: UUID }, mockClient as never)
-    );
+    const parsed = await handleListCategoryTransactions({ category_id: UUID }, mockClient as never);
     const byId = Object.fromEntries(parsed.transactions.map((t: { id: string }) => [t.id, t]));
     expectFull(byId['txn-full']);
     expect(byId['sub-001'].type).toBe('subtransaction');
@@ -142,24 +138,18 @@ describe('transaction list/get outputs carry chaining ids', () => {
 
   it('ynab_list_payee_transactions', async () => {
     mockClient.getPayeeTransactions.mockResolvedValue(createTransactionsResponse([full]));
-    const parsed = JSON.parse(
-      await handleListPayeeTransactions({ payee_id: UUID }, mockClient as never)
-    );
+    const parsed = await handleListPayeeTransactions({ payee_id: UUID }, mockClient as never);
     expectFull(parsed.transactions[0]);
     expect(parsed.transactions[0].category_name).toBe('Groceries');
   });
 
   it('ynab_get_transaction keeps all ids, including split ids', async () => {
     mockClient.getTransactionById.mockResolvedValue(createTransactionResponse(full));
-    const parsed = JSON.parse(
-      await handleGetTransaction({ transaction_id: UUID }, mockClient as never)
-    );
+    const parsed = await handleGetTransaction({ transaction_id: UUID }, mockClient as never);
     expectFull(parsed.transaction);
 
     mockClient.getTransactionById.mockResolvedValue(createTransactionResponse(mockSplitTransaction));
-    const split = JSON.parse(
-      await handleGetTransaction({ transaction_id: UUID }, mockClient as never)
-    );
+    const split = await handleGetTransaction({ transaction_id: UUID }, mockClient as never);
     expect(split.transaction.subtransactions[0]).toMatchObject({
       id: 'sub-001',
       transaction_id: 'txn-split-001',

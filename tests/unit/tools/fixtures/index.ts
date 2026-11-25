@@ -56,6 +56,7 @@ export {
   mockAllTransactions,
   mockScheduledTransactions,
   createTransactionsResponse,
+  createHybridTransactionsResponse,
   createTransactionResponse,
   createScheduledTransactionsResponse,
   createScheduledTransactionResponse,
