@@ -481,7 +481,9 @@ disconnected connection is refused at once on every replica. What remains for
 a while on the other replicas:
 
 - A request that another replica had already accepted when the revoke or
-  disconnect committed runs to its end, bounded by `MCP_REQUEST_TIMEOUT_MS`.
+  disconnect committed keeps running. `MCP_REQUEST_TIMEOUT_MS` bounds when
+  its client gets a reply, not the work: a YNAB call or write that has
+  already started can still complete after that reply.
   An erased user's audit row for that request is not written (audit rows are
   written only while the account generation exists).
 - The other replicas' in-memory entry for the user (cached budget data,
