@@ -29,6 +29,11 @@ function validatorFor(schema: z.ZodObject): ValidateFunction {
 /** Paths in `value` that would not survive a JSON round trip unchanged. */
 function nonJsonPaths(value: unknown, path = '$'): string[] {
   if (value === undefined) return [`${path} is undefined`];
+  // JSON.stringify drops functions and symbols (and throws on bigint), so the
+  // closed-schema check on the round-tripped copy would never see them.
+  if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
+    return [`${path} is a ${typeof value}`];
+  }
   if (typeof value === 'number') return Number.isFinite(value) ? [] : [`${path} is ${value}`];
   if (value === null || typeof value !== 'object') return [];
   if (Array.isArray(value)) return value.flatMap((v, i) => nonJsonPaths(v, `${path}[${i}]`));
