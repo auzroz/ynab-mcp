@@ -448,6 +448,13 @@ name there gets "Unknown tool".
   revoke a YNAB authorization itself. To use the server again, the user
   signs in from the start, as a new account.
 
+**A revoke or disconnect that times out.** `MCP_REQUEST_TIMEOUT_MS` ends the
+wait for the reply, not the storage work: neither tool passes a cancellation
+signal into storage, so a revoke or erase that has started can still commit
+after the client has the timeout result. That result says `outcome: "unknown"`
+and is not a sign that nothing changed. Check with `ynab_list_connections`
+before retrying. After a disconnect that did commit, that call gets `401`.
+
 **Who may call them.** Any connection may list. Revoking and disconnecting
 need what a YNAB write needs: writes enabled for the instance
 (`YNAB_READ_ONLY=false` and `YNAB_OAUTH_ALLOW_WRITE=true`), a read-write grant
