@@ -26,6 +26,7 @@ describe('defaults', () => {
   it('are the approved windows, and the policy built from them is DEFAULT_RETENTION', () => {
     const c = loadHttpConfig(HEADER_ENV);
     expect([c.refreshTokenIdleDays, c.refreshTokenTtlDays, c.abandonedClientHours, c.unusedClientDays]).toEqual([30, 90, 24, 90]);
+    expect(c.auditRetentionDays).toBe(90);
     expect(retentionPolicyFromSettings(c)).toEqual(DEFAULT_RETENTION);
   });
 
@@ -36,6 +37,7 @@ describe('defaults', () => {
       MCP_REFRESH_TOKEN_TTL_DAYS: '',
       MCP_ABANDONED_CLIENT_HOURS: '',
       MCP_UNUSED_CLIENT_DAYS: '',
+      AUDIT_RETENTION_DAYS: '',
     });
     expect(retentionPolicyFromSettings(c)).toEqual(DEFAULT_RETENTION);
   });
@@ -49,12 +51,14 @@ describe('explicit values', () => {
       MCP_REFRESH_TOKEN_TTL_DAYS: '14',
       MCP_ABANDONED_CLIENT_HOURS: '2',
       MCP_UNUSED_CLIENT_DAYS: '30',
+      AUDIT_RETENTION_DAYS: '365',
     });
     expect(retentionPolicyFromSettings(c)).toEqual({
       refreshTokenIdleMs: 7 * DAY,
       refreshTokenTtlMs: 14 * DAY,
       abandonedClientMs: 2 * 3_600_000,
       unusedClientMs: 30 * DAY,
+      auditRetentionMs: 365 * DAY,
     });
   });
 
@@ -65,16 +69,20 @@ describe('explicit values', () => {
       MCP_REFRESH_TOKEN_TTL_DAYS: '1',
       MCP_ABANDONED_CLIENT_HOURS: '1',
       MCP_UNUSED_CLIENT_DAYS: '1',
+      AUDIT_RETENTION_DAYS: '1',
     });
     expect(retentionPolicyFromSettings(low).abandonedClientMs).toBe(3_600_000);
+    expect(retentionPolicyFromSettings(low).auditRetentionMs).toBe(DAY);
     const top = loadHttpConfig({
       ...HEADER_ENV,
       MCP_REFRESH_TOKEN_IDLE_DAYS: '3650',
       MCP_REFRESH_TOKEN_TTL_DAYS: '3650',
       MCP_ABANDONED_CLIENT_HOURS: '87600',
       MCP_UNUSED_CLIENT_DAYS: '3650',
+      AUDIT_RETENTION_DAYS: '3650',
     });
     expect(retentionPolicyFromSettings(top).refreshTokenTtlMs).toBe(3650 * DAY);
+    expect(retentionPolicyFromSettings(top).auditRetentionMs).toBe(3650 * DAY);
   });
 });
 
@@ -84,6 +92,9 @@ describe('invalid values', () => {
     ['MCP_REFRESH_TOKEN_TTL_DAYS', ['0', '3651', '-1', '90days', '1e2']],
     ['MCP_ABANDONED_CLIENT_HOURS', ['0', '87601', '-5', '24h', '0.5']],
     ['MCP_UNUSED_CLIENT_DAYS', ['0', '3651', '-1', '90d', 'ninety']],
+    // 0 is refused: there is no "keep nothing" setting (#60b).
+    ['AUDIT_RETENTION_DAYS', ['0', '3651', '-1', '90d', '1.5', '1e2', ' 90', 'forever']],
+
   ])('%s refuses %j, naming the variable and never the value', (name, values) => {
     for (const value of values) {
       const message = failure({ [name]: value });

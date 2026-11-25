@@ -14,7 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { Ajv } from 'ajv';
 import type { z } from 'zod';
-import { tools, runToolCall, toolCallOutput } from '../../../src/tools/index.js';
+// The catalog: every transport's tools plus the OAuth-only account tools (#53c).
+import { toolCatalog as tools, runToolCall, toolCallOutput } from '../../../src/tools/index.js';
 import { closedOutputSchema, toOutputSchema } from '../../../src/tools/output-schema.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
@@ -107,6 +108,10 @@ const PENDING_OUTPUT_SCHEMA = [
   'ynab_list_money_movements',
   'ynab_list_money_movement_groups',
   // Analytics (45c)
+  // Account tools (#53c, OAuth HTTP mode only; their own call path in server.ts)
+  'ynab_list_connections',
+  'ynab_revoke_connection',
+  'ynab_disconnect',
 ];
 
 /**
@@ -267,12 +272,32 @@ describe('output schemas: real output validates', () => {
     await audit.record({ operation: 'create', tool: 'ynab_create_transaction', budgetId: 'b1', resourceType: 'transaction', resourceId: 'tx1', outcome: 'success' });
     await audit.record({ operation: 'update', tool: 'ynab_update_category', resourceType: 'category', outcome: 'denied_scope' });
     await audit.record({ operation: 'audit_suppressed', tool: 'ynab_update_category', resourceType: 'category', outcome: 'denied_scope' });
-    for (const args of [{}, { success: false }, { operation: 'update' }, { summary_only: true }, { summary_only: true, outcome: 'error' }]) {
+    // #60b: a bulk call's rows, and a revocation (success: null).
+    await audit.recordMany({ operation: 'create', tool: 'ynab_create_transactions', budgetId: 'b1', resourceType: 'transaction', outcome: 'success' }, ['tx2', 'tx3']);
+    await audit.recordRevocation({ resourceType: 'grant', resourceId: 'grant-b', outcome: 'revoked' });
+    for (const args of [
+      {},
+      { success: false },
+      { operation: 'update' },
+      { operation: 'revoke', all_clients: true },
+      { all_clients: true },
+      { summary_only: true },
+      { summary_only: true, all_clients: true },
+      { summary_only: true, outcome: 'error' },
+    ]) {
       const { text, structured } = await runToolCall('ynab_audit_log', args, client);
       expect(structured).toBeDefined();
       expect(text).toBe(JSON.stringify(structured, null, 2));
       expectValid('ynab_audit_log', structured);
     }
+    const revoke = (await runToolCall('ynab_audit_log', { operation: 'revoke', all_clients: true }, client)).structured as {
+      all_clients?: boolean;
+      entries: Array<{ success: boolean | null }>;
+      summary: { revocation_count: number };
+    };
+    expect(revoke.all_clients).toBe(true);
+    expect(revoke.entries.map((e) => e.success)).toEqual([null]);
+    expect(revoke.summary.revocation_count).toBe(1);
   });
 
   it('ynab_audit_log: a row with an operation and outcome this release does not know still validates', async () => {

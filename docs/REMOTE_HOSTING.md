@@ -75,6 +75,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_REFRESH_TOKEN_TTL_DAYS` | no | A connection ends this many days after its sign-in, however often it is refreshed (integer 1-3650, default `90`) |
 | `MCP_ABANDONED_CLIENT_HOURS` | no | A registered client that never completed a sign-in is deleted after this many hours (integer 1-87600, default `24`) |
 | `MCP_UNUSED_CLIENT_DAYS` | no | A client with no live connection is deleted this many days after its last sign-in (integer 1-3650, default `90`) |
+| `AUDIT_RETENTION_DAYS` | no | Audit log entries are deleted this many days after they were written (integer 1-3650, default `90`; `0` is refused). OAuth mode's durable log only: stdio and header mode keep the newest 1,000 entries per user in memory. See "The audit log" |
 
 OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
 `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL`; startup is refused if any is missing.
@@ -408,6 +409,96 @@ treated as **read-only**. Users who had read-write access must reconnect once
 (remove and re-add the connector, or re-run `mcp-remote`) to get write access
 back. Read access keeps working without reconnecting.
 
+### Managing connections
+
+In OAuth mode a user can see and remove their own connections from inside
+any connected client, with three tools (0.5.0, #53). Stdio and header mode
+have no connections, so they don't register these tools, and a call to one by
+name there gets "Unknown tool".
+
+- **`ynab_list_connections`** lists the user's live connections, one per
+  client grant. Each entry has the client's name as the client declared it
+  (sanitized, not verified), the client's host when its `client_id` is a
+  metadata-document URL (see "Client ID Metadata Documents"), when it was
+  connected, when it last signed in or refreshed (`last_used_at`), when it
+  expires unless refreshed, its access level (`read-only` or `read-write`, the
+  grant's own, see above), and `this_connection: true` on the calling client's
+  own entry. It shows no token values or hashes. The only id it shows is
+  `family_id`, the grant id that `ynab_revoke_connection` takes. Only the
+  calling user's connections are listed.
+- **`ynab_revoke_connection { family_id }`** revokes one connection: the
+  grant and every token and code under it. The client's next request gets
+  `401`, and it has to sign in again. Other connections are not affected. The
+  revoke is scoped to the signed-in user. Another user's `family_id` gets
+  exactly the same `not_found` reply as an id that doesn't exist, and that
+  connection is left alone. A `family_id` that isn't an id this server issues
+  (a 43-character grant id, or a 0.4.x UUID) is refused before storage is
+  read. A client may revoke its own connection. The reply then says
+  `this_connection: true`, the current request still finishes, and the next
+  one is refused. Each revoke that ends a connection is one `revoked` entry
+  in the audit log (see "Revoked connections"); a `not_found` reply writes
+  none.
+- **`ynab_disconnect { confirm: "DISCONNECT" }`** erases the user's account on
+  this server, with the same step as [erasing an inactive
+  user](#erasing-inactive-users). That covers the stored YNAB tokens, every
+  connection with its tokens and codes, and the user's audit log, removed in
+  one transaction on every driver. Anything but the exact string `DISCONNECT`
+  is refused, and nothing is erased. Nothing in the YNAB budget changes. The
+  reply tells the user that YNAB still lists the server as authorized, and how
+  to remove it there, with the consent page's words: open app.ynab.com/settings,
+  find Authorized Applications, and choose Revoke next to the server's app
+  (listed under the name the operator registered it with). The server can't
+  revoke a YNAB authorization itself. To use the server again, the user
+  signs in from the start, as a new account.
+
+**A revoke or disconnect that times out.** `MCP_REQUEST_TIMEOUT_MS` ends the
+wait for the reply, not the storage work: neither tool passes a cancellation
+signal into storage, so a revoke or erase that has started can still commit
+after the client has the timeout result. That result says `outcome: "unknown"`
+and is not a sign that nothing changed. Check with `ynab_list_connections`
+before retrying. After a disconnect that did commit, that call gets `401`.
+
+**Who may call them.** Any connection may list, revoke and disconnect,
+read-only grants included, whatever the instance's write settings
+(`YNAB_READ_ONLY`, `YNAB_OAUTH_ALLOW_WRITE`). The write cap
+(`YNAB_WRITE_LIMIT_PER_HOUR`) doesn't count them either. None of the three
+changes budget data or makes a YNAB request, and on an instance with writes
+off (the default) every connection is read-only, so a stricter rule would
+leave users no way to disconnect from a client. YNAB write tools stay hidden
+from and refused to a read-only connection as before; only these three are
+exempt. The cost: any connected client, a read-only one included, can end the
+user's other connections on this server, or erase the user's account here.
+It can't touch the budget, and YNAB's own authorization of the server stays
+in place until the user revokes it at YNAB.
+
+**What a disconnect clears on the replica that ran it.** This replica forgets
+the user's in-memory state at once: the cached budget data and delta
+snapshots, the rate limiter and per-client usage, and its cached YNAB access
+token. The user's next request, after signing in again, starts fresh. The
+OAuth endpoints' rate-limit counters are not reset: they hold no user data,
+and resetting them would hand out extra requests.
+
+**Several replicas.** Nothing that decides whether a request is allowed is
+cached. Every `/mcp` request looks its access token up in storage, and every
+replica re-reads the user's row on every request. So a revoked or
+disconnected connection is refused at once on every replica. What remains for
+a while on the other replicas:
+
+- A request that another replica had already accepted when the revoke or
+  disconnect committed keeps running. `MCP_REQUEST_TIMEOUT_MS` bounds when
+  its client gets a reply, not the work: a YNAB call or write that has
+  already started can still complete after that reply.
+  An erased user's audit row for that request is not written (audit rows are
+  written only while the account generation exists).
+- The other replicas' in-memory entry for the user (cached budget data,
+  snapshots, the limiter) stays until it is evicted as idle, an hour or more
+  after the user's last request there. Nothing can reach it: a request needs a
+  valid token, and the erased account's tokens are gone. A user who signs in
+  again gets a new account, but the same YNAB user id, so on a replica that
+  still holds the old entry, the new account's first requests share that
+  entry's limiter and cached budget data (their own budget data, read with
+  their own YNAB grant).
+
 ### Requests, limits and timeouts
 
 `/mcp` is stateless (since 0.5.0). The server issues no `Mcp-Session-Id` and
@@ -547,6 +638,7 @@ setting.
 | Connection, in total | 90 days after its sign-in, however often it is refreshed | `MCP_REFRESH_TOKEN_TTL_DAYS` (1-3650) |
 | Client that never completed a sign-in | 24 hours after registering | `MCP_ABANDONED_CLIENT_HOURS` (1-87600) |
 | Client with no live connection | 90 days after its last sign-in | `MCP_UNUSED_CLIENT_DAYS` (1-3650) |
+| Audit log entry | 90 days after it was written | `AUDIT_RETENTION_DAYS` (1-3650) |
 | Access token, authorization code, sign-in in progress | their own short lifetimes (`MCP_ACCESS_TOKEN_TTL_SEC`, `MCP_AUTH_CODE_TTL_SEC`) | not retention settings |
 | Spent codes and refresh tokens | kept 30 days after use so a replay can still revoke its grant | fixed |
 
@@ -568,12 +660,18 @@ others skip that pass. It deletes, in small batches:
 - expired connections once nothing is left under them;
 - abandoned and unused clients, once nothing refers to them.
 
+Then, as its own step (`audit-log`), it deletes audit log entries older than
+`AUDIT_RETENTION_DAYS`, in batches through the `(ts)` index. That step takes
+no lock: on Postgres a batch skips rows another replica's batch holds, so
+replicas pruning at once never wait on each other.
+
 It never deletes users: that is the opt-in "Erasing inactive users" below. A
 failed pass is logged and the next one runs on schedule. The log gives counts
 only, never a token, user or client id:
 
 ```text
 [Sweep] expired-rows: deleted accessTokens=12 refreshTokens=3 oauthAbandonedClients=1
+[Sweep] audit-log: deleted auditRows=240
 ```
 
 ### Erasing inactive users
@@ -600,16 +698,18 @@ tokens, codes and audit log.
   ```
 
 An erased user who comes back signs in again as a new account. The YNAB grant
-itself is not revoked at YNAB: the user can remove it under "Connected Apps" in
+itself is not revoked at YNAB: the user can remove it under "Authorized Applications" in
 YNAB's settings.
 
 ### The audit log
 
-Every write tool call is recorded with how it ended (#60a). In OAuth mode the
-entries go to the storage driver's `audit_log` table, so with `sqlite` or
-`postgres` they survive restarts and every replica writes to one log. In
-header mode, which has no storage, and on stdio they are kept in memory, the
-newest 1,000 per user.
+Every write tool call is recorded with how it ended (#60a), and in OAuth mode
+so is every revoked connection (#60b). In OAuth mode the entries go to the
+storage driver's `audit_log` table, so with `sqlite` or `postgres` they
+survive restarts and every replica writes to one log; the sweep deletes them
+`AUDIT_RETENTION_DAYS` (default 90) after they were written. In header mode,
+which has no storage, and on stdio they are kept in memory, the newest 1,000
+per user.
 
 Each entry holds:
 
@@ -618,17 +718,24 @@ Each entry holds:
   mode) or `local` (stdio).
 - `client_id`, `family_id`: the MCP client and its grant (OAuth mode).
 - `request_id`: the HTTP request (on stdio, one per tool call).
-- `tool`, `operation` (`create`, `update`, `delete`, `move`, `import`, or
-  `audit_suppressed`, below), `resource_type`, `resource_id` and `budget_id`
-  (a UUID, `last-used` or `default`; anything else is left out).
+- `tool`, `operation` (`create`, `update`, `delete`, `move`, `import`,
+  `audit_suppressed` or `revoke`, below), `resource_type`, `resource_id` and
+  `budget_id` (a UUID, `last-used` or `default`; anything else is left out).
 - `outcome`: `success`; `denied_read_only` (`YNAB_READ_ONLY`, or
   `YNAB_OAUTH_ALLOW_WRITE` off); `denied_scope` (a read-only grant, on the
   token or the user's YNAB connection); `denied_write_limit` (the write cap,
   first refusal of each episode only); or `error` (YNAB refused it, or it
-  failed before reaching YNAB, for example rate-limited).
+  failed before reaching YNAB, for example rate-limited). A revocation has
+  its own outcomes, below.
 
-A bulk call is one entry, with no `resource_id` unless it touched one record.
-`ynab_move_money` adds one `move` entry beside its two category updates. A
+A bulk call (`ynab_create_transactions`, `ynab_update_transactions`) writes
+one entry per transaction YNAB saved, each with its `resource_id` and all with
+the call's `request_id`, as one insert (at most 100, the tools' own item
+limit). A duplicate YNAB skipped has no entry, and the ids come from YNAB's
+answer, never from an `import_id`. A bulk call that saved nothing, failed or
+was refused is one entry with no `resource_id`; a refused one counts once
+against the refusal cap below. `ynab_move_money` adds one `move` entry beside
+its two category updates. A
 call that fails input validation is not a write attempt and is not recorded,
 and neither is a successful call of the deprecated `ynab_import_transactions`,
 which does nothing. Refused writes are bounded so a looping client can't fill
@@ -641,7 +748,8 @@ So an `audit_suppressed` entry tells a reader of the log that entries are
 missing after it.
 
 Recording an entry never fails or holds up the write. A write waits at most 1
-second for its entry (less when its request is close to its deadline), so a
+second for its entries, a bulk call's included (less when its request is
+close to its deadline), so a
 slow database can't turn a write YNAB applied into a timeout; a slower insert
 finishes in the background. If the store can't be written (the database is
 unreachable, say), the write's own result stands, the entry is lost, and the
@@ -651,22 +759,63 @@ therefore succeed with no audit entry; watch for that log line.
 Entries hold ids only. There is no column for an amount or other financial
 value, a payee, account, category or memo text, or an error message: those
 stay in the tool's result and in the server's sanitized logs. The server also
-writes one stderr line per entry (`[AUDIT] <outcome>: <operation> on
-<resource type> (<id>) via <tool>`).
+writes one stderr line per write (`[AUDIT] <outcome>: <operation> on
+<resource type> (<id>) via <tool>`; a bulk call's line says `(<n> items)`),
+and one per revocation at the authorization server with no id (`[AUDIT]
+<outcome>: revoke on grant`); an account tool's revocation logs the write-style
+line, with the revoked grant's or client's id and the tool.
 
 Erasing an account (deleting it, or the inactive-user erase) erases its
 entries in the same transaction. A write that finishes after its account was
 erased, or erased and connected again, writes no entry: the insert checks the
 user row of the request's account generation, and on Postgres holds it, so an
 erase in flight either waits for the insert and deletes the entry or finds
-nothing to delete.
+nothing to delete. A bulk call's entries are one insert under the same check:
+all of them land or none.
+
+#### Revoked connections
+
+In OAuth mode each revocation of a connection (an MCP grant) is one entry,
+with `operation` `revoke`, `resource_type` `grant` and the revoked grant's id
+as `resource_id` (D-7a). Issuing and refreshing tokens is not recorded, so a
+connection's hourly refreshes add nothing. The outcomes:
+
+- `revoked`: the user or their client revoked it, at `/revoke` (with the
+  refresh token or the access token), or with the account tools
+  (`ynab_revoke_connection`; revoking every connection of one client is one
+  entry with `resource_type` `client` and the client id).
+- `revoked_reuse`: a spent refresh token or authorization code was presented
+  again (past #64a's 60-second retry window), or a client presented another
+  client's, so the connection was ended (RFC 9700).
+- `revoked_replay`: two requests spent the same refresh token or code at once,
+  and the second ended the connection.
+
+`client_id` is the client that made the request (for reuse, the client that
+presented the credential, which may not be the connection's own), and
+`family_id` its grant when known. `budget_id` is empty, and so is
+`request_id` except for the account tools, which record the tool's request
+and name. Each
+revocation is recorded once, by the request that deleted the connection's
+rows, so two requests revoking one connection at once write one entry, and
+revoking a connection already gone writes none. No entry holds a token, code
+or storage key. Erasing an account (`ynab_disconnect`, the inactive-user
+erase) is not recorded: it deletes the user's entries. Neither is a retry
+answered inside the refresh window, or YNAB refusing the user's YNAB token. A
+revocation entry is written at most 1 second after the response, in the
+background where the authorization server can't wait, and a failure is logged
+as `[AUDIT] could not record a revocation`; the OAuth response never changes.
+
+#### Reading the log
 
 `ynab_audit_log` shows the calling client's own entries in OAuth mode (another
 client of the same user can't read them), and the user's entries on stdio and
-in header mode, where there is one caller. It lists them newest first, filtered
-by operation, resource type, outcome or success. Entries are kept until the
-account is erased; a retention window and an option to see every client's
-entries come in a later release (#60b).
+in header mode, where there is one caller. `all_clients: true` shows the
+entries of all of the user's clients, never another user's; a read-only
+connection may use it, since it reads the same user's log. It lists entries
+newest first, filtered by operation, resource type, outcome or success
+(`success` filters write attempts; a revocation is neither and shows
+`success: null`). The summary counts revocations apart (`revocation_count`).
+
 
 The table comes with schema 7 (0.5.0): `audit_log` and two indexes,
 `(user_id, ts)` and `(ts)`, created on startup. Older releases ignore it.

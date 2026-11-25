@@ -9,16 +9,18 @@
  * text: there is no column that could hold one (no free-form details, no
  * error message).
  *
- * The columns a later step fills for other kinds of event (#60b's revocation
- * rows have no tool or resource) are nullable, so it needs no migration.
- * `ts` (epoch ms) is indexed for #60b's retention prune, `(user_id, ts)` for
- * the per-user listing and the account erase (`deleteUserData`, D-7b).
+ * #60b adds two kinds of row and no column: one row per item of a bulk write
+ * (each with its resource id, all with the call's request id), and
+ * revocation rows (operation `revoke`; see {@link AUDIT_REVOCATION_OUTCOMES}).
+ * `ts` (epoch ms) is indexed for the retention prune (`AUDIT_RETENTION_DAYS`,
+ * a sweep step), `(user_id, ts)` for the per-user listing and the account
+ * erase (`deleteUserData`, D-7b).
  */
 
 import type { AddedTable, Dialect } from './migrations.js';
 
 /** How a write attempt ended. */
-export const AUDIT_OUTCOMES = [
+export const AUDIT_WRITE_OUTCOMES = [
   'success',
   /** The operator's read-only mode (YNAB_READ_ONLY, or YNAB_OAUTH_ALLOW_WRITE off). */
   'denied_read_only',
@@ -28,7 +30,27 @@ export const AUDIT_OUTCOMES = [
   'denied_write_limit',
   'error',
 ] as const;
-export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
+export type AuditOutcome = (typeof AUDIT_WRITE_OUTCOMES)[number];
+
+/**
+ * Why a grant was revoked (#60b, D-7a): the outcome of a `revoke` row. Only
+ * revocations are recorded, never issuance or a refresh.
+ */
+export const AUDIT_REVOCATION_OUTCOMES = [
+  /** The user or their client revoked it: `/revoke`, or the account tools (ynab_revoke_connection). */
+  'revoked',
+  /**
+   * A spent refresh token or code was presented again, or a client presented
+   * another client's, so the grant was revoked (RFC 9700).
+   */
+  'revoked_reuse',
+  /** Two requests spent the same refresh token or code at once; the second revoked the grant. */
+  'revoked_replay',
+] as const;
+export type AuditRevocationOutcome = (typeof AUDIT_REVOCATION_OUTCOMES)[number];
+
+/** Every outcome a row can carry: the tool's `outcome` filter. */
+export const AUDIT_OUTCOMES = [...AUDIT_WRITE_OUTCOMES, ...AUDIT_REVOCATION_OUTCOMES] as const;
 
 /**
  * What a write did. `move` is ynab_move_money; `import` the deprecated no-op
@@ -36,11 +58,17 @@ export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
  * budget of recorded refusals ran out, so later refusals in that hour are
  * missing from the log (its outcome is the refusal's, its tool the call's).
  */
-export const AUDIT_OPERATIONS = ['create', 'update', 'delete', 'move', 'import', 'audit_suppressed'] as const;
-export type AuditOperation = (typeof AUDIT_OPERATIONS)[number];
+export const AUDIT_WRITE_OPERATIONS = ['create', 'update', 'delete', 'move', 'import', 'audit_suppressed'] as const;
+export type AuditOperation = (typeof AUDIT_WRITE_OPERATIONS)[number];
+
+/** A revocation row's operation (#60b): its outcome says why, its resource what was revoked. */
+export const AUDIT_REVOKE_OPERATION = 'revoke';
+
+/** Every operation a row can carry: the tool's `operation` filter. */
+export const AUDIT_OPERATIONS = [...AUDIT_WRITE_OPERATIONS, AUDIT_REVOKE_OPERATION] as const;
 
 /** What a write acted on. */
-export const AUDIT_RESOURCE_TYPES = [
+export const AUDIT_WRITE_RESOURCE_TYPES = [
   'account',
   'category',
   'category_group',
@@ -48,7 +76,25 @@ export const AUDIT_RESOURCE_TYPES = [
   'transaction',
   'scheduled_transaction',
 ] as const;
-export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];
+export type AuditResourceType = (typeof AUDIT_WRITE_RESOURCE_TYPES)[number];
+
+/**
+ * What a revocation acted on: one grant (an MCP connection; `resource_id` is
+ * its grant id), or every grant the user gave one client (`resource_id` is
+ * the client id).
+ */
+export const AUDIT_REVOKED_RESOURCE_TYPES = ['grant', 'client'] as const;
+export type AuditRevokedResourceType = (typeof AUDIT_REVOKED_RESOURCE_TYPES)[number];
+
+/** Every resource type a row can carry: the tool's `resource_type` filter. */
+export const AUDIT_RESOURCE_TYPES = [...AUDIT_WRITE_RESOURCE_TYPES, ...AUDIT_REVOKED_RESOURCE_TYPES] as const;
+
+/**
+ * Most rows one call writes: one per item of a bulk write. The bulk tools
+ * accept at most 100 items, so this never truncates one of them; it bounds a
+ * response that names more.
+ */
+export const MAX_AUDIT_ROWS_PER_CALL = 100;
 
 /**
  * One row. Values are read back as stored, so a row a newer release wrote
@@ -81,7 +127,10 @@ export interface AuditQuery {
   outcomes?: readonly string[] | undefined;
   /** Rows at or after this time (epoch ms). */
   since?: number | undefined;
-  /** One client's rows only (#60b's default filter; unused in 60a). */
+  /**
+   * One client's rows only: ynab_audit_log's default in oauth mode. Its
+   * `all_clients` option leaves this unset; the user filter always applies.
+   */
   clientId?: string | undefined;
 }
 
@@ -101,6 +150,13 @@ export interface AuditGuard {
 export interface AuditStore {
   /** Append a row. Returns false when the guard refused it (the account is gone). */
   appendAuditEntry(entry: AuditRecord, guard?: AuditGuard): Promise<boolean>;
+  /**
+   * Append the rows of one call (a bulk write's items), all of one user, in
+   * one statement: all are written or none (the guard applies as for one
+   * row). Returns false when the guard refused them. Throws for an empty
+   * batch or one with rows of several users.
+   */
+  appendAuditEntries(entries: readonly AuditRecord[], guard?: AuditGuard): Promise<boolean>;
   /** The user's rows matching `query`, newest first, at most `limit`. */
   listAuditEntries(userId: string, query: AuditQuery, limit: number): Promise<AuditRecord[]>;
   /** The number of the user's rows matching `query`, per outcome. */
@@ -195,6 +251,98 @@ export function auditInsert(dialect: Dialect, entry: AuditRecord, guard?: AuditG
       WHERE EXISTS (SELECT 1 FROM users WHERE user_id = $${u} AND COALESCE(created_at, 0) = $${g})`,
     params: [...params, entry.userId, guard.generation],
   };
+}
+
+/** Postgres types of {@link COLUMNS}, in order. */
+const PG_TYPES = ['bigint', 'text', 'text', 'text', 'text', 'text', 'text', 'text', 'text', 'text', 'text'];
+const COLUMN_NAMES = COLUMNS.split(', ');
+
+/** The user every row of a batch belongs to. Throws for an empty batch or one of several users. */
+export function batchUser(entries: readonly AuditRecord[]): string {
+  const userId = entries[0]?.userId;
+  if (userId === undefined) throw new Error('An audit batch needs at least one row');
+  if (entries.some((e) => e.userId !== userId)) throw new Error("An audit batch holds one user's rows only");
+  return userId;
+}
+
+/**
+ * One INSERT for a batch of rows, with a fixed number of parameters whatever
+ * its size: on Postgres one array per column (`unnest`), on SQLite one JSON
+ * array of rows (`json_each`). With a guard it inserts only while the user row
+ * of that generation exists, as {@link auditInsert}; on Postgres it holds that
+ * row FOR KEY SHARE, so the whole batch lands before an erase or not at all.
+ */
+export function auditInsertMany(
+  dialect: Dialect,
+  entries: readonly AuditRecord[],
+  guard?: AuditGuard
+): { sql: string; params: unknown[] } {
+  const userId = batchUser(entries);
+  const rows = entries.map(values);
+  if (dialect === 'postgres') {
+    const params: unknown[] = COLUMN_NAMES.map((_, i) => rows.map((r) => r[i]));
+    const arrays = COLUMN_NAMES.map((_, i) => `$${i + 1}::${PG_TYPES[i]}[]`).join(', ');
+    const source = `unnest(${arrays}) AS r(${COLUMNS})`;
+    const select = COLUMN_NAMES.map((c) => `r.${c}`).join(', ');
+    if (guard === undefined) {
+      return { sql: `INSERT INTO audit_log (${COLUMNS}) SELECT ${select} FROM ${source}`, params };
+    }
+    const u = params.length + 1;
+    return {
+      sql: `INSERT INTO audit_log (${COLUMNS})
+        SELECT ${select} FROM users u CROSS JOIN ${source}
+        WHERE u.user_id = $${u} AND COALESCE(u.created_at, 0) = $${u + 1}::bigint FOR KEY SHARE OF u`,
+      params: [...params, userId, guard.generation],
+    };
+  }
+  const select = COLUMN_NAMES.map((_, i) => `json_extract(value, '$[${i}]')`).join(', ');
+  const base = `INSERT INTO audit_log (${COLUMNS}) SELECT ${select} FROM json_each($1)`;
+  const params: unknown[] = [JSON.stringify(rows)];
+  if (guard === undefined) return { sql: base, params };
+  return {
+    sql: `${base} WHERE EXISTS (SELECT 1 FROM users WHERE user_id = $2 AND COALESCE(created_at, 0) = $3)`,
+    params: [...params, userId, guard.generation],
+  };
+}
+
+/**
+ * One batch of the retention prune: up to `$2` rows older than `$1` (epoch
+ * ms), found through the `(ts)` index. On Postgres a batch skips rows another
+ * transaction holds; a later pass picks them up.
+ */
+export function auditPruneSql(dialect: Dialect): string {
+  const lock = dialect === 'postgres' ? ' FOR UPDATE SKIP LOCKED' : '';
+  return `DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE ts < $1 LIMIT $2${lock})`;
+}
+
+/**
+ * Refuse a prune batch size that is not a positive safe integer: a batch of 0
+ * would never come back short, and SQLite reads a negative LIMIT as none.
+ */
+export function assertPruneBatchSize(batchSize: number): void {
+  if (!Number.isSafeInteger(batchSize) || batchSize <= 0) {
+    throw new Error('The audit prune batch size must be a positive integer');
+  }
+}
+
+/**
+ * Run the prune in batches of `batchSize`, each its own statement (so its own
+ * short transaction), until one comes back short. Returns the rows deleted.
+ */
+export async function runAuditPrune(
+  run: (sql: string, params: readonly unknown[]) => Promise<number>,
+  dialect: Dialect,
+  before: number,
+  batchSize: number
+): Promise<number> {
+  assertPruneBatchSize(batchSize);
+  const sql = auditPruneSql(dialect);
+  let total = 0;
+  for (;;) {
+    const deleted = await run(sql, [before, batchSize]);
+    total += deleted;
+    if (deleted < batchSize) return total;
+  }
 }
 
 /** The WHERE clause of a user's rows matching `query`, and its parameters from `$1`. */
@@ -296,6 +444,12 @@ export class MemoryAuditStore implements AuditStore {
     return true;
   }
 
+  async appendAuditEntries(entries: readonly AuditRecord[]): Promise<boolean> {
+    batchUser(entries);
+    for (const e of entries) this.append(e);
+    return true;
+  }
+
   /** Synchronous append, for MemoryStorage's guarded write. */
   append(entry: AuditRecord): void {
     let list = this.rows.get(entry.userId);
@@ -326,6 +480,18 @@ export class MemoryAuditStore implements AuditStore {
       if (auditMatches(e, query)) counts[e.outcome] = (counts[e.outcome] ?? 0) + 1;
     }
     return counts;
+  }
+
+  /** Delete every row older than `before` (epoch ms); returns how many. */
+  prune(before: number): number {
+    let n = 0;
+    for (const [userId, list] of this.rows) {
+      const kept = list.filter((e) => e.ts >= before);
+      n += list.length - kept.length;
+      if (kept.length === 0) this.rows.delete(userId);
+      else if (kept.length !== list.length) this.rows.set(userId, kept);
+    }
+    return n;
   }
 
   /** Erase a user's rows (the account erase). */
