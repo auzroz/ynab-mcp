@@ -5,7 +5,7 @@
  *   npm run build && node scripts/build-site.mjs
  *
  * Zero dependencies. It:
- *   1. imports the tool and prompt registries from dist/ (run `npm run build`
+ *   1. imports the tool catalog and prompt registry from dist/ (run `npm run build`
  *      first). Importing dist/tools/index.js and dist/prompts/index.js loads
  *      only the tool modules, zod, decimal.js and the ynab SDK: no config is
  *      read, no network request is made, and no native module (better-sqlite3,
@@ -64,6 +64,12 @@ export const GROUPS = [
     blurb: 'Moves of money between categories made in YNAB.',
   },
   { dir: 'user', label: 'User', blurb: 'The signed-in YNAB user.' },
+  {
+    dir: 'connections',
+    label: 'Connections',
+    blurb:
+      'The apps connected to your account on a hosted (OAuth) server: list them, revoke one, or disconnect and erase your data. Only on a server with OAuth sign-in.',
+  },
   {
     dir: 'system',
     label: 'System',
@@ -570,7 +576,8 @@ async function main() {
   if (!existsSync(toolsIndex) || !existsSync(promptsIndex)) {
     fail('dist/ is missing. Run `npm run build` first.');
   }
-  const [{ tools }, { prompts }] = await Promise.all([
+  // The catalog: every tool, including the account tools only OAuth HTTP mode registers.
+  const [{ toolCatalog: tools }, { prompts }] = await Promise.all([
     import(pathToFileURL(toolsIndex).href),
     import(pathToFileURL(promptsIndex).href),
   ]);

@@ -18,13 +18,13 @@ Traditional YNAB integrations require manual API calls or custom scripting. This
 - **Talk to your budget naturally** — Ask Claude "Am I overspending on dining out?" and get instant insights
 - **Get AI-powered financial analysis** — Subscription detection, spending trends, savings recommendations, and budget health scores
 - **Stay safe by default** — Read-only mode protects against accidental changes
-- **Access everything** — 69 tools total: comprehensive YNAB API coverage (43 tools), 23 custom analytics tools, and 3 system tools
+- **Access everything** — 72 tools total: comprehensive YNAB API coverage (43 tools), 23 custom analytics tools, 3 system tools, and 3 connection tools on a server with OAuth sign-in
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Broad API Coverage** | 69 MCP tools spanning the YNAB API endpoints |
+| **Broad API Coverage** | 72 MCP tools spanning the YNAB API endpoints |
 | **Advanced Analytics** | 23 tools for spending analysis, trend detection, and financial insights |
 | **Read-Only by Default** | Write operations require explicit opt-in (`YNAB_READ_ONLY=false`) |
 | **Smart Rate Limiting** | Token bucket algorithm with 180 req/hour budget (10% safety margin) |
@@ -200,7 +200,7 @@ Once connected, try asking Claude:
 | "Am I on track this month?" | `ynab_spending_pace` |
 | "Compare this month to last month" | `ynab_monthly_comparison` |
 
-## Available Tools (69 Total)
+## Available Tools (72 Total)
 
 ### Analytics Tools (23)
 
@@ -331,6 +331,14 @@ Coverage of the YNAB API endpoints:
 - `ynab_audit_log` — View the audit log of write attempts, refused ones included
 - `ynab_health_check` — Test API connectivity
 </details>
+
+### Connection Tools (3, OAuth HTTP mode only)
+
+Registered only on an HTTP server with OAuth sign-in (`AUTH_MODE=oauth`), where each user connects their own apps. Stdio and header mode don't list them. See [Managing connections](docs/REMOTE_HOSTING.md#managing-connections).
+
+- `ynab_list_connections` — List the apps connected under your account: name, host, access level, when connected, last used and expiry
+- `ynab_revoke_connection` — Revoke one connection by its `family_id`
+- `ynab_disconnect` — Revoke every connection and erase your data on this server (needs `confirm: "DISCONNECT"`)
 
 ### Structured output
 

@@ -12,7 +12,14 @@
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../services/ynab-client.js';
 import { fanOutFor } from './fan-out.js';
-import { TOOL_METADATA } from './annotations.js';
+import { ACCOUNT_TOOL_METADATA, TOOL_METADATA } from './annotations.js';
+import { ACCOUNT_TOOL_NAMES, type AccountToolName } from './connections/policy.js';
+import type { AccountToolContext, AccountToolHandler } from './connections/context.js';
+
+// Account tools (OAuth HTTP mode only, #53c)
+import { listConnectionsTool, handleListConnections } from './connections/list-connections.js';
+import { revokeConnectionTool, handleRevokeConnection } from './connections/revoke-connection.js';
+import { disconnectTool, handleDisconnect } from './connections/disconnect.js';
 
 // User tools
 import { getUserTool, handleGetUser } from './user/get-user.js';
@@ -412,6 +419,44 @@ function withMetadata(tool: Tool): Tool {
 
 // Export all tool definitions with titles and annotations applied
 export const tools: Tool[] = toolDefinitions.map(withMetadata);
+
+// ---- Account tools (#53c) ---------------------------------------------------
+// Registered only in OAuth HTTP mode, where a user has connections: stdio and
+// header mode never list them, and a call by name there is an unknown tool.
+// They run with an AccountToolContext instead of a YnabClient, and make no
+// YNAB request.
+
+const accountHandlers = {
+  ynab_list_connections: handleListConnections,
+  ynab_revoke_connection: handleRevokeConnection,
+  ynab_disconnect: handleDisconnect,
+} satisfies Record<AccountToolName, AccountToolHandler>;
+
+const accountToolDefinitions: Tool[] = [listConnectionsTool, revokeConnectionTool, disconnectTool];
+
+/** The account tools with titles and annotations, in ACCOUNT_TOOL_NAMES order. */
+export const accountTools: Tool[] = accountToolDefinitions.map((tool) => {
+  if (!isAccountToolName(tool.name)) throw new Error(`Tool ${tool.name} has no account handler or annotation entry`);
+  const { title, annotations } = ACCOUNT_TOOL_METADATA[tool.name];
+  return { ...tool, title, annotations: { title, ...annotations } };
+});
+
+/** Every tool the server can register in some mode: the docs and the site count these. */
+export const toolCatalog: Tool[] = [...tools, ...accountTools];
+
+export function isAccountToolName(name: string): name is AccountToolName {
+  return (ACCOUNT_TOOL_NAMES as readonly string[]).includes(name);
+}
+
+/** Run an account tool. The caller has already applied its policy (src/tools/connections/policy.ts). */
+export async function handleAccountToolCall(
+  toolName: AccountToolName,
+  args: Record<string, unknown>,
+  ctx: AccountToolContext
+): Promise<string> {
+  const handler: AccountToolHandler = accountHandlers[toolName];
+  return handler(args, ctx);
+}
 
 const toolsByName = new Map(tools.map((t) => [t.name, t]));
 

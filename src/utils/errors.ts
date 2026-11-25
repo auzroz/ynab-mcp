@@ -144,6 +144,29 @@ export class NotFoundError extends Error {
 }
 
 /**
+ * An account tool (#53c) refused by its policy (src/tools/connections/policy.ts):
+ * the operator's read-only setting, or this connection's read-only grant.
+ */
+export class AccountChangeNotAllowedError extends Error {
+  constructor(public readonly reason: 'scope' | 'read_only') {
+    super('Account change not allowed');
+    this.name = 'AccountChangeNotAllowedError';
+  }
+}
+
+/**
+ * `ynab_revoke_connection` found no connection of the caller's with that id.
+ * The same for an unknown id and another user's: the message is fixed and
+ * never echoes the id.
+ */
+export class ConnectionNotFoundError extends Error {
+  constructor() {
+    super('Connection not found');
+    this.name = 'ConnectionNotFoundError';
+  }
+}
+
+/**
  * YNAB API error codes and their meanings.
  */
 export const YNAB_ERROR_CODES: Record<string, { message: string; suggestion: string }> = {
@@ -273,6 +296,31 @@ export function formatErrorResponse(error: unknown): string {
       message: sanitizeErrorMessage(error.message) || 'Validation failed',
       field: error.field,
       suggestion: 'Check that all input parameters are valid.',
+    }, null, 2);
+  }
+
+  if (error instanceof AccountChangeNotAllowedError) {
+    return JSON.stringify({
+      error: true,
+      type: 'account_change_not_allowed',
+      reason: error.reason,
+      message:
+        error.reason === 'read_only'
+          ? 'Not allowed: this server is read-only, so connections cannot be revoked or erased from here'
+          : 'Not allowed: this connection or the YNAB grant is read-only, so it cannot revoke connections or disconnect',
+      suggestion:
+        error.reason === 'read_only'
+          ? 'Ask the server operator, or remove the access at YNAB (app.ynab.com/settings, Authorized Applications).'
+          : 'Reconnect with read & write access, ask the server operator, or remove the access at YNAB (app.ynab.com/settings, Authorized Applications).',
+    }, null, 2);
+  }
+
+  if (error instanceof ConnectionNotFoundError) {
+    return JSON.stringify({
+      error: true,
+      type: 'not_found',
+      message: 'No connection of yours has that family_id',
+      suggestion: 'List your connections with ynab_list_connections and use a family_id from there. A connection that has already been revoked or has expired is no longer listed.',
     }, null, 2);
   }
 
