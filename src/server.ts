@@ -284,18 +284,27 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
       // as an error, like any write that failed before reaching YNAB. Such a
       // refusal takes no write slot, so it is bounded like the read-only ones
       // (#60a: 20 per user per hour, then one marker row).
+      // In HTTP the admission and its audit row are request work (D5): the
+      // shared cap waits on the database, and a shutdown's drain must wait for
+      // both. A request that has already ended admits nothing and sends nothing.
       let releaseSlot: (() => void) | undefined;
       if (isWrite) {
-        try {
-          releaseSlot = await ynabClient.admitWrite(name);
-        } catch (error) {
-          if (error instanceof WriteLimitError && error.firstRefusal) await recordWrite(name, 'denied_write_limit');
-          if (error instanceof RateLimitStoreUnavailableError) {
-            const audit = ynabClient.admitDeniedAudit();
-            if (audit !== 'skip') await recordWrite(name, 'error', audit === 'mark');
+        const admit = async (): Promise<() => void> => {
+          try {
+            return await ynabClient.admitWrite(name);
+          } catch (error) {
+            if (error instanceof WriteLimitError && error.firstRefusal) await recordWrite(name, 'denied_write_limit');
+            if (error instanceof RateLimitStoreUnavailableError) {
+              const audit = ynabClient.admitDeniedAudit();
+              if (audit !== 'skip') await recordWrite(name, 'error', audit === 'mark');
+            }
+            throw error;
           }
-          throw error;
-        }
+        };
+        const admission = toolCalls === undefined ? admit() : toolCalls.run(admit);
+        // The request ended before the write was admitted: no slot, no YNAB call.
+        if (admission === undefined) return toolTimeoutResult(false);
+        releaseSlot = await admission;
       }
       const call = async (): Promise<string> => {
         try {

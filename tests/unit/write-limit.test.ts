@@ -9,6 +9,7 @@ import { tools } from '../../src/tools/index.js';
 import { createUserComponents } from '../../src/services/user-registry.js';
 import { WriteLimiter, WRITE_WINDOW_MS } from '../../src/services/write-limiter.js';
 import { SharedWriteLimiter } from '../../src/services/shared-write-limiter.js';
+import { RequestLifetime } from '../../src/services/inflight-limiter.js';
 import { SharedLimitUnavailableError, type SharedLimitStore } from '../../src/storage/shared-limits.js';
 import { parseWriteLimitPerHour } from '../../src/config/write-limit.js';
 import { loadConfig, loadHttpConfig } from '../../src/config/environment.js';
@@ -390,6 +391,69 @@ describe('slots and request bounds', () => {
     const result = await client.callTool({ name: 'ynab_create_payee', arguments: payee });
     expect(JSON.parse(textOf(result))).toMatchObject({ type: 'request_timeout' });
     expect(components.writeLimiter.used()).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await client.close();
+  });
+
+  it('a slow admission is request work: a closed request waits for it and its audit row (#67)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    // A shared cap whose store answers late, and then fails.
+    let fail: () => void = () => undefined;
+    const store = {
+      admitWrite: () =>
+        new Promise<never>((_resolve, reject) => {
+          fail = () => reject(new SharedLimitUnavailableError());
+        }),
+      releaseWrite: async () => undefined,
+    } as unknown as SharedLimitStore;
+    const components = createUserComponents(
+      { rateLimitPerHour: 180, cacheTtlMs: 1000 },
+      Date.now,
+      undefined,
+      new SharedWriteLimiter(store, 'local', 20)
+    );
+    const ynabClient = buildYnabClient(userCtx(), components);
+    const lifetime = new RequestLifetime(Date.now() + 60_000);
+    const auditAtRelease: number[] = [];
+    lifetime.hold(() => {
+      void components.auditStore.listAuditEntries('local', {}, 10).then((rows) => auditAtRelease.push(rows.length));
+    });
+    const client = await connect(
+      createServerFromClient(ynabClient, { deadline: lifetime.deadline, run: (w) => lifetime.run(w) })
+    );
+    const call = client.callTool({ name: 'ynab_create_payee', arguments: payee });
+    await vi.waitFor(() => expect(lifetime.pendingWork).toBe(1));
+    // The response closes (shutdown, a dropped client) while the admission waits.
+    lifetime.close();
+    expect(lifetime.isReleased).toBe(false);
+    fail();
+    expect(JSON.parse(textOf(await call))).toMatchObject({ type: 'upstream_unavailable' });
+    await vi.waitFor(() => expect(lifetime.isReleased).toBe(true));
+    // Released only once the audit row was written.
+    await vi.waitFor(() => expect(auditAtRelease).toEqual([1]));
+    expect((await components.auditStore.listAuditEntries('local', {}, 10))[0]).toMatchObject({ outcome: 'error' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await client.close();
+  });
+
+  it('a request that has ended admits no write and sends nothing (run returns undefined before admission)', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const admitWrite = vi.fn();
+    const store = { admitWrite, releaseWrite: vi.fn() } as unknown as SharedLimitStore;
+    const components = createUserComponents(
+      { rateLimitPerHour: 180, cacheTtlMs: 1000 },
+      Date.now,
+      undefined,
+      new SharedWriteLimiter(store, 'local', 20)
+    );
+    const ynabClient = buildYnabClient(userCtx(), components);
+    const client = await connect(createServerFromClient(ynabClient, { deadline: Date.now() + 60_000, run: () => undefined }));
+    const result = await client.callTool({ name: 'ynab_create_payee', arguments: payee });
+    expect(JSON.parse(textOf(result))).toMatchObject({ type: 'request_timeout' });
+    expect(admitWrite).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
     await client.close();
   });
