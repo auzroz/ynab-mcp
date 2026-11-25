@@ -395,7 +395,7 @@ WS7.4 (`feat/stateless-http`) builds the decisions above as written. No SDK gap 
 
 ### 2026-11-25: #45a structured output, as built (D15)
 
-45a (`feat/structured-output`) builds the mechanism and the system tools' schemas. None of the points below changes D15's intent. Lead decisions (2026-11-25): the split, open advertised schemas checked closed in the test, the structuredContent guarantee, and the in-band failure rule. The others are implementation choices that are still open for review: removing `$schema`, and stored values as strings. D15.2 said `outputSchema: z.toJSONSchema(schema)`; how that is converted is under "Mechanism".
+45a (`feat/structured-output`) builds the mechanism and the system tools' schemas. None of the points below changes D15's intent. Lead decisions (2026-11-25): the split, open advertised schemas checked closed in the test, the structuredContent guarantee, the in-band failure rule, removing `$schema`, and stored values as strings. D15.2 said `outputSchema: z.toJSONSchema(schema)`; how that is converted is under "Mechanism".
 
 - **Split, replacing D15.6's ten-tool pilot.** 45a is the mechanism plus `ynab_rate_limit_status`, `ynab_audit_log` and `ynab_health_check`. 45b covers the core tools, by resource. 45c covers the analytics tools. `PENDING_OUTPUT_SCHEMA` in `tests/unit/tools/output-schemas.test.ts` lists the tools still without a schema. The list can only shrink, and it reaches zero with 45c. D15.6(b) still holds: a tool without a schema at the tag ships without `outputSchema`.
 - **Mechanism.**
