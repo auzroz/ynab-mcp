@@ -92,6 +92,13 @@ describe('our tools/call with structured output', () => {
     const result = await client.callTool({ name: 'ynab_audit_log', arguments: { limit: 'many' } });
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toBeUndefined();
+    // The error text is the mapped validation response, and it leaks nothing:
+    // not the fixture's access token, nor the raw input value.
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('token');
+    expect(serialized).not.toContain('many');
+    const [block] = result.content as Array<{ type: string; text: string }>;
+    expect(JSON.parse(block!.text)).toMatchObject({ error: true });
   });
 
   it('a failed check is still a normal, structured result (ynab_health_check, YNAB unreachable)', async () => {
