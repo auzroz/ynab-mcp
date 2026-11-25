@@ -307,7 +307,7 @@ export function formatErrorResponse(error: unknown): string {
       message:
         error.reason === 'read_only'
           ? 'Not allowed: this server is read-only, so connections cannot be revoked or erased from here'
-          : 'Not allowed: this connection is read-only, so it cannot revoke connections or disconnect',
+          : 'Not allowed: this connection or the YNAB grant is read-only, so it cannot revoke connections or disconnect',
       suggestion:
         error.reason === 'read_only'
           ? 'Ask the server operator, or remove the access at YNAB (app.ynab.com/settings, Authorized Applications).'

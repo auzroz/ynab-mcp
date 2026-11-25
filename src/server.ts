@@ -180,6 +180,19 @@ function toolTimeoutResult(outcomeUnknown: boolean): { content: Array<{ type: 't
   return { content: [{ type: 'text', text: JSON.stringify(body, null, 2) }], isError: true };
 }
 
+/** An account tool (#53c) that hit its deadline: a revoke or erase that started may still complete. */
+function accountToolTimeoutResult(outcomeUnknown: boolean): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+  if (!outcomeUnknown) return toolTimeoutResult(false);
+  const body = {
+    error: true,
+    type: 'request_timeout',
+    message: 'Request timed out; the change may still have been applied',
+    outcome: 'unknown',
+    suggestion: 'Check with ynab_list_connections before retrying.',
+  };
+  return { content: [{ type: 'text', text: JSON.stringify(body, null, 2) }], isError: true };
+}
+
 /**
  * Run `work` within `bounds`: its value, or `undefined` with whether it
  * started when the deadline came first (or the request had already ended, in
@@ -370,7 +383,7 @@ export function createServerFromClient(
         result = await call();
       } else {
         const outcome = await runWithin(toolCalls, call);
-        if (!outcome.done) return toolTimeoutResult(outcome.started && name !== 'ynab_list_connections');
+        if (!outcome.done) return accountToolTimeoutResult(outcome.started && name !== 'ynab_list_connections');
         result = outcome.value;
       }
       return { content: [{ type: 'text' as const, text: result }] };
@@ -386,7 +399,12 @@ export function createServerFromClient(
     const { name, arguments: args } = request.params;
     // Without an account context (stdio, header mode) an account tool's name
     // falls through to the registry below, which calls it an unknown tool.
-    if (accountContext !== undefined && isAccountToolName(name)) return callAccountTool(name, args ?? {}, accountContext);
+    if (accountContext !== undefined && isAccountToolName(name)) {
+      if (name === 'ynab_list_connections') return callAccountTool(name, args ?? {}, accountContext);
+      // Revoke and disconnect run as one tools/call of the audit log, so whatever
+      // AccountStore records names the tool (#60b). Nothing is recorded here.
+      return auditLog.runCall(name, () => callAccountTool(name, args ?? {}, accountContext));
+    }
     // A write tool runs as one audited call: every row it records names it and the request (#60a).
     if (writeToolNames.has(name)) return auditLog.runCall(name, () => callTool(name, args ?? {}));
     return callTool(name, args ?? {});

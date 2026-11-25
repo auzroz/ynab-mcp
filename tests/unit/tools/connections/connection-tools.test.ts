@@ -225,7 +225,7 @@ for (const driver of testDrivers) {
         const a = await connect('u1', 'read-write', 'App');
         const b = await connect('u1', 'read-only', 'Other app');
         const other = await connect('u2', 'read-write', 'Theirs');
-        await storage.appendAuditEntry({
+        const appended = await storage.appendAuditEntry({
           ts: Date.now(),
           userId: 'u1',
           clientId: undefined,
@@ -238,6 +238,8 @@ for (const driver of testDrivers) {
           budgetId: 'b1',
           outcome: 'success',
         });
+        expect(appended).toBe(true);
+        expect(Object.values(await h.userRows('u1')).reduce((n, v) => n + v, 0)).toBeGreaterThan(0);
         const after = vi.fn(async () => undefined);
 
         const res = await outcome(handleDisconnect({ confirm: 'DISCONNECT' }, contextFor(a, after)));
