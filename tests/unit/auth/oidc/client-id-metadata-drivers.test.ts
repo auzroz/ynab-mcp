@@ -108,6 +108,11 @@ for (const driver of testDrivers) {
       expect(await handle.storage.findOAuthRow(key)).toBeUndefined();
 
       const tokens = await signIn();
+      // The access token is bound to the URL client and the YNAB user who signed in.
+      const auth = await t.verifier.verifyAccessToken(tokens['access_token'] as string);
+      expect(auth.clientId).toBe(CLIENT_ID);
+      expect(auth.extra?.['userId']).toBe('ynab-user-cimd');
+
       const anchor = await handle.storage.findOAuthRow(key);
       expect(anchor?.model).toBe('Client');
       expect(anchor?.clientId).toBe(CLIENT_ID);
