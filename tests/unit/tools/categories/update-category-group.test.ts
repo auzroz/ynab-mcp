@@ -3,9 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleUpdateCategoryGroup } from '../../../../src/tools/categories/update-category-group.js';
+import { handleUpdateCategoryGroup as rawHandleUpdateCategoryGroup, updateCategoryGroupOutputSchema } from '../../../../src/tools/categories/update-category-group.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleUpdateCategoryGroup = validating(updateCategoryGroupOutputSchema, rawHandleUpdateCategoryGroup);
 
 const GROUP_ID = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
 
@@ -30,11 +34,10 @@ describe('handleUpdateCategoryGroup', () => {
   it('renames a category group', async () => {
     mockClient.updateCategoryGroup.mockResolvedValue(updatedGroupResponse());
 
-    const result = await handleUpdateCategoryGroup(
+    const parsed = await handleUpdateCategoryGroup(
       { category_group_id: GROUP_ID, name: 'Renamed Group' },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(mockClient.updateCategoryGroup).toHaveBeenCalledWith('test-budget-id', GROUP_ID, {
       category_group: { name: 'Renamed Group' },

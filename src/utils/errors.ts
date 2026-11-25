@@ -351,6 +351,27 @@ export function formatErrorResponse(error: unknown): string {
 }
 
 /**
+ * The object formatErrorResponse serializes, as a schema (#45): ynab_move_money
+ * embeds it as `cause` in its in-band failure results. Keep it in step with
+ * formatErrorResponse above (output-schemas-core.test.ts checks each branch).
+ */
+export const errorResponseSchema = z.object({
+  error: z.literal(true),
+  type: z.string().describe('read_only_mode, upstream_unavailable, write_limit_exceeded, auth_error, rate_limited, upstream_timeout, validation_error, not_found, ynab_api_error or unknown_error'),
+  message: z.string(),
+  code: z.string().exactOptional(),
+  field: z.string().exactOptional(),
+  issues: z.array(z.object({ field: z.string(), message: z.string() })).exactOptional(),
+  outcome: z.string().exactOptional(),
+  limit_per_hour: z.number().int().exactOptional(),
+  resets_at: z.string().exactOptional(),
+  retry_after_ms: z.number().exactOptional(),
+  retry_after_seconds: z.number().exactOptional(),
+  suggestion: z.string(),
+});
+export type ErrorResponse = z.output<typeof errorResponseSchema>;
+
+/**
  * Type guard for YNAB SDK errors.
  */
 function isYnabSdkError(error: unknown): error is { error: { id: string; detail?: string } } {

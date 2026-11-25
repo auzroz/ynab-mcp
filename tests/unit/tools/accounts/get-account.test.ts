@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetAccount } from '../../../../src/tools/accounts/get-account.js';
+import { handleGetAccount as rawHandleGetAccount, getAccountOutputSchema } from '../../../../src/tools/accounts/get-account.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createAccountResponse,
@@ -11,6 +12,9 @@ import {
   mockMortgageAccount,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetAccount = validating(getAccountOutputSchema, rawHandleGetAccount);
 
 describe('handleGetAccount', () => {
   let mockClient: MockClient;

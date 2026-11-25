@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetBudget } from '../../../../src/tools/budgets/get-budget.js';
+import { handleGetBudget as rawHandleGetBudget, getBudgetOutputSchema } from '../../../../src/tools/budgets/get-budget.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createBudgetResponse,
   mockBudgetDetail,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetBudget = validating(getBudgetOutputSchema, rawHandleGetBudget);
 
 describe('handleGetBudget', () => {
   let mockClient: MockClient;

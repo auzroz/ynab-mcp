@@ -9,9 +9,11 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { buildGoalDetail } from '../../utils/goals.js';
+import { buildGoalDetail, goalDetailSchema } from '../../utils/goals.js';
 import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
+import { money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -26,6 +28,23 @@ const inputSchema = z.object({
 });
 
 // Tool definition
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const getMonthCategoryOutputSchema = z.object({
+  month: z.string(),
+  category: z.object({
+    id: z.string(),
+    category_group_id: z.string(),
+    name: z.string(),
+    hidden: z.boolean(),
+    note: z.string().nullable(),
+    budgeted: money(),
+    activity: money(),
+    balance: money(),
+    goal: goalDetailSchema.nullable().describe('Null when the category has no target'),
+  }),
+});
+export type GetMonthCategoryOutput = z.output<typeof getMonthCategoryOutputSchema>;
+
 export const getMonthCategoryTool: Tool = {
   name: 'ynab_get_month_category',
   description: `Get category details for a specific month, including that month's budgeted amount, activity, and balance.
@@ -64,6 +83,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['month', 'category_id'],
   },
+  outputSchema: toOutputSchema(getMonthCategoryOutputSchema),
 };
 
 // Handler function
@@ -73,7 +93,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleGetMonthCategory(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetMonthCategoryOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -85,22 +105,18 @@ export async function handleGetMonthCategory(
   );
   const category = response.data.category;
 
-  return JSON.stringify(
-    {
-      month: validated.month,
-      category: {
-        id: category.id,
-        category_group_id: category.category_group_id,
-        name: sanitizeName(category.name),
-        hidden: category.hidden,
-        note: sanitizeMemo(category.note),
-        budgeted: money(category.budgeted),
-        activity: money(category.activity),
-        balance: money(category.balance),
-        goal: buildGoalDetail(category, money),
-      },
+  return {
+    month: validated.month,
+    category: {
+      id: category.id,
+      category_group_id: category.category_group_id,
+      name: sanitizeName(category.name),
+      hidden: category.hidden,
+      note: sanitizeMemo(category.note),
+      budgeted: money(category.budgeted),
+      activity: money(category.activity),
+      balance: money(category.balance),
+      goal: buildGoalDetail(category, money),
     },
-    null,
-    2
-  );
+  };
 }

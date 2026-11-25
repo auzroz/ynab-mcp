@@ -23,6 +23,15 @@ import { getBudgetSettingsOutputSchema } from '../../../src/tools/budgets/get-bu
 import { listAccountsOutputSchema } from '../../../src/tools/accounts/list-accounts.js';
 import { getAccountOutputSchema } from '../../../src/tools/accounts/get-account.js';
 import { createAccountOutputSchema } from '../../../src/tools/accounts/create-account.js';
+import { listCategoriesOutputSchema } from '../../../src/tools/categories/list-categories.js';
+import { getCategoryOutputSchema } from '../../../src/tools/categories/get-category.js';
+import { getMonthCategoryOutputSchema } from '../../../src/tools/categories/get-month-category.js';
+import { updateCategoryOutputSchema } from '../../../src/tools/categories/update-category.js';
+import { moveMoneyOutputSchema } from '../../../src/tools/categories/move-money.js';
+import { updateCategoryDetailsOutputSchema } from '../../../src/tools/categories/update-category-details.js';
+import { createCategoryOutputSchema } from '../../../src/tools/categories/create-category.js';
+import { createCategoryGroupOutputSchema } from '../../../src/tools/categories/create-category-group.js';
+import { updateCategoryGroupOutputSchema } from '../../../src/tools/categories/update-category-group.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
@@ -42,15 +51,6 @@ const PENDING_OUTPUT_SCHEMA = [
   // User, budgets
   // Accounts
   // Categories
-  'ynab_list_categories',
-  'ynab_get_category',
-  'ynab_get_month_category',
-  'ynab_update_category',
-  'ynab_move_money',
-  'ynab_update_category_details',
-  'ynab_create_category',
-  'ynab_create_category_group',
-  'ynab_update_category_group',
   // Payees
   'ynab_list_payees',
   'ynab_get_payee',
@@ -121,6 +121,15 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_list_accounts: listAccountsOutputSchema,
   ynab_get_account: getAccountOutputSchema,
   ynab_create_account: createAccountOutputSchema,
+  ynab_list_categories: listCategoriesOutputSchema,
+  ynab_get_category: getCategoryOutputSchema,
+  ynab_get_month_category: getMonthCategoryOutputSchema,
+  ynab_update_category: updateCategoryOutputSchema,
+  ynab_move_money: moveMoneyOutputSchema,
+  ynab_update_category_details: updateCategoryDetailsOutputSchema,
+  ynab_create_category: createCategoryOutputSchema,
+  ynab_create_category_group: createCategoryGroupOutputSchema,
+  ynab_update_category_group: updateCategoryGroupOutputSchema,
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,

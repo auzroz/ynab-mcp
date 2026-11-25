@@ -94,7 +94,7 @@ describe('ynab_list_accounts', () => {
 describe('ynab_list_categories', () => {
   it('full: server_knowledge added', async () => {
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse());
-    const out = parse(await handleListCategories({}, mockClient as never));
+    const out = await handleListCategories({}, mockClient as never);
     expect(mockClient.getCategories).toHaveBeenCalledWith('test-budget-id');
     expect(out.server_knowledge).toBe(12345);
     expect(out.summary.total_budgeted).toBeDefined();
@@ -107,7 +107,7 @@ describe('ynab_list_categories', () => {
     mockClient.getCategories.mockResolvedValue({
       data: { category_groups: [{ ...g, categories: [changed, removed] }, deletedGroup], server_knowledge: 77 },
     });
-    const out = parse(await handleListCategories({ since_server_knowledge: 70 }, mockClient as never));
+    const out = await handleListCategories({ since_server_knowledge: 70 }, mockClient as never);
     expect(mockClient.getCategories).toHaveBeenCalledWith('test-budget-id', { lastKnowledgeOfServer: 70 });
     expect(out).toMatchObject({
       delta: true,
@@ -128,8 +128,8 @@ describe('ynab_list_categories', () => {
     mockClient.getCategories.mockResolvedValue({
       data: { category_groups: [{ ...g, categories: [target] }], server_knowledge: 78 },
     });
-    const delta = parse(await handleListCategories({ since_server_knowledge: 70 }, mockClient as never));
-    const full = parse(await handleListCategories({ include_hidden: true }, mockClient as never));
+    const delta = await handleListCategories({ since_server_knowledge: 70 }, mockClient as never);
+    const full = await handleListCategories({ include_hidden: true }, mockClient as never);
     const pick = (o: { category_groups: Array<{ categories: Array<{ id: string; goal: unknown }> }> }) =>
       o.category_groups.flatMap((grp) => grp.categories).find((c) => c.id === target.id)?.goal;
     expect(pick(delta)).toEqual(pick(full));

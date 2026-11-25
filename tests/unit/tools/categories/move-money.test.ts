@@ -3,11 +3,15 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { moveMoneyTool, handleMoveMoney } from '../../../../src/tools/categories/move-money.js';
+import { moveMoneyTool, handleMoveMoney as rawHandleMoveMoney, moveMoneyOutputSchema } from '../../../../src/tools/categories/move-money.js';
+import { validating } from '../output-validation.js';
 import { AuditLog } from '../../../../src/services/audit-log.js';
 import { YnabApiError, ReadOnlyModeError, ValidationError, YnabAuthError } from '../../../../src/utils/errors.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleMoveMoney = validating(moveMoneyOutputSchema, rawHandleMoveMoney);
 
 const FROM = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TO = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -41,7 +45,7 @@ describe('handleMoveMoney', () => {
       .mockResolvedValueOnce(category(FROM, 'Dining Out', 150000, 100000))
       .mockResolvedValueOnce(category(TO, 'Groceries', 350000, 150000));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(mockClient.updateMonthCategory).toHaveBeenNthCalledWith(1, 'test-budget-id', MONTH, FROM, {
       category: { budgeted: 150000 },
@@ -77,7 +81,7 @@ describe('handleMoveMoney', () => {
         .mockResolvedValueOnce(category(FROM, 'Dining Out', 0, 0))
         .mockResolvedValueOnce(category(TO, 'Groceries', 0, 0));
 
-      const parsed = JSON.parse(await handleMoveMoney({ ...args, month: 'current' }, mockClient as never));
+      const parsed = await handleMoveMoney({ ...args, month: 'current' }, mockClient as never);
 
       expect(parsed.month).toBe('2024-05-01');
       expect(mockClient.getMonthCategoryById).toHaveBeenCalledWith('test-budget-id', '2024-05-01', FROM);
@@ -91,7 +95,7 @@ describe('handleMoveMoney', () => {
       .mockResolvedValueOnce(category(FROM, 'Dining Out', 150000, -20000))
       .mockResolvedValueOnce(category(TO, 'Groceries', 350000, 150000));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(parsed.warnings).toHaveLength(1);
     expect(parsed.warnings[0]).toContain('Dining Out');
@@ -137,7 +141,7 @@ describe('handleMoveMoney', () => {
       .mockRejectedValueOnce(new YnabApiError('Not found', '404'))
       .mockResolvedValueOnce(category(FROM, 'Dining Out', 200000, 150000));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(updateCalls()).toEqual([
       [FROM, 150000],
@@ -163,7 +167,7 @@ describe('handleMoveMoney', () => {
       .mockRejectedValueOnce(new Error('boom'))
       .mockRejectedValueOnce(new Error('boom again'));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(updateCalls()).toEqual([
       [FROM, 150000],
@@ -191,7 +195,7 @@ describe('handleMoveMoney', () => {
       .mockResolvedValueOnce(category(FROM, 'Dining Out', 150000, 0))
       .mockRejectedValueOnce(new Error('boom'));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(updateCalls()).toEqual([
       [FROM, 150000],
@@ -215,7 +219,7 @@ describe('handleMoveMoney', () => {
       .mockResolvedValueOnce(category(FROM, 'Dining Out', 150000, 0))
       .mockRejectedValueOnce(new Error('boom'));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(updateCalls()).toEqual([
       [FROM, 150000],
@@ -236,7 +240,7 @@ describe('handleMoveMoney', () => {
       .mockRejectedValueOnce(new Error('gateway timeout'))
       .mockResolvedValueOnce(category(TO, 'Groceries', 350000, 150000));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(updateCalls()).toEqual([
       [FROM, 150000],
@@ -271,7 +275,7 @@ describe('handleMoveMoney', () => {
       .mockRejectedValueOnce(new Error('offline'));
     mockClient.updateMonthCategory.mockRejectedValueOnce(new Error('timeout'));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(updateCalls()).toEqual([[FROM, 150000]]);
     expect(parsed.success).toBe(false);
@@ -294,7 +298,7 @@ describe('handleMoveMoney', () => {
       .mockResolvedValueOnce(fromRow(175000));
     mockClient.updateMonthCategory.mockRejectedValueOnce(new Error('timeout'));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(updateCalls()).toEqual([[FROM, 150000]]);
     expect(parsed.type).toBe('move_outcome_uncertain');
@@ -371,7 +375,7 @@ describe('handleMoveMoney', () => {
       .mockResolvedValueOnce(category(FROM, 'Dining Out', 150000, 100000))
       .mockRejectedValueOnce(new Error('socket hang up'));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(parsed.success).toBe(true);
     expect(parsed.to.budgeted_after).toBe('$350.00');
@@ -392,7 +396,7 @@ describe('handleMoveMoney', () => {
       .mockResolvedValueOnce(category(FROM, 'Dining Out', 150000, 100000))
       .mockRejectedValueOnce(new Error('timeout'));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(parsed.success).toBe(false);
     expect(parsed.type).toBe('move_outcome_uncertain');
@@ -444,7 +448,7 @@ describe('handleMoveMoney', () => {
       .mockResolvedValueOnce(category(FROM, 'Fun Money', 0, 0))
       .mockResolvedValueOnce(category(TO, 'Fun Money', 0, 0));
 
-    const parsed = JSON.parse(await handleMoveMoney(args, mockClient as never));
+    const parsed = await handleMoveMoney(args, mockClient as never);
 
     expect(parsed.from.name).toBe('Fun Money');
   });

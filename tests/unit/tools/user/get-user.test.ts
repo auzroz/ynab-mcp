@@ -3,9 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetUser } from '../../../../src/tools/user/get-user.js';
+import { handleGetUser as rawHandleGetUser, getUserOutputSchema } from '../../../../src/tools/user/get-user.js';
+import { validating } from '../output-validation.js';
 import { createMockClient, createUserResponse, mockUser } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetUser = validating(getUserOutputSchema, rawHandleGetUser);
 
 describe('handleGetUser', () => {
   let mockClient: MockClient;

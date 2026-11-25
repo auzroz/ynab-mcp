@@ -190,7 +190,7 @@ describe('amounts follow the budget currency format', () => {
   describe('ynab_list_categories and ynab_get_category', () => {
     it('formats category amounts, totals and goal amounts', async () => {
       client.getCurrencyFormat.mockResolvedValue(mockEurCurrencyFormat);
-      const parsed = JSON.parse(await handleListCategories({}, client as never));
+      const parsed = await handleListCategories({}, client as never);
       const cat = parsed.category_groups.flatMap((g: { categories: unknown[] }) => g.categories)[0];
 
       expect(cat.budgeted).toMatch(/€$/);
@@ -202,9 +202,7 @@ describe('amounts follow the budget currency format', () => {
     it('formats the decoded goal with the same format', async () => {
       client.getCurrencyFormat.mockResolvedValue(mockJpyCurrencyFormat);
       client.getCategoryById.mockResolvedValue(createCategoryResponse(mockSavingsCategories[1]));
-      const parsed = JSON.parse(
-        await handleGetCategory({ category_id: 'cccccccc-cccc-cccc-cccc-cccccccccccc' }, client as never)
-      );
+      const parsed = await handleGetCategory({ category_id: 'cccccccc-cccc-cccc-cccc-cccccccccccc' }, client as never);
 
       expect(parsed.category.goal.target).toBe('¥3,000');
       expect(parsed.category.goal.under_funded).toBe('¥300');
@@ -216,7 +214,7 @@ describe('amounts follow the budget currency format', () => {
       client.getCategories.mockResolvedValue({
         data: { category_groups: mockCategoryGroups, server_knowledge: 9 },
       } as never);
-      const parsed = JSON.parse(await handleListCategories({ since_server_knowledge: 1 }, client as never));
+      const parsed = await handleListCategories({ since_server_knowledge: 1 }, client as never);
       const cats = parsed.category_groups.flatMap((g: { categories: { budgeted: string }[] }) => g.categories);
       expect(cats.length).toBeGreaterThan(0);
       for (const c of cats) expect(c.budgeted).toMatch(/€$/);

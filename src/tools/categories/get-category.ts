@@ -9,10 +9,12 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { buildGoalDetail } from '../../utils/goals.js';
+import { buildGoalDetail, goalDetailSchema } from '../../utils/goals.js';
 import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
+import { toOutputSchema } from '../output-schema.js';
+import { money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -23,6 +25,24 @@ const inputSchema = z.object({
 });
 
 // Tool definition
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const getCategoryOutputSchema = z.object({
+  category: z.object({
+    id: z.string(),
+    category_group_id: z.string(),
+    name: z.string(),
+    hidden: z.boolean(),
+    note: z.string().nullable(),
+    budgeted: money(),
+    activity: money(),
+    balance: money(),
+    goal: goalDetailSchema.nullable().describe('Null when the category has no target'),
+    original_category_group_id: z.string().exactOptional().describe('Omitted unless the category was moved'),
+    deleted: z.boolean(),
+  }),
+});
+export type GetCategoryOutput = z.output<typeof getCategoryOutputSchema>;
+
 export const getCategoryTool: Tool = {
   name: 'ynab_get_category',
   description: `Get details about a specific budget category including budgeted amount, activity, and goal status.
@@ -54,6 +74,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['category_id'],
   },
+  outputSchema: toOutputSchema(getCategoryOutputSchema),
 };
 
 // Handler function
@@ -63,7 +84,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleGetCategory(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetCategoryOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -71,23 +92,19 @@ export async function handleGetCategory(
   const response = await client.getCategoryById(budgetId, validated.category_id);
   const category = response.data.category;
 
-  return JSON.stringify(
-    {
-      category: {
-        id: category.id,
-        category_group_id: category.category_group_id,
-        name: sanitizeName(category.name),
-        hidden: category.hidden,
-        note: sanitizeMemo(category.note),
-        budgeted: money(category.budgeted),
-        activity: money(category.activity),
-        balance: money(category.balance),
-        goal: buildGoalDetail(category, money),
-        ...omitNull({ original_category_group_id: category.original_category_group_id }),
-        deleted: category.deleted,
-      },
+  return {
+    category: {
+      id: category.id,
+      category_group_id: category.category_group_id,
+      name: sanitizeName(category.name),
+      hidden: category.hidden,
+      note: sanitizeMemo(category.note),
+      budgeted: money(category.budgeted),
+      activity: money(category.activity),
+      balance: money(category.balance),
+      goal: buildGoalDetail(category, money),
+      ...omitNull({ original_category_group_id: category.original_category_group_id }),
+      deleted: category.deleted,
     },
-    null,
-    2
-  );
+  };
 }

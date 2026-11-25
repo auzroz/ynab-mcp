@@ -10,6 +10,7 @@ import { CATEGORY_GROUP_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/sc
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -21,6 +22,14 @@ const inputSchema = z.object({
 });
 
 // Tool definition
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const updateCategoryGroupOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  category_group: z.object({ id: z.string(), name: z.string() }),
+});
+export type UpdateCategoryGroupOutput = z.output<typeof updateCategoryGroupOutputSchema>;
+
 export const updateCategoryGroupTool: Tool = {
   name: 'ynab_update_category_group',
   description: `Rename an existing category group.
@@ -57,6 +66,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['category_group_id', 'name'],
   },
+  outputSchema: toOutputSchema(updateCategoryGroupOutputSchema),
 };
 
 // Handler function
@@ -66,7 +76,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleUpdateCategoryGroup(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<UpdateCategoryGroupOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -76,16 +86,12 @@ export async function handleUpdateCategoryGroup(
 
   const group = response.data.category_group;
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Category group renamed to "${sanitizeName(group.name)}"`,
-      category_group: {
-        id: group.id,
-        name: sanitizeName(group.name),
-      },
+  return {
+    success: true,
+    message: `Category group renamed to "${sanitizeName(group.name)}"`,
+    category_group: {
+      id: group.id,
+      name: sanitizeName(group.name),
     },
-    null,
-    2
-  );
+  };
 }

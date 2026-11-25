@@ -3,9 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleUpdateCategory } from '../../../../src/tools/categories/update-category.js';
+import { handleUpdateCategory as rawHandleUpdateCategory, updateCategoryOutputSchema } from '../../../../src/tools/categories/update-category.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleUpdateCategory = validating(updateCategoryOutputSchema, rawHandleUpdateCategory);
 
 const CATEGORY_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const MONTH = '2024-01-01';
@@ -34,11 +38,10 @@ describe('handleUpdateCategory', () => {
   it('updates the budgeted amount converting dollars to milliunits', async () => {
     mockClient.updateMonthCategory.mockResolvedValue(updatedCategoryResponse());
 
-    const result = await handleUpdateCategory(
+    const parsed = await handleUpdateCategory(
       { month: MONTH, category_id: CATEGORY_ID, budgeted: 500 },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(mockClient.updateMonthCategory).toHaveBeenCalledWith(
       'test-budget-id',

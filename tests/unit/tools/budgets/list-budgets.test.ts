@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListBudgets } from '../../../../src/tools/budgets/list-budgets.js';
+import { handleListBudgets as rawHandleListBudgets, listBudgetsOutputSchema } from '../../../../src/tools/budgets/list-budgets.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createBudgetsResponse,
@@ -11,6 +12,9 @@ import {
   mockEurBudgetSummary,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListBudgets = validating(listBudgetsOutputSchema, rawHandleListBudgets);
 
 describe('handleListBudgets', () => {
   let mockClient: MockClient;

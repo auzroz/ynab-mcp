@@ -6,6 +6,7 @@
  */
 
 import DecimalJS from 'decimal.js';
+import { z } from 'zod';
 import { usdFallbackFormatter, type MoneyFormatter } from './milliunits.js';
 
 const Decimal = DecimalJS.default ?? DecimalJS;
@@ -149,6 +150,41 @@ export interface GoalSource {
 
 
 /**
+ * The goal object of the category tools' output (#45; rules in
+ * src/tools/output-schema.ts). Every null is reported on purpose. Money
+ * fields are formatted strings beside their raw *_milliunits.
+ */
+export const goalDetailSchema = z.object({
+  type: z.string().describe('YNAB goal type: TB, TBD, MF, NEED or DEBT'),
+  type_label: z.string(),
+  target_date: z.string().nullable(),
+  target_month: z.string().nullable().describe('Alias of target_date'),
+  target: z.string().nullable(),
+  target_milliunits: z.number().int().nullable(),
+  needs_whole_amount: z.boolean().nullable(),
+  cadence: z.object({ period: z.string(), months_per_period: z.number() }).nullable(),
+  due_day: z
+    .object({
+      kind: z.enum(['weekday', 'day_of_month', 'last_day_of_month']),
+      value: z.number().int().nullable(),
+      label: z.string(),
+    })
+    .nullable(),
+  snoozed: z.boolean(),
+  snoozed_at: z.string().nullable(),
+  created_month: z.string().nullable(),
+  percentage_complete: z.number().nullable(),
+  months_to_budget: z.number().nullable(),
+  under_funded: z.string().nullable(),
+  under_funded_milliunits: z.number().int().nullable(),
+  overall_funded: z.string().nullable(),
+  overall_funded_milliunits: z.number().int().nullable(),
+  overall_left: z.string().nullable(),
+  overall_left_milliunits: z.number().int().nullable(),
+});
+export type GoalDetail = z.output<typeof goalDetailSchema>;
+
+/**
  * Build the decoded goal object returned by the category tools. Returns null
  * when the category has no target. Existing keys (type, target_date,
  * target_month, target, percentage_complete, months_to_budget, under_funded,
@@ -157,7 +193,7 @@ export interface GoalSource {
 export function buildGoalDetail(
   category: GoalSource,
   format: MoneyFormatter = usdFallbackFormatter
-): Record<string, unknown> | null {
+): GoalDetail | null {
   const money = (milliunits: number | null | undefined): string | null =>
     milliunits !== null && milliunits !== undefined ? format(milliunits) : null;
   if (!category.goal_type) return null;

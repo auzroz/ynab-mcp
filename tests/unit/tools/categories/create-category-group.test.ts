@@ -3,9 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleCreateCategoryGroup } from '../../../../src/tools/categories/create-category-group.js';
+import { handleCreateCategoryGroup as rawHandleCreateCategoryGroup, createCategoryGroupOutputSchema } from '../../../../src/tools/categories/create-category-group.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleCreateCategoryGroup = validating(createCategoryGroupOutputSchema, rawHandleCreateCategoryGroup);
 
 function createdGroupResponse() {
   return {
@@ -28,8 +32,7 @@ describe('handleCreateCategoryGroup', () => {
   it('creates a category group', async () => {
     mockClient.createCategoryGroup.mockResolvedValue(createdGroupResponse());
 
-    const result = await handleCreateCategoryGroup({ name: 'Fun Money' }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleCreateCategoryGroup({ name: 'Fun Money' }, mockClient as never);
 
     expect(mockClient.createCategoryGroup).toHaveBeenCalledWith('test-budget-id', {
       category_group: { name: 'Fun Money' },

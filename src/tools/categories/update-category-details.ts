@@ -23,6 +23,8 @@ import {
   CATEGORY_TARGET_FIELDS,
   refineGoalFrequency,
 } from './category-targets.js';
+import { toOutputSchema } from '../output-schema.js';
+import { milliunits, money } from '../schemas/common.js';
 
 const UPDATABLE_FIELDS = ['name', 'note', 'category_group_id', ...CATEGORY_TARGET_FIELDS] as const;
 
@@ -51,6 +53,24 @@ const inputSchema = z
   });
 
 // Tool definition
+/** What the tool returns (#45; rules in ../output-schema.ts). Nulls are reported on purpose. */
+export const updateCategoryDetailsOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  updated_fields: z.array(z.enum(UPDATABLE_FIELDS)),
+  category: z.object({
+    id: z.string(),
+    name: z.string(),
+    category_group_id: z.string(),
+    note: z.string().nullable(),
+    goal_target: milliunits().nullable(),
+    goal_target_display: money().nullable(),
+    goal_target_date: z.string().nullable(),
+    goal_needs_whole_amount: z.boolean().nullable(),
+  }),
+});
+export type UpdateCategoryDetailsOutput = z.output<typeof updateCategoryDetailsOutputSchema>;
+
 export const updateCategoryDetailsTool: Tool = {
   name: 'ynab_update_category_details',
   description: `Update a category's details: rename it, change its note, move it to a different category group, or set/clear its target (goal).
@@ -106,6 +126,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['category_id'],
   },
+  outputSchema: toOutputSchema(updateCategoryDetailsOutputSchema),
 };
 
 /**
@@ -114,7 +135,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleUpdateCategoryDetails(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<UpdateCategoryDetailsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
   // Fail fast in read-only sessions before any API read is spent.
@@ -148,24 +169,20 @@ export async function handleUpdateCategoryDetails(
   const categoryName = sanitizeName(category.name);
   const updated = UPDATABLE_FIELDS.filter((f) => validated[f] !== undefined);
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Category "${categoryName}" updated`,
-      updated_fields: updated,
-      category: {
-        id: category.id,
-        name: categoryName,
-        category_group_id: category.category_group_id,
-        note: sanitizeMemo(category.note),
-        goal_target: category.goal_target ?? null,
-        goal_target_display:
-          category.goal_target != null ? money(category.goal_target) : null,
-        goal_target_date: category.goal_target_date ?? null,
-        goal_needs_whole_amount: category.goal_needs_whole_amount ?? null,
-      },
+  return {
+    success: true,
+    message: `Category "${categoryName}" updated`,
+    updated_fields: updated,
+    category: {
+      id: category.id,
+      name: categoryName,
+      category_group_id: category.category_group_id,
+      note: sanitizeMemo(category.note),
+      goal_target: category.goal_target ?? null,
+      goal_target_display:
+        category.goal_target != null ? money(category.goal_target) : null,
+      goal_target_date: category.goal_target_date ?? null,
+      goal_needs_whole_amount: category.goal_needs_whole_amount ?? null,
     },
-    null,
-    2
-  );
+  };
 }

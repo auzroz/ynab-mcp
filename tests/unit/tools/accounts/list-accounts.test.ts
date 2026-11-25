@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListAccounts } from '../../../../src/tools/accounts/list-accounts.js';
+import { handleListAccounts as rawHandleListAccounts, listAccountsOutputSchema } from '../../../../src/tools/accounts/list-accounts.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createAccountsResponse,
@@ -13,6 +14,9 @@ import {
   mockCreditCardWithOverpayment,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListAccounts = validating(listAccountsOutputSchema, rawHandleListAccounts);
 
 describe('handleListAccounts', () => {
   let mockClient: MockClient;

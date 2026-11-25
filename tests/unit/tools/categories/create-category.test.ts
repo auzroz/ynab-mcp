@@ -3,9 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleCreateCategory } from '../../../../src/tools/categories/create-category.js';
+import { handleCreateCategory as rawHandleCreateCategory, createCategoryOutputSchema } from '../../../../src/tools/categories/create-category.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleCreateCategory = validating(createCategoryOutputSchema, rawHandleCreateCategory);
 
 const GROUP_ID = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
 
@@ -32,11 +36,10 @@ describe('handleCreateCategory', () => {
   it('creates a category in the given group', async () => {
     mockClient.createCategory.mockResolvedValue(createdCategoryResponse());
 
-    const result = await handleCreateCategory(
+    const parsed = await handleCreateCategory(
       { category_group_id: GROUP_ID, name: 'Pet Supplies' },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(mockClient.createCategory).toHaveBeenCalledWith('test-budget-id', {
       category: { name: 'Pet Supplies', category_group_id: GROUP_ID },
@@ -96,9 +99,7 @@ describe('handleCreateCategory', () => {
       mockClient.createCategory.mockResolvedValue(
         createdCategoryResponse({ goal_target: 250000 })
       );
-      const result = JSON.parse(
-        await handleCreateCategory({ ...base, goal_target: 250 }, mockClient as never)
-      );
+      const result = await handleCreateCategory({ ...base, goal_target: 250 }, mockClient as never);
       expect(result.category.goal_target).toBe(250000);
       expect(result.category.goal_target_display).toBe('$250.00');
     });
