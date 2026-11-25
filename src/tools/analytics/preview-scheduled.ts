@@ -8,7 +8,6 @@
 import { z } from 'zod';
 import { MEMO_MAX_LENGTH, budgetId, ynabId, TXN_PAYEE_NAME_MAX_LENGTH } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
-import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
@@ -77,15 +76,13 @@ export const previewScheduledTransactionOutputSchema = z.object({
     .object({
       account_id: z.string(),
       date: z.string(),
-      // Typed after the SDK's SaveScheduledTransaction: the tool always sets amount and
-      // frequency, and sets the others (never null) only when they were given.
-      amount: z.number().int().exactOptional().describe('Milliunits'),
-      payee_id: z.string().nullable().exactOptional(),
-      payee_name: z.string().nullable().exactOptional(),
-      category_id: z.string().nullable().exactOptional(),
-      memo: z.string().nullable().exactOptional(),
-      flag_color: z.string().nullable().exactOptional(),
-      frequency: z.string().exactOptional(),
+      amount: z.number().int().describe('Milliunits'),
+      frequency: z.enum(frequencies),
+      payee_id: z.string().exactOptional().describe('Only when given, as are the fields below'),
+      payee_name: z.string().exactOptional(),
+      category_id: z.string().exactOptional(),
+      memo: z.string().exactOptional(),
+      flag_color: z.enum(flagColors).exactOptional(),
     })
     .describe('The request body ynab_create_scheduled_transaction would send'),
 });
@@ -423,18 +420,21 @@ export async function handlePreviewScheduledTransaction(
   const nextOccurrences = calculateNextOccurrences(startDate, validated.frequency, 3);
 
   // Build the API payload that would be used for creation
-  const apiPayload: ynab.SaveScheduledTransaction = {
+  // Typed as this tool's output (it is the SDK's SaveScheduledTransaction, narrowed
+  // to what the tool sets: amount and frequency always, the rest only when given).
+  const apiPayload: PreviewScheduledTransactionOutput['api_payload'] = {
     account_id: validated.account_id,
     date: startDate,
     amount: amountMilliunits,
-    frequency: validated.frequency as ynab.ScheduledTransactionFrequency,
+    frequency: validated.frequency,
   };
 
   if (validated.payee_id) apiPayload.payee_id = validated.payee_id;
   if (validated.payee_name) apiPayload.payee_name = sanitizeName(validated.payee_name);
   if (validated.category_id) apiPayload.category_id = validated.category_id;
-  if (validated.memo) apiPayload.memo = sanitizeMemo(validated.memo);
-  if (validated.flag_color) apiPayload.flag_color = validated.flag_color as ynab.TransactionFlagColor;
+  // sanitizeMemo returns null only for null input
+  if (validated.memo) apiPayload.memo = sanitizeMemo(validated.memo) ?? '';
+  if (validated.flag_color) apiPayload.flag_color = validated.flag_color;
 
   const isValid = validationErrors.length === 0;
 

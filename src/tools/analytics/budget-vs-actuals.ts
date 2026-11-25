@@ -52,7 +52,7 @@ export const budgetVsActualsOutputSchema = z.object({
           category: z.string(),
           group: z.string(),
           remaining: z.string(),
-          percent_used: z.number().int().nullable().describe('Null only for a category with nothing budgeted'),
+          percent_used: z.number().int().nullable().describe('Percent of the budget used; a warning always has a budget, so this is not null in practice'),
         })
       )
       .describe('At most 5'),
