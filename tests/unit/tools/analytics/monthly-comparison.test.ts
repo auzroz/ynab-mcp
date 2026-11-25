@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleMonthlyComparison as rawHandleMonthlyComparison, monthlyComparisonOutputSchema } from '../../../../src/tools/analytics/monthly-comparison.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import { createMockClient, type MockClient } from '../fixtures/mock-client.js';
 
 const handleMonthlyComparison = validating(monthlyComparisonOutputSchema, rawHandleMonthlyComparison);

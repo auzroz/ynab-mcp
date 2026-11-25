@@ -1,10 +1,10 @@
 /**
- * The analytics output helper itself (#45c): values a JSON round trip would
- * hide or change are refused before the closed-schema check.
+ * The output helper itself (#45, ./output-validation.ts): values a JSON round
+ * trip would hide or change are refused before the closed-schema check.
  */
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { expectOutput } from './output.js';
+import { expectOutput } from './output-validation.js';
 
 const schema = z.object({ n: z.number() });
 

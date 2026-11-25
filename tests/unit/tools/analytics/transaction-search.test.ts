@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleTransactionSearch as rawHandleTransactionSearch, transactionSearchOutputSchema } from '../../../../src/tools/analytics/transaction-search.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createAccountsResponse,

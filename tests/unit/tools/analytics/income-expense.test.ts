@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleIncomeExpense as rawHandleIncomeExpense, incomeExpenseOutputSchema } from '../../../../src/tools/analytics/income-expense.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import { createMockClient, createTransactionsResponse } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
 

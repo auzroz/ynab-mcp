@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleGoalProgress as rawHandleGoalProgress, goalProgressOutputSchema } from '../../../../src/tools/analytics/goal-progress.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import { createMockClient, type MockClient } from '../fixtures/mock-client.js';
 
 const handleGoalProgress = validating(goalProgressOutputSchema, rawHandleGoalProgress);
