@@ -9,7 +9,9 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import type { AddressInfo } from 'node:net';
 import type { Express } from 'express';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 vi.mock('../../src/auth/ynab-oauth.js', async () => {
   const actual =
@@ -31,6 +33,9 @@ import {
   pkcePair,
   registerClient,
 } from './helpers/oidc-app.js';
+
+/** The real fetch, for the v2 client: the tests stub the global one (YNAB's API). */
+const realFetch = globalThis.fetch;
 
 const PUBLIC_URL = 'https://mcp.example.com';
 const RESOURCE = `${PUBLIC_URL}/mcp`;
@@ -235,6 +240,58 @@ describe('account tools over /mcp (oauth mode)', () => {
     const done = await call(conn, 'ynab_disconnect', { confirm: 'DISCONNECT' });
     expect(done).toMatchObject({ isError: false, body: { disconnected: true } });
     expect((await mcpInitialize(app, bearer(laptop))).status).toBe(401);
+  });
+});
+
+describe.each(['2025-11-25', '2026-07-28'] as const)('account tools and the v2 client over /mcp (oauth mode, %s)', (era) => {
+  it('list, revoke and disconnect return structuredContent the client validates, equal to the text block (#45b)', async () => {
+    const handle = await startOauthApp();
+    const laptop = await connect(handle.app, 'u1', 'read-write', 'Laptop');
+    await connect(handle.app, 'u1', 'read-only', 'Phone');
+    const server = handle.app.listen(0, '127.0.0.1');
+    await new Promise((resolve) => server.once('listening', resolve));
+    const client = new Client(
+      { name: 'account-tools-v2-test', version: '0.0.0' },
+      era === '2026-07-28' ? { versionNegotiation: { mode: { pin: '2026-07-28' } } } : {}
+    );
+    try {
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`),
+        { requestInit: { headers: { Authorization: `Bearer ${laptop}` } }, fetch: realFetch }
+      );
+      await client.connect(transport);
+      expect(client.getNegotiatedProtocolVersion()).toBe(era);
+      // The client validates structuredContent against the schemas it listed.
+      const listed = (await client.listTools()).tools.filter((t) => (ACCOUNT_TOOL_NAMES as readonly string[]).includes(t.name));
+      expect(listed.map((t) => t.outputSchema?.type)).toEqual(['object', 'object', 'object']);
+
+      const textOf = (res: Awaited<ReturnType<Client['callTool']>>) => (res.content as Array<{ text: string }>)[0]!.text;
+      const list = await client.callTool({ name: 'ynab_list_connections', arguments: {} });
+      expect(list.isError).not.toBe(true);
+      expect(list.structuredContent).toEqual(JSON.parse(textOf(list)));
+      const connections = (list.structuredContent as { connections: Array<{ client_name: string | null; family_id: string }> }).connections;
+      expect(connections).toHaveLength(2);
+      const phoneId = connections.find((c) => c.client_name === 'Phone')!.family_id;
+
+      const revoke = await client.callTool({ name: 'ynab_revoke_connection', arguments: { family_id: phoneId } });
+      expect(revoke.isError).not.toBe(true);
+      expect(revoke.structuredContent).toEqual(JSON.parse(textOf(revoke)));
+      expect(revoke.structuredContent).toMatchObject({ revoked: true, this_connection: false });
+
+      // An error result carries no structuredContent, and the client accepts it.
+      const unknown = await client.callTool({ name: 'ynab_revoke_connection', arguments: { family_id: phoneId } });
+      expect(unknown.isError).toBe(true);
+      expect(unknown.structuredContent).toBeUndefined();
+
+      const done = await client.callTool({ name: 'ynab_disconnect', arguments: { confirm: 'DISCONNECT' } });
+      expect(done.isError).not.toBe(true);
+      expect(done.structuredContent).toEqual(JSON.parse(textOf(done)));
+      expect(done.structuredContent).toMatchObject({ disconnected: true });
+    } finally {
+      await client.close().catch(() => undefined);
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });
 

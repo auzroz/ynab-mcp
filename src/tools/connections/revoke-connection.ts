@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import { ConnectionNotFoundError } from '../../utils/errors.js';
 import type { AccountToolContext } from './context.js';
+import { toOutputSchema } from '../output-schema.js';
 
 /**
  * A connection id as the server issues them: an oidc-provider grant id (43
@@ -30,6 +31,15 @@ const FAMILY_ID = z
   });
 
 const inputSchema = z.object({ family_id: FAMILY_ID }).strict();
+
+/** What the tool returns (#45; rules in ../output-schema.ts). An unknown id is a tool error, not a result. */
+export const revokeConnectionOutputSchema = z.object({
+  revoked: z.literal(true),
+  family_id: z.string(),
+  this_connection: z.boolean().describe('True when the caller revoked its own connection: it must sign in again'),
+  message: z.string(),
+});
+export type RevokeConnectionOutput = z.output<typeof revokeConnectionOutputSchema>;
 
 export const revokeConnectionTool: Tool = {
   name: 'ynab_revoke_connection',
@@ -53,23 +63,23 @@ That app's tokens stop working at once. To use this server again, the app must s
     required: ['family_id'],
     additionalProperties: false,
   },
+  outputSchema: toOutputSchema(revokeConnectionOutputSchema),
 };
 
-export async function handleRevokeConnection(args: Record<string, unknown>, ctx: AccountToolContext): Promise<string> {
+export async function handleRevokeConnection(
+  args: Record<string, unknown>,
+  ctx: AccountToolContext
+): Promise<RevokeConnectionOutput> {
   const { family_id: familyId } = inputSchema.parse(args);
   // Scoped by the session's user. Another user's id and an unknown one both come back false.
   if (!(await ctx.accounts.revokeUserFamily(ctx.userId, familyId))) throw new ConnectionNotFoundError();
   const own = ctx.currentFamilyId !== undefined && familyId === ctx.currentFamilyId;
-  return JSON.stringify(
-    {
-      revoked: true,
-      family_id: familyId,
-      this_connection: own,
-      message: own
-        ? 'Revoked. This was the connection making this call: its tokens no longer work, and this app must sign in again to keep using this server.'
-        : "Revoked. That app's tokens no longer work. Your other connections are not affected.",
-    },
-    null,
-    2
-  );
+  return {
+    revoked: true,
+    family_id: familyId,
+    this_connection: own,
+    message: own
+      ? 'Revoked. This was the connection making this call: its tokens no longer work, and this app must sign in again to keep using this server.'
+      : "Revoked. That app's tokens no longer work. Your other connections are not affected.",
+  };
 }

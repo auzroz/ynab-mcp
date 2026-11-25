@@ -60,6 +60,10 @@ import { updateScheduledTransactionOutputSchema } from '../../../src/tools/sched
 import { deleteScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/delete-scheduled.js';
 import { listMoneyMovementsOutputSchema } from '../../../src/tools/money-movements/list-money-movements.js';
 import { listMoneyMovementGroupsOutputSchema } from '../../../src/tools/money-movements/list-money-movement-groups.js';
+import { listConnectionsOutputSchema } from '../../../src/tools/connections/list-connections.js';
+import { revokeConnectionOutputSchema } from '../../../src/tools/connections/revoke-connection.js';
+import { disconnectOutputSchema } from '../../../src/tools/connections/disconnect.js';
+import { ACCOUNT_TOOL_NAMES } from '../../../src/tools/connections/policy.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
@@ -109,9 +113,6 @@ const PENDING_OUTPUT_SCHEMA = [
   'ynab_age_of_money',
   'ynab_preview_scheduled_transaction',
   // Account tools (#53c, OAuth HTTP mode only; their own call path in server.ts)
-  'ynab_list_connections',
-  'ynab_revoke_connection',
-  'ynab_disconnect',
 ];
 
 /**
@@ -162,6 +163,9 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_delete_scheduled_transaction: deleteScheduledTransactionOutputSchema,
   ynab_list_money_movements: listMoneyMovementsOutputSchema,
   ynab_list_money_movement_groups: listMoneyMovementGroupsOutputSchema,
+  ynab_list_connections: listConnectionsOutputSchema,
+  ynab_revoke_connection: revokeConnectionOutputSchema,
+  ynab_disconnect: disconnectOutputSchema,
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,
@@ -194,6 +198,13 @@ function closedPaths(node: unknown, path = '$'): string[] {
 }
 
 const schemaTools = tools.filter((t) => t.outputSchema !== undefined);
+/**
+ * The tools #44's null-payload fixture runs. The account tools make no YNAB
+ * request (they read this server's storage); their output is validated in
+ * tests/unit/tools/connections/connection-tools.test.ts and over /mcp in
+ * tests/unit/http-connection-tools.test.ts.
+ */
+const fixtureTools = schemaTools.filter((t) => !(ACCOUNT_TOOL_NAMES as readonly string[]).includes(t.name));
 
 describe('output schemas: coverage', () => {
   it('lists only registered tools, once each', () => {
@@ -216,7 +227,7 @@ describe('output schemas: coverage', () => {
   });
 
   it("every schema'd tool's real output is exercised by the null-payload fixture", () => {
-    for (const t of schemaTools) expect(recorded[t.name], `${t.name} is not in the null-output fixture`).toBeDefined();
+    for (const t of fixtureTools) expect(recorded[t.name], `${t.name} is not in the null-output fixture`).toBeDefined();
   });
 });
 
@@ -250,7 +261,7 @@ describe('output schemas: real output validates', () => {
     vi.restoreAllMocks();
   });
 
-  it.each(schemaTools.map((t) => t.name))('%s: the null-payload fixture output', (name) => {
+  it.each(fixtureTools.map((t) => t.name))('%s: the null-payload fixture output', (name) => {
     expectValid(name, recorded[name]!.result);
   });
 

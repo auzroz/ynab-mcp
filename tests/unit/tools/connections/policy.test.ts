@@ -193,12 +193,12 @@ describe('the server with and without an account context', () => {
     await s.close();
   });
 
-  it('answers with a text block only: no outputSchema, no structuredContent (until #45b gives them schemas)', async () => {
+  it('answers with structuredContent the client validates, from the same object as the text block (#45b)', async () => {
     const { ctx } = stubContext(RW);
     const s = await connectServer(false, ctx);
     const listed = (await s.client.listTools()).tools.filter((t) => (ACCOUNT_TOOL_NAMES as readonly string[]).includes(t.name));
     expect(listed).toHaveLength(3);
-    for (const t of listed) expect(t.outputSchema, t.name).toBeUndefined();
+    for (const t of listed) expect(t.outputSchema?.type, t.name).toBe('object');
     for (const [name, args] of [
       ['ynab_list_connections', {}],
       ['ynab_revoke_connection', { family_id: 'B'.repeat(43) }],
@@ -206,9 +206,12 @@ describe('the server with and without an account context', () => {
     ] as const) {
       const res = await s.call(name, args);
       expect(res.isError, name).toBe(false);
-      expect(res.structured, name).toBeUndefined();
-      expect(() => JSON.parse(res.text), name).not.toThrow();
+      expect(res.structured, name).toEqual(JSON.parse(res.text));
     }
+    // A refused call is an error result: text only, as before.
+    const refused = await s.call('ynab_revoke_connection', { family_id: 'not-an-id' });
+    expect(refused.isError).toBe(true);
+    expect(refused.structured).toBeUndefined();
     await s.close();
   });
 

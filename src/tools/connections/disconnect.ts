@@ -17,6 +17,7 @@ import type { Tool } from '@modelcontextprotocol/server';
 import { YNAB_REVOKE_STEPS } from '../../auth/ynab-revoke-text.js';
 import { sanitizeErrorMessage } from '../../utils/sanitize.js';
 import type { AccountToolContext } from './context.js';
+import { toOutputSchema } from '../output-schema.js';
 
 /** The confirmation the call must carry, exactly. */
 export const DISCONNECT_CONFIRMATION = 'DISCONNECT';
@@ -32,6 +33,15 @@ const inputSchema = z
 
 /** The fixed text of a failed erase. Storage errors are logged, not returned. */
 export const DISCONNECT_FAILED_MESSAGE = 'Could not disconnect; nothing was erased. Try again shortly.';
+
+/** What the tool returns (#45; rules in ../output-schema.ts). A failed erase is a tool error, not a result. */
+export const disconnectOutputSchema = z.object({
+  disconnected: z.literal(true),
+  message: z.string(),
+  ynab_authorization: z.string().describe('How to revoke the authorization at YNAB too'),
+  next_step: z.string(),
+});
+export type DisconnectOutput = z.output<typeof disconnectOutputSchema>;
 
 export const disconnectTool: Tool = {
   name: 'ynab_disconnect',
@@ -56,9 +66,10 @@ Revokes every connection under your account, including the one making this call,
     required: ['confirm'],
     additionalProperties: false,
   },
+  outputSchema: toOutputSchema(disconnectOutputSchema),
 };
 
-export async function handleDisconnect(args: Record<string, unknown>, ctx: AccountToolContext): Promise<string> {
+export async function handleDisconnect(args: Record<string, unknown>, ctx: AccountToolContext): Promise<DisconnectOutput> {
   inputSchema.parse(args);
   try {
     // One transaction on every driver: all of it is erased, or none.
@@ -68,15 +79,11 @@ export async function handleDisconnect(args: Record<string, unknown>, ctx: Accou
     throw new Error(DISCONNECT_FAILED_MESSAGE, { cause: error });
   }
   await ctx.afterDisconnect();
-  return JSON.stringify(
-    {
-      disconnected: true,
-      message:
-        'Disconnected. Every connection under your account on this server is revoked, including this one, and the server has erased your stored YNAB tokens, your connections and your audit log. Your YNAB budget is unchanged.',
-      ynab_authorization: `This server is still listed as authorized in your YNAB account. To remove it there too, ${YNAB_REVOKE_STEPS}`,
-      next_step: 'To use this server again later, connect and sign in again from the start.',
-    },
-    null,
-    2
-  );
+  return {
+    disconnected: true,
+    message:
+      'Disconnected. Every connection under your account on this server is revoked, including this one, and the server has erased your stored YNAB tokens, your connections and your audit log. Your YNAB budget is unchanged.',
+    ynab_authorization: `This server is still listed as authorized in your YNAB account. To remove it there too, ${YNAB_REVOKE_STEPS}`,
+    next_step: 'To use this server again later, connect and sign in again from the start.',
+  };
 }

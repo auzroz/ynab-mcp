@@ -448,19 +448,32 @@ export function isAccountToolName(name: string): name is AccountToolName {
   return (ACCOUNT_TOOL_NAMES as readonly string[]).includes(name);
 }
 
-/** Run an account tool. The caller has already applied its policy (src/tools/connections/policy.ts). */
+const toolsByName = new Map(toolCatalog.map((t) => [t.name, t]));
+
+/**
+ * Run an account tool and return its text and structuredContent, both from
+ * the handler's one output object (see runToolCall). The caller has already
+ * applied its policy (src/tools/connections/policy.ts).
+ */
+export async function runAccountToolCall(
+  toolName: AccountToolName,
+  args: Record<string, unknown>,
+  ctx: AccountToolContext
+): Promise<ToolCallOutput> {
+  const handler: AccountToolHandler = accountHandlers[toolName];
+  return toolCallOutput(toolsByName.get(toolName), await handler(args, ctx));
+}
+
+/** Run an account tool and return its text block (for callers and tests that read it). */
 export async function handleAccountToolCall(
   toolName: AccountToolName,
   args: Record<string, unknown>,
   ctx: AccountToolContext
 ): Promise<string> {
-  const handler: AccountToolHandler = accountHandlers[toolName];
-  return handler(args, ctx);
+  return (await runAccountToolCall(toolName, args, ctx)).text;
 }
 
-const toolsByName = new Map(tools.map((t) => [t.name, t]));
-
-/** The advertised definition of a registered tool (the object tools/list sends). */
+/** The advertised definition of a tool in the catalog, account tools included (the object tools/list sends). */
 export function getTool(name: string): Tool | undefined {
   return toolsByName.get(name);
 }
