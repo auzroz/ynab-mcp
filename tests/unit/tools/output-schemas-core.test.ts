@@ -59,6 +59,14 @@ import {
   handleUpdateScheduledTransaction,
 } from '../../../src/tools/scheduled-transactions/update-scheduled.js';
 import {
+  listMoneyMovementsOutputSchema,
+  handleListMoneyMovements,
+} from '../../../src/tools/money-movements/list-money-movements.js';
+import {
+  listMoneyMovementGroupsOutputSchema,
+  handleListMoneyMovementGroups,
+} from '../../../src/tools/money-movements/list-money-movement-groups.js';
+import {
   CircuitOpenError,
   errorResponseSchema,
   formatErrorResponse,
@@ -74,6 +82,9 @@ import {
 } from '../../../src/utils/errors.js';
 import {
   createMockClient,
+  createMoneyMovementsResponse,
+  createMoneyMovementGroupsResponse,
+  mockMoneyMovements,
   createScheduledTransactionsResponse,
   createScheduledTransactionResponse,
   mockScheduledTransactions,
@@ -447,5 +458,29 @@ describe('core output schemas: scheduled transactions', () => {
     expectValid(updateScheduledTransactionOutputSchema, nothing);
     expect(client.createScheduledTransaction).not.toHaveBeenCalled();
     expect(client.updateScheduledTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('core output schemas: money movements', () => {
+  it('ynab_list_money_movements: flat, by month, and grouped (with a movement whose group is unknown)', async () => {
+    client.getMoneyMovements.mockResolvedValue(createMoneyMovementsResponse());
+    client.getMoneyMovementGroups.mockResolvedValue(createMoneyMovementGroupsResponse());
+    expectValid(listMoneyMovementsOutputSchema, await handleListMoneyMovements({}, c()));
+    const grouped = await handleListMoneyMovements({ group_by_group: true }, c());
+    expect(grouped.money_movement_groups).toBeDefined();
+    expectValid(listMoneyMovementsOutputSchema, grouped);
+    client.getMoneyMovements.mockResolvedValue(
+      createMoneyMovementsResponse([...mockMoneyMovements, { ...mockMoneyMovements[0]!, id: 'orphan', money_movement_group_id: 'missing' }] as never)
+    );
+    expectValid(listMoneyMovementsOutputSchema, await handleListMoneyMovements({ group_by_group: true }, c()));
+    client.getMoneyMovementsByMonth.mockResolvedValue(createMoneyMovementsResponse());
+    expectValid(listMoneyMovementsOutputSchema, await handleListMoneyMovements({ month: '2024-01-01' }, c()));
+  });
+
+  it('ynab_list_money_movement_groups: all and by month', async () => {
+    client.getMoneyMovementGroups.mockResolvedValue(createMoneyMovementGroupsResponse());
+    expectValid(listMoneyMovementGroupsOutputSchema, await handleListMoneyMovementGroups({}, c()));
+    client.getMoneyMovementGroupsByMonth.mockResolvedValue(createMoneyMovementGroupsResponse());
+    expectValid(listMoneyMovementGroupsOutputSchema, await handleListMoneyMovementGroups({ month: '2024-01-01' }, c()));
   });
 });

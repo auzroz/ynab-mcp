@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListMoneyMovements } from '../../../../src/tools/money-movements/list-money-movements.js';
+import { handleListMoneyMovements as rawHandleListMoneyMovements, listMoneyMovementsOutputSchema } from '../../../../src/tools/money-movements/list-money-movements.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createMoneyMovementsResponse,
@@ -11,6 +12,9 @@ import {
   mockMoneyMovements,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListMoneyMovements = validating(listMoneyMovementsOutputSchema, rawHandleListMoneyMovements);
 
 describe('handleListMoneyMovements', () => {
   let mockClient: MockClient;
@@ -22,8 +26,7 @@ describe('handleListMoneyMovements', () => {
   it('lists money movements with formatted amounts and count', async () => {
     mockClient.getMoneyMovements.mockResolvedValue(createMoneyMovementsResponse());
 
-    const result = await handleListMoneyMovements({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListMoneyMovements({}, mockClient as never);
 
     expect(parsed.count).toBe(mockMoneyMovements.length);
     expect(parsed.money_movements[0].id).toBe('mm-1');
@@ -37,7 +40,7 @@ describe('handleListMoneyMovements', () => {
   it('adds raw milliunit amounts and a masked performed_by_user_id', async () => {
     mockClient.getMoneyMovements.mockResolvedValue(createMoneyMovementsResponse());
 
-    const parsed = JSON.parse(await handleListMoneyMovements({}, mockClient as never));
+    const parsed = await handleListMoneyMovements({}, mockClient as never);
 
     expect(parsed.money_movements[0].amount).toBe('-$50.00');
     expect(parsed.money_movements[0].amount_milliunits).toBe(-50000);
@@ -63,9 +66,7 @@ describe('handleListMoneyMovements', () => {
       mockClient.getMoneyMovements.mockResolvedValue(createMoneyMovementsResponse(movements));
       mockClient.getMoneyMovementGroups.mockResolvedValue(createMoneyMovementGroupsResponse(groups));
 
-      const parsed = JSON.parse(
-        await handleListMoneyMovements({ group_by_group: true }, mockClient as never)
-      );
+      const parsed = await handleListMoneyMovements({ group_by_group: true }, mockClient as never);
 
       expect(mockClient.getMoneyMovementGroups).toHaveBeenCalledTimes(1);
       expect(parsed.money_movements).toBeUndefined();
@@ -83,12 +84,10 @@ describe('handleListMoneyMovements', () => {
       mockClient.getMoneyMovementsByMonth.mockResolvedValue(createMoneyMovementsResponse(movements));
       mockClient.getMoneyMovementGroupsByMonth.mockResolvedValue(createMoneyMovementGroupsResponse(groups));
 
-      const parsed = JSON.parse(
-        await handleListMoneyMovements(
+      const parsed = await handleListMoneyMovements(
           { budget_id: 'b-1', month: '2024-01-01', group_by_group: true },
           mockClient as never
-        )
-      );
+        );
 
       expect(mockClient.getMoneyMovementGroupsByMonth).toHaveBeenCalledWith('b-1', '2024-01-01');
       expect(mockClient.getMoneyMovementGroups).not.toHaveBeenCalled();
@@ -110,8 +109,7 @@ describe('handleListMoneyMovements', () => {
       createMoneyMovementsResponse([{ id: 'mm-x', amount: 1000 }])
     );
 
-    const result = await handleListMoneyMovements({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListMoneyMovements({}, mockClient as never);
 
     const m = parsed.money_movements[0];
     expect(m.month).toBeNull();
@@ -134,8 +132,7 @@ describe('handleListMoneyMovements', () => {
   it('handles empty movements list', async () => {
     mockClient.getMoneyMovements.mockResolvedValue(createMoneyMovementsResponse([]));
 
-    const result = await handleListMoneyMovements({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListMoneyMovements({}, mockClient as never);
 
     expect(parsed.count).toBe(0);
     expect(parsed.money_movements).toEqual([]);
@@ -144,9 +141,7 @@ describe('handleListMoneyMovements', () => {
   it('uses the month endpoint when month is provided', async () => {
     mockClient.getMoneyMovementsByMonth.mockResolvedValue(createMoneyMovementsResponse());
 
-    const parsed = JSON.parse(
-      await handleListMoneyMovements({ month: '2024-01-01' }, mockClient as never)
-    );
+    const parsed = await handleListMoneyMovements({ month: '2024-01-01' }, mockClient as never);
 
     expect(mockClient.getMoneyMovementsByMonth).toHaveBeenCalledWith(expect.any(String), '2024-01-01');
     expect(mockClient.getMoneyMovements).not.toHaveBeenCalled();

@@ -57,6 +57,8 @@ import { getScheduledTransactionOutputSchema } from '../../../src/tools/schedule
 import { createScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/create-scheduled.js';
 import { updateScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/update-scheduled.js';
 import { deleteScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/delete-scheduled.js';
+import { listMoneyMovementsOutputSchema } from '../../../src/tools/money-movements/list-money-movements.js';
+import { listMoneyMovementGroupsOutputSchema } from '../../../src/tools/money-movements/list-money-movement-groups.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
@@ -81,8 +83,6 @@ const PENDING_OUTPUT_SCHEMA = [
   // Transactions
   // Scheduled transactions
   // Money movements
-  'ynab_list_money_movements',
-  'ynab_list_money_movement_groups',
   // Analytics (45c)
   'ynab_detect_recurring',
   'ynab_spending_analysis',
@@ -155,6 +155,8 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_create_scheduled_transaction: createScheduledTransactionOutputSchema,
   ynab_update_scheduled_transaction: updateScheduledTransactionOutputSchema,
   ynab_delete_scheduled_transaction: deleteScheduledTransactionOutputSchema,
+  ynab_list_money_movements: listMoneyMovementsOutputSchema,
+  ynab_list_money_movement_groups: listMoneyMovementGroupsOutputSchema,
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,

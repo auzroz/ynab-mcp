@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListMoneyMovementGroups } from '../../../../src/tools/money-movements/list-money-movement-groups.js';
+import { handleListMoneyMovementGroups as rawHandleListMoneyMovementGroups, listMoneyMovementGroupsOutputSchema } from '../../../../src/tools/money-movements/list-money-movement-groups.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createMoneyMovementGroupsResponse,
   mockMoneyMovementGroups,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListMoneyMovementGroups = validating(listMoneyMovementGroupsOutputSchema, rawHandleListMoneyMovementGroups);
 
 describe('handleListMoneyMovementGroups', () => {
   let mockClient: MockClient;
@@ -21,7 +25,7 @@ describe('handleListMoneyMovementGroups', () => {
   it('lists all groups without a month', async () => {
     mockClient.getMoneyMovementGroups.mockResolvedValue(createMoneyMovementGroupsResponse());
 
-    const parsed = JSON.parse(await handleListMoneyMovementGroups({}, mockClient as never));
+    const parsed = await handleListMoneyMovementGroups({}, mockClient as never);
 
     expect(parsed.count).toBe(mockMoneyMovementGroups.length);
     expect(parsed.month).toBeNull();
@@ -43,9 +47,7 @@ describe('handleListMoneyMovementGroups', () => {
       ])
     );
 
-    const parsed = JSON.parse(
-      await handleListMoneyMovementGroups({ budget_id: 'b-1', month: '2024-02-01' }, mockClient as never)
-    );
+    const parsed = await handleListMoneyMovementGroups({ budget_id: 'b-1', month: '2024-02-01' }, mockClient as never);
 
     expect(mockClient.getMoneyMovementGroupsByMonth).toHaveBeenCalledWith('b-1', '2024-02-01');
     expect(parsed.month).toBe('2024-02-01');
