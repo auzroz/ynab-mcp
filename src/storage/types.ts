@@ -19,6 +19,7 @@ import type { OAuthClientInformationFull } from '@modelcontextprotocol/server';
 import type { RetentionPolicy } from '../auth/retention-defaults.js';
 import type { StorageTimeouts } from './timeouts.js';
 import type { AuditStore } from './audit-rows.js';
+import type { RateLimitSweepCounts, SharedLimitStore } from './shared-limits.js';
 
 export type { AuditStore, AuditRecord, AuditQuery, AuditGuard } from './audit-rows.js';
 
@@ -464,6 +465,22 @@ export interface Storage extends OAuthRowStore, CiphertextStore, AuditStore {
    * pruners (replicas) never wait on each other. Returns the rows deleted.
    */
   pruneAuditLog(options?: SweepOptions): Promise<number>;
+
+  /**
+   * Delete the shared rate-limit rows that no longer limit anything (#67):
+   * windows that have ended and buckets that are full and unblocked (a full
+   * bucket reads the same as no row). Batched; on Postgres a batch skips rows
+   * a limiter holds. The SQL drivers have the tables on every install; memory
+   * storage has none and deletes nothing.
+   */
+  sweepRateLimitRows(options?: { now?: number }): Promise<RateLimitSweepCounts>;
+
+  /**
+   * The store the shared limiters use (`RATE_LIMIT_STORE=postgres`, #67), on a
+   * pool of its own opened on first use. Postgres only: the other drivers
+   * don't have it, and the config refuses the setting for them.
+   */
+  sharedLimits?(): SharedLimitStore;
 
   // MCP clients (Dynamic Client Registration). saveClient stamps created_at on insert.
   getClient(clientId: string): Promise<OAuthClientInformationFull | undefined>;

@@ -33,6 +33,15 @@ export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 5_000;
  * Still bounded, so a wedged lock holder fails startup.
  */
 export const DEFAULT_SQLITE_MIGRATION_BUSY_TIMEOUT_MS = 60_000;
+/**
+ * Postgres, the shared rate limiter's own pool (#67, `RATE_LIMIT_STORE=postgres`):
+ * every YNAB request and every rate-limited authorization-server request
+ * waits on it, so its bounds are short. A limiter that can't answer within
+ * them refuses the request (fail closed; src/storage/shared-limits.ts).
+ */
+export const DEFAULT_PG_LIMITER_STATEMENT_TIMEOUT_MS = 1_000;
+export const DEFAULT_PG_LIMITER_QUERY_TIMEOUT_MS = 2_000;
+export const DEFAULT_PG_LIMITER_CONNECTION_TIMEOUT_MS = 2_000;
 
 export interface StorageTimeouts {
   pgStatementTimeoutMs: number;
@@ -40,6 +49,9 @@ export interface StorageTimeouts {
   pgConnectionTimeoutMs: number;
   sqliteBusyTimeoutMs: number;
   sqliteMigrationBusyTimeoutMs: number;
+  pgLimiterStatementTimeoutMs: number;
+  pgLimiterQueryTimeoutMs: number;
+  pgLimiterConnectionTimeoutMs: number;
 }
 
 export const DEFAULT_STORAGE_TIMEOUTS: StorageTimeouts = {
@@ -48,6 +60,9 @@ export const DEFAULT_STORAGE_TIMEOUTS: StorageTimeouts = {
   pgConnectionTimeoutMs: DEFAULT_PG_CONNECTION_TIMEOUT_MS,
   sqliteBusyTimeoutMs: DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
   sqliteMigrationBusyTimeoutMs: DEFAULT_SQLITE_MIGRATION_BUSY_TIMEOUT_MS,
+  pgLimiterStatementTimeoutMs: DEFAULT_PG_LIMITER_STATEMENT_TIMEOUT_MS,
+  pgLimiterQueryTimeoutMs: DEFAULT_PG_LIMITER_QUERY_TIMEOUT_MS,
+  pgLimiterConnectionTimeoutMs: DEFAULT_PG_LIMITER_CONNECTION_TIMEOUT_MS,
 };
 
 /** Defaults overlaid with overrides; a non-positive or non-integer value is a bug, not "no limit". */

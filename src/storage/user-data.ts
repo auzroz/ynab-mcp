@@ -10,8 +10,11 @@
  * it either commits before that DELETE and its tokens go below, or finds the
  * row gone), codes before code tombstones, tokens before tombstones (the order
  * the replay revocation writes them in), then the oidc-provider rows, and the
- * audit rows last (D-7b: erasing an account erases its audit log; an audit
- * insert holds the user row, so it lands before this erase or not at all).
+ * audit rows (D-7b: erasing an account erases its audit log; an audit
+ * insert holds the user row, so it lands before this erase or not at all),
+ * then the user's shared rate-limit bucket and write-cap row (#67c; a request
+ * still in flight may write them again, which the sweep removes once they
+ * limit nothing).
  * Memory storage mirrors the same entries in its own maps.
  */
 
@@ -46,6 +49,10 @@ export const USER_DATA_TABLES: readonly UserDataTable[] = [
   { table: 'oauth_rows', column: 'account_id', orIn: { column: 'grant_id', ids: 'grants' } },
   // The audit log (M6, #60a; D-7b).
   { table: 'audit_log', column: 'user_id' },
+  // The shared YNAB request budget (M7, #67c): one row per user, no lock order to keep.
+  { table: 'rate_limit_buckets', column: 'user_id' },
+  // The shared write cap (M7, #61c across replicas).
+  { table: 'rate_limit_writes', column: 'user_id' },
 ];
 
 /** The user's oidc-provider grants (`$1` = the user id). */

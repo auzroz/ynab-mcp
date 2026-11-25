@@ -9,6 +9,9 @@
  * orphaned tokens, expired grants, and abandoned or unused client
  * registrations, in batches (on Postgres under an advisory lock, so replicas
  * don't sweep at once; a replica that finds the lock held does nothing).
+ * The second is `Storage.sweepRateLimitRows` (#67): ended rate-limit windows
+ * and full, idle request buckets of the shared limiters (no lock: its
+ * batches skip rows a limiter holds, and deleting a row twice is harmless).
  *
  * The second is `Storage.pruneAuditLog` (#60b): audit log rows older than
  * `AUDIT_RETENTION_DAYS` (default 90), in batches through the `(ts)` index.
@@ -51,6 +54,13 @@ export const SWEEP_STEPS: readonly SweepStep[] = [
     name: 'audit-log',
     async run(storage) {
       return { auditRows: await storage.pruneAuditLog() };
+    },
+  },
+  {
+    // #67: shared limiter rows that limit nothing any more (RATE_LIMIT_STORE=postgres).
+    name: 'rate-limit-rows',
+    async run(storage) {
+      return { ...(await storage.sweepRateLimitRows()) };
     },
   },
 ];

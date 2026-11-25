@@ -55,6 +55,7 @@ import {
   signInCiphertext,
 } from './encryption-meta.js';
 import { resolveStorageTimeouts } from './timeouts.js';
+import { runRateLimitSweep, type RateLimitSweepCounts } from './shared-limits.js';
 import {
   auditCountSql,
   auditInsert,
@@ -1167,6 +1168,17 @@ export class SqliteStorage implements Storage, OAuthRowStore {
       options.batchSize
     );
     return { ran: true, deleted };
+  }
+
+  async sweepRateLimitRows(options: { now?: number } = {}): Promise<RateLimitSweepCounts> {
+    // Nothing writes these tables on SQLite (RATE_LIMIT_STORE=postgres needs
+    // Postgres); swept anyway so a copied database doesn't keep stale rows.
+    const db = this.database;
+    return runRateLimitSweep(
+      'sqlite',
+      async (sql, params) => db.prepare(sql.replace(/\$\d+/g, '?')).run(...params).changes,
+      options.now ?? Date.now()
+    );
   }
 
   // MCP clients

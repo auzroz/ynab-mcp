@@ -110,6 +110,20 @@ export class RateLimitError extends Error {
 }
 
 /**
+ * The shared rate limit (`RATE_LIMIT_STORE=postgres`, #67c) could not be read
+ * in time: the database is unreachable or slow. The request is refused, not
+ * served from a budget of this process's own (that would let every replica
+ * spend the user's whole budget). Nothing was sent to YNAB; retry after
+ * `retryAfterMs`. The message is fixed.
+ */
+export class RateLimitStoreUnavailableError extends Error {
+  constructor(public readonly retryAfterMs: number) {
+    super('The shared rate limit is temporarily unavailable');
+    this.name = 'RateLimitStoreUnavailableError';
+  }
+}
+
+/**
  * An outbound call to YNAB hit its deadline (#58). The message is fixed:
  * nothing from the upstream is carried. `outcomeUnknown` is true for a call that
  * may have changed something (any non-GET): it is never retried, and the caller
@@ -261,6 +275,17 @@ export function formatErrorResponse(error: unknown): string {
         error.retryAfterMs === undefined ? undefined : Math.max(1, Math.ceil(error.retryAfterMs / 1000)),
       // Note: Server uses 180 req/hr budget (10% below YNAB's 200 limit) for safety margin
       suggestion: 'Wait before making more requests. Check ynab_rate_limit_status for current limits.',
+    }, null, 2);
+  }
+
+  if (error instanceof RateLimitStoreUnavailableError) {
+    return JSON.stringify({
+      error: true,
+      type: 'upstream_unavailable',
+      message: 'The rate limit store is temporarily unavailable; nothing was sent to YNAB',
+      retry_after_ms: error.retryAfterMs,
+      retry_after_seconds: Math.max(1, Math.ceil(error.retryAfterMs / 1000)),
+      suggestion: 'Try again after the retry time.',
     }, null, 2);
   }
 

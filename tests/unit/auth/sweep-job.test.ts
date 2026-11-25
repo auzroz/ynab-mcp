@@ -32,7 +32,12 @@ function storageWith(
 ): { storage: Storage; sweepExpired: ReturnType<typeof vi.fn>; pruneAuditLog: ReturnType<typeof vi.fn> } {
   const fn = vi.fn(sweepExpired);
   const prune = vi.fn(pruneAuditLog);
-  return { storage: { sweepExpired: fn, pruneAuditLog: prune } as unknown as Storage, sweepExpired: fn, pruneAuditLog: prune };
+  const sweepRateLimitRows = async (): Promise<Record<string, number>> => ({ rateLimitWindows: 0, rateLimitBuckets: 0, rateLimitWrites: 0 });
+  return {
+    storage: { sweepExpired: fn, pruneAuditLog: prune, sweepRateLimitRows } as unknown as Storage,
+    sweepExpired: fn,
+    pruneAuditLog: prune,
+  };
 }
 
 const ranWith = (deleted: Partial<ReturnType<typeof emptySweepCounts>>): SweepResult => ({
@@ -83,7 +88,7 @@ describe('one pass', () => {
       async () => 7
     );
     const log = vi.fn();
-    expect(SWEEP_STEPS.map((s) => s.name)).toEqual(['expired-rows', 'audit-log']);
+    expect(SWEEP_STEPS.map((s) => s.name)).toEqual(['expired-rows', 'audit-log', 'rate-limit-rows']);
     const result = await runSweepPass(storage, { log });
     expect(pruneAuditLog).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ deleted: 7, failed: 1 });

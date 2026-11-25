@@ -60,6 +60,9 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     auditRetentionDays: 90,
     // The loader's default (#64a).
     requireResource: true,
+    // The loader's defaults (#67).
+    rateLimitStore: 'memory',
+    mcpReplicas: 1,
     ...overrides,
   };
 }

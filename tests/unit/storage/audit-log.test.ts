@@ -38,8 +38,8 @@ async function seedUser(s: Storage, userId: string): Promise<number> {
 }
 
 describe('the audit_log table (M6)', () => {
-  it('is schema 7, with no column for an amount, a name or a memo', () => {
-    expect(SCHEMA_VERSION).toBe(7);
+  it('came with schema 7, and has no column for an amount, a name or a memo', () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(7);
     for (const sql of Object.values(AUDIT_LOG_TABLE.sql)) {
       const columns = [...sql.matchAll(/^\s+(\w+) (?:TEXT|INTEGER|BIGINT|BIGSERIAL)/gm)].map((m) => m[1]);
       expect(columns).toEqual([
@@ -194,7 +194,7 @@ for (const driver of testDrivers) {
         expect(await again.listAuditEntries('u1', {}, 10)).toEqual([written]);
       });
 
-      it('upgrades a schema 6 database: the table and its indexes are created, the stamp is 7, nothing else changes', async () => {
+      it('upgrades a schema 6 database: the table and its indexes are created, the stamp is current, nothing else changes', async () => {
         const h = await driver.open();
         const sql = h.sql as NonNullable<DriverHandle['sql']>;
         await seedUser(h.storage, 'u1');
@@ -206,14 +206,14 @@ for (const driver of testDrivers) {
         const upgraded = await h.reopen();
         expect(await tableExists(h, 'audit_log')).toBe(true);
         expect((await indexes(h)).sort()).toEqual(['audit_log_ts', 'audit_log_user_ts']);
-        expect((await sql("SELECT value FROM schema_meta WHERE key = 'schema_version'"))[0]?.['value']).toBe('7');
+        expect((await sql("SELECT value FROM schema_meta WHERE key = 'schema_version'"))[0]?.['value']).toBe(String(SCHEMA_VERSION));
         expect(await upgraded.getUser('u1')).toBeDefined();
         expect(await upgraded.appendAuditEntry(row())).toBe(true);
 
         // A restart against the upgraded database changes nothing.
         const again = await h.reopen();
         expect(await again.listAuditEntries('u1', {}, 10)).toHaveLength(1);
-        expect((await sql("SELECT value FROM schema_meta WHERE key = 'schema_version'"))[0]?.['value']).toBe('7');
+        expect((await sql("SELECT value FROM schema_meta WHERE key = 'schema_version'"))[0]?.['value']).toBe(String(SCHEMA_VERSION));
       });
     }
   });

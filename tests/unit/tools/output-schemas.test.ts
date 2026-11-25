@@ -215,7 +215,7 @@ describe('output schemas: real output validates', () => {
     const mock = createMockClient();
     mock.getRateLimitStatus.mockReturnValue({
       available: 0, limit: 180, used: 180, percentUsed: 100, canMakeRequest: false, waitTimeMs: 4000,
-      resetTimeMs: 60_000, sentLastHour: 180, rejectedLastHour: 4, maxWaitMs: 2000,
+      resetTimeMs: 60_000, sentLastHour: 180, rejectedLastHour: 4, maxWaitMs: 2000, store: 'postgres',
       ynabExhausted: { active: true, exhaustedAtMs: 1_700_000_000_000, untilMs: 1_700_000_900_000, retryAfterMs: 900_000 },
     });
     mock.getClientUsage.mockReturnValue({ clientId: 'client-a', sentLastHour: 7, rejectedLastHour: 1 });

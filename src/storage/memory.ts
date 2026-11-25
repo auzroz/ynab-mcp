@@ -42,6 +42,7 @@ import type {
   RefreshedAccessToken,
   InactiveUserCondition,
 } from './types.js';
+import type { RateLimitSweepCounts } from './shared-limits.js';
 import { MemoryAuditStore, assertPruneBatchSize, batchUser, type AuditGuard, type AuditQuery, type AuditRecord } from './audit-rows.js';
 import { assertFloorAllows, compareKeyCheck, isBelowFloor, keyCheckMetaKey, signInCiphertext } from './encryption-meta.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
@@ -939,6 +940,11 @@ export class MemoryStorage implements Storage, OAuthRowStore {
       createdAt: existing?.createdAt ?? now,
       authorizedAt: existing?.authorizedAt,
     });
+  }
+
+  /** Memory storage holds no shared rate-limit rows (#67): the limiters keep their own state. */
+  async sweepRateLimitRows(): Promise<RateLimitSweepCounts> {
+    return { rateLimitWindows: 0, rateLimitBuckets: 0, rateLimitWrites: 0 };
   }
 
   async pruneAuditLog(options: SweepOptions = {}): Promise<number> {
