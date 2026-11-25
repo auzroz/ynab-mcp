@@ -46,6 +46,7 @@ Set these environment variables (see `.env.example`):
 | `ENCRYPTION_KEY_PREVIOUS` | no | Older keys, as `<id>:<key>` separated by commas (e.g. `1:<old key>`), used only to read tokens stored under them while the rekey job moves those to the current key. Requires `TOKEN_PEPPER`. See "Rotating ENCRYPTION_KEY" |
 | `TOKEN_PEPPER` | no | 32-byte secret (base64 or 64 hex characters) keying the hashes of stored MCP tokens, codes and state — `openssl rand -base64 32`. Default: derived from `ENCRYPTION_KEY`. Set it **before the first 0.5.0 start** if you want one; see "Hashed tokens and the pepper" |
 | `YNAB_OAUTH_ALLOW_WRITE` | no | Allow writes (default `false`). Checked on every request, not only at consent: unless `true`, no connection can write, including one granted read-write earlier, so setting it back to `false` is an instant switch. Writes also need `YNAB_READ_ONLY=false`. `YNAB_ACCESS_TOKEN` and `YNAB_BUDGET_ID` must not be set in OAuth mode |
+| `YNAB_READ_ONLY` | no | `false` to allow writes at all (default `true`). With `true`, every write tool is hidden and refused, whatever `YNAB_OAUTH_ALLOW_WRITE` says. Accepts `true`/`false`, `1`/`0` or `yes`/`no` (any case); anything else refuses to start |
 | `STORAGE_DRIVER` | no | `memory` (default, **non-durable**), `sqlite`, or `postgres` |
 | `SQLITE_PATH` | if sqlite | e.g. `/data/ynab-mcp.db` |
 | `DATABASE_URL` | if postgres | `postgres://user:pass@host:5432/db` |
@@ -54,11 +55,16 @@ Set these environment variables (see `.env.example`):
 | `MCP_RESOURCE_URL` | no | Absolute URL of the MCP endpoint (the OAuth resource/audience). Default `PUBLIC_URL` + `/mcp`. Must be https (http only for `localhost`, `127.0.0.1`, `[::1]`), no fragment |
 | `ALLOWED_HOSTS` / `ALLOWED_ORIGINS` | no | Comma-separated Host / Origin allowlists. Explicit values **replace** the derived defaults. Defaults: host and origin of `PUBLIC_URL`, plus `localhost`, `127.0.0.1`, `[::1]` (bare and with `:PORT`) when `PUBLIC_URL` is unset or loopback |
 | `ENABLE_DNS_REBINDING_PROTECTION` | no | Host/Origin validation, **on by default** (previously off; a breaking default in 0.4.0). `false` disables it entirely. **Unsafe**: see "Host and Origin validation" |
+| `PORT` | no | Port to listen on (integer 1-65535, default `3000`) |
+| `MCP_BIND_HOST` | no | Address to listen on: an IP address (IPv6 without brackets) or a hostname. Default: every interface |
+| `LOG_LEVEL` | no | `debug`, `info`, `warn` or `error` (default `info`), checked at startup: any other value refuses to start |
 | `MCP_MAX_INFLIGHT_PER_USER` | no | Requests one user can have in flight at `/mcp` (integer 1-64, default `8`). Past it: `429` with `Retry-After: 1`. See "Requests, limits and timeouts" |
 | `MCP_MAX_INFLIGHT_PER_CLIENT` | no | Requests one client of a user can have in flight, OAuth mode only (integer 1-64 and at most `MCP_MAX_INFLIGHT_PER_USER`, default `4`, or the per-user cap if smaller). See "Requests, limits and timeouts" |
 | `MCP_MAX_INFLIGHT` | no | Requests in flight across the server (integer 1-1024 and at least `MCP_MAX_INFLIGHT_PER_USER`, default `64`). See "Requests, limits and timeouts" |
 | `MCP_REQUEST_TIMEOUT_MS` | no | Longest a `/mcp` request runs (integer 5000-300000, default `60000`). See "Requests, limits and timeouts" |
 | `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` / `MCP_SESSION_IDLE_TIMEOUT_MS` | no | **Deprecated, no effect** since 0.5.0 (`/mcp` is stateless). Still parsed, so a malformed value refuses to start; a set value logs a warning once at startup. Removed in 0.6 |
+| `RATE_LIMIT_PER_HOUR` | no | YNAB requests one user may make per hour (integer 1-195 in HTTP mode, default `180`; YNAB allows 200 per token). See "Requests, limits and timeouts" |
+| `CACHE_TTL_MS` | no | How long a user's slow-changing budget data (accounts, categories, payees, the budget list) is cached, in milliseconds (integer 1 to 86400000, default `300000`) |
 | `RATE_LIMIT_MAX_WAIT_MS` | no | Longest a request waits for a per-user YNAB rate-limit token (integer 0-60000, default `2000`). `0` never waits. Past that, or when another request is already waiting, the tool returns `rate_limited` with `retry_after_seconds` at once, so a burst can't pile up behind the limiter |
 | `YNAB_WRITE_LIMIT_PER_HOUR` | no | Write requests one user may make per hour (integer 0-1000, default `20`; **breaking** in 0.5.0, since writes were previously unlimited). One write tool call counts as 1, so a bulk call is 1. `0` turns the cap off. Counted per user (the YNAB user in oauth mode, the token in header mode), shared by all of that user's clients and requests, in memory (a restart resets it), or across every replica with `RATE_LIMIT_STORE=postgres`. A refused write returns `write_limit_exceeded` naming the limit and when it resets, and takes no YNAB request. Separate from `RATE_LIMIT_PER_HOUR` |
 | `TRUST_PROXY` | if behind a reverse proxy | Number of proxies between the client and this server whose `X-Forwarded-For` to trust (integer 0-10, default `0`; e.g. `1` behind a single Traefik/Caddy/nginx). Too low and every client shares one rate-limit bucket, so one client can lock out the others; too high and clients can spoof their address. Set it only when the app is reachable solely through the proxy. See "Client addresses and rate limits" |
@@ -77,7 +83,11 @@ Set these environment variables (see `.env.example`):
 | `MCP_REFRESH_TOKEN_TTL_DAYS` | no | A connection ends this many days after its sign-in, however often it is refreshed (integer 1-3650, default `90`) |
 | `MCP_ABANDONED_CLIENT_HOURS` | no | A registered client that never completed a sign-in is deleted after this many hours (integer 1-87600, default `24`) |
 | `MCP_UNUSED_CLIENT_DAYS` | no | A client with no live connection is deleted this many days after its last sign-in (integer 1-3650, default `90`) |
+| `MCP_ACCESS_TOKEN_TTL_SEC` | no | Lifetime of the access tokens the server issues to MCP clients (integer 60-3600, default `3600`) |
+| `MCP_AUTH_CODE_TTL_SEC` | no | Lifetime of an authorization code and of the consent step (integer 30-600, default `600`) |
 | `AUDIT_RETENTION_DAYS` | no | Audit log entries are deleted this many days after they were written (integer 1-3650, default `90`; `0` is refused). OAuth mode's durable log only: stdio and header mode keep the newest 1,000 entries per user in memory. See "The audit log" |
+| `YNAB_ACCESS_TOKEN` / `YNAB_BUDGET_ID` | header mode only | A YNAB personal access token used for requests without `X-YNAB-Token`, and the default budget. `oauth` mode refuses to start when either is set. See "Interim header mode" |
+| `MCP_ALLOW_ANONYMOUS_FALLBACK` | header mode only | `true` lets header mode with `YNAB_ACCESS_TOKEN` start on a bind other than loopback (default `false`). See "Upgrading to 0.5.0: configuration" for what that exposes |
 
 OAuth mode (`AUTH_MODE=oauth`) also needs `YNAB_OAUTH_CLIENT_ID`,
 `YNAB_OAUTH_CLIENT_SECRET`, `ENCRYPTION_KEY`, and `PUBLIC_URL`; startup is refused if any is missing.
@@ -481,7 +491,10 @@ the user's in-memory state at once: the cached budget data and delta
 snapshots, the rate limiter and per-client usage, and its cached YNAB access
 token. The user's next request, after signing in again, starts fresh. The
 OAuth endpoints' rate-limit counters are not reset: they hold no user data,
-and resetting them would hand out extra requests.
+and resetting them would hand out extra requests. With
+`RATE_LIMIT_STORE=postgres` the user's shared YNAB budget and write-cap rows
+are deleted with the account instead (see "Several replicas: shared rate
+limits").
 
 **Several replicas.** Nothing that decides whether a request is allowed is
 cached. Every `/mcp` request looks its access token up in storage, and every
@@ -496,13 +509,14 @@ a while on the other replicas:
   An erased user's audit row for that request is not written (audit rows are
   written only while the account generation exists).
 - The other replicas' in-memory entry for the user (cached budget data,
-  snapshots, the limiter) stays until it is evicted as idle, an hour or more
-  after the user's last request there. Nothing can reach it: a request needs a
-  valid token, and the erased account's tokens are gone. A user who signs in
-  again gets a new account, but the same YNAB user id, so on a replica that
-  still holds the old entry, the new account's first requests share that
-  entry's limiter and cached budget data (their own budget data, read with
-  their own YNAB grant).
+  snapshots, and the limiter unless `RATE_LIMIT_STORE=postgres` keeps it in
+  the database) stays until it is evicted as idle, an hour or more after the
+  user's last request there. Nothing can reach it: a request needs a valid
+  token, and the erased account's tokens are gone. A user who signs in again
+  gets a new account, but the same YNAB user id, so on a replica that still
+  holds the old entry, the new account's first requests share that entry's
+  cached budget data (their own budget data, read with their own YNAB grant)
+  and, with the in-memory store, its limiter.
 
 ### Requests, limits and timeouts
 
@@ -578,10 +592,11 @@ evicting the least recently used user entry under load (past 10,000 retained
 users) can reset it too. With several replicas each process counts on its own,
 so a user could make up to the limit per replica; `RATE_LIMIT_STORE=postgres`
 makes it one cap across the replicas (see "Several replicas: shared rate
-limits"). A write call that fails input validation gives its slot
-back; one that YNAB rejects keeps it. In OAuth mode every request looks up the user's YNAB grant and
-access token, refreshing the token when it expires. Once the user's YNAB grant
-is gone, or YNAB rejects its refresh token (`invalid_grant`), requests are
+limits"). A write call that fails input validation gives its slot back; one
+that YNAB rejects keeps it.
+
+In OAuth mode every request looks up the user's YNAB grant and access token,
+refreshing the token when it expires. Once the user's YNAB grant is gone, or YNAB rejects its refresh token (`invalid_grant`), requests are
 refused with `401` and the client re-authorizes, and a tool call whose token
 can't be refreshed midway fails with an `auth_error`. A failure that clears by
 itself (YNAB timing out or answering `5xx`, the circuit breaker being open, or
@@ -804,8 +819,8 @@ YNAB's settings.
 
 ### The audit log
 
-Every write tool call is recorded with how it ended (#60a), and in OAuth mode
-so is every revoked connection (#60b). In OAuth mode the entries go to the
+Every write tool call is recorded with how it ended, and in OAuth mode so is
+every revoked connection (0.5.0). In OAuth mode the entries go to the
 storage driver's `audit_log` table, so with `sqlite` or `postgres` they
 survive restarts and every replica writes to one log; the sweep deletes them
 `AUDIT_RETENTION_DAYS` (default 90) after they were written. In header mode,
@@ -878,7 +893,7 @@ all of them land or none.
 
 In OAuth mode each revocation of a connection (an MCP grant) is one entry,
 with `operation` `revoke`, `resource_type` `grant` and the revoked grant's id
-as `resource_id` (D-7a). Issuing and refreshing tokens is not recorded, so a
+as `resource_id`. Issuing and refreshing tokens is not recorded, so a
 connection's hourly refreshes add nothing. The outcomes:
 
 - `revoked`: the user or their client revoked it, at `/revoke` (with the
@@ -886,7 +901,8 @@ connection's hourly refreshes add nothing. The outcomes:
   (`ynab_revoke_connection`; revoking every connection of one client is one
   entry with `resource_type` `client` and the client id).
 - `revoked_reuse`: a spent refresh token or authorization code was presented
-  again (past #64a's 60-second retry window), or a client presented another
+  again (past the 60-second retry window, see "Refresh-token rotation and
+  reuse detection"), or a client presented another
   client's, so the connection was ended (RFC 9700).
 - `revoked_replay`: two requests spent the same refresh token or code at once,
   and the second ended the connection.
@@ -1287,6 +1303,22 @@ changelog has the full list):
   up the database first.
 - **Out-of-range numeric settings refuse to start**, and every problem is
   listed in one startup message that never shows a value.
+- **Writes are capped at 20 per user per hour** (`YNAB_WRITE_LIMIT_PER_HOUR`,
+  `0` turns the cap off). 0.4.x had no cap.
+- **A new `ENCRYPTION_KEY` needs a new `ENCRYPTION_KEY_ID`** (see "Rotating
+  ENCRYPTION_KEY").
+- **`ynab_audit_log` output changed.** Its fields are snake_case, entries no
+  longer carry `details` or `error`, and in OAuth mode each client sees only
+  its own entries unless it asks for `all_clients`. Anything that reads the
+  tool's output must change (see "The audit log" and the changelog).
+- **Any connection, read-only ones included, can revoke the user's
+  connections and erase their account on this server** with the account
+  tools, whatever the write settings (see "Managing connections").
+- **The first start migrates the schema** to version 8. Among other changes
+  it rewrites stored tokens as hashes and creates `oauth_rows` (both above),
+  and adds the `users` columns for the refresh lease (schema 6),
+  the `audit_log` table (schema 7) and the shared rate-limit tables
+  (schema 8), on every SQL driver. Back up first.
 
 ### Changing TOKEN_PEPPER
 

@@ -79,7 +79,7 @@ These are the rules reviewers check, and most of them have tests that enforce th
 ### Output, errors and secrets
 - **Sanitize user strings in output** (names, memos, notes, flag names) with the helpers in `src/utils/sanitize.ts`.
 - **Never log or return a token or secret.** Client-facing errors are generic and mapped (`src/utils/errors.ts`). Detailed errors go to the sanitized internal log only, and upstream error text never reaches the client.
-- **Audit entries record which fields were present, never their contents.** For example `has_memo`, never the memo itself.
+- **Audit entries hold ids only.** No amount or other financial value, no payee, account, category or memo text, and no error message; the `audit_log` table has no column for one.
 
 ### Calling YNAB
 - **All budget API requests go through `YnabClient`.** It acquires the rate limiter, applies the cache and delta sync, and maps errors.
@@ -87,8 +87,8 @@ These are the rules reviewers check, and most of them have tests that enforce th
 - **Check what the SDK actually sends.** The `ynab` SDK can drop fields it doesn't know. The generated SDK has dropped fields before (4.5 dropped `goal_frequency`; 5.0 sends it). If your change relies on a field reaching the API, add a test that inspects the outgoing request with a stubbed `fetch`. `tests/unit/services/ynab-client-transactions-wire.test.ts` shows the pattern.
 
 ### HTTP mode
-- **Keep users isolated.** A user's sessions share one rate limiter, cache and audit log, which are never shared between users.
-- **Keep sessions bound to their owner.** Don't introduce module-level state that would leak between users.
+- **Keep users isolated.** All of a user's requests share one rate limiter, cache and audit log, which are never shared between users.
+- **Keep per-user state bound to its owner.** `/mcp` is stateless: each request is authenticated on its own. Don't introduce module-level state that would leak between users or requests.
 
 ### Tests
 - **Add tests with every change.** Coverage is gated at 80% lines, functions and statements, and 75% branches.

@@ -342,7 +342,7 @@ Registered only on an HTTP server with OAuth sign-in (`AUTH_MODE=oauth`), where 
 
 ### Structured output
 
-Every tool returns its result as JSON in a text block. A tool that declares an `outputSchema` in `tools/list` also returns the same object as `structuredContent`, so a client can validate it and use it without parsing text. A key whose value is null is left out, as in 0.4.x, and the schema marks it optional. Fields the tool reports as `null` on purpose are marked nullable. The advertised schemas allow extra keys, and values copied as they are from YNAB (ids, dates, flags) are advertised as optional and nullable, so a change on YNAB's side can't make a validating client reject a result. Errors are `isError` results with a text block only. Every tool declares an `outputSchema`.
+Every tool returns its result as JSON in a text block. A tool that declares an `outputSchema` in `tools/list` also returns the same object as `structuredContent`, so a client can validate it and use it without parsing text. A key whose value is null is left out, as in 0.4.x, and the schema marks it optional. Fields the tool reports as `null` on purpose are marked nullable. The advertised schemas allow extra keys, and values copied as they are from YNAB (ids, dates, flags, enum strings and raw amounts) are advertised as optional and nullable, so a change on YNAB's side can't make a validating client reject a result. Errors are `isError` results with a text block only. Every tool declares an `outputSchema`.
 
 ### Tips and Common Recipes
 
@@ -524,7 +524,7 @@ category groups, `deleted_months` for months), and counts instead of totals.
 
 | Feature | Description |
 |---------|-------------|
-| **Read-Only Default** | Write operations disabled unless `YNAB_READ_ONLY=false`; in read-only mode (including read-only OAuth sessions) write tools are hidden from the tool list and still rejected if called |
+| **Read-Only Default** | Write operations disabled unless `YNAB_READ_ONLY=false`; in read-only mode (including read-only OAuth connections) write tools are hidden from the tool list and still rejected if called |
 | **Token Security** | Never commit your `YNAB_ACCESS_TOKEN`; use environment variables |
 | **Input Validation** | All tool parameters validated with Zod schemas |
 | **Rate Limiting** | Built-in protection against API quota exhaustion |
