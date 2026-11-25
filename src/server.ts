@@ -26,7 +26,13 @@ import {
   InvalidPromptArgumentsError,
 } from './prompts/index.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
-import { formatErrorResponse, isInputValidationError, ReadOnlyModeError, WriteLimitError } from './utils/errors.js';
+import {
+  formatErrorResponse,
+  isInputValidationError,
+  RateLimitStoreUnavailableError,
+  ReadOnlyModeError,
+  WriteLimitError,
+} from './utils/errors.js';
 import { assertSafeToolInput } from './utils/input-guard.js';
 
 /**
@@ -273,12 +279,16 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
       // A call that fails Zod input validation never reaches YNAB, so it gives
       // its slot back; a call YNAB rejects still used quota and keeps it.
       // The first refusal of an episode is audited, so a looping agent adds one row.
+      // With RATE_LIMIT_STORE=postgres the cap is shared by every replica (#67);
+      // when it can't be read the write is refused (fail closed) and recorded
+      // as an error, like any write that failed before reaching YNAB.
       let releaseSlot: (() => void) | undefined;
       if (isWrite) {
         try {
-          releaseSlot = ynabClient.admitWrite(name);
+          releaseSlot = await ynabClient.admitWrite(name);
         } catch (error) {
           if (error instanceof WriteLimitError && error.firstRefusal) await recordWrite(name, 'denied_write_limit');
+          if (error instanceof RateLimitStoreUnavailableError) await recordWrite(name, 'error');
           throw error;
         }
       }

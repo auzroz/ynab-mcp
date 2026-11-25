@@ -11,15 +11,21 @@
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { cleanupDrivers, testDrivers, type DriverHandle } from '../helpers/storage-drivers.js';
 import { SCHEMA_VERSION } from '../../../src/storage/migrations.js';
 import {
   PostgresSharedLimits,
   RATE_LIMIT_BUCKETS_TABLE,
   RATE_LIMIT_HITS_TABLE,
-  limiterKeyDigest,
+  RATE_LIMIT_WRITES_TABLE,
+  SHARED_WRITE_WINDOW_MS,
   type SharedLimitStore,
 } from '../../../src/storage/shared-limits.js';
+import { TokenHasher } from '../../../src/auth/token-hash.js';
+import { TEST_TOKEN_HASHER } from '../helpers/token-hasher.js';
+import { SharedWriteLimiter } from '../../../src/services/shared-write-limiter.js';
+import { WRITE_WINDOW_MS } from '../../../src/services/write-limiter.js';
 import { USER_DATA_TABLES } from '../../../src/storage/user-data.js';
 import { SharedRateLimiter } from '../../../src/services/shared-rate-limiter.js';
 import { SharedWindowStore } from '../../../src/middleware/shared-limiter-store.js';
@@ -36,14 +42,31 @@ afterEach(async () => {
 type Sql = NonNullable<DriverHandle['sql']>;
 
 describe('schema 8 (M7)', () => {
-  it('is the current schema, and the bucket table is in the account erase', () => {
+  it('is the current schema, and the bucket and write-cap tables are in the account erase', () => {
     expect(SCHEMA_VERSION).toBe(8);
-    expect(USER_DATA_TABLES.at(-1)).toEqual({ table: 'rate_limit_buckets', column: 'user_id' });
-    // The window key is stored as a digest, never as the raw address or client_id.
-    expect(limiterKeyDigest('client:abc|ip:203.0.113.5')).toMatch(/^[0-9a-f]{64}$/);
-    for (const table of [RATE_LIMIT_HITS_TABLE, RATE_LIMIT_BUCKETS_TABLE]) {
+    expect(USER_DATA_TABLES.slice(-2)).toEqual([
+      { table: 'rate_limit_buckets', column: 'user_id' },
+      { table: 'rate_limit_writes', column: 'user_id' },
+    ]);
+    expect(SHARED_WRITE_WINDOW_MS).toBe(WRITE_WINDOW_MS);
+    for (const table of [RATE_LIMIT_HITS_TABLE, RATE_LIMIT_BUCKETS_TABLE, RATE_LIMIT_WRITES_TABLE]) {
       expect(Object.keys(table.sql).sort()).toEqual(['postgres', 'sqlite']);
     }
+  });
+
+  it('stores a limiter key as an HMAC under the pepper: per limiter, the same on every replica, not a plain hash', () => {
+    const key = 'ip:203.0.113.5';
+    const digest = TEST_TOKEN_HASHER.limiterKey('route:token:ip', key);
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    // Every replica has the pepper, so they agree.
+    expect(TokenHasher.fromSecrets({ tokenPepper: Buffer.alloc(32, 7).toString('base64') }).limiterKey('route:token:ip', key)).toBe(
+      new TokenHasher(Buffer.alloc(32, 7)).limiterKey('route:token:ip', key)
+    );
+    // Another pepper, another limiter: another digest; and no unkeyed SHA-256 of the key.
+    expect(new TokenHasher(Buffer.alloc(32, 9)).limiterKey('route:token:ip', key)).not.toBe(digest);
+    expect(TEST_TOKEN_HASHER.limiterKey('authorize:ip', key)).not.toBe(digest);
+    expect(digest).not.toBe(createHash('sha256').update(key).digest('hex'));
+    expect(digest).not.toBe(createHash('sha256').update(`route:token:ip\0${key}`).digest('hex'));
   });
 });
 
@@ -56,17 +79,22 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
       // As schema 7 left it: no rate-limit tables, stamped 7.
       await sql('DROP TABLE rate_limit_hits');
       await sql('DROP TABLE rate_limit_buckets');
+      await sql('DROP TABLE rate_limit_writes');
       await sql("UPDATE schema_meta SET value = '7' WHERE key = 'schema_version'");
       expect(await tableExists(h, 'rate_limit_hits')).toBe(false);
 
       const upgraded = await h.reopen();
       expect(await tableExists(h, 'rate_limit_hits')).toBe(true);
       expect(await tableExists(h, 'rate_limit_buckets')).toBe(true);
+      expect(await tableExists(h, 'rate_limit_writes')).toBe(true);
+      expect((await indexes(h, 'rate_limit_writes')).filter((n) => n.endsWith('_last_admitted_at'))).toEqual([
+        'rate_limit_writes_last_admitted_at',
+      ]);
       expect((await indexes(h, 'rate_limit_hits')).filter((n) => n.endsWith('_reset_at'))).toEqual(['rate_limit_hits_reset_at']);
       expect((await indexes(h, 'rate_limit_buckets')).filter((n) => n.endsWith('_tat'))).toEqual(['rate_limit_buckets_tat']);
       expect(await schemaVersion(sql)).toBe('8');
       expect(await upgraded.getUser('u1')).toBeDefined();
-      expect(await upgraded.sweepRateLimitRows()).toEqual({ rateLimitWindows: 0, rateLimitBuckets: 0 });
+      expect(await upgraded.sweepRateLimitRows()).toEqual({ rateLimitWindows: 0, rateLimitBuckets: 0, rateLimitWrites: 0 });
 
       // A restart against the upgraded database (rows in both tables) changes nothing.
       await sql("INSERT INTO rate_limit_hits (limiter, key, hits, reset_at) VALUES ('l', 'k', 3, 99999999999999)");
@@ -77,7 +105,7 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
       expect(await again.getUser('u1')).toBeDefined();
     });
 
-    it('the sweep removes ended windows and full, unblocked buckets only; the erase removes the user\'s bucket', async () => {
+    it('the sweep removes ended windows, full unblocked buckets and spent write caps only; the erase removes the user\'s rows', async () => {
       const h = await driver.open();
       const sql = h.sql as Sql;
       const past = 1_000;
@@ -89,7 +117,13 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
         `INSERT INTO rate_limit_buckets (user_id, tat, blocked_until) VALUES
           ('full', ${past}, 0), ('draining', ${future}, 0), ('blocked', ${past}, ${future}), ('u1', ${future}, 0), ('u2', ${future}, 0)`
       );
-      expect(await h.storage.sweepRateLimitRows()).toEqual({ rateLimitWindows: 1, rateLimitBuckets: 1 });
+      // A write cap last used over an hour ago limits nothing; one used now does.
+      const empty = driver.kind === 'postgres' ? "'{}'" : "'[]'";
+      await sql(
+        `INSERT INTO rate_limit_writes (user_id, admitted, last_admitted_at) VALUES
+          ('idle-writer', ${empty}, ${past}), ('u1', ${empty}, ${Date.now()}), ('u2', ${empty}, ${Date.now()})`
+      );
+      expect(await h.storage.sweepRateLimitRows()).toEqual({ rateLimitWindows: 1, rateLimitBuckets: 1, rateLimitWrites: 1 });
       expect((await sql('SELECT key FROM rate_limit_hits')).map((r) => r['key'])).toEqual(['live']);
       expect((await sql('SELECT user_id FROM rate_limit_buckets ORDER BY user_id')).map((r) => r['user_id'])).toEqual([
         'blocked',
@@ -105,6 +139,7 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
         'draining',
         'u2',
       ]);
+      expect((await sql('SELECT user_id FROM rate_limit_writes')).map((r) => r['user_id'])).toEqual(['u2']);
     });
 
     it('the sweep job runs the step on the real driver and logs counts only', async () => {
@@ -114,8 +149,12 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
       await sql("INSERT INTO rate_limit_buckets (user_id, tat, blocked_until) VALUES ('full-user', 1000, 0)");
       const log = vi.fn();
       const step = SWEEP_STEPS.find((s) => s.name === 'rate-limit-rows')!;
-      expect(await runSweepPass(h.storage, { steps: [step], log })).toEqual({ deleted: 2, failed: 0 });
-      expect(log.mock.calls.map((c) => String(c[0]))).toEqual(['[Sweep] rate-limit-rows: deleted rateLimitWindows=1 rateLimitBuckets=1']);
+      const empty = driver.kind === 'postgres' ? "'{}'" : "'[]'";
+      await sql(`INSERT INTO rate_limit_writes (user_id, admitted, last_admitted_at) VALUES ('idle-writer', ${empty}, 1000)`);
+      expect(await runSweepPass(h.storage, { steps: [step], log })).toEqual({ deleted: 3, failed: 0 });
+      expect(log.mock.calls.map((c) => String(c[0]))).toEqual([
+        '[Sweep] rate-limit-rows: deleted rateLimitWindows=1 rateLimitBuckets=1 rateLimitWrites=1',
+      ]);
     });
   });
 }
@@ -162,8 +201,12 @@ describe.skipIf(!postgres.enabled)('shared limits across two replicas (Postgres)
     // Another limiter, or another key, has its own window.
     expect((await windowStore(a, 'authorize:ip').increment('ip:203.0.113.5')).totalHits).toBe(1);
     expect((await onB.increment('ip:198.51.100.7')).totalHits).toBe(1);
-    // No raw address in the table.
+    // No raw address in the table: the key is the pepper-keyed digest.
     expect(JSON.stringify(await sql('SELECT * FROM rate_limit_hits'))).not.toContain('203.0.113.5');
+    const keys = (await sql("SELECT key FROM rate_limit_hits WHERE limiter = 'route:token:ip'")).map((r) => r['key']);
+    expect(keys.sort()).toEqual(
+      ['ip:203.0.113.5', 'ip:198.51.100.7'].map((k) => TEST_TOKEN_HASHER.limiterKey('route:token:ip', k)).sort()
+    );
     // decrement, get, resetKey
     await onA.decrement('ip:203.0.113.5');
     expect((await onB.get('ip:203.0.113.5'))?.totalHits).toBe(39);
@@ -283,6 +326,46 @@ describe.skipIf(!postgres.enabled)('shared limits across two replicas (Postgres)
     await expect(onB.acquireMany(2)).rejects.toBeInstanceOf(RateLimitError);
   });
 
+  it('the write cap is one cap: two replicas admit exactly the limit between them, atomically', async () => {
+    const { a, b, sql } = await twoReplicas();
+    const onA = new SharedWriteLimiter(a.sharedLimits!(), 'u1', 5);
+    const onB = new SharedWriteLimiter(b.sharedLimits!(), 'u1', 5);
+    const admissions = await Promise.all(Array.from({ length: 20 }, (_, i) => (i % 2 === 0 ? onA : onB).tryAcquire()));
+    const allowed = admissions.filter((x) => x.allowed);
+    const refused = admissions.filter((x): x is Extract<typeof x, { allowed: false }> => !x.allowed);
+    expect(allowed).toHaveLength(5);
+    expect(refused).toHaveLength(15);
+    // The first refusal of the episode is flagged once, across both replicas (the one #60a audits).
+    expect(refused.filter((r) => r.firstRefusal)).toHaveLength(1);
+    for (const r of refused) {
+      expect(r.limit).toBe(5);
+      // Sliding window: the next write when the oldest admission is an hour old.
+      expect(r.retryAfterMs).toBeGreaterThan(3_590_000);
+      expect(r.retryAfterMs).toBeLessThanOrEqual(3_600_000);
+    }
+    // Another user has their own cap.
+    expect((await new SharedWriteLimiter(b.sharedLimits!(), 'u2', 5).tryAcquire()).allowed).toBe(true);
+
+    // A released slot (a call that failed input validation) is free on the other replica.
+    (allowed[0] as Extract<(typeof admissions)[number], { allowed: true }>).release();
+    await vi.waitFor(async () => {
+      const [row] = await sql("SELECT cardinality(admitted) AS n FROM rate_limit_writes WHERE user_id = 'u1'");
+      expect(Number(row?.['n'])).toBe(4);
+    });
+    expect((await onB.tryAcquire()).allowed).toBe(true);
+    const again = await onA.tryAcquire();
+    expect(again.allowed).toBe(false);
+    // A new episode after an admission: its first refusal is flagged again.
+    expect(again.allowed === false && again.firstRefusal).toBe(true);
+
+    // The window slides: admissions older than an hour no longer count.
+    await sql(`UPDATE rate_limit_writes SET admitted = ARRAY[1000, 2000, 3000, 4000]::bigint[] || admitted[5:5] WHERE user_id = 'u1'`);
+    const after = await Promise.all([onA.tryAcquire(), onB.tryAcquire(), onA.tryAcquire(), onB.tryAcquire(), onA.tryAcquire()]);
+    expect(after.filter((x) => x.allowed)).toHaveLength(4);
+    // A cap of 0 is off and never reads the database.
+    expect((await new SharedWriteLimiter(a.sharedLimits!(), 'u1', 0).tryAcquire()).allowed).toBe(true);
+  });
+
   it('fails closed, within the limiter bounds, when the tables are locked; works again once they are free', async () => {
     const h = await postgres.open({ timeouts: { pgLimiterStatementTimeoutMs: 200, pgLimiterQueryTimeoutMs: 1_000 } });
     const pg = (await import('pg')).default;
@@ -294,9 +377,12 @@ describe.skipIf(!postgres.enabled)('shared limits across two replicas (Postgres)
       const window = windowStore(h.storage, 'authorize:ip');
       await bucket.acquire();
       await locker.query('BEGIN');
-      await locker.query('LOCK TABLE rate_limit_buckets, rate_limit_hits IN ACCESS EXCLUSIVE MODE');
+      await locker.query('LOCK TABLE rate_limit_buckets, rate_limit_hits, rate_limit_writes IN ACCESS EXCLUSIVE MODE');
 
       const startedAt = Date.now();
+      await expect(new SharedWriteLimiter(h.storage.sharedLimits!(), 'u1', 20).tryAcquire()).rejects.toBeInstanceOf(
+        RateLimitStoreUnavailableError
+      );
       const refused = await bucket.acquire().catch((e: unknown) => e);
       expect(refused).toBeInstanceOf(RateLimitStoreUnavailableError);
       expect((refused as RateLimitStoreUnavailableError).retryAfterMs).toBe(5_000);
@@ -324,7 +410,7 @@ describe.skipIf(!postgres.enabled)('shared limits across two replicas (Postgres)
     const pool = new pg.Pool({ connectionString: 'postgres://postgres@127.0.0.1:1/none', connectionTimeoutMillis: 500 });
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
-      const store: SharedLimitStore = new PostgresSharedLimits(pool);
+      const store: SharedLimitStore = new PostgresSharedLimits(pool, TEST_TOKEN_HASHER);
       const bucket = new SharedRateLimiter(store, 'u1', 180);
       const startedAt = Date.now();
       await expect(bucket.acquire()).rejects.toBeInstanceOf(RateLimitStoreUnavailableError);

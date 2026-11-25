@@ -259,19 +259,19 @@ describe('the write cap in the tools/call handler', () => {
 
   it('defaults to 20 per user', async () => {
     const ynabClient = buildYnabClient(userCtx());
-    for (let i = 0; i < 20; i++) ynabClient.admitWrite('ynab_create_payee');
-    expect(() => ynabClient.admitWrite('ynab_create_payee')).toThrow(/Write limit/);
+    for (let i = 0; i < 20; i++) await ynabClient.admitWrite('ynab_create_payee');
+    await expect(ynabClient.admitWrite('ynab_create_payee')).rejects.toThrow(/Write limit/);
   });
 
-  it('is shared by all of one user\'s clients and not by other users', () => {
+  it('is shared by all of one user\'s clients and not by other users', async () => {
     const a = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 1 });
     const b = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 1 });
     const a1 = buildYnabClient(userCtx({ writeLimitPerHour: 1 }), a);
     const a2 = buildYnabClient(userCtx({ writeLimitPerHour: 1 }), a);
     const b1 = buildYnabClient(userCtx({ writeLimitPerHour: 1 }), b);
-    a1.admitWrite('ynab_create_payee');
-    expect(() => a2.admitWrite('ynab_create_payee')).toThrow(/Write limit/);
-    expect(() => b1.admitWrite('ynab_create_payee')).not.toThrow();
+    await a1.admitWrite('ynab_create_payee');
+    await expect(a2.admitWrite('ynab_create_payee')).rejects.toThrow(/Write limit/);
+    await expect(b1.admitWrite('ynab_create_payee')).resolves.toBeTypeOf('function');
   });
 
   it('does not take effect in read-only mode before the read-only error', async () => {

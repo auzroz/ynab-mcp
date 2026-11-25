@@ -22,7 +22,7 @@ import { DeltaCache } from './delta-cache.js';
 import { MemoryAuditStore } from '../storage/audit-rows.js';
 import { ClientUsage } from './client-usage.js';
 import { CircuitBreaker } from './circuit-breaker.js';
-import { WriteLimiter } from './write-limiter.js';
+import { WriteLimiter, type WriteCap } from './write-limiter.js';
 import { WRITE_LIMIT_DEFAULT_PER_HOUR } from '../config/write-limit.js';
 import { ByteBudget, DEFAULT_USER_CACHE_BYTES } from './byte-budget.js';
 import type { TransactionFeedState } from './ynab-client.js';
@@ -62,8 +62,8 @@ export interface UserComponents {
   readonly auditedDenials: WriteLimiter;
   /** Fails this user's YNAB calls fast while YNAB is failing (#58); per user, never shared. */
   readonly breaker: CircuitBreaker;
-  /** The user's write cap (#61c), shared by all their requests like the rate limiter. */
-  readonly writeLimiter: WriteLimiter;
+  /** The user's write cap (#61c), shared by all their requests like the rate limiter; across replicas with RATE_LIMIT_STORE=postgres (#67). */
+  readonly writeLimiter: WriteCap;
   /**
    * What YNAB has told us about the transaction change feed (a rejected
    * since_date), kept per user so a new request's YnabClient does not repeat a
@@ -85,7 +85,9 @@ export function createUserComponents(
   },
   now: () => number = Date.now,
   /** The user's limiter when it lives elsewhere (RATE_LIMIT_STORE=postgres); in-process otherwise. */
-  rateLimiter?: RequestLimiter
+  rateLimiter?: RequestLimiter,
+  /** The user's write cap when it lives elsewhere (RATE_LIMIT_STORE=postgres); in-process otherwise. */
+  writeLimiter?: WriteCap
 ): UserComponents {
   // One byte budget for both stores, so a user's snapshots and cached
   // responses together stay under it (#58).
@@ -98,7 +100,7 @@ export function createUserComponents(
     clientUsage: new ClientUsage(now),
     auditedDenials: new WriteLimiter(AUDITED_DENIALS_PER_HOUR, now),
     breaker: new CircuitBreaker({ now }),
-    writeLimiter: new WriteLimiter(limits.writeLimitPerHour ?? WRITE_LIMIT_DEFAULT_PER_HOUR, now),
+    writeLimiter: writeLimiter ?? new WriteLimiter(limits.writeLimitPerHour ?? WRITE_LIMIT_DEFAULT_PER_HOUR, now),
     feedState: { sinceDateRejected: false },
   };
 }
@@ -145,6 +147,8 @@ export interface UserRegistryOptions {
    * shared bucket, #67c). Absent: an in-process RateLimiter per user.
    */
   rateLimiterFor?: ((userKey: string) => RequestLimiter) | undefined;
+  /** Builds a user's write cap (RATE_LIMIT_STORE=postgres: the shared one, #67). Absent: in-process. */
+  writeLimiterFor?: ((userKey: string) => WriteCap) | undefined;
 }
 
 interface Entry {
@@ -167,6 +171,7 @@ export class UserRegistry {
   private readonly maxEntries: number;
   private readonly now: () => number;
   private readonly rateLimiterFor: ((userKey: string) => RequestLimiter) | undefined;
+  private readonly writeLimiterFor: ((userKey: string) => WriteCap) | undefined;
   private lastPrunedAt = 0;
 
   constructor(opts: UserRegistryOptions) {
@@ -181,6 +186,7 @@ export class UserRegistry {
     this.maxEntries = opts.maxEntries ?? DEFAULT_MAX_USER_ENTRIES;
     this.now = opts.now ?? Date.now;
     this.rateLimiterFor = opts.rateLimiterFor;
+    this.writeLimiterFor = opts.writeLimiterFor;
   }
 
   /** Take a hold on the user's components for a request, creating them if needed. */
@@ -191,7 +197,12 @@ export class UserRegistry {
     if (!entry) {
       if (this.entries.size >= this.maxEntries) this.evictLeastRecentlyUsedIdle();
       entry = {
-        components: createUserComponents(this.limits, this.now, this.rateLimiterFor?.(userKey)),
+        components: createUserComponents(
+          this.limits,
+          this.now,
+          this.rateLimiterFor?.(userKey),
+          this.writeLimiterFor?.(userKey)
+        ),
         liveLeases: 0,
         lastUsedAt: now,
       };

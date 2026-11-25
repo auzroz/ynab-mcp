@@ -80,7 +80,7 @@ The server is configured via environment variables:
 | `YNAB_ACCESS_TOKEN` | Yes | Your YNAB Personal Access Token |
 | `YNAB_BUDGET_ID` | No | Default budget UUID (uses "last-used" if not set) |
 | `YNAB_READ_ONLY` | No | Set to `false` to enable write operations (default: `true`) |
-| `YNAB_WRITE_LIMIT_PER_HOUR` | No | Write requests one user may make per hour (integer 0-1000, default `20`). One write tool call counts as 1, so a bulk call (for example `ynab_create_transactions`) is 1. `0` turns the cap off. Applies to stdio and HTTP. Past the cap, a write returns `write_limit_exceeded` with the limit and when it resets, and never reaches YNAB. The first refusal of each episode is written to the audit log. Separate from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests |
+| `YNAB_WRITE_LIMIT_PER_HOUR` | No | Write requests one user may make per hour (integer 0-1000, default `20`). One write tool call counts as 1, so a bulk call (for example `ynab_create_transactions`) is 1. `0` turns the cap off. Applies to stdio and HTTP (per process; across replicas with `RATE_LIMIT_STORE=postgres`). Past the cap, a write returns `write_limit_exceeded` with the limit and when it resets, and never reaches YNAB. The first refusal of each episode is written to the audit log. Separate from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests |
 | `RATE_LIMIT_MAX_WAIT_MS` | No | Longest a request waits for a YNAB rate-limit token, in ms (integer 0-60000, default `2000`). `0` never waits. When the budget is used up, tools return `rate_limited` with `retry_after_seconds` instead of queueing. Applies to stdio and HTTP |
 
 ### Remote / HTTP mode

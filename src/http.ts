@@ -48,6 +48,7 @@ import type { HttpConfig } from './config/environment.js';
 import { deprecatedSessionSettingsWarning } from './config/http/limits.js';
 import { replicaRateLimitWarning } from './config/http/rate-limit-store.js';
 import { SharedRateLimiter } from './services/shared-rate-limiter.js';
+import { SharedWriteLimiter } from './services/shared-write-limiter.js';
 import { sharedLimiterStores } from './middleware/shared-limiter-store.js';
 import type { SharedLimitStore } from './storage/shared-limits.js';
 import { Encryptor } from './crypto.js';
@@ -336,6 +337,8 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     rateLimiterFor: shared
       ? (userKey) => new SharedRateLimiter(shared, userKey, config.rateLimitPerHour, Date.now, config.rateLimitMaxWaitMs)
       : undefined,
+    // The user's write cap too (#61c across replicas, #67).
+    writeLimiterFor: shared ? (userKey) => new SharedWriteLimiter(shared, userKey, config.writeLimitPerHour) : undefined,
   });
   const inflight = new InflightLimiter({
     perUser: config.maxInflightPerUser,
@@ -757,7 +760,7 @@ export async function startHttpServer(
     if (replicas !== undefined) console.error(replicas);
     if (config.rateLimitStore === 'postgres') {
       console.error(
-        'Rate limits: shared through Postgres (RATE_LIMIT_STORE=postgres); the in-flight caps, the write cap, the circuit breaker and the caches stay per process'
+        'Rate limits: the YNAB budget, the write cap and the authorization-server limits are shared through Postgres (RATE_LIMIT_STORE=postgres); the in-flight caps, the circuit breaker and the caches stay per process'
       );
     }
   };

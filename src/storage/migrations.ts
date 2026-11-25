@@ -35,7 +35,7 @@ import type { ClientSchemaValidator } from './types.js';
 import { TOKEN_HASHING_BACKFILL } from './token-hashing-migration.js';
 import { CLIENT_CONVERSION_BACKFILL, M4_COLUMNS, OAUTH_ROWS_TABLE } from './oauth-rows-migration.js';
 import { AUDIT_LOG_TABLE } from './audit-rows.js';
-import { RATE_LIMIT_BUCKETS_TABLE, RATE_LIMIT_HITS_TABLE } from './shared-limits.js';
+import { RATE_LIMIT_BUCKETS_TABLE, RATE_LIMIT_HITS_TABLE, RATE_LIMIT_WRITES_TABLE } from './shared-limits.js';
 
 export type Dialect = 'sqlite' | 'postgres';
 
@@ -191,6 +191,7 @@ export const ADDED_TABLES: readonly AddedTable[] = [
   // driver; only the Postgres store writes them. Older releases ignore them.
   RATE_LIMIT_HITS_TABLE,
   RATE_LIMIT_BUCKETS_TABLE,
+  RATE_LIMIT_WRITES_TABLE,
 ];
 
 /** Columns added since 0.3.x, applied in order. */

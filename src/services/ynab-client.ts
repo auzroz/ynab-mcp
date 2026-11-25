@@ -18,7 +18,7 @@ import {
   YnabApiError,
   YnabAuthError,
 } from '../utils/errors.js';
-import { WriteLimiter } from './write-limiter.js';
+import { WriteLimiter, type WriteCap } from './write-limiter.js';
 import { NO_CLIENT, type ClientUsage, type ClientUsageStatus } from './client-usage.js';
 import { WRITE_LIMIT_DEFAULT_PER_HOUR } from '../config/write-limit.js';
 import type { AuditLog } from './audit-log.js';
@@ -57,7 +57,7 @@ export interface YnabClientOptions {
   /** The user's circuit breaker (#58); none: no breaking. */
   breaker?: CircuitBreaker | undefined;
   /** The user's write cap (#61c); a client built without one gets the default cap of its own. */
-  writeLimiter?: WriteLimiter | undefined;
+  writeLimiter?: WriteCap | undefined;
   /** The calling MCP client (oauth mode), for the per-client usage report (#58). */
   clientId?: string | undefined;
   /** The user's per-client usage (#58); none: not reported. */
@@ -369,7 +369,7 @@ export class YnabClient {
   // Per user in HTTP mode (UserComponents), so it outlives this client.
   private readonly feedState: TransactionFeedState;
   private readonly breaker: CircuitBreaker | undefined;
-  private readonly writeLimiter: WriteLimiter;
+  private readonly writeLimiter: WriteCap;
   private readonly clientKey: string;
   private readonly clientUsage: ClientUsage | undefined;
   private readonly readOnlyReason: ReadOnlyReason;
@@ -598,10 +598,13 @@ export class YnabClient {
    * agent adds one row, not one per call).
    * Returns a handle that gives the slot back; the caller uses it only when
    * the call failed input validation, before any YNAB request.
+   * With RATE_LIMIT_STORE=postgres the cap is counted across replicas (#67),
+   * so admission waits on the database.
    * @throws WriteLimitError when the cap is used up
+   * @throws RateLimitStoreUnavailableError when the shared cap can't be read (fail closed)
    */
-  admitWrite(_tool: string): () => void {
-    const admission = this.writeLimiter.tryAcquire();
+  async admitWrite(_tool: string): Promise<() => void> {
+    const admission = await this.writeLimiter.tryAcquire();
     if (admission.allowed) return admission.release;
     throw new WriteLimitError(admission.limit, admission.resetsAt, admission.retryAfterMs, admission.firstRefusal);
   }

@@ -60,7 +60,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_REQUEST_TIMEOUT_MS` | no | Longest a `/mcp` request runs (integer 5000-300000, default `60000`). See "Requests, limits and timeouts" |
 | `MCP_MAX_SESSIONS` / `MCP_MAX_SESSIONS_PER_USER` / `MCP_SESSION_IDLE_TIMEOUT_MS` | no | **Deprecated, no effect** since 0.5.0 (`/mcp` is stateless). Still parsed, so a malformed value refuses to start; a set value logs a warning once at startup. Removed in 0.6 |
 | `RATE_LIMIT_MAX_WAIT_MS` | no | Longest a request waits for a per-user YNAB rate-limit token (integer 0-60000, default `2000`). `0` never waits. Past that, or when another request is already waiting, the tool returns `rate_limited` with `retry_after_seconds` at once, so a burst can't pile up behind the limiter |
-| `YNAB_WRITE_LIMIT_PER_HOUR` | no | Write requests one user may make per hour (integer 0-1000, default `20`; **breaking** in 0.5.0, since writes were previously unlimited). One write tool call counts as 1, so a bulk call is 1. `0` turns the cap off. Counted per user (the YNAB user in oauth mode, the token in header mode), shared by all of that user's clients and requests, in memory: a restart resets it. A refused write returns `write_limit_exceeded` naming the limit and when it resets, and takes no YNAB request. Separate from `RATE_LIMIT_PER_HOUR` |
+| `YNAB_WRITE_LIMIT_PER_HOUR` | no | Write requests one user may make per hour (integer 0-1000, default `20`; **breaking** in 0.5.0, since writes were previously unlimited). One write tool call counts as 1, so a bulk call is 1. `0` turns the cap off. Counted per user (the YNAB user in oauth mode, the token in header mode), shared by all of that user's clients and requests, in memory (a restart resets it), or across every replica with `RATE_LIMIT_STORE=postgres`. A refused write returns `write_limit_exceeded` naming the limit and when it resets, and takes no YNAB request. Separate from `RATE_LIMIT_PER_HOUR` |
 | `TRUST_PROXY` | if behind a reverse proxy | Number of proxies between the client and this server whose `X-Forwarded-For` to trust (integer 0-10, default `0`; e.g. `1` behind a single Traefik/Caddy/nginx). Too low and every client shares one rate-limit bucket, so one client can lock out the others; too high and clients can spoof their address. Set it only when the app is reachable solely through the proxy. See "Client addresses and rate limits" |
 | `TRUST_CF_CONNECTING_IP` | no | `true` to take the client address from `CF-Connecting-IP` (default `false`). Separate from `TRUST_PROXY`; turn it on only when the server is reachable solely through Cloudflare. See "Client addresses and rate limits" |
 | `REGISTER_RATE_LIMIT_PER_IP` | no | `/register` requests per client address per hour (integer 1-100000, default `100`) |
@@ -479,13 +479,15 @@ the rate limit. With several replicas, these caps and the caches are per
 process, and so is the rate limit unless `RATE_LIMIT_STORE=postgres` (see
 "Several replicas: shared rate limits").
 
-The write cap (`YNAB_WRITE_LIMIT_PER_HOUR`) is the same kind of per-process,
-in-memory state, held per user next to the rate limiter, the circuit breaker and
-the caches, and shared by all of the user's requests and clients. A restart
-resets it. In header mode, where any token counts as a user, evicting the
-least recently used user entry under load (past 10,000 retained users) can reset it
-too. With several replicas each process counts on its own, so a user can make up
-to the limit per replica. A write call that fails input validation gives its slot
+The write cap (`YNAB_WRITE_LIMIT_PER_HOUR`) is by default the same kind of
+per-process, in-memory state, held per user next to the rate limiter, the
+circuit breaker and the caches, and shared by all of the user's requests and
+clients. A restart resets it. In header mode, where any token counts as a user,
+evicting the least recently used user entry under load (past 10,000 retained
+users) can reset it too. With several replicas each process counts on its own,
+so a user could make up to the limit per replica; `RATE_LIMIT_STORE=postgres`
+makes it one cap across the replicas (see "Several replicas: shared rate
+limits"). A write call that fails input validation gives its slot
 back; one that YNAB rejects keeps it. In OAuth mode every request looks up the user's YNAB grant and
 access token, refreshing the token when it expires. Once the user's YNAB grant
 is gone, or YNAB rejects its refresh token (`invalid_grant`), requests are
@@ -563,31 +565,44 @@ database instead, so every replica on it counts against one budget:
   of that user is already waiting, now on any replica; a multi-request tool
   reserves its whole fan-out in one statement, or refuses with the retry time.
   A YNAB `429` is shared too, so no replica keeps sending into YNAB's window.
+- **The per-user write cap** (`YNAB_WRITE_LIMIT_PER_HOUR`). One row per user
+  in `rate_limit_writes` holding the admission times of the last hour, changed
+  by one statement under the row's lock, so the replicas admit at most the cap
+  between them. The window is the in-memory one, sliding: at most the cap in
+  any 60 minutes, and the next write is allowed once the oldest counted one is
+  an hour old. (A fixed window would have been one counter, but would let up to
+  twice the cap through across a window boundary.) The first refusal of an
+  episode is audited once, whichever replica refuses it, as `denied_write_limit`.
+  A write that fails input validation gives its slot back, as before.
 - **The authorization server's limits** on `/authorize`, `/token`, `/revoke`,
   `/register` and the `/oauth` legs (see "What is limited, and by what key"),
   and the **metadata-document fetch budget** (see "Client ID Metadata
   Documents"). One row per limiter and key in `rate_limit_hits`: the same
   windows as in memory (fixed, starting at a key's first request), counted
-  atomically. The key is stored as its SHA-256, which bounds its size and
-  keeps addresses and `client_id`s out of plain view; it is not a secret
-  (an IPv4 address can be recovered by trying them all), and a row lasts only
-  as long as its window.
+  atomically. The key is stored as an HMAC-SHA256 of the limiter's name and
+  key under a key derived from the token pepper (`TOKEN_PEPPER`, or derived
+  from `ENCRYPTION_KEY`), so a copy of the database can't be turned back into
+  client addresses or `client_id`s without the pepper. Every replica has the
+  same pepper, so they agree on the keys. A row lasts only as long as its
+  window.
 
 It needs `AUTH_MODE=oauth` and `STORAGE_DRIVER=postgres`; any other driver,
 header mode, or a value other than `memory` or `postgres` refuses to start.
 Nothing turns it on by itself, `MCP_REPLICAS` included. The tables come with
 schema 8 (0.5.0) on every SQL driver; on SQLite they stay empty. The sweep
-removes windows that have ended and buckets that are full again, and
-erasing a user (see "Erasing inactive users") removes their bucket. A request
-still running at that moment may write it back; the sweep removes it once
-the bucket is full.
+removes windows that have ended, buckets that are full again and write caps
+with no write in the last hour, and erasing a user (see "Erasing inactive
+users") removes their bucket and write-cap row. A request still running at
+that moment may write them back; the sweep removes them once they limit
+nothing.
 
 **When the database can't answer, requests are refused, never let through.**
 The limiters use a small pool of their own (four connections) with short
 bounds: a statement is cancelled after 1 second, a reply is given up on after
 2 seconds, and a connection must open within 2 seconds. A limiter that can't
 answer within them refuses the request: a tool call gets `upstream_unavailable`
-with `retry_after_seconds: 5` (nothing is sent to YNAB), and a rate-limited
+with `retry_after_seconds: 5` (nothing is sent to YNAB; a write is recorded in
+the audit log as `error`), and a rate-limited
 authorization-server request gets its route's usual `429` with
 `Retry-After: 5`. There is no fallback to per-process limits, which would
 hand each replica the whole budget again. One stderr line every 30 seconds
@@ -603,8 +618,6 @@ What stays per process, whatever the setting:
 
 - the in-flight caps (`MCP_MAX_INFLIGHT_PER_USER`, `MCP_MAX_INFLIGHT_PER_CLIENT`,
   `MCP_MAX_INFLIGHT`), so N replicas allow N times as many requests in flight;
-- the write cap (`YNAB_WRITE_LIMIT_PER_HOUR`), so a user can make up to the
-  limit per replica;
 - the circuit breaker, per user;
 - the response cache and the delta-sync snapshots;
 - the audit log's bound on recorded refusals (20 per user per hour, see "The
@@ -649,7 +662,8 @@ others skip that pass. It deletes, in small batches:
 - expired connections once nothing is left under them;
 - abandoned and unused clients, once nothing refers to them;
 - shared rate-limit rows (`RATE_LIMIT_STORE=postgres`) that limit nothing any
-  more: windows that have ended, and buckets that are full again. Every
+  more: windows that have ended, buckets that are full again, and write caps
+  with no write in the last hour. Every
   replica runs this step, skipping rows a limiter holds.
 
 It never deletes users: that is the opt-in "Erasing inactive users" below. A
@@ -658,7 +672,7 @@ only, never a token, user or client id:
 
 ```text
 [Sweep] expired-rows: deleted accessTokens=12 refreshTokens=3 oauthAbandonedClients=1
-[Sweep] rate-limit-rows: deleted rateLimitWindows=40 rateLimitBuckets=2
+[Sweep] rate-limit-rows: deleted rateLimitWindows=40 rateLimitBuckets=2 rateLimitWrites=1
 ```
 
 ### Erasing inactive users
@@ -1384,8 +1398,8 @@ any MCP client that supports the `prompts` capability:
 - Always run behind TLS; enable DNS-rebinding protection with an allowlist.
 - `memory` storage is for evaluation only — it is not durable and not shared across
   replicas. For multiple replicas, use `postgres` with `RATE_LIMIT_STORE=postgres`,
-  so the rate limits are shared (the in-flight caps, write cap, circuit breaker
-  and caches stay per process); see "Several replicas: shared rate limits". YNAB
+  so the rate limits and the write cap are shared (the in-flight caps, circuit
+  breaker and caches stay per process); see "Several replicas: shared rate limits". YNAB
   token refreshes are coordinated through the database; see "Several replicas:
   YNAB token refresh".
 

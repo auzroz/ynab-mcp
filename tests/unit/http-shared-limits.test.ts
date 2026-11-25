@@ -6,8 +6,11 @@
  * requests; the metadata-document fetch budget is shared; and a database that
  * doesn't answer refuses tool calls (`upstream_unavailable`, nothing sent to
  * YNAB) and rate-limited AS requests (429, Retry-After 5) instead of letting
- * them through on a per-process budget. YNAB is mocked: its token refresh, and
- * the API through a stubbed fetch.
+ * them through on a per-process budget. The write cap (#61c) is shared too:
+ * exactly the cap in writes between the replicas, the refusal audited, a
+ * database that doesn't answer refuses the write before YNAB, and the erase
+ * removes the user's row. YNAB is mocked: its token refresh, and the API
+ * through a stubbed fetch.
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -62,9 +65,9 @@ let fetchSpy: ReturnType<typeof vi.fn>;
 const apps: HttpApp[] = [];
 
 function stubYnab(): void {
-  fetchSpy = vi.fn(async () =>
-    new Response(JSON.stringify({ data: { user: { id: USER } } }), { status: 200, headers: { 'content-type': 'application/json' } })
-  );
+  // One body for every call these tests make (ynab_get_user, ynab_create_payee).
+  const body = { data: { user: { id: USER }, payee: { id: '33333333-3333-4333-8333-333333333333', name: 'Corner Shop' } } };
+  fetchSpy = vi.fn(async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }));
   vi.stubGlobal('fetch', fetchSpy);
 }
 
@@ -97,7 +100,8 @@ const postgres = testDrivers.find((d) => d.kind === 'postgres')!;
 /** Two replicas of the app on one database; the user and a token for each replica's client. */
 async function twoReplicas(
   overrides: Partial<HttpConfig> = {},
-  storageOptions: Parameters<DriverHandle['reopen']>[0] = undefined
+  storageOptions: Parameters<DriverHandle['reopen']>[0] = undefined,
+  scope: 'read-only' | 'read-write' = 'read-only'
 ): Promise<{ a: HttpApp; b: HttpApp; tokens: string[]; handle: DriverHandle }> {
   const handle = await postgres.open();
   factory.open = () => handle.reopen(storageOptions);
@@ -107,7 +111,7 @@ async function twoReplicas(
   apps.push(a, b);
   await handle.storage.upsertUser({
     userId: USER,
-    grantedScope: 'read-only',
+    grantedScope: scope,
     encryptedRefreshToken: new Encryptor(encryptionKey).encrypt('ynab-refresh-1', refreshTokenContext(USER)),
     updatedAt: Date.now(),
   });
@@ -117,10 +121,10 @@ async function twoReplicas(
       await plantAccessToken(handle.storage, {
         clientId,
         userId: USER,
-        scopes: ['read-only'],
+        scopes: scope === 'read-write' ? ['read-only', 'read-write'] : ['read-only'],
         expiresAt: Date.now() + 3_600_000,
         resource: RESOURCE,
-        grantedScope: 'read-only',
+        grantedScope: scope,
       })
     );
   }
@@ -158,6 +162,58 @@ describe.skipIf(!postgres.enabled)('RATE_LIMIT_STORE=postgres across two replica
     expect(status.rate_limit).toMatchObject({ available_requests: 0, store: 'postgres' });
     // This replica's own sends.
     expect(status.usage.requests_last_hour).toBe(1);
+  });
+
+  it('one write cap per user: exactly YNAB_WRITE_LIMIT_PER_HOUR writes between the replicas, the refusal audited; down fails closed; the erase removes it', async () => {
+    stubYnab();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { a, b, tokens, handle } = await twoReplicas(
+      { writeLimitPerHour: 3, readOnly: false, allowWrite: true },
+      { timeouts: { pgLimiterStatementTimeoutMs: 200, pgLimiterQueryTimeoutMs: 1_000 } },
+      'read-write'
+    );
+    const sql = handle.sql!;
+    const onA = await mcpConnect(a.app, bearer(tokens[0]!));
+    const onB = await mcpConnect(b.app, bearer(tokens[1]!));
+    const write = (c: typeof onA) => c.callTool('ynab_create_payee', { budget_id: '11111111-1111-4111-8111-111111111111', name: 'Corner Shop' });
+    const types = [];
+    for (const c of [onA, onB, onA, onB, onA]) types.push(errorType(await write(c)));
+    expect(types).toEqual([undefined, undefined, undefined, 'write_limit_exceeded', 'write_limit_exceeded']);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    // The first refusal of the episode is audited once, on whichever replica it happened.
+    await vi.waitFor(async () => {
+      const outcomes = (await sql('SELECT outcome FROM audit_log WHERE user_id = $1 ORDER BY id', [USER])).map((r) => r['outcome']);
+      expect(outcomes).toEqual(['success', 'success', 'success', 'denied_write_limit']);
+    });
+
+    // The database doesn't answer: the write is refused before YNAB, and recorded as an error.
+    await sql('DELETE FROM rate_limit_writes');
+    const pg = (await import('pg')).default;
+    const locker = new pg.Client({ connectionString: handle.connectionString });
+    await locker.connect();
+    try {
+      await locker.query('BEGIN');
+      await locker.query('LOCK TABLE rate_limit_writes IN ACCESS EXCLUSIVE MODE');
+      const startedAt = Date.now();
+      const refused = JSON.parse((await write(onB)).text) as Record<string, unknown>;
+      expect(refused).toMatchObject({ error: true, type: 'upstream_unavailable', retry_after_seconds: 5 });
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+    } finally {
+      await locker.query('ROLLBACK').catch(() => undefined);
+      await locker.end();
+    }
+    await vi.waitFor(async () => {
+      const [last] = await sql('SELECT outcome FROM audit_log WHERE user_id = $1 ORDER BY id DESC LIMIT 1', [USER]);
+      expect(last?.['outcome']).toBe('error');
+    });
+
+    // The erase removes the user's write-cap row (and bucket).
+    expect(errorType(await write(onA))).toBeUndefined();
+    expect(await sql('SELECT user_id FROM rate_limit_writes')).toEqual([{ user_id: USER }]);
+    expect(await handle.storage.deleteUserData(USER)).toBe(true);
+    expect(await sql('SELECT user_id FROM rate_limit_writes')).toEqual([]);
+    expect(await sql('SELECT user_id FROM rate_limit_buckets')).toEqual([]);
   });
 
   it('an authorization-server limit counts both replicas: /token per (client_id, address)', async () => {

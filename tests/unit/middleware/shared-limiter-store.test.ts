@@ -16,6 +16,7 @@ import { keyedLimiter, registerHostLimiter } from '../../../src/middleware/rate-
 import { SharedWindowStore, sharedLimiterStores } from '../../../src/middleware/shared-limiter-store.js';
 import { SharedLimitUnavailableError, type SharedLimitStore } from '../../../src/storage/shared-limits.js';
 import { SharedRateLimiter } from '../../../src/services/shared-rate-limiter.js';
+import { SharedWriteLimiter } from '../../../src/services/shared-write-limiter.js';
 import { createClientIdMetadataDocuments } from '../../../src/auth/client-id-metadata.js';
 import { formatErrorResponse, RateLimitStoreUnavailableError } from '../../../src/utils/errors.js';
 
@@ -40,6 +41,8 @@ function downStore(): SharedLimitStore & { calls: string[] } {
     give: fail('give'),
     block: fail('block'),
     peek: fail('peek'),
+    admitWrite: fail('admitWrite'),
+    releaseWrite: fail('releaseWrite'),
   };
 }
 
@@ -140,6 +143,17 @@ describe('the per-user YNAB limiter with the shared store down', () => {
       retry_after_seconds: 5,
       suggestion: 'Try again after the retry time.',
     });
+  });
+
+  it('the shared write cap refuses every write with RateLimitStoreUnavailableError; a cap of 0 never asks', async () => {
+    const store = downStore();
+    const cap = new SharedWriteLimiter(store, 'u1', 20);
+    await expect(cap.tryAcquire()).rejects.toBeInstanceOf(RateLimitStoreUnavailableError);
+    await expect(cap.tryAcquire()).rejects.toBeInstanceOf(RateLimitStoreUnavailableError);
+    expect(store.calls).toEqual(['admitWrite', 'admitWrite']);
+    expect(await new SharedWriteLimiter(store, 'u1', 0).tryAcquire()).toMatchObject({ allowed: true });
+    expect(store.calls).toHaveLength(2);
+    expect(() => new SharedWriteLimiter(store, 'u1', -1)).toThrow(/non-negative/);
   });
 
   it('refuses an invalid count before calling the store', async () => {

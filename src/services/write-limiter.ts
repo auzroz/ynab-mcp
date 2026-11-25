@@ -10,6 +10,10 @@
  * A sliding window: the cap allows `limit` admissions in any 60 minutes. When
  * it is used up, the next write is allowed once the oldest counted one is an
  * hour old (`resetsAt`). A limit of 0 disables the cap.
+ *
+ * This class is the in-process cap. With RATE_LIMIT_STORE=postgres (#67) each
+ * user gets a SharedWriteLimiter instead (src/services/shared-write-limiter.ts),
+ * with the same rules counted across every replica; both are a {@link WriteCap}.
  */
 
 export const WRITE_WINDOW_MS = 60 * 60 * 1000;
@@ -30,7 +34,14 @@ export type WriteAdmission =
       firstRefusal: boolean;
     };
 
-export class WriteLimiter {
+/** What YnabClient needs from a write cap: this process's WriteLimiter, or the shared one. */
+export interface WriteCap {
+  readonly limitPerHour: number;
+  /** Count one write request if the cap allows it. The shared cap answers asynchronously and may throw RateLimitStoreUnavailableError. */
+  tryAcquire(): WriteAdmission | Promise<WriteAdmission>;
+}
+
+export class WriteLimiter implements WriteCap {
   /** Admission times, oldest first; at most `limit` of them. */
   private readonly admitted: number[] = [];
   private refusedSinceAdmit = false;

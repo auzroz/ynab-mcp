@@ -3,9 +3,9 @@
  * maintainer decision D-4).
  *
  *  - `RATE_LIMIT_STORE`: `memory` (default) keeps every limit in this process;
- *    `postgres` shares the per-user YNAB request budget, the authorization
- *    server's limiters and the metadata-document fetch budget through the
- *    database (#67b, #67c). Exactly `memory` or `postgres`; `postgres` needs
+ *    `postgres` shares the per-user YNAB request budget, the per-user write cap
+ *    (#61c), the authorization server's limiters and the metadata-document
+ *    fetch budget through the database (#67b, #67c). Exactly `memory` or `postgres`; `postgres` needs
  *    AUTH_MODE=oauth and STORAGE_DRIVER=postgres (checks.ts). Opt-in: nothing
  *    turns it on by itself.
  *  - `MCP_REPLICAS` (1-1000, default 1): the replicas serving this deployment.
@@ -45,7 +45,7 @@ export function replicaRateLimitWarning(settings: RateLimitStoreSettings): strin
   return (
     `WARNING: MCP_REPLICAS=${settings.mcpReplicas} but RATE_LIMIT_STORE=memory: each replica keeps its own rate limits, ` +
     `so a user can spend up to ${settings.mcpReplicas} times RATE_LIMIT_PER_HOUR YNAB requests an hour (YNAB allows 200) ` +
-    'and every authorization-server limit is multiplied the same way. Set RATE_LIMIT_STORE=postgres ' +
+    'and make that many times YNAB_WRITE_LIMIT_PER_HOUR writes, and every authorization-server limit is multiplied the same way. Set RATE_LIMIT_STORE=postgres ' +
     '(with STORAGE_DRIVER=postgres) to share them; see "Several replicas: shared rate limits" in docs/REMOTE_HOSTING.md.'
   );
 }

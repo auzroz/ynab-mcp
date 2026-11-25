@@ -929,7 +929,7 @@ export class MemoryStorage implements Storage, OAuthRowStore {
 
   /** Memory storage holds no shared rate-limit rows (#67): the limiters keep their own state. */
   async sweepRateLimitRows(): Promise<RateLimitSweepCounts> {
-    return { rateLimitWindows: 0, rateLimitBuckets: 0 };
+    return { rateLimitWindows: 0, rateLimitBuckets: 0, rateLimitWrites: 0 };
   }
 
   async sweepExpired(options: SweepOptions = {}): Promise<SweepResult> {

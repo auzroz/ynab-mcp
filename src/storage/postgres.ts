@@ -748,7 +748,8 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     // An idle connection that dies (the server restarts) is an 'error' on the
     // pool; the next query opens a new one.
     pool.on('error', () => undefined);
-    this.limiter = { pool, store: new PostgresSharedLimits(pool) };
+    // Limiter keys are HMACs under the pepper's derived key (TokenHasher.limiterKey).
+    this.limiter = { pool, store: new PostgresSharedLimits(pool, this.options.tokenKeys) };
     return this.limiter.store;
   }
 
