@@ -14,6 +14,8 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count } from '../schemas/common.js';
 
 export const IMPORT_DEPRECATION_MESSAGE =
   'This tool is deprecated. YNAB API 1.88 retired the linked-account import endpoint ' +
@@ -30,6 +32,17 @@ const inputSchema = z.object({
     .default(false)
     .describe('Include imported transaction IDs in the response'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). The tool is deprecated and makes no API call. */
+export const importTransactionsOutputSchema = z.object({
+  success: z.literal(true),
+  deprecated: z.literal(true),
+  message: z.string(),
+  imported_count: count().describe('Always 0'),
+  transaction_ids: z.array(z.string()).exactOptional().describe('With include_ids: always empty'),
+  note: z.string(),
+});
+export type ImportTransactionsOutput = z.output<typeof importTransactionsOutputSchema>;
 
 // Tool definition
 export const importTransactionsTool: Tool = {
@@ -56,6 +69,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(importTransactionsOutputSchema),
 };
 
 // Handler function
@@ -65,22 +79,18 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleImportTransactions(
   args: Record<string, unknown>,
   _client: YnabClient
-): Promise<string> {
+): Promise<ImportTransactionsOutput> {
   const validated = inputSchema.parse(args);
   // budget_id is validated by the schema only: nothing is resolved, because
   // the endpoint is a no-op since YNAB API 1.88 and must not cost a request.
   const importedIds: string[] = [];
 
-  return JSON.stringify(
-    {
-      success: true,
-      deprecated: true,
-      message: IMPORT_DEPRECATION_MESSAGE,
-      imported_count: importedIds.length,
-      ...(validated.include_ids ? { transaction_ids: importedIds } : {}),
-      note: 'Use ynab_list_transactions to review recent transactions. Linked accounts sync automatically in YNAB.',
-    },
-    null,
-    2
-  );
+  return {
+    success: true,
+    deprecated: true,
+    message: IMPORT_DEPRECATION_MESSAGE,
+    imported_count: importedIds.length,
+    ...(validated.include_ids ? { transaction_ids: importedIds } : {}),
+    note: 'Use ynab_list_transactions to review recent transactions. Linked accounts sync automatically in YNAB.',
+  };
 }

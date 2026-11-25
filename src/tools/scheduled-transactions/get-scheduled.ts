@@ -13,6 +13,8 @@ import { sanitizeFlagName } from '../transactions/format.js';
 import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { omitNull } from '../../utils/omit-null.js';
+import { toOutputSchema } from '../output-schema.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -21,6 +23,42 @@ const inputSchema = z.object({
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   scheduled_transaction_id: ynabId().describe('The scheduled transaction UUID to retrieve'),
 });
+
+const OMITTED = 'Omitted when YNAB has no value';
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const getScheduledTransactionOutputSchema = z.object({
+  scheduled_transaction: z.object({
+    id: fromYnab(z.string()),
+    date_first: fromYnab(z.string()),
+    date_next: fromYnab(z.string()),
+    frequency: fromYnab(z.string().describe('YNAB frequency, such as monthly or everyOtherWeek')),
+    amount: money(),
+    memo: z.string().nullable(),
+    flag_color: z.string().exactOptional().describe('YNAB flag colour; omitted when unflagged'),
+    flag_name: z.string().nullable(),
+    account_id: fromYnab(z.string()),
+    account_name: z.string(),
+    payee_id: z.string().exactOptional().describe(OMITTED),
+    payee_name: z.string(),
+    category_id: z.string().exactOptional().describe(OMITTED),
+    category_name: z.string(),
+    transfer_account_id: z.string().exactOptional().describe(OMITTED),
+    deleted: fromYnab(z.boolean()),
+    subtransactions: z.array(
+      z.object({
+        id: fromYnab(z.string()),
+        scheduled_transaction_id: fromYnab(z.string()),
+        amount: money(),
+        memo: z.string().nullable(),
+        payee_id: z.string().exactOptional().describe(OMITTED),
+        category_id: z.string().exactOptional().describe(OMITTED),
+        transfer_account_id: z.string().exactOptional().describe(OMITTED),
+      })
+    ),
+  }),
+});
+export type GetScheduledTransactionOutput = z.output<typeof getScheduledTransactionOutputSchema>;
 
 // Tool definition
 export const getScheduledTransactionTool: Tool = {
@@ -50,6 +88,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['scheduled_transaction_id'],
   },
+  outputSchema: toOutputSchema(getScheduledTransactionOutputSchema),
 };
 
 // Handler function
@@ -59,7 +98,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleGetScheduledTransaction(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetScheduledTransactionOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -70,44 +109,40 @@ export async function handleGetScheduledTransaction(
   );
   const txn = response.data.scheduled_transaction;
 
-  return JSON.stringify(
-    {
-      scheduled_transaction: {
-        id: txn.id,
-        date_first: txn.date_first,
-        date_next: txn.date_next,
-        frequency: txn.frequency,
-        amount: money(txn.amount),
-        memo: sanitizeMemo(txn.memo),
-        ...omitNull({ flag_color: txn.flag_color }),
-        flag_name: sanitizeFlagName(txn.flag_name),
-        account_id: txn.account_id,
-        account_name: sanitizeName(txn.account_name),
-        ...omitNull({ payee_id: txn.payee_id }),
-        payee_name: sanitizeName(txn.payee_name),
-        ...omitNull({ category_id: txn.category_id }),
-        category_name: sanitizeName(txn.category_name),
-        ...omitNull({ transfer_account_id: txn.transfer_account_id }),
-        deleted: txn.deleted,
-        subtransactions: (() => {
-          const subs = txn.subtransactions ?? [];
-          return subs.length > 0
-            ? subs.map((sub) => ({
-                id: sub.id,
-                scheduled_transaction_id: sub.scheduled_transaction_id,
-                amount: money(sub.amount),
-                memo: sanitizeMemo(sub.memo),
-                ...omitNull({
-                  payee_id: sub.payee_id,
-                  category_id: sub.category_id,
-                  transfer_account_id: sub.transfer_account_id,
-                }),
-              }))
-            : [];
-        })(),
-      },
+  return {
+    scheduled_transaction: {
+      id: txn.id,
+      date_first: txn.date_first,
+      date_next: txn.date_next,
+      frequency: txn.frequency,
+      amount: money(txn.amount),
+      memo: sanitizeMemo(txn.memo),
+      ...omitNull({ flag_color: txn.flag_color }),
+      flag_name: sanitizeFlagName(txn.flag_name),
+      account_id: txn.account_id,
+      account_name: sanitizeName(txn.account_name),
+      ...omitNull({ payee_id: txn.payee_id }),
+      payee_name: sanitizeName(txn.payee_name),
+      ...omitNull({ category_id: txn.category_id }),
+      category_name: sanitizeName(txn.category_name),
+      ...omitNull({ transfer_account_id: txn.transfer_account_id }),
+      deleted: txn.deleted,
+      subtransactions: (() => {
+        const subs = txn.subtransactions ?? [];
+        return subs.length > 0
+          ? subs.map((sub) => ({
+              id: sub.id,
+              scheduled_transaction_id: sub.scheduled_transaction_id,
+              amount: money(sub.amount),
+              memo: sanitizeMemo(sub.memo),
+              ...omitNull({
+                payee_id: sub.payee_id,
+                category_id: sub.category_id,
+                transfer_account_id: sub.transfer_account_id,
+              }),
+            }))
+          : [];
+      })(),
     },
-    null,
-    2
-  );
+  };
 }

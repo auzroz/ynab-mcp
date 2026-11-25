@@ -10,6 +10,8 @@ import { PAYEE_NAME_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js'
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -19,6 +21,14 @@ const inputSchema = z.object({
   payee_id: ynabId().describe('The payee UUID to update'),
   name: z.string().min(1).max(PAYEE_NAME_MAX_LENGTH).describe('The new name for the payee'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const updatePayeeOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  payee: z.object({ id: fromYnab(z.string()), name: z.string() }),
+});
+export type UpdatePayeeOutput = z.output<typeof updatePayeeOutputSchema>;
 
 // Tool definition
 export const updatePayeeTool: Tool = {
@@ -58,6 +68,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['payee_id', 'name'],
   },
+  outputSchema: toOutputSchema(updatePayeeOutputSchema),
 };
 
 // Handler function
@@ -67,7 +78,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleUpdatePayee(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<UpdatePayeeOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -77,16 +88,12 @@ export async function handleUpdatePayee(
 
   const payee = response.data.payee;
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Payee renamed to "${sanitizeName(payee.name)}"`,
-      payee: {
-        id: payee.id,
-        name: sanitizeName(payee.name),
-      },
+  return {
+    success: true,
+    message: `Payee renamed to "${sanitizeName(payee.name)}"`,
+    payee: {
+      id: payee.id,
+      name: sanitizeName(payee.name),
     },
-    null,
-    2
-  );
+  };
 }

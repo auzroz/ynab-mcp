@@ -124,10 +124,11 @@ describe.each<Era>(['2025-11-25', '2026-07-28'])('the v2 client over HTTP, %s', 
     const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
     expect(result.structuredContent).toEqual(JSON.parse(text));
     expect(result.structuredContent).toMatchObject({ status: 'healthy', upstream: { circuit: 'closed' } });
-    // A tool without a schema yet keeps the text block only.
+    // A core tool (#45b) that makes a YNAB request: validated the same way.
     const user = await client.callTool({ name: 'ynab_get_user', arguments: {} });
     expect(user.isError).not.toBe(true);
-    expect(user.structuredContent).toBeUndefined();
+    const userText = (user.content as Array<{ type: string; text: string }>)[0]!.text;
+    expect(user.structuredContent).toEqual(JSON.parse(userText));
   });
 
   it('serves two clients of two users concurrently, each as itself', async () => {

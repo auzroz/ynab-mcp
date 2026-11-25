@@ -3,12 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  handleUpdateCategoryDetails,
-  updateCategoryDetailsTool,
-} from '../../../../src/tools/categories/update-category-details.js';
+import { handleUpdateCategoryDetails as rawHandleUpdateCategoryDetails, updateCategoryDetailsTool, updateCategoryDetailsOutputSchema } from '../../../../src/tools/categories/update-category-details.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleUpdateCategoryDetails = validating(updateCategoryDetailsOutputSchema, rawHandleUpdateCategoryDetails);
 
 const CAT_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const GROUP_ID = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
@@ -49,9 +50,7 @@ describe('handleUpdateCategoryDetails', () => {
   });
 
   it('renames a category', async () => {
-    const result = JSON.parse(
-      await handleUpdateCategoryDetails({ category_id: CAT_ID, name: 'Pet Care' }, mockClient as never)
-    );
+    const result = await handleUpdateCategoryDetails({ category_id: CAT_ID, name: 'Pet Care' }, mockClient as never);
     expect(mockClient.updateCategory).toHaveBeenCalledWith('test-budget-id', CAT_ID, {
       category: { name: 'Pet Care' },
     });
@@ -121,9 +120,7 @@ describe('handleUpdateCategoryDetails', () => {
 
   it('converts a dollar goal_target to milliunits and echoes a display value', async () => {
     mockClient.updateCategory.mockResolvedValue(updatedResponse({ goal_target: 200000 }));
-    const result = JSON.parse(
-      await handleUpdateCategoryDetails({ category_id: CAT_ID, goal_target: 200 }, mockClient as never)
-    );
+    const result = await handleUpdateCategoryDetails({ category_id: CAT_ID, goal_target: 200 }, mockClient as never);
     expect(mockClient.updateCategory).toHaveBeenCalledWith('test-budget-id', CAT_ID, {
       category: { goal_target: 200000 },
     });
@@ -132,9 +129,7 @@ describe('handleUpdateCategoryDetails', () => {
 
   it('returns null display when the target is cleared', async () => {
     mockClient.updateCategory.mockResolvedValue(updatedResponse({ goal_target: null }));
-    const result = JSON.parse(
-      await handleUpdateCategoryDetails({ category_id: CAT_ID, goal_target: null }, mockClient as never)
-    );
+    const result = await handleUpdateCategoryDetails({ category_id: CAT_ID, goal_target: null }, mockClient as never);
     expect(result.category.goal_target_display).toBeNull();
   });
 
@@ -162,9 +157,7 @@ describe('handleUpdateCategoryDetails', () => {
     mockClient.updateCategory.mockResolvedValue(
       updatedResponse({ name: 'Bad\u0000Name', note: 'Note\u0007' })
     );
-    const result = JSON.parse(
-      await handleUpdateCategoryDetails({ category_id: CAT_ID, name: 'x' }, mockClient as never)
-    );
+    const result = await handleUpdateCategoryDetails({ category_id: CAT_ID, name: 'x' }, mockClient as never);
     expect(result.category.name).toBe('BadName');
     expect(result.category.note).toBe('Note');
   });

@@ -40,5 +40,9 @@ export interface AccountToolSetup extends Omit<AccountToolContext, 'accounts'> {
   readonly openAccounts: (auditLog: AuditLog) => AccountStore;
 }
 
-/** An account tool's handler: like the others, it returns the reply as text. */
-export type AccountToolHandler = (args: Record<string, unknown>, ctx: AccountToolContext) => Promise<string>;
+/**
+ * An account tool's handler: like the others, it returns its output object
+ * (#45), which the caller serializes for the text block and sends as
+ * structuredContent.
+ */
+export type AccountToolHandler = (args: Record<string, unknown>, ctx: AccountToolContext) => Promise<Record<string, unknown>>;

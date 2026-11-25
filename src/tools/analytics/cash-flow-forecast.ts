@@ -11,6 +11,7 @@ import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -27,7 +28,7 @@ const inputSchema = z.object({
 });
 
 const occurrenceSchema = z.object({
-  date: z.string(),
+  date: fromYnab(z.string()),
   payee: z.string(),
   amount: z.string(),
   frequency: z.string().describe('Frequency label, such as "Monthly"'),

@@ -12,6 +12,8 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { maskId } from '../../utils/mask.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId, monthParam } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, fromYnab } from '../schemas/common.js';
 
 const inputSchema = z.object({
   budget_id: budgetId()
@@ -21,6 +23,23 @@ const inputSchema = z.object({
     .optional()
     .describe('Only return groups for this budget month: YYYY-MM-01 (first of month) or "current"'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Nulls are reported on purpose. */
+export const listMoneyMovementGroupsOutputSchema = z.object({
+  money_movement_groups: z.array(
+    z.object({
+      id: fromYnab(z.string()),
+      month: fromYnab(z.string()),
+      group_created_at: fromYnab(z.string()),
+      note: z.string().nullable(),
+      has_performed_by_user: z.boolean(),
+      performed_by_user_id: z.string().nullable().describe('Masked'),
+    })
+  ),
+  count: count(),
+  month: z.string().nullable().describe('The month filter; null when not given'),
+});
+export type ListMoneyMovementGroupsOutput = z.output<typeof listMoneyMovementGroupsOutputSchema>;
 
 export const listMoneyMovementGroupsTool: Tool = {
   name: 'ynab_list_money_movement_groups',
@@ -49,6 +68,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
       },
     },
   },
+  outputSchema: toOutputSchema(listMoneyMovementGroupsOutputSchema),
 };
 
 /**
@@ -57,7 +77,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleListMoneyMovementGroups(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<ListMoneyMovementGroupsOutput> {
   const validated = inputSchema.parse(args);
   const resolvedBudgetId = await client.resolveBudgetId(validated.budget_id);
 
@@ -75,13 +95,9 @@ export async function handleListMoneyMovementGroups(
     performed_by_user_id: g.performed_by_user_id ? maskId(g.performed_by_user_id) : null,
   }));
 
-  return JSON.stringify(
-    {
-      money_movement_groups: groups,
-      count: groups.length,
-      month: validated.month ?? null,
-    },
-    null,
-    2
-  );
+  return {
+    money_movement_groups: groups,
+    count: groups.length,
+    month: validated.month ?? null,
+  };
 }

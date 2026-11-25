@@ -9,6 +9,8 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeString } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -16,6 +18,15 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const listPayeeLocationsOutputSchema = z.object({
+  location_count: count(),
+  payee_locations: z.array(
+    z.object({ id: z.string(), payee_id: z.string(), latitude: fromYnab(z.string()), longitude: fromYnab(z.string()) })
+  ),
+});
+export type ListPayeeLocationsOutput = z.output<typeof listPayeeLocationsOutputSchema>;
 
 // Tool definition
 export const listPayeeLocationsTool: Tool = {
@@ -42,6 +53,7 @@ Not possible through the YNAB API (do it in the YNAB app): adding, editing or de
     },
     required: [],
   },
+  outputSchema: toOutputSchema(listPayeeLocationsOutputSchema),
 };
 
 // Handler function
@@ -51,24 +63,20 @@ Not possible through the YNAB API (do it in the YNAB app): adding, editing or de
 export async function handleListPayeeLocations(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<ListPayeeLocationsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   const response = await client.getPayeeLocations(budgetId);
   const locations = response.data.payee_locations;
 
-  return JSON.stringify(
-    {
-      location_count: locations.length,
-      payee_locations: locations.map((loc) => ({
-        id: sanitizeString(loc.id) ?? '',
-        payee_id: sanitizeString(loc.payee_id) ?? '',
-        latitude: loc.latitude,
-        longitude: loc.longitude,
-      })),
-    },
-    null,
-    2
-  );
+  return {
+    location_count: locations.length,
+    payee_locations: locations.map((loc) => ({
+      id: sanitizeString(loc.id) ?? '',
+      payee_id: sanitizeString(loc.payee_id) ?? '',
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+    })),
+  };
 }

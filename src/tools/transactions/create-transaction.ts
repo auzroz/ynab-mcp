@@ -14,11 +14,14 @@ import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo, sanitizeString } from '../../utils/sanitize.js';
 import {
   checkSplitRules,
-  formatSubtransactions,
+  createdSubtransactionSchema,
+  subtransactionsField,
   subtransactionsJsonSchema,
   subtransactionsSchema,
   toSaveSubTransactions,
 } from './subtransactions.js';
+import { toOutputSchema } from '../output-schema.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Cleared status options
 const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
@@ -67,6 +70,36 @@ const inputSchema = z
     subtransactions: subtransactionsSchema.optional(),
   })
   .superRefine(checkSplitRules);
+
+/**
+ * What the tool returns (#45; rules in ../output-schema.ts). One object covers
+ * the created transaction and the in-band duplicate result (success: false
+ * with duplicate_import_ids), which is an ordinary result, not a tool error.
+ */
+export const createTransactionOutputSchema = z.object({
+  success: z.boolean().describe('False when the import_id already existed and nothing was created'),
+  message: z.string(),
+  duplicate_import_ids: z
+    .array(z.string())
+    .exactOptional()
+    .describe('When success is false: the import_id that already exists'),
+  transaction: z
+    .object({
+      id: fromYnab(z.string()),
+      date: fromYnab(z.string()),
+      amount: money(),
+      payee_name: z.string(),
+      category_name: z.string(),
+      account_name: z.string(),
+      memo: z.string().nullable(),
+      cleared: fromYnab(z.string().describe('YNAB cleared status')),
+      approved: fromYnab(z.boolean()),
+      subtransactions: z.array(createdSubtransactionSchema).exactOptional().describe('The splits; omitted when none'),
+    })
+    .exactOptional()
+    .describe('When success is true'),
+});
+export type CreateTransactionOutput = z.output<typeof createTransactionOutputSchema>;
 
 // Tool definition
 export const createTransactionTool: Tool = {
@@ -153,6 +186,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['account_id', 'date', 'amount'],
   },
+  outputSchema: toOutputSchema(createTransactionOutputSchema),
 };
 
 // Handler function
@@ -172,7 +206,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleCreateTransaction(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<CreateTransactionOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -211,37 +245,29 @@ export async function handleCreateTransaction(
     // A repeated import_id is a normal outcome, not a failure: YNAB skips the create.
     const duplicates = response.data.duplicate_import_ids ?? [];
     if (validated.import_id !== undefined && duplicates.length > 0) {
-      return JSON.stringify(
-        {
-          success: false,
-          message: 'No transaction created: a transaction with this import_id already exists',
-          duplicate_import_ids: duplicates.map((id) => sanitizeString(id, 100) ?? ''),
-        },
-        null,
-        2
-      );
+      return {
+        success: false,
+        message: 'No transaction created: a transaction with this import_id already exists',
+        duplicate_import_ids: duplicates.map((id) => sanitizeString(id, 100) ?? ''),
+      };
     }
     throw new Error('Transaction creation failed: no transaction returned');
   }
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Transaction created: ${money(txn.amount)} at ${sanitizeName(txn.payee_name)}`,
-      transaction: {
-        id: txn.id,
-        date: txn.date,
-        amount: money(txn.amount),
-        payee_name: sanitizeName(txn.payee_name),
-        category_name: sanitizeName(txn.category_name),
-        account_name: sanitizeName(txn.account_name),
-        memo: sanitizeMemo(txn.memo),
-        cleared: txn.cleared,
-        approved: txn.approved,
-        subtransactions: formatSubtransactions(txn.subtransactions, money),
-      },
+  return {
+    success: true,
+    message: `Transaction created: ${money(txn.amount)} at ${sanitizeName(txn.payee_name)}`,
+    transaction: {
+      id: txn.id,
+      date: txn.date,
+      amount: money(txn.amount),
+      payee_name: sanitizeName(txn.payee_name),
+      category_name: sanitizeName(txn.category_name),
+      account_name: sanitizeName(txn.account_name),
+      memo: sanitizeMemo(txn.memo),
+      cleared: txn.cleared,
+      approved: txn.approved,
+      ...subtransactionsField(txn.subtransactions, money),
     },
-    null,
-    2
-  );
+  };
 }

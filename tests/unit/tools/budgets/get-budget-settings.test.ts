@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetBudgetSettings } from '../../../../src/tools/budgets/get-budget-settings.js';
+import { handleGetBudgetSettings as rawHandleGetBudgetSettings, getBudgetSettingsOutputSchema } from '../../../../src/tools/budgets/get-budget-settings.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createBudgetSettingsResponse,
   mockEurCurrencyFormat,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetBudgetSettings = validating(getBudgetSettingsOutputSchema, rawHandleGetBudgetSettings);
 
 describe('handleGetBudgetSettings', () => {
   let mockClient: MockClient;
@@ -21,8 +25,7 @@ describe('handleGetBudgetSettings', () => {
   it('returns date_format and currency_format', async () => {
     mockClient.getBudgetSettingsById.mockResolvedValue(createBudgetSettingsResponse());
 
-    const result = await handleGetBudgetSettings({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetBudgetSettings({}, mockClient as never);
 
     expect(parsed.budget_id).toBe('test-budget-id');
     expect(parsed.settings.date_format).toBe('MM/DD/YYYY');
@@ -44,8 +47,7 @@ describe('handleGetBudgetSettings', () => {
       createBudgetSettingsResponse(mockEurCurrencyFormat)
     );
 
-    const result = await handleGetBudgetSettings({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetBudgetSettings({}, mockClient as never);
 
     expect(parsed.settings.currency_format.iso_code).toBe('EUR');
     expect(parsed.settings.date_format).toBe('DD/MM/YYYY');
@@ -56,8 +58,7 @@ describe('handleGetBudgetSettings', () => {
       data: { settings: { date_format: null, currency_format: null } },
     });
 
-    const result = await handleGetBudgetSettings({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetBudgetSettings({}, mockClient as never);
 
     expect(parsed.settings.date_format).toBeNull();
     expect(parsed.settings.currency_format).toBeNull();

@@ -4,9 +4,13 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ZodError } from 'zod';
-import { handleUpdateTransactions, updateTransactionsTool } from '../../../../src/tools/transactions/update-transactions.js';
+import { handleUpdateTransactions as rawHandleUpdateTransactions, updateTransactionsTool, updateTransactionsOutputSchema } from '../../../../src/tools/transactions/update-transactions.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleUpdateTransactions = validating(updateTransactionsOutputSchema, rawHandleUpdateTransactions);
 
 const TXN_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TXN_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -24,7 +28,7 @@ describe('handleUpdateTransactions', () => {
       data: { transaction_ids: [TXN_A, TXN_B] },
     });
 
-    const result = await handleUpdateTransactions(
+    const parsed = await handleUpdateTransactions(
       {
         transactions: [
           { id: TXN_A, amount: -42.5 },
@@ -33,7 +37,6 @@ describe('handleUpdateTransactions', () => {
       },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(mockClient.updateTransactions).toHaveBeenCalledWith('test-budget-id', {
       transactions: [

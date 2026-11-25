@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleBudgetSuggestions as rawHandleBudgetSuggestions, budgetSuggestionsOutputSchema } from '../../../../src/tools/analytics/budget-suggestions.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createCategoriesResponse,

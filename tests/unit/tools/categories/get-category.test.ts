@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetCategory } from '../../../../src/tools/categories/get-category.js';
+import { handleGetCategory as rawHandleGetCategory, getCategoryOutputSchema } from '../../../../src/tools/categories/get-category.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createCategoryResponse,
@@ -12,6 +13,9 @@ import {
   mockDiscretionaryCategories,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetCategory = validating(getCategoryOutputSchema, rawHandleGetCategory);
 
 const CATEGORY_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 
@@ -28,8 +32,7 @@ describe('handleGetCategory', () => {
       createCategoryResponse(mockSavingsCategories[1])
     );
 
-    const result = await handleGetCategory({ category_id: CATEGORY_ID }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetCategory({ category_id: CATEGORY_ID }, mockClient as never);
 
     expect(parsed.category.name).toBe('Vacation');
     expect(parsed.category.goal).not.toBeNull();
@@ -55,7 +58,7 @@ describe('handleGetCategory', () => {
     );
 
     const result = await handleGetCategory({ category_id: CATEGORY_ID }, mockClient as never);
-    const goal = JSON.parse(result).category.goal;
+    const goal = result.category.goal;
 
     expect(goal.type).toBe('MF');
     expect(goal.type_label).toBe('Monthly Funding');
@@ -77,8 +80,7 @@ describe('handleGetCategory', () => {
       createCategoryResponse(mockDiscretionaryCategories[0])
     );
 
-    const result = await handleGetCategory({ category_id: CATEGORY_ID }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetCategory({ category_id: CATEGORY_ID }, mockClient as never);
 
     expect(parsed.category.name).toBe('Entertainment');
     expect(parsed.category.goal).toBeNull();
@@ -89,8 +91,7 @@ describe('handleGetCategory', () => {
       createCategoryResponse(mockBillsCategories[0])
     );
 
-    const result = await handleGetCategory({ category_id: CATEGORY_ID }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetCategory({ category_id: CATEGORY_ID }, mockClient as never);
 
     expect(parsed.category.budgeted).toBe('$1500.00');
     expect(parsed.category.activity).toBe('-$1500.00');
@@ -117,7 +118,7 @@ describe('handleGetCategory', () => {
         createCategoryResponse({ ...base, ...overrides } as never)
       );
       const result = await handleGetCategory({ category_id: CATEGORY_ID }, mockClient as never);
-      return JSON.parse(result).category.goal;
+      return result.category.goal;
     }
 
     it('exposes goal_target_date as target_date', async () => {

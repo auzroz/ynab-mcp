@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleDetectRecurring as rawHandleDetectRecurring, detectRecurringOutputSchema } from '../../../../src/tools/analytics/detect-recurring.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import { createMockClient, createTransactionsResponse } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
 

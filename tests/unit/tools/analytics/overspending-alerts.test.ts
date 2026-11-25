@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleOverspendingAlerts as rawHandleOverspendingAlerts, overspendingAlertsOutputSchema } from '../../../../src/tools/analytics/overspending-alerts.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createCategoriesResponse,

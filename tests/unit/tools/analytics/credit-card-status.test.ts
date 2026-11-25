@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleCreditCardStatus as rawHandleCreditCardStatus, creditCardStatusOutputSchema } from '../../../../src/tools/analytics/credit-card-status.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createAccountsResponse,

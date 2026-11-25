@@ -10,6 +10,8 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { CATEGORY_GROUP_NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -18,6 +20,14 @@ const inputSchema = z.object({
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   name: z.string().min(1).max(CATEGORY_GROUP_NAME_MAX_LENGTH).describe('The name of the new category group'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const createCategoryGroupOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  category_group: z.object({ id: fromYnab(z.string()), name: z.string() }),
+});
+export type CreateCategoryGroupOutput = z.output<typeof createCategoryGroupOutputSchema>;
 
 // Tool definition
 export const createCategoryGroupTool: Tool = {
@@ -52,6 +62,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['name'],
   },
+  outputSchema: toOutputSchema(createCategoryGroupOutputSchema),
 };
 
 // Handler function
@@ -61,7 +72,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleCreateCategoryGroup(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<CreateCategoryGroupOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -71,16 +82,12 @@ export async function handleCreateCategoryGroup(
 
   const group = response.data.category_group;
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Category group "${sanitizeName(group.name)}" created successfully`,
-      category_group: {
-        id: group.id,
-        name: sanitizeName(group.name),
-      },
+  return {
+    success: true,
+    message: `Category group "${sanitizeName(group.name)}" created successfully`,
+    category_group: {
+      id: group.id,
+      name: sanitizeName(group.name),
     },
-    null,
-    2
-  );
+  };
 }

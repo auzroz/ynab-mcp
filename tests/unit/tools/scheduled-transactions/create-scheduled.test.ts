@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleCreateScheduledTransaction } from '../../../../src/tools/scheduled-transactions/create-scheduled.js';
+import { handleCreateScheduledTransaction as rawHandleCreateScheduledTransaction, createScheduledTransactionOutputSchema } from '../../../../src/tools/scheduled-transactions/create-scheduled.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createScheduledTransactionResponse,
   mockScheduledTransactions,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleCreateScheduledTransaction = validating(createScheduledTransactionOutputSchema, rawHandleCreateScheduledTransaction);
 
 const ACCOUNT_ID = '11111111-1111-1111-1111-111111111111';
 const PAYEE_ID = '22222222-2222-2222-2222-222222222222';
@@ -28,7 +32,7 @@ describe('handleCreateScheduledTransaction', () => {
   });
 
   it('creates a scheduled transaction with dollars converted to milliunits', async () => {
-    const result = await handleCreateScheduledTransaction(
+    const parsed = await handleCreateScheduledTransaction(
       {
         account_id: ACCOUNT_ID,
         date: FUTURE_DATE,
@@ -38,7 +42,6 @@ describe('handleCreateScheduledTransaction', () => {
       },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(true);
     expect(mockClient.createScheduledTransaction).toHaveBeenCalledTimes(1);
@@ -103,7 +106,7 @@ describe('handleCreateScheduledTransaction', () => {
   });
 
   it('returns error JSON without calling client when date is in the past', async () => {
-    const result = await handleCreateScheduledTransaction(
+    const parsed = await handleCreateScheduledTransaction(
       {
         account_id: ACCOUNT_ID,
         date: '2020-01-01',
@@ -113,7 +116,6 @@ describe('handleCreateScheduledTransaction', () => {
       },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(false);
     expect(parsed.error).toBe('Date must be in the future');

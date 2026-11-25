@@ -211,12 +211,10 @@ describe('import_id on the wire', () => {
       })
     );
 
-    const out = JSON.parse(
-      await handleCreateTransaction(
+    const out = await handleCreateTransaction(
         { account_id: ACCOUNT, date: '2024-02-01', amount: -1, import_id: 'YNAB:-1000:2024-02-01:1' },
         makeClient()
-      )
-    );
+      );
 
     const { body } = request();
     expect(body.transaction).toBeUndefined();
@@ -232,12 +230,10 @@ describe('import_id on the wire', () => {
       json({ data: { transaction_ids: [], transactions: [], duplicate_import_ids: ['dup-1'], server_knowledge: 1 } })
     );
 
-    const out = JSON.parse(
-      await handleCreateTransaction(
+    const out = await handleCreateTransaction(
         { account_id: ACCOUNT, date: '2024-02-01', amount: -1, import_id: 'dup-1' },
         makeClient()
-      )
-    );
+      );
 
     expect(out.success).toBe(false);
     expect(out.duplicate_import_ids).toEqual(['dup-1']);

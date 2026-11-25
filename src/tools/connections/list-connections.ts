@@ -14,8 +14,34 @@ import { displayClientName } from '../../auth/client-metadata.js';
 import { isMetadataDocumentClientId } from '../../auth/client-id-url.js';
 import { sanitizeString } from '../../utils/sanitize.js';
 import type { AccountToolContext } from './context.js';
+import { toOutputSchema } from '../output-schema.js';
 
 const inputSchema = z.object({}).strict();
+
+const connectionSchema = z.object({
+  family_id: z.string().describe('Pass to ynab_revoke_connection'),
+  client_name: z.string().nullable().describe('What the app calls itself (not verified); null when it gave no name'),
+  client_host: z.string().nullable().describe("The app's web host when it is identified by a URL; null otherwise"),
+  access: z.string().describe('read-only or read-write (a stored value, so a string)'),
+  connected_at: z.string().nullable(),
+  last_used_at: z.string().nullable().describe('When the app last signed in or refreshed; null when unknown'),
+  expires_at: z.string().nullable().describe('When the connection expires unless used; null when unknown'),
+  this_connection: z.boolean().describe('True for the connection making this call'),
+});
+type ConnectionOutput = z.output<typeof connectionSchema>;
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Nulls are reported on purpose. */
+export const listConnectionsOutputSchema = z.object({
+  connections: z.array(connectionSchema),
+  summary: z.object({
+    count: z.number().int(),
+    read_write_count: z.number().int(),
+    read_only_count: z.number().int(),
+    message: z.string(),
+    note: z.string(),
+  }),
+});
+export type ListConnectionsOutput = z.output<typeof listConnectionsOutputSchema>;
 
 export const listConnectionsTool: Tool = {
   name: 'ynab_list_connections',
@@ -34,6 +60,7 @@ Each entry shows the client's name as it declared it (not verified), the client'
     required: [],
     additionalProperties: false,
   },
+  outputSchema: toOutputSchema(listConnectionsOutputSchema),
 };
 
 const iso = (ms: number | undefined): string | null => (ms === undefined ? null : new Date(ms).toISOString());
@@ -49,11 +76,12 @@ function clientHost(clientId: string): string | undefined {
 }
 
 /** One connection as the tool shows it. Every string from a client is sanitized. */
-function present(c: ConnectionRecord, currentFamilyId: string | undefined): Record<string, unknown> {
+function present(c: ConnectionRecord, currentFamilyId: string | undefined): ConnectionOutput {
   const name = displayClientName(c.clientName);
   const host = clientHost(c.clientId);
   return {
-    family_id: sanitizeString(c.familyId, 64),
+    // Never null for a stored id; `?? ''` is for the type only.
+    family_id: sanitizeString(c.familyId, 64) ?? '',
     client_name: name === undefined ? null : sanitizeString(name, 200),
     client_host: host === undefined ? null : sanitizeString(host, 255),
     access: c.grantedScope,
@@ -64,25 +92,24 @@ function present(c: ConnectionRecord, currentFamilyId: string | undefined): Reco
   };
 }
 
-export async function handleListConnections(args: Record<string, unknown>, ctx: AccountToolContext): Promise<string> {
+export async function handleListConnections(
+  args: Record<string, unknown>,
+  ctx: AccountToolContext
+): Promise<ListConnectionsOutput> {
   inputSchema.parse(args);
   const connections = (await ctx.accounts.listConnections(ctx.userId)).map((c) => present(c, ctx.currentFamilyId));
-  const readWrite = connections.filter((c) => c['access'] === 'read-write').length;
-  return JSON.stringify(
-    {
-      connections,
-      summary: {
-        count: connections.length,
-        read_write_count: readWrite,
-        read_only_count: connections.length - readWrite,
-        message:
-          connections.length === 1
-            ? 'One app is connected under your account.'
-            : `${connections.length} apps are connected under your account.`,
-        note: 'client_name is what each app calls itself. client_host, when present, is the web host the app is identified by. last_used_at is when the app last signed in or refreshed its access.',
-      },
+  const readWrite = connections.filter((c) => c.access === 'read-write').length;
+  return {
+    connections,
+    summary: {
+      count: connections.length,
+      read_write_count: readWrite,
+      read_only_count: connections.length - readWrite,
+      message:
+        connections.length === 1
+          ? 'One app is connected under your account.'
+          : `${connections.length} apps are connected under your account.`,
+      note: 'client_name is what each app calls itself. client_host, when present, is the web host the app is identified by. last_used_at is when the app last signed in or refreshed its access.',
     },
-    null,
-    2
-  );
+  };
 }

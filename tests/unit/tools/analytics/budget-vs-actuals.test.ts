@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleBudgetVsActuals as rawHandleBudgetVsActuals, budgetVsActualsOutputSchema } from '../../../../src/tools/analytics/budget-vs-actuals.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createMonthResponse,

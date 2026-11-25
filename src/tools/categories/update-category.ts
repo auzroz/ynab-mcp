@@ -11,6 +11,8 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId, ynabId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -27,6 +29,21 @@ const inputSchema = z.object({
     .finite()
     .describe('The new budgeted amount in dollars (e.g., 500.00 for $500)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const updateCategoryOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  month: z.string(),
+  category: z.object({
+    id: fromYnab(z.string()),
+    name: z.string(),
+    budgeted: money(),
+    activity: money(),
+    balance: money(),
+  }),
+});
+export type UpdateCategoryOutput = z.output<typeof updateCategoryOutputSchema>;
 
 // Tool definition
 export const updateCategoryTool: Tool = {
@@ -73,6 +90,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['month', 'category_id', 'budgeted'],
   },
+  outputSchema: toOutputSchema(updateCategoryOutputSchema),
 };
 
 // Handler function
@@ -82,7 +100,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleUpdateCategory(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<UpdateCategoryOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -101,20 +119,16 @@ export async function handleUpdateCategory(
   const category = response.data.category;
 
   const categoryName = sanitizeName(category.name);
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Budget for "${categoryName}" updated to ${money(category.budgeted)}`,
-      month: validated.month,
-      category: {
-        id: category.id,
-        name: categoryName,
-        budgeted: money(category.budgeted),
-        activity: money(category.activity),
-        balance: money(category.balance),
-      },
+  return {
+    success: true,
+    message: `Budget for "${categoryName}" updated to ${money(category.budgeted)}`,
+    month: validated.month,
+    category: {
+      id: category.id,
+      name: categoryName,
+      budgeted: money(category.budgeted),
+      activity: money(category.activity),
+      balance: money(category.balance),
     },
-    null,
-    2
-  );
+  };
 }

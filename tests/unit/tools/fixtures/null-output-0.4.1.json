@@ -736,6 +736,7 @@
           "subtransactions": [
             {
               "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+              "scheduled_transaction_id": "88888888-8888-4888-8888-888888888888",
               "amount": "-$6.17",
               "memo": null,
               "transfer_account_id": null
@@ -774,6 +775,7 @@
         "subtransactions": [
           {
             "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+            "scheduled_transaction_id": "88888888-8888-4888-8888-888888888888",
             "amount": "-$6.17",
             "memo": null
           }
@@ -1707,6 +1709,8 @@
       "money_movement_groups": [
         {
           "id": "g1",
+          "month": "2026-10-01",
+          "group_created_at": "2026-10-05T12:00:00Z",
           "note": null,
           "has_performed_by_user": false,
           "performed_by_user_id": null
@@ -2115,6 +2119,51 @@
         "id": "55555555-5555-4555-8555-555555555555",
         "name": "Store"
       }
+    }
+  },
+  "ynab_move_money": {
+    "args": {
+      "month": "2026-10-01",
+      "from_category_id": "33333333-3333-4333-8333-333333333333",
+      "to_category_id": "33333333-3333-4333-8333-333333333334",
+      "amount": 5
+    },
+    "result": {
+      "success": true,
+      "message": "Moved $5.00 of budgeted money from \"Rent\" to \"Rent\" for 2026-10-01",
+      "month": "2026-10-01",
+      "amount": "$5.00",
+      "amount_milliunits": 5000,
+      "from": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "name": "Rent",
+        "budgeted_before": "$50.00",
+        "budgeted_after": "$50.00",
+        "budgeted_after_milliunits": 50000,
+        "balance_after": "-$12.34"
+      },
+      "to": {
+        "id": "33333333-3333-4333-8333-333333333334",
+        "name": "Rent",
+        "budgeted_before": "$50.00",
+        "budgeted_after": "$50.00",
+        "budgeted_after_milliunits": 50000,
+        "balance_after": "-$12.34"
+      },
+      "warnings": [
+        "\"Rent\" now has a negative balance (-$12.34); it is overspent for this month."
+      ],
+      "note": "Budgeted amounts were changed; no YNAB money-movement record was created."
+    }
+  },
+  "ynab_import_transactions": {
+    "args": {},
+    "result": {
+      "success": true,
+      "deprecated": true,
+      "message": "This tool is deprecated. YNAB API 1.88 retired the linked-account import endpoint because YNAB now imports linked accounts automatically. No action was taken.",
+      "imported_count": 0,
+      "note": "Use ynab_list_transactions to review recent transactions. Linked accounts sync automatically in YNAB."
     }
   }
 }

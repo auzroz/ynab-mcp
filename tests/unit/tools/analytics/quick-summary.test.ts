@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleQuickSummary as rawHandleQuickSummary, quickSummaryOutputSchema } from '../../../../src/tools/analytics/quick-summary.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createMonthResponse,

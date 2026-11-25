@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleSpendingPace as rawHandleSpendingPace, spendingPaceOutputSchema } from '../../../../src/tools/analytics/spending-pace.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createCategoriesResponse,

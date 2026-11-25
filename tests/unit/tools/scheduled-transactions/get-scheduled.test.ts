@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetScheduledTransaction } from '../../../../src/tools/scheduled-transactions/get-scheduled.js';
+import { handleGetScheduledTransaction as rawHandleGetScheduledTransaction, getScheduledTransactionOutputSchema } from '../../../../src/tools/scheduled-transactions/get-scheduled.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createScheduledTransactionResponse,
@@ -11,6 +12,9 @@ import {
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
 import type { ScheduledTransactionDetail } from 'ynab';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetScheduledTransaction = validating(getScheduledTransactionOutputSchema, rawHandleGetScheduledTransaction);
 
 const VALID_ID = '99999999-9999-9999-9999-999999999999';
 
@@ -26,11 +30,10 @@ describe('handleGetScheduledTransaction', () => {
       createScheduledTransactionResponse(mockScheduledTransactions[0]!)
     );
 
-    const result = await handleGetScheduledTransaction(
+    const parsed = await handleGetScheduledTransaction(
       { scheduled_transaction_id: VALID_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.scheduled_transaction.id).toBe('sched-rent-001');
     expect(parsed.scheduled_transaction.amount).toBe('-$1500.00');
@@ -60,11 +63,10 @@ describe('handleGetScheduledTransaction', () => {
       createScheduledTransactionResponse(withSubs)
     );
 
-    const result = await handleGetScheduledTransaction(
+    const parsed = await handleGetScheduledTransaction(
       { scheduled_transaction_id: VALID_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.scheduled_transaction.subtransactions).toHaveLength(1);
     expect(parsed.scheduled_transaction.subtransactions[0].amount).toBe('-$75.00');

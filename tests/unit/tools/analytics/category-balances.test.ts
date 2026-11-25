@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleCategoryBalances as rawHandleCategoryBalances, categoryBalancesOutputSchema } from '../../../../src/tools/analytics/category-balances.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createCategoriesResponse,

@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListMonths } from '../../../../src/tools/months/list-months.js';
+import { handleListMonths as rawHandleListMonths, listMonthsOutputSchema } from '../../../../src/tools/months/list-months.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createMonthsResponse,
   mockMonthSummaries,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListMonths = validating(listMonthsOutputSchema, rawHandleListMonths);
 
 describe('handleListMonths', () => {
   let mockClient: MockClient;
@@ -21,8 +25,7 @@ describe('handleListMonths', () => {
   it('lists months with formatted amounts and count', async () => {
     mockClient.getBudgetMonths.mockResolvedValue(createMonthsResponse());
 
-    const result = await handleListMonths({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListMonths({}, mockClient as never);
 
     expect(parsed.count).toBe(mockMonthSummaries.length);
     expect(parsed.months[0].month).toBe('2024-01-01');
@@ -36,8 +39,7 @@ describe('handleListMonths', () => {
   it('handles months with null notes', async () => {
     mockClient.getBudgetMonths.mockResolvedValue(createMonthsResponse());
 
-    const result = await handleListMonths({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListMonths({}, mockClient as never);
 
     const octMonth = parsed.months.find((m: { month: string }) => m.month === '2023-10-01');
     expect(octMonth.note).toBeNull();
@@ -55,8 +57,7 @@ describe('handleListMonths', () => {
   it('handles empty month list', async () => {
     mockClient.getBudgetMonths.mockResolvedValue(createMonthsResponse([]));
 
-    const result = await handleListMonths({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListMonths({}, mockClient as never);
 
     expect(parsed.count).toBe(0);
     expect(parsed.months).toEqual([]);

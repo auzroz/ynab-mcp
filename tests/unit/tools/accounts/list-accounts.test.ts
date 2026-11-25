@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListAccounts } from '../../../../src/tools/accounts/list-accounts.js';
+import { handleListAccounts as rawHandleListAccounts, listAccountsOutputSchema } from '../../../../src/tools/accounts/list-accounts.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createAccountsResponse,
@@ -13,6 +14,9 @@ import {
   mockCreditCardWithOverpayment,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListAccounts = validating(listAccountsOutputSchema, rawHandleListAccounts);
 
 describe('handleListAccounts', () => {
   let mockClient: MockClient;
@@ -24,8 +28,7 @@ describe('handleListAccounts', () => {
   it('groups accounts by type with balances and summary', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleListAccounts({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListAccounts({}, mockClient as never);
 
     expect(parsed.accounts_by_type.checking).toBeDefined();
     expect(parsed.accounts_by_type.checking[0]).toHaveProperty('id');
@@ -40,8 +43,7 @@ describe('handleListAccounts', () => {
   it('excludes closed accounts by default', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleListAccounts({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListAccounts({}, mockClient as never);
 
     const allNames = Object.values(parsed.accounts_by_type)
       .flat()
@@ -52,8 +54,7 @@ describe('handleListAccounts', () => {
   it('includes closed accounts when include_closed=true', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleListAccounts({ include_closed: true }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListAccounts({ include_closed: true }, mockClient as never);
 
     const allNames = Object.values(parsed.accounts_by_type)
       .flat()
@@ -66,8 +67,7 @@ describe('handleListAccounts', () => {
       createAccountsResponse([mockCreditCardWithOverpayment])
     );
 
-    const result = await handleListAccounts({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListAccounts({}, mockClient as never);
 
     expect(parsed.summary.liability_credits).toBeDefined();
     expect(parsed.summary.liability_credits).toContain('$');
@@ -83,8 +83,7 @@ describe('handleListAccounts', () => {
       createAccountsResponse(accountsWithoutCredits)
     );
 
-    const result = await handleListAccounts({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListAccounts({}, mockClient as never);
 
     expect(parsed.summary.liability_credits).toBeUndefined();
   });
@@ -101,8 +100,7 @@ describe('handleListAccounts', () => {
   it('handles empty account list', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse([]));
 
-    const result = await handleListAccounts({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListAccounts({}, mockClient as never);
 
     expect(parsed.summary.total_accounts).toBe(0);
     expect(parsed.summary.liability_credits).toBeUndefined();
@@ -113,8 +111,7 @@ describe('handleListAccounts', () => {
       createAccountsResponse([mockCheckingAccount, mockMortgageAccount])
     );
 
-    const result = await handleListAccounts({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListAccounts({}, mockClient as never);
 
     const checking = parsed.accounts_by_type.checking[0];
     expect(checking.on_budget).toBe(true);
@@ -145,8 +142,7 @@ describe('handleListAccounts', () => {
       createAccountsResponse([{ ...mockCheckingAccount, note: 'hi\u0000 there\u0007' }])
     );
 
-    const result = await handleListAccounts({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListAccounts({}, mockClient as never);
 
     expect(parsed.accounts_by_type.checking[0].note).toBe('hi there');
   });

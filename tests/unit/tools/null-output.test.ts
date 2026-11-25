@@ -23,6 +23,7 @@ import { handleToolCall, tools } from '../../../src/tools/index.js';
 const ACC = '11111111-1111-4111-8111-111111111111';
 const GRP = '22222222-2222-4222-8222-222222222222';
 const CAT = '33333333-3333-4333-8333-333333333333';
+const CAT2 = '33333333-3333-4333-8333-333333333334';
 const PAY = '55555555-5555-4555-8555-555555555555';
 const TXN = '77777777-7777-4777-8777-777777777777';
 const TXN2 = '77777777-7777-4777-8777-777777777778';
@@ -80,13 +81,13 @@ const scheduled = {
   memo: null, flag_color: null, flag_name: null, account_id: ACC, payee_id: null, category_id: null,
   transfer_account_id: null, deleted: false, account_name: 'Checking', payee_name: null,
   category_name: null,
-  subtransactions: [{ ...splitNulls(3), transaction_id: SCH }],
+  subtransactions: [{ ...splitNulls(3), transaction_id: undefined, scheduled_transaction_id: SCH }],
 };
 const movement = {
   id: 'mm1', month: '2026-10-01', moved_at: null, note: null, money_movement_group_id: null,
   performed_by_user_id: null, from_category_id: null, to_category_id: CAT, amount: 1000,
 };
-const movementGroup = { id: 'g1', group_creation_month: '2026-10-01', note: null, performed_by_user_id: null };
+const movementGroup = { id: 'g1', month: '2026-10-01', group_created_at: '2026-10-05T12:00:00Z', note: null, performed_by_user_id: null };
 const summary = {
   id: 'budget-1', name: 'B', last_modified_on: null, first_month: null, last_month: null,
   date_format: null, currency_format: null, accounts: [account],
@@ -102,6 +103,11 @@ const txns = [named(txnNulls, false), named(txnFull, true)];
 const hybrids = [hybrid(txnNulls, false), hybrid(txnFull, true)];
 const K = { server_knowledge: 10 };
 
+/** A month category, with the id the path names (ynab_move_money reads two). */
+function monthCategory(path: string): typeof category {
+  return { ...category, id: path.split('/').pop() ?? CAT };
+}
+
 function route(path: string): unknown {
   const p = path.replace(/^.*\/v1/, '');
   const rules: Array<[RegExp, unknown]> = [
@@ -110,7 +116,7 @@ function route(path: string): unknown {
     [/^\/plans\/[^/]+\/settings$/, { settings: { date_format: null, currency_format: null } }],
     [/\/(accounts|categories|payees)\/[^/]+\/transactions$/, { transactions: hybrids, ...K }],
     [/\/months\/[^/]+\/transactions$/, { transactions: hybrids, ...K }],
-    [/\/months\/[^/]+\/categories\/[^/]+$/, { category }],
+    [/\/months\/[^/]+\/categories\/[^/]+$/, { category: monthCategory(p) }],
     [/\/months\/[^/]+\/money_movements$/, { money_movements: [movement], ...K }],
     [/\/months\/[^/]+\/money_movement_groups$/, { money_movement_groups: [movementGroup], ...K }],
     [/\/months\/[^/]+$/, { month }],
@@ -160,6 +166,8 @@ const WRITES: Array<{ tool: string; args: Record<string, unknown> }> = [
   { tool: 'ynab_update_category_group', args: { category_group_id: GRP, name: 'Bills' } },
   { tool: 'ynab_create_payee', args: { name: 'Store' } },
   { tool: 'ynab_update_payee', args: { payee_id: PAY, name: 'Store' } },
+  { tool: 'ynab_move_money', args: { month: '2026-10-01', from_category_id: CAT, to_category_id: CAT2, amount: 5 } },
+  { tool: 'ynab_import_transactions', args: {} },
 ];
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/null-output-0.4.1.json', import.meta.url));
@@ -173,7 +181,7 @@ function writeRoute(method: string, path: string): unknown {
   if (method === 'POST' && /\/categories$/.test(p)) return { data: { category, ...K } };
   if (method === 'POST' && /\/category_groups$/.test(p)) return { data: { category_group: groups[0], ...K } };
   if (method === 'POST' && /\/payees$/.test(p)) return { data: { payee, ...K } };
-  if (method === 'PATCH' && /\/months\/[^/]+\/categories\/[^/]+$/.test(p)) return { data: { category } };
+  if (method === 'PATCH' && /\/months\/[^/]+\/categories\/[^/]+$/.test(p)) return { data: { category: monthCategory(p) } };
   if (method === 'PATCH' && /\/categories\/[^/]+$/.test(p)) return { data: { category, ...K } };
   if (method === 'PATCH' && /\/category_groups\/[^/]+$/.test(p)) return { data: { category_group: groups[0], ...K } };
   if (method === 'PATCH' && /\/payees\/[^/]+$/.test(p)) return { data: { payee, ...K } };

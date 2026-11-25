@@ -9,9 +9,11 @@ import { z } from 'zod';
 import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
-import { buildGoalDetail } from '../../utils/goals.js';
+import { buildGoalDetail, goalDetailSchema } from '../../utils/goals.js';
 import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -24,6 +26,23 @@ const inputSchema = z.object({
     .describe('The budget month in YYYY-MM-01 format (first of month, e.g., 2024-01-01)'),
   category_id: ynabId().describe('The category UUID to retrieve'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const getMonthCategoryOutputSchema = z.object({
+  month: z.string(),
+  category: z.object({
+    id: fromYnab(z.string()),
+    category_group_id: fromYnab(z.string()),
+    name: z.string(),
+    hidden: fromYnab(z.boolean()),
+    note: z.string().nullable(),
+    budgeted: money(),
+    activity: money(),
+    balance: money(),
+    goal: goalDetailSchema.nullable().describe('Null when the category has no target'),
+  }),
+});
+export type GetMonthCategoryOutput = z.output<typeof getMonthCategoryOutputSchema>;
 
 // Tool definition
 export const getMonthCategoryTool: Tool = {
@@ -64,6 +83,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['month', 'category_id'],
   },
+  outputSchema: toOutputSchema(getMonthCategoryOutputSchema),
 };
 
 // Handler function
@@ -73,7 +93,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleGetMonthCategory(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetMonthCategoryOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -85,22 +105,18 @@ export async function handleGetMonthCategory(
   );
   const category = response.data.category;
 
-  return JSON.stringify(
-    {
-      month: validated.month,
-      category: {
-        id: category.id,
-        category_group_id: category.category_group_id,
-        name: sanitizeName(category.name),
-        hidden: category.hidden,
-        note: sanitizeMemo(category.note),
-        budgeted: money(category.budgeted),
-        activity: money(category.activity),
-        balance: money(category.balance),
-        goal: buildGoalDetail(category, money),
-      },
+  return {
+    month: validated.month,
+    category: {
+      id: category.id,
+      category_group_id: category.category_group_id,
+      name: sanitizeName(category.name),
+      hidden: category.hidden,
+      note: sanitizeMemo(category.note),
+      budgeted: money(category.budgeted),
+      activity: money(category.activity),
+      balance: money(category.balance),
+      goal: buildGoalDetail(category, money),
     },
-    null,
-    2
-  );
+  };
 }

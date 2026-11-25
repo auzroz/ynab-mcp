@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListPayeeLocationsByPayee } from '../../../../src/tools/payees/list-payee-locations-by-payee.js';
+import { handleListPayeeLocationsByPayee as rawHandleListPayeeLocationsByPayee, listPayeeLocationsByPayeeOutputSchema } from '../../../../src/tools/payees/list-payee-locations-by-payee.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createPayeeLocationsResponse,
   getLocationsForPayee,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListPayeeLocationsByPayee = validating(listPayeeLocationsByPayeeOutputSchema, rawHandleListPayeeLocationsByPayee);
 
 const PAYEE_UUID = '44444444-4444-4444-4444-4444444444dd';
 
@@ -26,11 +30,10 @@ describe('handleListPayeeLocationsByPayee', () => {
       createPayeeLocationsResponse(krogerLocations)
     );
 
-    const result = await handleListPayeeLocationsByPayee(
+    const parsed = await handleListPayeeLocationsByPayee(
       { payee_id: PAYEE_UUID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.payee_id).toBe(PAYEE_UUID);
     expect(parsed.location_count).toBe(krogerLocations.length);
@@ -54,11 +57,10 @@ describe('handleListPayeeLocationsByPayee', () => {
   it('handles empty location list', async () => {
     mockClient.getPayeeLocationsByPayee.mockResolvedValue(createPayeeLocationsResponse([]));
 
-    const result = await handleListPayeeLocationsByPayee(
+    const parsed = await handleListPayeeLocationsByPayee(
       { payee_id: PAYEE_UUID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.location_count).toBe(0);
     expect(parsed.payee_locations).toEqual([]);

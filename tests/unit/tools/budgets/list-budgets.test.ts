@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListBudgets } from '../../../../src/tools/budgets/list-budgets.js';
+import { handleListBudgets as rawHandleListBudgets, listBudgetsOutputSchema } from '../../../../src/tools/budgets/list-budgets.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createBudgetsResponse,
@@ -11,6 +12,9 @@ import {
   mockEurBudgetSummary,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListBudgets = validating(listBudgetsOutputSchema, rawHandleListBudgets);
 
 describe('handleListBudgets', () => {
   let mockClient: MockClient;
@@ -22,8 +26,7 @@ describe('handleListBudgets', () => {
   it('lists budgets with names, ids, and count', async () => {
     mockClient.getBudgets.mockResolvedValue(createBudgetsResponse());
 
-    const result = await handleListBudgets({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListBudgets({}, mockClient as never);
 
     expect(parsed.count).toBe(2);
     expect(parsed.budgets).toHaveLength(2);
@@ -36,8 +39,7 @@ describe('handleListBudgets', () => {
   it('includes sanitized currency_format when present', async () => {
     mockClient.getBudgets.mockResolvedValue(createBudgetsResponse([mockBudgetSummary]));
 
-    const result = await handleListBudgets({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListBudgets({}, mockClient as never);
 
     expect(parsed.budgets[0].currency_format.iso_code).toBe('USD');
     expect(parsed.budgets[0].currency_format.decimal_digits).toBe(2);
@@ -55,8 +57,7 @@ describe('handleListBudgets', () => {
     // mockBudgetSummary has accounts populated; EUR budget has empty accounts.
     mockClient.getBudgets.mockResolvedValue(createBudgetsResponse([mockBudgetSummary]));
 
-    const result = await handleListBudgets({ include_accounts: true }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListBudgets({ include_accounts: true }, mockClient as never);
 
     expect(mockClient.getBudgets).toHaveBeenCalledWith(true);
     expect(parsed.budgets[0].accounts).toBeInstanceOf(Array);
@@ -69,8 +70,7 @@ describe('handleListBudgets', () => {
   it('omits accounts for budgets with empty account list', async () => {
     mockClient.getBudgets.mockResolvedValue(createBudgetsResponse([mockEurBudgetSummary]));
 
-    const result = await handleListBudgets({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListBudgets({}, mockClient as never);
 
     expect(parsed.budgets[0].accounts).toBeUndefined();
   });
@@ -78,8 +78,7 @@ describe('handleListBudgets', () => {
   it('handles empty budget list', async () => {
     mockClient.getBudgets.mockResolvedValue(createBudgetsResponse([]));
 
-    const result = await handleListBudgets({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListBudgets({}, mockClient as never);
 
     expect(parsed.count).toBe(0);
     expect(parsed.budgets).toEqual([]);
@@ -89,7 +88,7 @@ describe('handleListBudgets', () => {
     mockClient.getBudgets.mockResolvedValue(createBudgetsResponse([mockBudgetSummary]));
 
     const result = await handleListBudgets({ include_accounts: true }, mockClient as never);
-    const budget = JSON.parse(result).budgets[0];
+    const budget = result.budgets[0];
 
     expect(budget.first_month).toBe('2023-01-01');
     expect(budget.last_month).toBe('2024-12-01');
@@ -106,7 +105,7 @@ describe('handleListBudgets', () => {
     );
 
     const result = await handleListBudgets({}, mockClient as never);
-    const budget = JSON.parse(result).budgets[0];
+    const budget = result.budgets[0];
 
     expect(budget.first_month).toBeNull();
     expect(budget.last_month).toBeNull();

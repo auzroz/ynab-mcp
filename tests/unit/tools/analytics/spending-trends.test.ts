@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleSpendingTrends as rawHandleSpendingTrends, spendingTrendsOutputSchema } from '../../../../src/tools/analytics/spending-trends.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createMonthResponse,

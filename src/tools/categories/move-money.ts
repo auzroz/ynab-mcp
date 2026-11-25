@@ -19,8 +19,10 @@ import { addMilliunits, moneyFormatterFor, subtractMilliunits, toMilliunits, typ
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId, monthParam, ynabId, MONTH_MAX_LENGTH } from '../../utils/schemas.js';
 import { getCurrentMonth } from '../../utils/dates.js';
-import { formatErrorResponse, ReadOnlyModeError, ValidationError, YnabAuthError } from '../../utils/errors.js';
+import { errorResponseSchema, formatErrorResponse, ReadOnlyModeError, ValidationError, YnabAuthError } from '../../utils/errors.js';
 import { isInternalCategory } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
+import { fromYnab, milliunits, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z
@@ -45,6 +47,54 @@ const inputSchema = z
     message: 'amount must be at least 0.001 (1 milliunit)',
     path: ['amount'],
   });
+
+const FAILED = 'In-band failure results only';
+const DONE = 'Successful move only';
+
+/** One category of the move: its state before (failures) or before and after (success). */
+const sideSchema = z.object({
+  id: fromYnab(z.string()),
+  name: z.string(),
+  original_budgeted: money().exactOptional().describe(FAILED),
+  original_budgeted_milliunits: milliunits().exactOptional().describe(FAILED),
+  budgeted_before: money().exactOptional().describe(DONE),
+  budgeted_after: money().exactOptional().describe(DONE),
+  budgeted_after_milliunits: milliunits().exactOptional().describe(DONE),
+  balance_after: money().exactOptional().describe(DONE),
+});
+
+/** The error a failed category update reported (formatErrorResponse's object). */
+const causeSchema = errorResponseSchema.partial({ type: true, suggestion: true });
+type Cause = z.output<typeof causeSchema>;
+
+/**
+ * What the tool returns (#45; rules in ../output-schema.ts). One object covers
+ * the successful move and the four in-band failures (`error: true,
+ * success: false`), which are ordinary results, not tool errors.
+ */
+export const moveMoneyOutputSchema = z.object({
+  error: z.literal(true).exactOptional().describe(FAILED),
+  success: z.boolean(),
+  type: z
+    .enum(['move_outcome_uncertain', 'move_partially_applied', 'move_failed_rolled_back'])
+    .exactOptional()
+    .describe(FAILED),
+  rolled_back: z.boolean().exactOptional().describe(FAILED),
+  message: z.string(),
+  month: z.string(),
+  amount: money().exactOptional().describe(DONE),
+  amount_milliunits: milliunits().exactOptional().describe(DONE),
+  from: sideSchema,
+  to: sideSchema,
+  from_intended_budgeted: money().exactOptional().describe('When the first update could not be confirmed'),
+  from_intended_budgeted_milliunits: milliunits().exactOptional().describe('When the first update could not be confirmed'),
+  to_intended_budgeted: money().exactOptional().describe('When the first update could not be confirmed'),
+  to_intended_budgeted_milliunits: milliunits().exactOptional().describe('When the first update could not be confirmed'),
+  cause: causeSchema.exactOptional().describe(`${FAILED}: the error the failed update reported`),
+  warnings: z.array(z.string()).exactOptional().describe(`${DONE}, when there is something to flag`),
+  note: z.string().exactOptional().describe(DONE),
+});
+export type MoveMoneyOutput = z.output<typeof moveMoneyOutputSchema>;
 
 // Tool definition
 export const moveMoneyTool: Tool = {
@@ -96,6 +146,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['month', 'from_category_id', 'to_category_id', 'amount'],
   },
+  outputSchema: toOutputSchema(moveMoneyOutputSchema),
 };
 
 interface CategorySnapshot {
@@ -135,9 +186,9 @@ function describeSide(
   };
 }
 
-function causeOf(error: unknown): unknown {
+function causeOf(error: unknown): Cause {
   try {
-    return JSON.parse(formatErrorResponse(error));
+    return JSON.parse(formatErrorResponse(error)) as Cause;
   } catch {
     return { error: true, message: 'Request failed' };
   }
@@ -168,7 +219,7 @@ async function recordAudit(client: YnabClient, budgetId: string, fromId: string,
 export async function handleMoveMoney(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<MoveMoneyOutput> {
   const validated = inputSchema.parse(args);
   const budget = await client.resolveBudgetId(validated.budget_id, { fresh: true });
   // Fail fast in read-only sessions: no category reads and no settings request for a refused write.
@@ -255,24 +306,20 @@ export async function handleMoveMoney(
     } else {
       // Re-read failed or shows an unexpected value: do not attempt leg 2.
       await audit(false, 'first_update_outcome_unknown');
-      return JSON.stringify(
-        {
-          error: true,
-          success: false,
-          type: 'move_outcome_uncertain',
-          rolled_back: false,
-          message: `Could not confirm whether "${from.name}" was reduced by ${money(amount)}. It was ${money(from.budgeted)} before and may be ${money(newFromBudgeted)}, unchanged, or something else if it was edited meanwhile; "${to.name}" was ${money(to.budgeted)} and would become ${money(newToBudgeted)}. No further writes were attempted. Check both categories with ynab_get_month_category and correct them with ynab_update_category.`,
-          month,
-          ...sides,
-          from_intended_budgeted: money(newFromBudgeted),
-          from_intended_budgeted_milliunits: newFromBudgeted,
-          to_intended_budgeted: money(newToBudgeted),
-          to_intended_budgeted_milliunits: newToBudgeted,
-          cause: causeOf(error),
-        },
-        null,
-        2
-      );
+      return {
+        error: true,
+        success: false,
+        type: 'move_outcome_uncertain',
+        rolled_back: false,
+        message: `Could not confirm whether "${from.name}" was reduced by ${money(amount)}. It was ${money(from.budgeted)} before and may be ${money(newFromBudgeted)}, unchanged, or something else if it was edited meanwhile; "${to.name}" was ${money(to.budgeted)} and would become ${money(newToBudgeted)}. No further writes were attempted. Check both categories with ynab_get_month_category and correct them with ynab_update_category.`,
+        month,
+        ...sides,
+        from_intended_budgeted: money(newFromBudgeted),
+        from_intended_budgeted_milliunits: newFromBudgeted,
+        to_intended_budgeted: money(newToBudgeted),
+        to_intended_budgeted_milliunits: newToBudgeted,
+        cause: causeOf(error),
+      };
     }
   }
 
@@ -303,20 +350,16 @@ export async function handleMoveMoney(
         // Could not confirm the state of "to" (re-read failed or value is unexpected).
         // Restoring "from" could create money if the write landed, so leave both alone.
         await audit(false, 'second_update_outcome_unknown');
-        return JSON.stringify(
-          {
-            error: true,
-            success: false,
-            type: 'move_outcome_uncertain',
-            rolled_back: false,
-            message: `Could not confirm whether ${money(amount)} was added to "${to.name}". "${from.name}" is now budgeted at ${money(newFromBudgeted)} (was ${money(from.budgeted)}); "${to.name}" was ${money(to.budgeted)} before and may be ${money(newToBudgeted)} or unchanged. No rollback was attempted. Check both categories with ynab_get_month_category and correct them with ynab_update_category.`,
-            month,
-            ...sides,
-            cause: causeOf(error),
-          },
-          null,
-          2
-        );
+        return {
+          error: true,
+          success: false,
+          type: 'move_outcome_uncertain',
+          rolled_back: false,
+          message: `Could not confirm whether ${money(amount)} was added to "${to.name}". "${from.name}" is now budgeted at ${money(newFromBudgeted)} (was ${money(from.budgeted)}); "${to.name}" was ${money(to.budgeted)} before and may be ${money(newToBudgeted)} or unchanged. No rollback was attempted. Check both categories with ynab_get_month_category and correct them with ynab_update_category.`,
+          month,
+          ...sides,
+          cause: causeOf(error),
+        };
       }
 
       // Confirmed unchanged: put the first category back, but only if nobody
@@ -332,23 +375,19 @@ export async function handleMoveMoney(
 
       if (fromNow !== newFromBudgeted) {
         await audit(false, 'second_update_failed_rollback_skipped');
-        return JSON.stringify(
-          {
-            error: true,
-            success: false,
-            type: 'move_partially_applied',
-            rolled_back: false,
-            message:
-              fromNow === undefined
-                ? `Could not add ${money(amount)} to "${to.name}", and "${from.name}" could not be re-read, so it was not restored. "${from.name}" was set to ${money(newFromBudgeted)} (was ${money(from.budgeted)}) and "${to.name}" is unchanged at ${money(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and fix it with ynab_update_category.`
-                : `Could not add ${money(amount)} to "${to.name}". "${from.name}" changed since the move (now ${money(fromNow)}, expected ${money(newFromBudgeted)}), so it was not restored to avoid overwriting that edit. It was ${money(from.budgeted)} before the move and "${to.name}" is unchanged at ${money(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and fix it with ynab_update_category if needed.`,
-            month,
-            ...sides,
-            cause: causeOf(error),
-          },
-          null,
-          2
-        );
+        return {
+          error: true,
+          success: false,
+          type: 'move_partially_applied',
+          rolled_back: false,
+          message:
+            fromNow === undefined
+              ? `Could not add ${money(amount)} to "${to.name}", and "${from.name}" could not be re-read, so it was not restored. "${from.name}" was set to ${money(newFromBudgeted)} (was ${money(from.budgeted)}) and "${to.name}" is unchanged at ${money(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and fix it with ynab_update_category.`
+              : `Could not add ${money(amount)} to "${to.name}". "${from.name}" changed since the move (now ${money(fromNow)}, expected ${money(newFromBudgeted)}), so it was not restored to avoid overwriting that edit. It was ${money(from.budgeted)} before the move and "${to.name}" is unchanged at ${money(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and fix it with ynab_update_category if needed.`,
+          month,
+          ...sides,
+          cause: causeOf(error),
+        };
       }
 
       let rolledBack: boolean;
@@ -366,22 +405,18 @@ export async function handleMoveMoney(
         false,
         rolledBack ? 'second_update_failed_rolled_back' : 'second_update_failed_rollback_outcome_unknown'
       );
-      return JSON.stringify(
-        {
-          error: true,
-          success: false,
-          type: rolledBack ? 'move_failed_rolled_back' : 'move_partially_applied',
-          rolled_back: rolledBack,
-          message: rolledBack
-            ? `Could not add ${money(amount)} to "${to.name}". "${from.name}" was restored to ${money(from.budgeted)}; no budgeted amounts changed.`
-            : `Could not add ${money(amount)} to "${to.name}", and restoring "${from.name}" also failed. "${from.name}" may still be budgeted at ${money(newFromBudgeted)} (was ${money(from.budgeted)}; the restore may have been applied despite the error) and "${to.name}" is unchanged at ${money(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and, if it is not ${money(from.budgeted)}, set it back with ynab_update_category.`,
-          month,
-          ...sides,
-          cause: causeOf(error),
-        },
-        null,
-        2
-      );
+      return {
+        error: true,
+        success: false,
+        type: rolledBack ? 'move_failed_rolled_back' : 'move_partially_applied',
+        rolled_back: rolledBack,
+        message: rolledBack
+          ? `Could not add ${money(amount)} to "${to.name}". "${from.name}" was restored to ${money(from.budgeted)}; no budgeted amounts changed.`
+          : `Could not add ${money(amount)} to "${to.name}", and restoring "${from.name}" also failed. "${from.name}" may still be budgeted at ${money(newFromBudgeted)} (was ${money(from.budgeted)}; the restore may have been applied despite the error) and "${to.name}" is unchanged at ${money(to.budgeted)}. Check "${from.name}" with ynab_get_month_category and, if it is not ${money(from.budgeted)}, set it back with ynab_update_category.`,
+        month,
+        ...sides,
+        cause: causeOf(error),
+      };
     }
   }
 
@@ -409,19 +444,15 @@ export async function handleMoveMoney(
     );
   }
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Moved ${money(amount)} of budgeted money from "${from.name}" to "${to.name}" for ${month}`,
-      month,
-      amount: money(amount),
-      amount_milliunits: amount,
-      from: describeSide(from, fromAfter.budgeted, fromAfter.balance, money),
-      to: describeSide(to, toAfter.budgeted, toAfter.balance, money),
-      ...(warnings.length > 0 && { warnings }),
-      note: 'Budgeted amounts were changed; no YNAB money-movement record was created.',
-    },
-    null,
-    2
-  );
+  return {
+    success: true,
+    message: `Moved ${money(amount)} of budgeted money from "${from.name}" to "${to.name}" for ${month}`,
+    month,
+    amount: money(amount),
+    amount_milliunits: amount,
+    from: describeSide(from, fromAfter.budgeted, fromAfter.balance, money),
+    to: describeSide(to, toAfter.budgeted, toAfter.balance, money),
+    ...(warnings.length > 0 && { warnings }),
+    note: 'Budgeted amounts were changed; no YNAB money-movement record was created.',
+  };
 }

@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleSpendingByPayee as rawHandleSpendingByPayee, spendingByPayeeOutputSchema } from '../../../../src/tools/analytics/spending-by-payee.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createTransactionsResponse,

@@ -419,6 +419,19 @@ export function createTransactionsResponse(transactions: MockTransaction[] = moc
   };
 }
 
+/**
+ * The category and payee transaction endpoints answer with hybrid rows, which
+ * carry a type ('transaction' or 'subtransaction').
+ */
+export function createHybridTransactionsResponse(transactions: MockTransaction[] = mockAllTransactions) {
+  return {
+    data: {
+      transactions: transactions.map((t) => ({ type: 'transaction', parent_transaction_id: null, ...t })) as unknown as TransactionDetail[],
+      server_knowledge: 12345,
+    },
+  };
+}
+
 export function createTransactionResponse(transaction: MockTransaction = mockGroceryTransactions[0]!) {
   return {
     data: {

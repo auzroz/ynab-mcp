@@ -9,9 +9,11 @@ import { z } from 'zod';
 import { DATE_TEXT_MAX_LENGTH, budgetId, ynabId } from '../../utils/schemas.js';
 import {
   deltaFields,
+  deltaOutputShape,
   sinceServerKnowledge,
   sinceServerKnowledgeJsonSchema,
   splitDeleted,
+  transactionCursorShape,
   transactionDeltaResult,
 } from '../../utils/delta.js';
 import type { Tool } from '@modelcontextprotocol/server';
@@ -21,12 +23,17 @@ import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import {
   formatSubtransaction,
+  listedTransactionShape,
+  listSummaryShape,
+  subtransactionOutputSchema,
   transactionChainFields,
   transactionTypeJsonSchema,
   transactionTypeSchema,
   truncationSummary,
 } from './format.js';
 import { omitNull } from '../../utils/omit-null.js';
+import { toOutputSchema } from '../output-schema.js';
+import { money } from '../schemas/common.js';
 
 const DEFAULT_RANGE_NOTE =
   'since_date was not provided, so YNAB returned only the last 12 months of transactions. Pass an earlier since_date to see older history.';
@@ -61,6 +68,30 @@ const inputSchema = z.object({
     .describe('Maximum number of transactions to return (default 100, max 500)'),
   since_server_knowledge: sinceServerKnowledge(),
 });
+
+const FULL = 'Full list only (no since_server_knowledge)';
+
+/** What the tool returns (#45; rules in ../output-schema.ts). One object covers the full list and the delta. */
+export const listAccountTransactionsOutputSchema = z.object({
+  ...deltaOutputShape,
+  account_id: z.string(),
+  transactions: z.array(
+    z.object({
+      ...listedTransactionShape,
+      payee_name: z.string(),
+      category_name: z.string(),
+      subtransactions: z.array(subtransactionOutputSchema).exactOptional().describe('Split lines; omitted when none'),
+    })
+  ),
+  summary: z.object({
+    ...listSummaryShape,
+    total_inflow: money().exactOptional().describe(FULL),
+    total_outflow: money().exactOptional().describe(FULL),
+    net: money().exactOptional().describe(FULL),
+  }),
+  ...transactionCursorShape,
+});
+export type ListAccountTransactionsOutput = z.output<typeof listAccountTransactionsOutputSchema>;
 
 // Tool definition
 export const listAccountTransactionsTool: Tool = {
@@ -115,6 +146,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['account_id'],
   },
+  outputSchema: toOutputSchema(listAccountTransactionsOutputSchema),
 };
 
 // Handler function
@@ -124,7 +156,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleListAccountTransactions(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<ListAccountTransactionsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -173,10 +205,13 @@ export async function handleListAccountTransactions(
     ...omitNull({ flag_color: txn.flag_color }),
     ...transactionChainFields(txn),
     // A delta may list removed split lines as deleted.
-    subtransactions:
-      (txn.subtransactions ?? []).some((sub) => !sub.deleted)
-        ? (txn.subtransactions ?? []).filter((sub) => !sub.deleted).map((sub) => formatSubtransaction(sub, money))
-        : undefined,
+    ...((txn.subtransactions ?? []).some((sub) => !sub.deleted)
+      ? {
+          subtransactions: (txn.subtransactions ?? [])
+            .filter((sub) => !sub.deleted)
+            .map((sub) => formatSubtransaction(sub, money)),
+        }
+      : {}),
   }));
 
   const rangeNote = validated.since_date === undefined ? { date_range_note: DEFAULT_RANGE_NOTE } : {};
@@ -185,31 +220,27 @@ export async function handleListAccountTransactions(
     response.data.server_knowledge,
     totalCount > formattedTransactions.length
   );
-  return JSON.stringify(
-    {
-      ...(cursor !== undefined ? deltaFields(cursor, deletedIds) : {}),
-      account_id: validated.account_id,
-      transactions: formattedTransactions,
-      summary:
-        cursor !== undefined
-          ? {
-              count: formattedTransactions.length,
-              ...truncationSummary(totalCount, formattedTransactions.length),
-              deleted_count: deletedIds.length,
-              ...rangeNote,
-              ...delta.summary,
-            }
-          : {
-              count: formattedTransactions.length,
-              ...truncationSummary(totalCount, formattedTransactions.length),
-              ...rangeNote,
-              total_inflow: money(totalInflow),
-              total_outflow: money(totalOutflow),
-              net: money(totalInflow - totalOutflow),
-            },
-      ...delta.cursor,
-    },
-    null,
-    2
-  );
+  return {
+    ...(cursor !== undefined ? deltaFields(cursor, deletedIds) : {}),
+    account_id: validated.account_id,
+    transactions: formattedTransactions,
+    summary:
+      cursor !== undefined
+        ? {
+            count: formattedTransactions.length,
+            ...truncationSummary(totalCount, formattedTransactions.length),
+            deleted_count: deletedIds.length,
+            ...rangeNote,
+            ...delta.summary,
+          }
+        : {
+            count: formattedTransactions.length,
+            ...truncationSummary(totalCount, formattedTransactions.length),
+            ...rangeNote,
+            total_inflow: money(totalInflow),
+            total_outflow: money(totalOutflow),
+            net: money(totalInflow - totalOutflow),
+          },
+    ...delta.cursor,
+  };
 }

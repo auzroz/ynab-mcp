@@ -3,9 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleUpdatePayee } from '../../../../src/tools/payees/update-payee.js';
+import { handleUpdatePayee as rawHandleUpdatePayee, updatePayeeOutputSchema } from '../../../../src/tools/payees/update-payee.js';
+import { validating } from '../output-validation.js';
 import { createMockClient, createPayeeResponse } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleUpdatePayee = validating(updatePayeeOutputSchema, rawHandleUpdatePayee);
 
 const PAYEE_UUID = '22222222-2222-2222-2222-2222222222bb';
 
@@ -21,11 +25,10 @@ describe('handleUpdatePayee', () => {
       createPayeeResponse({ id: PAYEE_UUID, name: 'New Name', transfer_account_id: null, deleted: false })
     );
 
-    const result = await handleUpdatePayee(
+    const parsed = await handleUpdatePayee(
       { payee_id: PAYEE_UUID, name: 'New Name' },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(true);
     expect(parsed.message).toContain('renamed');

@@ -3,9 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleCreateAccount } from '../../../../src/tools/accounts/create-account.js';
+import { handleCreateAccount as rawHandleCreateAccount, createAccountOutputSchema } from '../../../../src/tools/accounts/create-account.js';
+import { validating } from '../output-validation.js';
 import { createMockClient, createAccountResponse } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleCreateAccount = validating(createAccountOutputSchema, rawHandleCreateAccount);
 
 describe('handleCreateAccount', () => {
   let mockClient: MockClient;
@@ -17,11 +21,10 @@ describe('handleCreateAccount', () => {
   it('creates an account and returns success', async () => {
     mockClient.createAccount.mockResolvedValue(createAccountResponse());
 
-    const result = await handleCreateAccount(
+    const parsed = await handleCreateAccount(
       { name: 'New Checking', type: 'checking', balance: 1000.5 },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(true);
     expect(parsed.message).toContain('created successfully');

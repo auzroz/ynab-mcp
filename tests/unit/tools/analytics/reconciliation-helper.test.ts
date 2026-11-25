@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleReconciliationHelper as rawHandleReconciliationHelper, reconciliationHelperOutputSchema } from '../../../../src/tools/analytics/reconciliation-helper.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createAccountsResponse,

@@ -9,6 +9,8 @@ import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeString } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -17,6 +19,17 @@ const inputSchema = z.object({
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   payee_location_id: ynabId().describe('The payee location UUID'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const getPayeeLocationOutputSchema = z.object({
+  payee_location: z.object({
+    id: z.string(),
+    payee_id: z.string(),
+    latitude: fromYnab(z.string()),
+    longitude: fromYnab(z.string()),
+  }),
+});
+export type GetPayeeLocationOutput = z.output<typeof getPayeeLocationOutputSchema>;
 
 // Tool definition
 export const getPayeeLocationTool: Tool = {
@@ -40,6 +53,7 @@ Returns the details of a single payee location including coordinates.`,
     },
     required: ['payee_location_id'],
   },
+  outputSchema: toOutputSchema(getPayeeLocationOutputSchema),
 };
 
 // Handler function
@@ -49,23 +63,19 @@ Returns the details of a single payee location including coordinates.`,
 export async function handleGetPayeeLocation(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetPayeeLocationOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   const response = await client.getPayeeLocationById(budgetId, validated.payee_location_id);
   const loc = response.data.payee_location;
 
-  return JSON.stringify(
-    {
-      payee_location: {
-        id: sanitizeString(loc.id) ?? '',
-        payee_id: sanitizeString(loc.payee_id) ?? '',
-        latitude: loc.latitude,
-        longitude: loc.longitude,
-      },
+  return {
+    payee_location: {
+      id: sanitizeString(loc.id) ?? '',
+      payee_id: sanitizeString(loc.payee_id) ?? '',
+      latitude: loc.latitude,
+      longitude: loc.longitude,
     },
-    null,
-    2
-  );
+  };
 }

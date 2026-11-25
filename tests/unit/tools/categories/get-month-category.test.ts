@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetMonthCategory } from '../../../../src/tools/categories/get-month-category.js';
+import { handleGetMonthCategory as rawHandleGetMonthCategory, getMonthCategoryOutputSchema } from '../../../../src/tools/categories/get-month-category.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createCategoryResponse,
@@ -11,6 +12,9 @@ import {
   mockSavingsCategories,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetMonthCategory = validating(getMonthCategoryOutputSchema, rawHandleGetMonthCategory);
 
 const CATEGORY_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const MONTH = '2024-01-01';
@@ -27,11 +31,10 @@ describe('handleGetMonthCategory', () => {
       createCategoryResponse(mockBillsCategories[1])
     );
 
-    const result = await handleGetMonthCategory(
+    const parsed = await handleGetMonthCategory(
       { month: MONTH, category_id: CATEGORY_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.month).toBe(MONTH);
     expect(parsed.category.name).toBe('Utilities');
@@ -49,11 +52,10 @@ describe('handleGetMonthCategory', () => {
       createCategoryResponse(mockSavingsCategories[0])
     );
 
-    const result = await handleGetMonthCategory(
+    const parsed = await handleGetMonthCategory(
       { month: MONTH, category_id: CATEGORY_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.category.goal).not.toBeNull();
     expect(parsed.category.goal.type).toBe('TB');
@@ -75,7 +77,7 @@ describe('handleGetMonthCategory', () => {
       { month: MONTH, category_id: CATEGORY_ID },
       mockClient as never
     );
-    const goal = JSON.parse(result).category.goal;
+    const goal = result.category.goal;
 
     expect(goal.type_label).toBe('Spending Target');
     expect(goal.cadence.period).toBe('every 2 weeks');
@@ -113,7 +115,7 @@ describe('handleGetMonthCategory', () => {
         createCategoryResponse({ ...base, ...overrides } as never)
       );
       const result = await handleGetMonthCategory({ month: MONTH, category_id: CATEGORY_ID }, mockClient as never);
-      return JSON.parse(result).category.goal;
+      return result.category.goal;
     }
 
     it('exposes goal_target_date as target_date', async () => {

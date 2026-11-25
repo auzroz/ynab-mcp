@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetMonth } from '../../../../src/tools/months/get-month.js';
+import { handleGetMonth as rawHandleGetMonth, getMonthOutputSchema } from '../../../../src/tools/months/get-month.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createMonthResponse,
@@ -11,6 +12,9 @@ import {
   mockMonthDetail,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetMonth = validating(getMonthOutputSchema, rawHandleGetMonth);
 
 describe('handleGetMonth', () => {
   let mockClient: MockClient;
@@ -23,8 +27,7 @@ describe('handleGetMonth', () => {
   it('returns month summary and categories grouped', async () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse());
 
-    const result = await handleGetMonth({ month: '2024-01-01' }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetMonth({ month: '2024-01-01' }, mockClient as never);
 
     expect(parsed.month).toBe('2024-01-01');
     expect(parsed.summary.income).toContain('$');
@@ -59,8 +62,7 @@ describe('handleGetMonth', () => {
   it('sorts groups alphabetically by group name', async () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse());
 
-    const result = await handleGetMonth({ month: '2024-01-01' }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetMonth({ month: '2024-01-01' }, mockClient as never);
 
     const names = parsed.categories_by_group.map((g: { group_name: string }) => g.group_name);
     const sorted = [...names].sort((a, b) => a.localeCompare(b));
@@ -71,8 +73,7 @@ describe('handleGetMonth', () => {
     const emptyMonth = { ...mockMonthDetail, categories: [] };
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(emptyMonth));
 
-    const result = await handleGetMonth({ month: '2024-01-01' }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetMonth({ month: '2024-01-01' }, mockClient as never);
 
     expect(parsed.category_count).toBe(0);
     expect(parsed.categories_by_group).toEqual([]);

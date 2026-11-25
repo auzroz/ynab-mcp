@@ -11,6 +11,9 @@ import { makeMoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { isInternalGroup } from '../../utils/categories.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, dateFormatSchema, fromYnab, money, serverKnowledge } from '../schemas/common.js';
+import { omitNull } from '../../utils/omit-null.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -18,6 +21,37 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const getBudgetOutputSchema = z.object({
+  budget_id: fromYnab(z.string()),
+  name: z.string(),
+  last_modified: z.string().exactOptional().describe('Omitted when YNAB does not report it'),
+  first_month: z.string().nullable(),
+  last_month: z.string().nullable(),
+  date_format: dateFormatSchema.nullable(),
+  summary: z.object({
+    total_assets: money(),
+    total_liabilities: money(),
+    net_worth: money(),
+    account_count: count(),
+    category_count: count(),
+    payee_count: count(),
+  }),
+  accounts_by_type: z
+    .record(z.string(), z.array(z.object({ id: fromYnab(z.string()), name: z.string(), balance: money() })))
+    .describe('Open accounts keyed by YNAB account type'),
+  category_groups: z.array(
+    z.object({
+      name: z.string(),
+      categories: z.array(
+        z.object({ name: z.string(), budgeted: money(), activity: money(), balance: money() })
+      ),
+    })
+  ),
+  server_knowledge: fromYnab(serverKnowledge()),
+});
+export type GetBudgetOutput = z.output<typeof getBudgetOutputSchema>;
 
 // Tool definition
 export const getBudgetTool: Tool = {
@@ -43,6 +77,7 @@ Not possible through the YNAB API (do it in the YNAB app): creating, renaming or
       },
     },
   },
+  outputSchema: toOutputSchema(getBudgetOutputSchema),
 };
 
 // Handler function
@@ -52,7 +87,7 @@ Not possible through the YNAB API (do it in the YNAB app): creating, renaming or
 export async function handleGetBudget(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetBudgetOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   
@@ -140,29 +175,25 @@ export async function handleGetBudget(
         })),
     }));
 
-  return JSON.stringify(
-    {
-      budget_id: budget.id,
-      name: sanitizeName(budget.name),
-      last_modified: budget.last_modified_on,
-      first_month: budget.first_month ?? null,
-      last_month: budget.last_month ?? null,
-      date_format: budget.date_format
-        ? { format: sanitizeString(budget.date_format.format) ?? '' }
-        : null,
-      summary: {
-        total_assets: fmt(totalAssets),
-        total_liabilities: fmt(totalLiabilities),
-        net_worth: fmt(totalAssets - totalLiabilities),
-        account_count: (budget.accounts ?? []).filter((a) => !a.closed).length,
-        category_count: (budget.categories ?? []).filter((c) => !c.hidden).length,
-        payee_count: (budget.payees ?? []).length,
-      },
-      accounts_by_type: accountsByType,
-      category_groups: categoryGroups,
-      server_knowledge: response.data.server_knowledge,
+  return {
+    budget_id: budget.id,
+    name: sanitizeName(budget.name),
+    ...omitNull({ last_modified: budget.last_modified_on }),
+    first_month: budget.first_month ?? null,
+    last_month: budget.last_month ?? null,
+    date_format: budget.date_format
+      ? { format: sanitizeString(budget.date_format.format) ?? '' }
+      : null,
+    summary: {
+      total_assets: fmt(totalAssets),
+      total_liabilities: fmt(totalLiabilities),
+      net_worth: fmt(totalAssets - totalLiabilities),
+      account_count: (budget.accounts ?? []).filter((a) => !a.closed).length,
+      category_count: (budget.categories ?? []).filter((c) => !c.hidden).length,
+      payee_count: (budget.payees ?? []).length,
     },
-    null,
-    2
-  );
+    accounts_by_type: accountsByType,
+    category_groups: categoryGroups,
+    server_knowledge: response.data.server_knowledge,
+  };
 }

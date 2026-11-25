@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetBudget } from '../../../../src/tools/budgets/get-budget.js';
+import { handleGetBudget as rawHandleGetBudget, getBudgetOutputSchema } from '../../../../src/tools/budgets/get-budget.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createBudgetResponse,
   mockBudgetDetail,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetBudget = validating(getBudgetOutputSchema, rawHandleGetBudget);
 
 describe('handleGetBudget', () => {
   let mockClient: MockClient;
@@ -21,8 +25,7 @@ describe('handleGetBudget', () => {
   it('returns budget details with summary and accounts_by_type', async () => {
     mockClient.getBudgetById.mockResolvedValue(createBudgetResponse());
 
-    const result = await handleGetBudget({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetBudget({}, mockClient as never);
 
     expect(parsed.budget_id).toBe(mockBudgetDetail.id);
     expect(parsed.name).toBe('My Budget');
@@ -60,8 +63,7 @@ describe('handleGetBudget', () => {
   it('builds category_groups excluding hidden and Internal Master Category', async () => {
     mockClient.getBudgetById.mockResolvedValue(createBudgetResponse());
 
-    const result = await handleGetBudget({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetBudget({}, mockClient as never);
 
     expect(parsed.category_groups).toBeInstanceOf(Array);
     const names = parsed.category_groups.map((g: { name: string }) => g.name);
@@ -72,8 +74,7 @@ describe('handleGetBudget', () => {
     const noCurrency = { ...mockBudgetDetail, currency_format: null };
     mockClient.getBudgetById.mockResolvedValue(createBudgetResponse(noCurrency as never));
 
-    const result = await handleGetBudget({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetBudget({}, mockClient as never);
 
     expect(parsed.summary.total_assets).toContain('$');
   });
@@ -81,8 +82,7 @@ describe('handleGetBudget', () => {
   it('includes month range, date format and account ids', async () => {
     mockClient.getBudgetById.mockResolvedValue(createBudgetResponse());
 
-    const result = await handleGetBudget({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetBudget({}, mockClient as never);
 
     expect(parsed.first_month).toBe('2023-01-01');
     expect(parsed.last_month).toBe('2024-12-01');

@@ -9,6 +9,9 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { makeMoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, currencyFormatSchema, dateFormatSchema, fromYnab, money } from '../schemas/common.js';
+import { omitNull } from '../../utils/omit-null.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -17,6 +20,36 @@ const inputSchema = z.object({
     .optional()
     .describe('Whether to include account summaries for each budget'),
 });
+
+const budgetSchema = z.object({
+  id: fromYnab(z.string()),
+  name: z.string(),
+  last_modified: z.string().exactOptional().describe('Omitted when YNAB does not report it'),
+  currency_format: currencyFormatSchema.exactOptional().describe('Omitted when the budget has none'),
+  first_month: z.string().nullable(),
+  last_month: z.string().nullable(),
+  date_format: dateFormatSchema.nullable(),
+  accounts: z
+    .array(
+      z.object({
+        id: fromYnab(z.string()),
+        name: z.string(),
+        type: fromYnab(z.string().describe('YNAB account type')),
+        balance: money(),
+        closed: fromYnab(z.boolean()),
+      })
+    )
+    .exactOptional()
+    .describe('With include_accounts, for a budget that has accounts'),
+});
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const listBudgetsOutputSchema = z.object({
+  budgets: z.array(budgetSchema),
+  count: count(),
+  default_budget_id: z.string(),
+});
+export type ListBudgetsOutput = z.output<typeof listBudgetsOutputSchema>;
 
 // Tool definition
 export const listBudgetsTool: Tool = {
@@ -41,6 +74,7 @@ Not possible through the YNAB API (do it in the YNAB app): creating, renaming or
       },
     },
   },
+  outputSchema: toOutputSchema(listBudgetsOutputSchema),
 };
 
 // Handler function
@@ -50,14 +84,14 @@ Not possible through the YNAB API (do it in the YNAB app): creating, renaming or
 export async function handleListBudgets(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<ListBudgetsOutput> {
   const validated = inputSchema.parse(args);
   
   const response = await client.getBudgets(validated.include_accounts ?? false);
   // ynab v4 renamed the API response's "budgets" collection to "plans".
   const budgets = response.data.plans;
 
-  const result = budgets.map((budget) => {
+  const result = budgets.map((budget): z.output<typeof budgetSchema> => {
     // Sanitize currency_format fields if present
     const sanitizedCurrencyFormat = budget.currency_format
       ? {
@@ -70,13 +104,12 @@ export async function handleListBudgets(
           currency_symbol: sanitizeString(budget.currency_format.currency_symbol) ?? '',
           display_symbol: budget.currency_format.display_symbol,
         }
-      : undefined;
+      : null;
 
-    const budgetInfo: Record<string, unknown> = {
+    const budgetInfo: z.output<typeof budgetSchema> = {
       id: budget.id,
       name: sanitizeName(budget.name),
-      last_modified: budget.last_modified_on,
-      currency_format: sanitizedCurrencyFormat,
+      ...omitNull({ last_modified: budget.last_modified_on, currency_format: sanitizedCurrencyFormat }),
       first_month: budget.first_month ?? null,
       last_month: budget.last_month ?? null,
       date_format: budget.date_format
@@ -87,7 +120,7 @@ export async function handleListBudgets(
     if (budget.accounts != null && budget.accounts.length > 0) {
       // Use budget's currency format if available, otherwise fall back to default formatting
       const money = makeMoneyFormatter(budget.currency_format);
-      budgetInfo['accounts'] = budget.accounts.map((acc) => ({
+      budgetInfo.accounts = budget.accounts.map((acc) => ({
         id: acc.id,
         name: sanitizeName(acc.name),
         type: acc.type,
@@ -99,13 +132,9 @@ export async function handleListBudgets(
     return budgetInfo;
   });
 
-  return JSON.stringify(
-    {
-      budgets: result,
-      count: budgets.length,
-      default_budget_id: client.getDefaultBudgetId(),
-    },
-    null,
-    2
-  );
+  return {
+    budgets: result,
+    count: budgets.length,
+    default_budget_id: client.getDefaultBudgetId(),
+  };
 }

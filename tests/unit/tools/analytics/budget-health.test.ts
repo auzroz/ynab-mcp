@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleBudgetHealth as rawHandleBudgetHealth, budgetHealthOutputSchema } from '../../../../src/tools/analytics/budget-health.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createMonthResponse,

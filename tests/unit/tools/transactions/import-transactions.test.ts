@@ -3,13 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  handleImportTransactions,
-  importTransactionsTool,
-  IMPORT_DEPRECATION_MESSAGE,
-} from '../../../../src/tools/transactions/import-transactions.js';
+import { handleImportTransactions as rawHandleImportTransactions, importTransactionsTool, IMPORT_DEPRECATION_MESSAGE, importTransactionsOutputSchema } from '../../../../src/tools/transactions/import-transactions.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleImportTransactions = validating(importTransactionsOutputSchema, rawHandleImportTransactions);
 
 describe('importTransactionsTool definition', () => {
   it('description starts with DEPRECATED:', () => {
@@ -35,8 +35,7 @@ describe('handleImportTransactions', () => {
   it('returns the deprecation response without calling the API', async () => {
     // A client exposing only budget resolution proves the handler makes no API call
     const apiFreeClient = { resolveBudgetId: () => 'test-budget-id' };
-    const result = await handleImportTransactions({}, apiFreeClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleImportTransactions({}, apiFreeClient as never);
 
     expect(parsed.success).toBe(true);
     expect(parsed.deprecated).toBe(true);
@@ -50,16 +49,14 @@ describe('handleImportTransactions', () => {
     // No write-guarded client method is available, so any call would throw
     const readOnlyClient = { resolveBudgetId: () => 'test-budget-id' };
 
-    const parsed = JSON.parse(await handleImportTransactions({}, readOnlyClient as never));
+    const parsed = await handleImportTransactions({}, readOnlyClient as never);
 
     expect(parsed.deprecated).toBe(true);
     expect(parsed.imported_count).toBe(0);
   });
 
   it('returns an empty id list when include_ids is true', async () => {
-    const parsed = JSON.parse(
-      await handleImportTransactions({ include_ids: true }, mockClient as never)
-    );
+    const parsed = await handleImportTransactions({ include_ids: true }, mockClient as never);
 
     expect(parsed.transaction_ids).toEqual([]);
   });

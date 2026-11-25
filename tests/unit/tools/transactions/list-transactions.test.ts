@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListTransactions } from '../../../../src/tools/transactions/list-transactions.js';
+import { handleListTransactions as rawHandleListTransactions, listTransactionsOutputSchema } from '../../../../src/tools/transactions/list-transactions.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createTransactionsResponse,
@@ -12,6 +13,9 @@ import {
   mockSplitTransaction,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListTransactions = validating(listTransactionsOutputSchema, rawHandleListTransactions);
 
 describe('handleListTransactions', () => {
   let mockClient: MockClient;
@@ -23,8 +27,7 @@ describe('handleListTransactions', () => {
   it('lists transactions sorted by date descending', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = await handleListTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListTransactions({}, mockClient as never);
 
     expect(parsed.transactions.length).toBe(mockAllTransactions.length);
     // First should be most recent
@@ -38,8 +41,7 @@ describe('handleListTransactions', () => {
   it('calculates inflow, outflow, and net', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = await handleListTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListTransactions({}, mockClient as never);
 
     expect(parsed.summary.total_inflow).toBeDefined();
     expect(parsed.summary.total_outflow).toBeDefined();
@@ -50,8 +52,7 @@ describe('handleListTransactions', () => {
   it('applies limit', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const result = await handleListTransactions({ limit: 2 }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListTransactions({ limit: 2 }, mockClient as never);
 
     expect(parsed.transactions.length).toBe(2);
     expect(parsed.filters_applied.limit).toBe(2);
@@ -60,11 +61,10 @@ describe('handleListTransactions', () => {
   it('passes since_date and type filters to the client', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse(mockGroceryTransactions));
 
-    const result = await handleListTransactions(
+    const parsed = await handleListTransactions(
       { since_date: '2024-01-01', type: 'unapproved' },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(mockClient.getTransactions).toHaveBeenCalledWith('test-budget-id', {
       sinceDate: '2024-01-01',
@@ -80,8 +80,7 @@ describe('handleListTransactions', () => {
   it('formats subtransactions when present', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([mockSplitTransaction]));
 
-    const result = await handleListTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListTransactions({}, mockClient as never);
 
     expect(parsed.transactions[0].subtransactions).toBeInstanceOf(Array);
     expect(parsed.transactions[0].subtransactions.length).toBe(2);
@@ -90,8 +89,7 @@ describe('handleListTransactions', () => {
   it('handles empty results', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([]));
 
-    const result = await handleListTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListTransactions({}, mockClient as never);
 
     expect(parsed.transactions.length).toBe(0);
     expect(parsed.summary.count).toBe(0);
@@ -111,9 +109,7 @@ describe('handleListTransactions', () => {
   it('passes until_date through and notes the 12-month default when since_date is omitted', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([]));
 
-    const parsed = JSON.parse(
-      await handleListTransactions({ until_date: '2023-12-31' }, mockClient as never)
-    );
+    const parsed = await handleListTransactions({ until_date: '2023-12-31' }, mockClient as never);
 
     expect(mockClient.getTransactions).toHaveBeenCalledWith('test-budget-id', {
       untilDate: '2023-12-31',
@@ -128,9 +124,7 @@ describe('handleListTransactions', () => {
   it('omits the default-range note when since_date is given', async () => {
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([]));
 
-    const parsed = JSON.parse(
-      await handleListTransactions({ since_date: '2023-01-01' }, mockClient as never)
-    );
+    const parsed = await handleListTransactions({ since_date: '2023-01-01' }, mockClient as never);
 
     expect(parsed.summary.date_range_note).toBeUndefined();
   });
@@ -141,9 +135,7 @@ describe('handleListTransactions month scope', () => {
     const mockClient = createMockClient();
     mockClient.getTransactionsByMonth.mockResolvedValue(createTransactionsResponse(mockAllTransactions));
 
-    const parsed = JSON.parse(
-      await handleListTransactions({ month: '2024-01-01', type: 'unapproved' }, mockClient as never)
-    );
+    const parsed = await handleListTransactions({ month: '2024-01-01', type: 'unapproved' }, mockClient as never);
 
     expect(mockClient.getTransactions).not.toHaveBeenCalled();
     expect(mockClient.getTransactionsByMonth).toHaveBeenCalledWith(

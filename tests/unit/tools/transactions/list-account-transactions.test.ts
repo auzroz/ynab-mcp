@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListAccountTransactions } from '../../../../src/tools/transactions/list-account-transactions.js';
+import { handleListAccountTransactions as rawHandleListAccountTransactions, listAccountTransactionsOutputSchema } from '../../../../src/tools/transactions/list-account-transactions.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createTransactionsResponse,
@@ -11,6 +12,9 @@ import {
   mockGroceryTransactions,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListAccountTransactions = validating(listAccountTransactionsOutputSchema, rawHandleListAccountTransactions);
 
 const ACCOUNT_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -26,11 +30,10 @@ describe('handleListAccountTransactions', () => {
       createTransactionsResponse(mockAllTransactions)
     );
 
-    const result = await handleListAccountTransactions(
+    const parsed = await handleListAccountTransactions(
       { account_id: ACCOUNT_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.account_id).toBe(ACCOUNT_ID);
     expect(parsed.transactions.length).toBe(mockAllTransactions.length);
@@ -50,11 +53,10 @@ describe('handleListAccountTransactions', () => {
       createTransactionsResponse(mockGroceryTransactions)
     );
 
-    const result = await handleListAccountTransactions(
+    const parsed = await handleListAccountTransactions(
       { account_id: ACCOUNT_ID, since_date: '2024-01-01', limit: 2 },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.transactions.length).toBe(2);
     expect(mockClient.getAccountTransactions).toHaveBeenCalledWith('test-budget-id', ACCOUNT_ID, {
@@ -67,11 +69,10 @@ describe('handleListAccountTransactions', () => {
   it('handles empty results', async () => {
     mockClient.getAccountTransactions.mockResolvedValue(createTransactionsResponse([]));
 
-    const result = await handleListAccountTransactions(
+    const parsed = await handleListAccountTransactions(
       { account_id: ACCOUNT_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.transactions.length).toBe(0);
     expect(parsed.summary.count).toBe(0);
@@ -91,12 +92,10 @@ describe('handleListAccountTransactions', () => {
   it('passes parsed until_date through and omits the default-range note', async () => {
     mockClient.getAccountTransactions.mockResolvedValue(createTransactionsResponse([]));
 
-    const parsed = JSON.parse(
-      await handleListAccountTransactions(
+    const parsed = await handleListAccountTransactions(
         { account_id: ACCOUNT_ID, since_date: '2023-01-01', until_date: '2023-12-31' },
         mockClient as never
-      )
-    );
+      );
 
     expect(mockClient.getAccountTransactions).toHaveBeenCalledWith('test-budget-id', ACCOUNT_ID, {
       sinceDate: '2023-01-01',
@@ -109,9 +108,7 @@ describe('handleListAccountTransactions', () => {
   it('notes the 12-month YNAB default when since_date is omitted', async () => {
     mockClient.getAccountTransactions.mockResolvedValue(createTransactionsResponse([]));
 
-    const parsed = JSON.parse(
-      await handleListAccountTransactions({ account_id: ACCOUNT_ID }, mockClient as never)
-    );
+    const parsed = await handleListAccountTransactions({ account_id: ACCOUNT_ID }, mockClient as never);
 
     expect(parsed.summary.date_range_note).toContain('last 12 months');
   });

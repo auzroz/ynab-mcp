@@ -17,6 +17,8 @@ import {
   pickCategoryTargets,
   refineGoalFrequency,
 } from './category-targets.js';
+import { toOutputSchema } from '../output-schema.js';
+import { fromYnab, milliunits, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -29,6 +31,20 @@ const inputSchema = z.object({
   note: z.string().max(NOTE_MAX_LENGTH).optional().describe('Optional note for the category'),
   ...categoryTargetCreateShape,
 }).superRefine(refineGoalFrequency);
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Nulls are reported on purpose. */
+export const createCategoryOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  category: z.object({
+    id: fromYnab(z.string()),
+    name: z.string(),
+    category_group_id: fromYnab(z.string()),
+    goal_target: milliunits().nullable().describe('Null when the category has no target'),
+    goal_target_display: money().nullable(),
+  }),
+});
+export type CreateCategoryOutput = z.output<typeof createCategoryOutputSchema>;
 
 // Tool definition
 export const createCategoryTool: Tool = {
@@ -75,6 +91,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['category_group_id', 'name'],
   },
+  outputSchema: toOutputSchema(createCategoryOutputSchema),
 };
 
 // Handler function
@@ -84,7 +101,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleCreateCategory(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<CreateCategoryOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -100,20 +117,16 @@ export async function handleCreateCategory(
   const money = await moneyFormatterFor(client, budgetId);
   const category = response.data.category;
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Category "${sanitizeName(category.name)}" created successfully`,
-      category: {
-        id: category.id,
-        name: sanitizeName(category.name),
-        category_group_id: category.category_group_id,
-        goal_target: category.goal_target ?? null,
-        goal_target_display:
-          category.goal_target != null ? money(category.goal_target) : null,
-      },
+  return {
+    success: true,
+    message: `Category "${sanitizeName(category.name)}" created successfully`,
+    category: {
+      id: category.id,
+      name: sanitizeName(category.name),
+      category_group_id: category.category_group_id,
+      goal_target: category.goal_target ?? null,
+      goal_target_display:
+        category.goal_target != null ? money(category.goal_target) : null,
     },
-    null,
-    2
-  );
+  };
 }

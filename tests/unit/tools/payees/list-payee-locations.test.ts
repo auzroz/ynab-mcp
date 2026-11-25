@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListPayeeLocations } from '../../../../src/tools/payees/list-payee-locations.js';
+import { handleListPayeeLocations as rawHandleListPayeeLocations, listPayeeLocationsOutputSchema } from '../../../../src/tools/payees/list-payee-locations.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createPayeeLocationsResponse,
   mockPayeeLocations,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListPayeeLocations = validating(listPayeeLocationsOutputSchema, rawHandleListPayeeLocations);
 
 describe('handleListPayeeLocations', () => {
   let mockClient: MockClient;
@@ -21,8 +25,7 @@ describe('handleListPayeeLocations', () => {
   it('lists locations with coordinates and count', async () => {
     mockClient.getPayeeLocations.mockResolvedValue(createPayeeLocationsResponse());
 
-    const result = await handleListPayeeLocations({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListPayeeLocations({}, mockClient as never);
 
     expect(parsed.location_count).toBe(mockPayeeLocations.length);
     expect(parsed.payee_locations[0]).toHaveProperty('id');
@@ -43,8 +46,7 @@ describe('handleListPayeeLocations', () => {
   it('handles empty location list', async () => {
     mockClient.getPayeeLocations.mockResolvedValue(createPayeeLocationsResponse([]));
 
-    const result = await handleListPayeeLocations({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListPayeeLocations({}, mockClient as never);
 
     expect(parsed.location_count).toBe(0);
     expect(parsed.payee_locations).toEqual([]);

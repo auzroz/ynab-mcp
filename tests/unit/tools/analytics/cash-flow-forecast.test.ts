@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { handleCashFlowForecast as rawHandleCashFlowForecast, cashFlowForecastOutputSchema } from '../../../../src/tools/analytics/cash-flow-forecast.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createAccountsResponse,

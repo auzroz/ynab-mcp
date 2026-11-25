@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleAgeOfMoney as rawHandleAgeOfMoney, ageOfMoneyOutputSchema } from '../../../../src/tools/analytics/age-of-money.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createBudgetResponse,

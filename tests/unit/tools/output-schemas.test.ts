@@ -17,6 +17,53 @@ import type { z } from 'zod';
 // The catalog: every transport's tools plus the OAuth-only account tools (#53c).
 import { toolCatalog as tools, runToolCall, toolCallOutput } from '../../../src/tools/index.js';
 import { closedOutputSchema, toOutputSchema } from '../../../src/tools/output-schema.js';
+import { getUserOutputSchema } from '../../../src/tools/user/get-user.js';
+import { listBudgetsOutputSchema } from '../../../src/tools/budgets/list-budgets.js';
+import { getBudgetOutputSchema } from '../../../src/tools/budgets/get-budget.js';
+import { getBudgetSettingsOutputSchema } from '../../../src/tools/budgets/get-budget-settings.js';
+import { listAccountsOutputSchema } from '../../../src/tools/accounts/list-accounts.js';
+import { getAccountOutputSchema } from '../../../src/tools/accounts/get-account.js';
+import { createAccountOutputSchema } from '../../../src/tools/accounts/create-account.js';
+import { listCategoriesOutputSchema } from '../../../src/tools/categories/list-categories.js';
+import { getCategoryOutputSchema } from '../../../src/tools/categories/get-category.js';
+import { getMonthCategoryOutputSchema } from '../../../src/tools/categories/get-month-category.js';
+import { updateCategoryOutputSchema } from '../../../src/tools/categories/update-category.js';
+import { moveMoneyOutputSchema } from '../../../src/tools/categories/move-money.js';
+import { updateCategoryDetailsOutputSchema } from '../../../src/tools/categories/update-category-details.js';
+import { createCategoryOutputSchema } from '../../../src/tools/categories/create-category.js';
+import { createCategoryGroupOutputSchema } from '../../../src/tools/categories/create-category-group.js';
+import { updateCategoryGroupOutputSchema } from '../../../src/tools/categories/update-category-group.js';
+import { listPayeesOutputSchema } from '../../../src/tools/payees/list-payees.js';
+import { getPayeeOutputSchema } from '../../../src/tools/payees/get-payee.js';
+import { createPayeeOutputSchema } from '../../../src/tools/payees/create-payee.js';
+import { updatePayeeOutputSchema } from '../../../src/tools/payees/update-payee.js';
+import { listPayeeLocationsOutputSchema } from '../../../src/tools/payees/list-payee-locations.js';
+import { getPayeeLocationOutputSchema } from '../../../src/tools/payees/get-payee-location.js';
+import { listPayeeLocationsByPayeeOutputSchema } from '../../../src/tools/payees/list-payee-locations-by-payee.js';
+import { listMonthsOutputSchema } from '../../../src/tools/months/list-months.js';
+import { getMonthOutputSchema } from '../../../src/tools/months/get-month.js';
+import { listTransactionsOutputSchema } from '../../../src/tools/transactions/list-transactions.js';
+import { getTransactionOutputSchema } from '../../../src/tools/transactions/get-transaction.js';
+import { createTransactionOutputSchema } from '../../../src/tools/transactions/create-transaction.js';
+import { updateTransactionOutputSchema } from '../../../src/tools/transactions/update-transaction.js';
+import { deleteTransactionOutputSchema } from '../../../src/tools/transactions/delete-transaction.js';
+import { createTransactionsOutputSchema } from '../../../src/tools/transactions/create-transactions.js';
+import { updateTransactionsOutputSchema } from '../../../src/tools/transactions/update-transactions.js';
+import { listAccountTransactionsOutputSchema } from '../../../src/tools/transactions/list-account-transactions.js';
+import { listCategoryTransactionsOutputSchema } from '../../../src/tools/transactions/list-category-transactions.js';
+import { listPayeeTransactionsOutputSchema } from '../../../src/tools/transactions/list-payee-transactions.js';
+import { importTransactionsOutputSchema } from '../../../src/tools/transactions/import-transactions.js';
+import { listScheduledTransactionsOutputSchema } from '../../../src/tools/scheduled-transactions/list-scheduled.js';
+import { getScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/get-scheduled.js';
+import { createScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/create-scheduled.js';
+import { updateScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/update-scheduled.js';
+import { deleteScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/delete-scheduled.js';
+import { listMoneyMovementsOutputSchema } from '../../../src/tools/money-movements/list-money-movements.js';
+import { listMoneyMovementGroupsOutputSchema } from '../../../src/tools/money-movements/list-money-movement-groups.js';
+import { listConnectionsOutputSchema } from '../../../src/tools/connections/list-connections.js';
+import { revokeConnectionOutputSchema } from '../../../src/tools/connections/revoke-connection.js';
+import { disconnectOutputSchema } from '../../../src/tools/connections/disconnect.js';
+import { ACCOUNT_TOOL_NAMES } from '../../../src/tools/connections/policy.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
@@ -51,74 +98,56 @@ import { MemoryAuditStore } from '../../../src/storage/audit-rows.js';
 import { createMockClient } from './fixtures/index.js';
 
 /**
- * Tools that don't declare an outputSchema yet. This list only shrinks: the
- * test fails when a listed tool gains a schema (take it off) or an unlisted
- * tool has none. 45b (core tools) and 45c (analytics) take it to zero.
- */
-const PENDING_OUTPUT_SCHEMA = [
-  // User, budgets
-  'ynab_get_user',
-  'ynab_list_budgets',
-  'ynab_get_budget',
-  'ynab_get_budget_settings',
-  // Accounts
-  'ynab_list_accounts',
-  'ynab_get_account',
-  'ynab_create_account',
-  // Categories
-  'ynab_list_categories',
-  'ynab_get_category',
-  'ynab_get_month_category',
-  'ynab_update_category',
-  'ynab_move_money',
-  'ynab_update_category_details',
-  'ynab_create_category',
-  'ynab_create_category_group',
-  'ynab_update_category_group',
-  // Payees
-  'ynab_list_payees',
-  'ynab_get_payee',
-  'ynab_create_payee',
-  'ynab_update_payee',
-  'ynab_list_payee_locations',
-  'ynab_get_payee_location',
-  'ynab_list_payee_locations_by_payee',
-  // Months
-  'ynab_list_months',
-  'ynab_get_month',
-  // Transactions
-  'ynab_list_transactions',
-  'ynab_get_transaction',
-  'ynab_create_transaction',
-  'ynab_update_transaction',
-  'ynab_delete_transaction',
-  'ynab_create_transactions',
-  'ynab_update_transactions',
-  'ynab_list_account_transactions',
-  'ynab_list_category_transactions',
-  'ynab_list_payee_transactions',
-  'ynab_import_transactions',
-  // Scheduled transactions
-  'ynab_list_scheduled_transactions',
-  'ynab_get_scheduled_transaction',
-  'ynab_create_scheduled_transaction',
-  'ynab_update_scheduled_transaction',
-  'ynab_delete_scheduled_transaction',
-  // Money movements
-  'ynab_list_money_movements',
-  'ynab_list_money_movement_groups',
-  // Analytics (45c)
-  // Account tools (#53c, OAuth HTTP mode only; their own call path in server.ts)
-  'ynab_list_connections',
-  'ynab_revoke_connection',
-  'ynab_disconnect',
-];
-
-/**
  * Each schema'd tool's Zod schema, for the closed check. A tool that gains
  * a schema adds it here (the test fails until it does).
  */
 const SCHEMAS: Record<string, z.ZodObject> = {
+  ynab_get_user: getUserOutputSchema,
+  ynab_list_budgets: listBudgetsOutputSchema,
+  ynab_get_budget: getBudgetOutputSchema,
+  ynab_get_budget_settings: getBudgetSettingsOutputSchema,
+  ynab_list_accounts: listAccountsOutputSchema,
+  ynab_get_account: getAccountOutputSchema,
+  ynab_create_account: createAccountOutputSchema,
+  ynab_list_categories: listCategoriesOutputSchema,
+  ynab_get_category: getCategoryOutputSchema,
+  ynab_get_month_category: getMonthCategoryOutputSchema,
+  ynab_update_category: updateCategoryOutputSchema,
+  ynab_move_money: moveMoneyOutputSchema,
+  ynab_update_category_details: updateCategoryDetailsOutputSchema,
+  ynab_create_category: createCategoryOutputSchema,
+  ynab_create_category_group: createCategoryGroupOutputSchema,
+  ynab_update_category_group: updateCategoryGroupOutputSchema,
+  ynab_list_payees: listPayeesOutputSchema,
+  ynab_get_payee: getPayeeOutputSchema,
+  ynab_create_payee: createPayeeOutputSchema,
+  ynab_update_payee: updatePayeeOutputSchema,
+  ynab_list_payee_locations: listPayeeLocationsOutputSchema,
+  ynab_get_payee_location: getPayeeLocationOutputSchema,
+  ynab_list_payee_locations_by_payee: listPayeeLocationsByPayeeOutputSchema,
+  ynab_list_months: listMonthsOutputSchema,
+  ynab_get_month: getMonthOutputSchema,
+  ynab_list_transactions: listTransactionsOutputSchema,
+  ynab_get_transaction: getTransactionOutputSchema,
+  ynab_create_transaction: createTransactionOutputSchema,
+  ynab_update_transaction: updateTransactionOutputSchema,
+  ynab_delete_transaction: deleteTransactionOutputSchema,
+  ynab_create_transactions: createTransactionsOutputSchema,
+  ynab_update_transactions: updateTransactionsOutputSchema,
+  ynab_list_account_transactions: listAccountTransactionsOutputSchema,
+  ynab_list_category_transactions: listCategoryTransactionsOutputSchema,
+  ynab_list_payee_transactions: listPayeeTransactionsOutputSchema,
+  ynab_import_transactions: importTransactionsOutputSchema,
+  ynab_list_scheduled_transactions: listScheduledTransactionsOutputSchema,
+  ynab_get_scheduled_transaction: getScheduledTransactionOutputSchema,
+  ynab_create_scheduled_transaction: createScheduledTransactionOutputSchema,
+  ynab_update_scheduled_transaction: updateScheduledTransactionOutputSchema,
+  ynab_delete_scheduled_transaction: deleteScheduledTransactionOutputSchema,
+  ynab_list_money_movements: listMoneyMovementsOutputSchema,
+  ynab_list_money_movement_groups: listMoneyMovementGroupsOutputSchema,
+  ynab_list_connections: listConnectionsOutputSchema,
+  ynab_revoke_connection: revokeConnectionOutputSchema,
+  ynab_disconnect: disconnectOutputSchema,
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,
@@ -174,20 +203,19 @@ function closedPaths(node: unknown, path = '$'): string[] {
 }
 
 const schemaTools = tools.filter((t) => t.outputSchema !== undefined);
+/**
+ * The tools #44's null-payload fixture runs. The account tools make no YNAB
+ * request (they read this server's storage); their output is validated in
+ * tests/unit/tools/connections/connection-tools.test.ts and over /mcp in
+ * tests/unit/http-connection-tools.test.ts.
+ */
+const fixtureTools = schemaTools.filter((t) => !(ACCOUNT_TOOL_NAMES as readonly string[]).includes(t.name));
 
 describe('output schemas: coverage', () => {
-  it('lists only registered tools, once each', () => {
-    const names = new Set(tools.map((t) => t.name));
-    expect(PENDING_OUTPUT_SCHEMA.filter((n) => !names.has(n))).toEqual([]);
-    expect(new Set(PENDING_OUTPUT_SCHEMA).size).toBe(PENDING_OUTPUT_SCHEMA.length);
-  });
-
-  it('every tool has an outputSchema or is on the pending list, never both', () => {
-    const pending = new Set(PENDING_OUTPUT_SCHEMA);
-    const missing = tools.filter((t) => t.outputSchema === undefined && !pending.has(t.name)).map((t) => t.name);
-    const nowDone = tools.filter((t) => t.outputSchema !== undefined && pending.has(t.name)).map((t) => t.name);
-    expect(missing, 'tools without an outputSchema must be on PENDING_OUTPUT_SCHEMA').toEqual([]);
-    expect(nowDone, 'tools with an outputSchema must come off PENDING_OUTPUT_SCHEMA').toEqual([]);
+  it('every tool in the catalog declares an outputSchema (45a, 45b and 45c took the pending list to zero)', () => {
+    const missing = tools.filter((t) => t.outputSchema === undefined).map((t) => t.name);
+    expect(missing, 'every tool needs an outputSchema (see src/tools/output-schema.ts)').toEqual([]);
+    expect(tools.length).toBeGreaterThan(70);
   });
 
   it('every schema has its Zod source here, and the advertised schema is derived from it', () => {
@@ -196,7 +224,7 @@ describe('output schemas: coverage', () => {
   });
 
   it("every schema'd tool's real output is exercised by the null-payload fixture", () => {
-    for (const t of schemaTools) expect(recorded[t.name], `${t.name} is not in the null-output fixture`).toBeDefined();
+    for (const t of fixtureTools) expect(recorded[t.name], `${t.name} is not in the null-output fixture`).toBeDefined();
   });
 });
 
@@ -230,7 +258,7 @@ describe('output schemas: real output validates', () => {
     vi.restoreAllMocks();
   });
 
-  it.each(schemaTools.map((t) => t.name))('%s: the null-payload fixture output', (name) => {
+  it.each(fixtureTools.map((t) => t.name))('%s: the null-payload fixture output', (name) => {
     expectValid(name, recorded[name]!.result);
   });
 

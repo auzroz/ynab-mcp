@@ -16,6 +16,8 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { NAME_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
+import { fromYnab, money } from '../schemas/common.js';
 
 // Derive account types from the YNAB SDK enum to prevent drift. The YNAB API
 // only supports CREATING this restricted set (SaveAccountType) — loan/mortgage
@@ -38,6 +40,20 @@ const inputSchema = z.object({
     .finite()
     .describe('The starting balance in dollars (e.g., 1000.50 for $1,000.50)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const createAccountOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  account: z.object({
+    id: fromYnab(z.string()),
+    name: z.string(),
+    type: fromYnab(z.string().describe('YNAB account type')),
+    balance: money(),
+    on_budget: fromYnab(z.boolean()),
+  }),
+});
+export type CreateAccountOutput = z.output<typeof createAccountOutputSchema>;
 
 // Tool definition
 export const createAccountTool: Tool = {
@@ -82,6 +98,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['name', 'type', 'balance'],
   },
+  outputSchema: toOutputSchema(createAccountOutputSchema),
 };
 
 // Handler function
@@ -91,7 +108,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleCreateAccount(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<CreateAccountOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -107,19 +124,15 @@ export async function handleCreateAccount(
   const account = response.data.account;
 
   const accountName = sanitizeName(account.name);
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Account "${accountName}" created successfully`,
-      account: {
-        id: account.id,
-        name: accountName,
-        type: account.type,
-        balance: money(account.balance),
-        on_budget: account.on_budget,
-      },
+  return {
+    success: true,
+    message: `Account "${accountName}" created successfully`,
+    account: {
+      id: account.id,
+      name: accountName,
+      type: account.type,
+      balance: money(account.balance),
+      on_budget: account.on_budget,
     },
-    null,
-    2
-  );
+  };
 }

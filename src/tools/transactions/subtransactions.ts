@@ -10,6 +10,7 @@ import type * as ynab from 'ynab';
 import { MEMO_MAX_LENGTH, TXN_PAYEE_NAME_MAX_LENGTH, ynabId } from '../../utils/schemas.js';
 import { toDecimal, usdFallbackFormatter, type MoneyFormatter, sumMilliunits, toMilliunits } from '../../utils/milliunits.js';
 import { sanitizeMemo, sanitizeName } from '../../utils/sanitize.js';
+import { fromYnab } from '../schemas/common.js';
 
 /** Minimum splits for a split transaction (YNAB: a split needs at least two parts). */
 export const MIN_SUBTRANSACTIONS = 2;
@@ -103,11 +104,35 @@ export function toSaveSubTransactions(
   });
 }
 
+/** A split of a created transaction, as the create tools report it (#45). Nulls are reported on purpose. */
+export const createdSubtransactionSchema = z.object({
+  id: fromYnab(z.string()),
+  amount: z.string(),
+  amount_milliunits: fromYnab(z.number().int()),
+  payee_id: z.string().nullable(),
+  payee_name: z.string(),
+  category_id: z.string().nullable(),
+  category_name: z.string(),
+  memo: z.string().nullable(),
+});
+
+/**
+ * The `subtransactions` field of a created transaction: the sanitized splits
+ * YNAB returned, or no field at all when there are none.
+ */
+export function subtransactionsField(
+  subtransactions: ynab.SubTransaction[] | undefined,
+  money: MoneyFormatter = usdFallbackFormatter
+): { subtransactions?: Array<z.output<typeof createdSubtransactionSchema>> } {
+  const formatted = formatSubtransactions(subtransactions, money);
+  return formatted === undefined ? {} : { subtransactions: formatted };
+}
+
 /** Sanitized view of the splits YNAB returned, or undefined when there are none. */
 export function formatSubtransactions(
   subtransactions: ynab.SubTransaction[] | undefined,
   money: MoneyFormatter = usdFallbackFormatter
-): Array<Record<string, unknown>> | undefined {
+): Array<z.output<typeof createdSubtransactionSchema>> | undefined {
   const live = (subtransactions ?? []).filter((s) => !s.deleted);
   if (live.length === 0) return undefined;
   return live.map((s) => ({

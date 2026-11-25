@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListCategories } from '../../../../src/tools/categories/list-categories.js';
+import { handleListCategories as rawHandleListCategories, listCategoriesOutputSchema } from '../../../../src/tools/categories/list-categories.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createCategoriesResponse,
   mockCategoryGroups,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListCategories = validating(listCategoriesOutputSchema, rawHandleListCategories);
 
 describe('handleListCategories', () => {
   let mockClient: MockClient;
@@ -21,8 +25,7 @@ describe('handleListCategories', () => {
   it('lists visible category groups excluding hidden by default', async () => {
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleListCategories({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListCategories({}, mockClient as never);
 
     const names = parsed.category_groups.map((g: { name: string }) => g.name);
     // Internal Master Category and hidden groups should be filtered out
@@ -36,8 +39,7 @@ describe('handleListCategories', () => {
   it('includes a decoded goal object only for categories with a target', async () => {
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleListCategories({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListCategories({}, mockClient as never);
 
     const cats = parsed.category_groups.flatMap(
       (g: { categories: { name: string; goal_type: string | null; goal: Record<string, unknown> | null }[] }) =>
@@ -56,8 +58,7 @@ describe('handleListCategories', () => {
   it('reports summary totals and overspent/underfunded alerts', async () => {
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleListCategories({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListCategories({}, mockClient as never);
 
     expect(parsed.summary.total_budgeted).toBeDefined();
     expect(parsed.summary.total_activity).toBeDefined();
@@ -72,8 +73,7 @@ describe('handleListCategories', () => {
   it('includes hidden categories and groups when requested', async () => {
     mockClient.getCategories.mockResolvedValue(createCategoriesResponse(mockCategoryGroups));
 
-    const result = await handleListCategories({ include_hidden: true }, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListCategories({ include_hidden: true }, mockClient as never);
 
     const names = parsed.category_groups.map((g: { name: string }) => g.name);
     expect(names).toContain('Internal Master Category');

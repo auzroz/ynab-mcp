@@ -4,9 +4,13 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ZodError } from 'zod';
-import { handleUpdateTransaction, updateTransactionTool } from '../../../../src/tools/transactions/update-transaction.js';
+import { handleUpdateTransaction as rawHandleUpdateTransaction, updateTransactionTool, updateTransactionOutputSchema } from '../../../../src/tools/transactions/update-transaction.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleUpdateTransaction = validating(updateTransactionOutputSchema, rawHandleUpdateTransaction);
 
 const TXN_ID = '99999999-9999-9999-9999-999999999999';
 const CATEGORY_ID = '33333333-3333-3333-3333-333333333333';
@@ -41,11 +45,10 @@ describe('handleUpdateTransaction', () => {
   it('updates a single field', async () => {
     mockClient.updateTransaction.mockResolvedValue(updatedTxnResponse());
 
-    const result = await handleUpdateTransaction(
+    const parsed = await handleUpdateTransaction(
       { transaction_id: TXN_ID, category_id: CATEGORY_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(mockClient.updateTransaction).toHaveBeenCalledWith('test-budget-id', TXN_ID, {
       transaction: { category_id: CATEGORY_ID },
@@ -151,7 +154,7 @@ describe('handleUpdateTransaction', () => {
       mockClient.updateTransaction.mockResolvedValue(updatedTxnResponse());
       await expect(
         handleUpdateTransaction({ transaction_id: TXN_ID, category_id: null }, mockClient as never)
-      ).resolves.toBeTypeOf('string');
+      ).resolves.toBeTypeOf('object');
     });
 
     it('rejects clearing payee_id while also setting payee_name', async () => {

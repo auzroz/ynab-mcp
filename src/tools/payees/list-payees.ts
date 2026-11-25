@@ -9,7 +9,9 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeName, sanitizeString } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
-import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
+import { DELTA_SUMMARY_NOTE, deltaFields, deltaOutputShape, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, fromYnab, serverKnowledge } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -18,6 +20,31 @@ const inputSchema = z.object({
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   since_server_knowledge: sinceServerKnowledge(),
 });
+
+const payeeSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  transfer_account_id: z.string().nullable().describe('Null for a payee that is not a transfer payee'),
+});
+const FULL = 'Full list only';
+const DELTA = 'Delta (since_server_knowledge) only';
+
+/** What the tool returns (#45; rules in ../output-schema.ts). One object covers the full list and the delta. */
+export const listPayeesOutputSchema = z.object({
+  ...deltaOutputShape,
+  payees: z.array(payeeSchema),
+  transfer_payees: z.array(payeeSchema).describe('Payees that transfer to an account'),
+  summary: z.object({
+    total_payees: count().exactOptional().describe(FULL),
+    regular_payees: count().exactOptional().describe(FULL),
+    transfer_payees: count().exactOptional().describe(FULL),
+    changed_count: count().exactOptional().describe(DELTA),
+    deleted_count: count().exactOptional().describe(DELTA),
+    note: z.string().exactOptional().describe(DELTA),
+  }),
+  server_knowledge: fromYnab(serverKnowledge()),
+});
+export type ListPayeesOutput = z.output<typeof listPayeesOutputSchema>;
 
 // Tool definition
 export const listPayeesTool: Tool = {
@@ -45,6 +72,7 @@ Not possible through the YNAB API (do it in the YNAB app): deleting or merging p
       since_server_knowledge: sinceServerKnowledgeJsonSchema,
     },
   },
+  outputSchema: toOutputSchema(listPayeesOutputSchema),
 };
 
 // Handler function
@@ -54,7 +82,7 @@ Not possible through the YNAB API (do it in the YNAB app): deleting or merging p
 export async function handleListPayees(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<ListPayeesOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
 
@@ -79,35 +107,27 @@ export async function handleListPayees(
   const regularPayees = formattedPayees.filter((p) => p.transfer_account_id == null);
 
   if (cursor !== undefined) {
-    return JSON.stringify(
-      {
-        ...deltaFields(cursor, deletedIds),
-        payees: regularPayees,
-        transfer_payees: transferPayees,
-        summary: {
-          changed_count: formattedPayees.length,
-          deleted_count: deletedIds.length,
-          note: DELTA_SUMMARY_NOTE,
-        },
-        server_knowledge: response.data.server_knowledge,
-      },
-      null,
-      2
-    );
-  }
-
-  return JSON.stringify(
-    {
+    return {
+      ...deltaFields(cursor, deletedIds),
       payees: regularPayees,
       transfer_payees: transferPayees,
       summary: {
-        total_payees: formattedPayees.length,
-        regular_payees: regularPayees.length,
-        transfer_payees: transferPayees.length,
+        changed_count: formattedPayees.length,
+        deleted_count: deletedIds.length,
+        note: DELTA_SUMMARY_NOTE,
       },
       server_knowledge: response.data.server_knowledge,
+    };
+  }
+
+  return {
+    payees: regularPayees,
+    transfer_payees: transferPayees,
+    summary: {
+      total_payees: formattedPayees.length,
+      regular_payees: regularPayees.length,
+      transfer_payees: transferPayees.length,
     },
-    null,
-    2
-  );
+    server_knowledge: response.data.server_knowledge,
+  };
 }

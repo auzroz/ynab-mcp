@@ -12,8 +12,10 @@ import { sanitizeFlagName } from '../transactions/format.js';
 import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
-import { DELTA_SUMMARY_NOTE, deltaFields, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
+import { DELTA_SUMMARY_NOTE, deltaFields, deltaOutputShape, sinceServerKnowledge, sinceServerKnowledgeJsonSchema, splitDeleted } from '../../utils/delta.js';
 import { omitNull } from '../../utils/omit-null.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, fromYnab, money, serverKnowledge } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -22,6 +24,55 @@ const inputSchema = z.object({
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   since_server_knowledge: sinceServerKnowledge(),
 });
+
+const OMITTED = 'Omitted when YNAB has no value';
+const FULL = 'Full list only';
+const DELTA = 'Delta (since_server_knowledge) only';
+
+/** What the tool returns (#45; rules in ../output-schema.ts). One object covers the full list and the delta. */
+export const listScheduledTransactionsOutputSchema = z.object({
+  ...deltaOutputShape,
+  scheduled_transactions: z.array(
+    z.object({
+      id: fromYnab(z.string()),
+      date_first: fromYnab(z.string()),
+      date_next: fromYnab(z.string()),
+      frequency: fromYnab(z.string().describe('YNAB frequency, such as monthly or everyOtherWeek')),
+      amount: money(),
+      memo: z.string().nullable(),
+      payee_name: z.string(),
+      category_name: z.string(),
+      account_name: z.string(),
+      flag_color: z.string().exactOptional().describe('YNAB flag colour; omitted when unflagged'),
+      flag_name: z.string().nullable(),
+      account_id: fromYnab(z.string()),
+      payee_id: z.string().nullable(),
+      category_id: z.string().nullable(),
+      transfer_account_id: z.string().nullable(),
+      subtransactions: z.array(
+        z.object({
+          id: fromYnab(z.string()),
+          scheduled_transaction_id: fromYnab(z.string()),
+          amount: money(),
+          memo: z.string().nullable(),
+          payee_id: z.string().exactOptional().describe(OMITTED),
+          category_id: z.string().exactOptional().describe(OMITTED),
+          transfer_account_id: z.string().nullable(),
+        })
+      ),
+    })
+  ),
+  summary: z.object({
+    total_count: count().exactOptional().describe(FULL),
+    estimated_monthly_total: money().exactOptional().describe(`${FULL}: approximate`),
+    by_frequency: z.record(z.string(), count()).exactOptional().describe(`${FULL}: counts keyed by YNAB frequency`),
+    changed_count: count().exactOptional().describe(DELTA),
+    deleted_count: count().exactOptional().describe(DELTA),
+    note: z.string().exactOptional().describe(DELTA),
+  }),
+  server_knowledge: fromYnab(serverKnowledge()),
+});
+export type ListScheduledTransactionsOutput = z.output<typeof listScheduledTransactionsOutputSchema>;
 
 // Tool definition
 export const listScheduledTransactionsTool: Tool = {
@@ -49,6 +100,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
       since_server_knowledge: sinceServerKnowledgeJsonSchema,
     },
   },
+  outputSchema: toOutputSchema(listScheduledTransactionsOutputSchema),
 };
 
 // Handler function
@@ -58,7 +110,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleListScheduledTransactions(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<ListScheduledTransactionsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -107,20 +159,16 @@ export async function handleListScheduledTransactions(
   });
 
   if (cursor !== undefined) {
-    return JSON.stringify(
-      {
-        ...deltaFields(cursor, deletedIds),
-        scheduled_transactions: formattedTransactions,
-        summary: {
-          changed_count: formattedTransactions.length,
-          deleted_count: deletedIds.length,
-          note: DELTA_SUMMARY_NOTE,
-        },
-        server_knowledge: response.data.server_knowledge,
+    return {
+      ...deltaFields(cursor, deletedIds),
+      scheduled_transactions: formattedTransactions,
+      summary: {
+        changed_count: formattedTransactions.length,
+        deleted_count: deletedIds.length,
+        note: DELTA_SUMMARY_NOTE,
       },
-      null,
-      2
-    );
+      server_knowledge: response.data.server_knowledge,
+    };
   }
 
   // Calculate monthly total (approximate)
@@ -166,17 +214,13 @@ export async function handleListScheduledTransactions(
     byFrequency[freq] = (byFrequency[freq] ?? 0) + 1;
   }
 
-  return JSON.stringify(
-    {
-      scheduled_transactions: formattedTransactions,
-      summary: {
-        total_count: formattedTransactions.length,
-        estimated_monthly_total: money(estimatedMonthlyTotal),
-        by_frequency: byFrequency,
-      },
-      server_knowledge: response.data.server_knowledge,
+  return {
+    scheduled_transactions: formattedTransactions,
+    summary: {
+      total_count: formattedTransactions.length,
+      estimated_monthly_total: money(estimatedMonthlyTotal),
+      by_frequency: byFrequency,
     },
-    null,
-    2
-  );
+    server_knowledge: response.data.server_knowledge,
+  };
 }

@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleGetPayeeLocation } from '../../../../src/tools/payees/get-payee-location.js';
+import { handleGetPayeeLocation as rawHandleGetPayeeLocation, getPayeeLocationOutputSchema } from '../../../../src/tools/payees/get-payee-location.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createPayeeLocationResponse,
   mockPayeeLocations,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleGetPayeeLocation = validating(getPayeeLocationOutputSchema, rawHandleGetPayeeLocation);
 
 const LOCATION_UUID = '33333333-3333-3333-3333-3333333333cc';
 
@@ -23,11 +27,10 @@ describe('handleGetPayeeLocation', () => {
   it('returns a single payee location', async () => {
     mockClient.getPayeeLocationById.mockResolvedValue(createPayeeLocationResponse());
 
-    const result = await handleGetPayeeLocation(
+    const parsed = await handleGetPayeeLocation(
       { payee_location_id: LOCATION_UUID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.payee_location.id).toBe(mockPayeeLocations[0]!.id);
     expect(parsed.payee_location.payee_id).toBe(mockPayeeLocations[0]!.payee_id);

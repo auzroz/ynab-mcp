@@ -22,9 +22,16 @@ import type { GrantedScope, Storage } from '../../../../src/storage/types.js';
 import { createAccountStore } from '../../../../src/storage/account-store.js';
 import { AuditLog } from '../../../../src/services/audit-log.js';
 import type { AccountToolContext } from '../../../../src/tools/connections/context.js';
-import { handleListConnections } from '../../../../src/tools/connections/list-connections.js';
-import { handleRevokeConnection } from '../../../../src/tools/connections/revoke-connection.js';
-import { handleDisconnect } from '../../../../src/tools/connections/disconnect.js';
+import {
+  handleListConnections as rawHandleListConnections,
+  listConnectionsOutputSchema,
+} from '../../../../src/tools/connections/list-connections.js';
+import {
+  handleRevokeConnection as rawHandleRevokeConnection,
+  revokeConnectionOutputSchema,
+} from '../../../../src/tools/connections/revoke-connection.js';
+import { handleDisconnect as rawHandleDisconnect, disconnectOutputSchema } from '../../../../src/tools/connections/disconnect.js';
+import { validating } from '../output-validation.js';
 import { YNAB_REVOKE_STEPS } from '../../../../src/auth/ynab-revoke-text.js';
 import { formatErrorResponse } from '../../../../src/utils/errors.js';
 import { cleanupDrivers, testDrivers, type DriverHandle } from '../../helpers/storage-drivers.js';
@@ -40,6 +47,11 @@ import {
   type OidcTestApp,
 } from '../../helpers/oidc-app.js';
 
+/** Every result is checked against the output schema (#45). */
+const handleListConnections = validating(listConnectionsOutputSchema, rawHandleListConnections);
+const handleRevokeConnection = validating(revokeConnectionOutputSchema, rawHandleRevokeConnection);
+const handleDisconnect = validating(disconnectOutputSchema, rawHandleDisconnect);
+
 interface Connection {
   userId: string;
   access: string;
@@ -47,11 +59,11 @@ interface Connection {
   scope: GrantedScope;
 }
 
-/** What a handler call ends as: its parsed reply, or the error reply the server would send. */
-async function outcome(work: Promise<string>): Promise<{ ok: boolean; body: Record<string, any>; text: string }> {
+/** What a handler call ends as: its reply and the text block made from it, or the error reply the server would send. */
+async function outcome(work: Promise<Record<string, unknown>>): Promise<{ ok: boolean; body: Record<string, any>; text: string }> {
   try {
-    const text = await work;
-    return { ok: true, body: JSON.parse(text) as Record<string, any>, text };
+    const body = await work;
+    return { ok: true, body, text: JSON.stringify(body, null, 2) };
   } catch (error) {
     const text = formatErrorResponse(error);
     return { ok: false, body: JSON.parse(text) as Record<string, any>, text };

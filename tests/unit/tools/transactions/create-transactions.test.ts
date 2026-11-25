@@ -3,9 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleCreateTransactions } from '../../../../src/tools/transactions/create-transactions.js';
+import { handleCreateTransactions as rawHandleCreateTransactions, createTransactionsOutputSchema } from '../../../../src/tools/transactions/create-transactions.js';
+import { validating } from '../output-validation.js';
 import { createMockClient } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleCreateTransactions = validating(createTransactionsOutputSchema, rawHandleCreateTransactions);
 
 const ACCOUNT_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -44,7 +48,7 @@ describe('handleCreateTransactions', () => {
   it('creates multiple transactions converting dollars to milliunits', async () => {
     mockClient.createTransaction.mockResolvedValue(bulkResponse());
 
-    const result = await handleCreateTransactions(
+    const parsed = await handleCreateTransactions(
       {
         transactions: [
           { account_id: ACCOUNT_ID, date: '2024-02-01', amount: -42.5 },
@@ -53,7 +57,6 @@ describe('handleCreateTransactions', () => {
       },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(mockClient.createTransaction).toHaveBeenCalledWith('test-budget-id', {
       transactions: [
@@ -81,11 +84,10 @@ describe('handleCreateTransactions', () => {
       bulkResponse({ transactions: [], duplicate_import_ids: ['dup-1', 'dup-2'] })
     );
 
-    const result = await handleCreateTransactions(
+    const parsed = await handleCreateTransactions(
       { transactions: [{ account_id: ACCOUNT_ID, date: '2024-02-01', amount: -1 }] },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.summary.created_count).toBe(0);
     expect(parsed.summary.duplicate_count).toBe(2);

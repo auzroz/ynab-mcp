@@ -6,6 +6,8 @@
 import { z } from 'zod';
 import { usdFallbackFormatter, type MoneyFormatter } from '../../utils/milliunits.js';
 import { sanitizeMemo, sanitizeName, sanitizeString } from '../../utils/sanitize.js';
+import { transactionDeltaSummaryShape } from '../../utils/delta.js';
+import { fromYnab } from '../schemas/common.js';
 
 /** YNAB's transaction type filter, shared by every transaction list tool. */
 export const transactionTypeSchema = z
@@ -45,7 +47,7 @@ interface TransactionLike {
  * Ids and import/debt metadata needed to chain into other tools, plus the flag
  * label. Missing values come back as null so the keys are always present.
  */
-export function transactionChainFields(txn: TransactionLike) {
+export function transactionChainFields(txn: TransactionLike): z.output<z.ZodObject<typeof transactionChainShape>> {
   return {
     account_id: txn.account_id,
     payee_id: txn.payee_id ?? null,
@@ -74,7 +76,10 @@ interface SubtransactionLike {
 }
 
 /** A split line with its ids, for transaction list/get output. */
-export function formatSubtransaction(sub: SubtransactionLike, money: MoneyFormatter = usdFallbackFormatter) {
+export function formatSubtransaction(
+  sub: SubtransactionLike,
+  money: MoneyFormatter = usdFallbackFormatter
+): z.output<typeof subtransactionOutputSchema> {
   return {
     id: sub.id,
     transaction_id: sub.transaction_id,
@@ -96,3 +101,62 @@ export function formatSubtransaction(sub: SubtransactionLike, money: MoneyFormat
 export function truncationSummary(totalCount: number, returnedCount: number) {
   return { total_count: totalCount, truncated: totalCount > returnedCount };
 }
+
+/*
+ * Output schemas of the helpers above (#45; rules in ../output-schema.ts).
+ * Every null here is reported on purpose, so the keys are always present.
+ */
+
+/** transactionChainFields. */
+export const transactionChainShape = {
+  account_id: fromYnab(z.string()),
+  payee_id: z.string().nullable(),
+  category_id: z.string().nullable(),
+  transfer_account_id: z.string().nullable(),
+  transfer_transaction_id: z.string().nullable(),
+  matched_transaction_id: z.string().nullable(),
+  import_id: z.string().nullable(),
+  debt_transaction_type: z.string().nullable().describe('YNAB debt transaction type'),
+  flag_name: z.string().nullable(),
+};
+
+/** formatSubtransaction: a split line of a listed transaction. */
+export const subtransactionOutputSchema = z.object({
+  id: fromYnab(z.string()),
+  transaction_id: fromYnab(z.string()),
+  amount: z.string(),
+  memo: z.string().nullable(),
+  payee_id: z.string().nullable(),
+  payee_name: z.string(),
+  category_id: z.string().nullable(),
+  category_name: z.string(),
+  transfer_account_id: z.string().nullable(),
+  transfer_transaction_id: z.string().nullable(),
+});
+
+/** truncationSummary. */
+export const truncationShape = {
+  total_count: z.number().int().describe('Matches before limit was applied'),
+  truncated: z.boolean().describe('True when limit left some matches out'),
+};
+
+/** The summary fields every transaction list tool reports, in both modes. */
+export const listSummaryShape = {
+  count: z.number().int(),
+  ...truncationShape,
+  deleted_count: z.number().int().exactOptional().describe('Delta (since_server_knowledge) only'),
+  date_range_note: z.string().exactOptional().describe('When since_date was not given'),
+  ...transactionDeltaSummaryShape,
+};
+
+/** The fields of a listed transaction that every transaction list tool reports. */
+export const listedTransactionShape = {
+  id: fromYnab(z.string()),
+  date: fromYnab(z.string()),
+  amount: z.string(),
+  memo: z.string().nullable(),
+  cleared: fromYnab(z.string().describe('YNAB cleared status: cleared, uncleared or reconciled')),
+  approved: fromYnab(z.boolean()),
+  flag_color: z.string().exactOptional().describe('YNAB flag colour; omitted when unflagged'),
+  ...transactionChainShape,
+};

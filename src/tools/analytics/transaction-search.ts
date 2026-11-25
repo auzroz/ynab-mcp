@@ -13,6 +13,7 @@ import { parseNaturalDate } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { DATE_TEXT_MAX_LENGTH, NAME_MAX_LENGTH, NOTE_MAX_LENGTH, budgetId } from '../../utils/schemas.js';
 import { toOutputSchema } from '../output-schema.js';
+import { fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -82,7 +83,7 @@ export const transactionSearchOutputSchema = z.object({
   }),
   transactions: z.array(
     z.object({
-      date: z.string(),
+      date: fromYnab(z.string()),
       payee: z.string(),
       category: z.string().nullable().describe('Null when uncategorized or the category is unknown'),
       amount: z.string(),

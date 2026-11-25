@@ -13,6 +13,8 @@ import { moneyFormatterFor } from '../../utils/milliunits.js';
 import { maskId } from '../../utils/mask.js';
 import { sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId, monthParam } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, fromYnab, milliunits, money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -27,6 +29,46 @@ const inputSchema = z.object({
     .optional()
     .describe('Nest movements under their money movement group (one extra request for the groups). Default false'),
 });
+
+const movementSchema = z.object({
+  id: fromYnab(z.string()),
+  amount: money(),
+  amount_milliunits: fromYnab(milliunits()),
+  month: z.string().nullable(),
+  moved_at: z.string().nullable(),
+  from_category_id: z.string().nullable().describe('Null when the money came from Ready to Assign'),
+  to_category_id: z.string().nullable().describe('Null when the money went to Ready to Assign'),
+  money_movement_group_id: z.string().nullable(),
+  performed_by_user_id: z.string().nullable().describe('Masked'),
+  note: z.string().nullable(),
+});
+
+const FLAT = 'Without group_by_group';
+const NESTED = 'With group_by_group';
+
+/** What the tool returns (#45; rules in ../output-schema.ts). One object covers the flat and the grouped view. */
+export const listMoneyMovementsOutputSchema = z.object({
+  money_movements: z.array(movementSchema).exactOptional().describe(FLAT),
+  money_movement_groups: z
+    .array(
+      z.object({
+        id: fromYnab(z.string()),
+        month: z.string().nullable(),
+        group_created_at: z.string().nullable().describe('Null for a group the groups endpoint did not return'),
+        note: z.string().nullable(),
+        performed_by_user_id: z.string().nullable().describe('Masked'),
+        count: count(),
+        movements: z.array(movementSchema),
+      })
+    )
+    .exactOptional()
+    .describe(NESTED),
+  ungrouped_movements: z.array(movementSchema).exactOptional().describe(NESTED),
+  count: count(),
+  group_count: count().exactOptional().describe(NESTED),
+  month: z.string().nullable().describe('The month filter; null when not given'),
+});
+export type ListMoneyMovementsOutput = z.output<typeof listMoneyMovementsOutputSchema>;
 
 // Tool definition
 export const listMoneyMovementsTool: Tool = {
@@ -61,6 +103,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
       },
     },
   },
+  outputSchema: toOutputSchema(listMoneyMovementsOutputSchema),
 };
 
 // Handler function
@@ -70,7 +113,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleListMoneyMovements(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<ListMoneyMovementsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -95,15 +138,11 @@ export async function handleListMoneyMovements(
   }));
 
   if (!validated.group_by_group) {
-    return JSON.stringify(
-      {
-        money_movements: formatted,
-        count: formatted.length,
-        month: validated.month ?? null,
-      },
-      null,
-      2
-    );
+    return {
+      money_movements: formatted,
+      count: formatted.length,
+      month: validated.month ?? null,
+    };
   }
 
   // Nested view: the flat list is replaced by groups holding their movements.
@@ -160,15 +199,11 @@ export async function handleListMoneyMovements(
     });
   }
 
-  return JSON.stringify(
-    {
-      money_movement_groups: nested,
-      ungrouped_movements: ungrouped,
-      count: formatted.length,
-      group_count: nested.length,
-      month: validated.month ?? null,
-    },
-    null,
-    2
-  );
+  return {
+    money_movement_groups: nested,
+    ungrouped_movements: ungrouped,
+    count: formatted.length,
+    group_count: nested.length,
+    month: validated.month ?? null,
+  };
 }

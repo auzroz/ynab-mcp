@@ -9,6 +9,8 @@ import { budgetId, ynabId } from '../../utils/schemas.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeString } from '../../utils/sanitize.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, fromYnab } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -17,6 +19,14 @@ const inputSchema = z.object({
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
   payee_id: ynabId('Invalid payee UUID format').describe('The payee UUID'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const listPayeeLocationsByPayeeOutputSchema = z.object({
+  payee_id: z.string(),
+  location_count: count(),
+  payee_locations: z.array(z.object({ id: z.string(), latitude: fromYnab(z.string()), longitude: fromYnab(z.string()) })),
+});
+export type ListPayeeLocationsByPayeeOutput = z.output<typeof listPayeeLocationsByPayeeOutputSchema>;
 
 // Tool definition
 export const listPayeeLocationsByPayeeTool: Tool = {
@@ -45,6 +55,7 @@ Returns all recorded locations for a specific payee.`,
     },
     required: ['payee_id'],
   },
+  outputSchema: toOutputSchema(listPayeeLocationsByPayeeOutputSchema),
 };
 
 // Handler function
@@ -54,24 +65,20 @@ Returns all recorded locations for a specific payee.`,
 export async function handleListPayeeLocationsByPayee(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<ListPayeeLocationsByPayeeOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
 
   const response = await client.getPayeeLocationsByPayee(budgetId, validated.payee_id);
   const locations = response.data.payee_locations;
 
-  return JSON.stringify(
-    {
-      payee_id: sanitizeString(validated.payee_id) ?? '',
-      location_count: locations.length,
-      payee_locations: locations.map((loc) => ({
-        id: sanitizeString(loc.id) ?? '',
-        latitude: loc.latitude,
-        longitude: loc.longitude,
-      })),
-    },
-    null,
-    2
-  );
+  return {
+    payee_id: sanitizeString(validated.payee_id) ?? '',
+    location_count: locations.length,
+    payee_locations: locations.map((loc) => ({
+      id: sanitizeString(loc.id) ?? '',
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+    })),
+  };
 }

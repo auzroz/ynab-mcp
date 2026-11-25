@@ -11,6 +11,8 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type * as ynab from 'ynab';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { toMilliunits } from '../../utils/milliunits.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, fromYnab } from '../schemas/common.js';
 
 // Cleared status / flag color options
 const clearedStatuses = ['cleared', 'uncleared', 'reconciled'] as const;
@@ -61,6 +63,16 @@ const inputSchema = z.object({
     .max(100)
     .describe('Array of transactions to update (1-100). Each must include exactly one of id or import_id.'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const updateTransactionsOutputSchema = z.object({
+  success: z.literal(true),
+  message: z.string(),
+  requested_count: count(),
+  updated_count: count(),
+  transaction_ids: fromYnab(z.array(z.string())),
+});
+export type UpdateTransactionsOutput = z.output<typeof updateTransactionsOutputSchema>;
 
 // Tool definition
 export const updateTransactionsTool: Tool = {
@@ -125,6 +137,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['transactions'],
   },
+  outputSchema: toOutputSchema(updateTransactionsOutputSchema),
 };
 
 // Handler function
@@ -134,7 +147,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleUpdateTransactions(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<UpdateTransactionsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -160,15 +173,11 @@ export async function handleUpdateTransactions(
 
   const response = await client.updateTransactions(budgetId, { transactions });
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Updated ${response.data.transaction_ids.length} transaction(s)`,
-      requested_count: transactions.length,
-      updated_count: response.data.transaction_ids.length,
-      transaction_ids: response.data.transaction_ids,
-    },
-    null,
-    2
-  );
+  return {
+    success: true,
+    message: `Updated ${response.data.transaction_ids.length} transaction(s)`,
+    requested_count: transactions.length,
+    updated_count: response.data.transaction_ids.length,
+    transaction_ids: response.data.transaction_ids,
+  };
 }

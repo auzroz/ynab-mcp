@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListCategoryTransactions } from '../../../../src/tools/transactions/list-category-transactions.js';
+import { handleListCategoryTransactions as rawHandleListCategoryTransactions, listCategoryTransactionsOutputSchema } from '../../../../src/tools/transactions/list-category-transactions.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
-  createTransactionsResponse,
+  createHybridTransactionsResponse,
   mockGroceryTransactions,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleListCategoryTransactions = validating(listCategoryTransactionsOutputSchema, rawHandleListCategoryTransactions);
 
 const CATEGORY_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 
@@ -22,14 +26,13 @@ describe('handleListCategoryTransactions', () => {
 
   it('lists category transactions with spending summary and top payees', async () => {
     mockClient.getCategoryTransactions.mockResolvedValue(
-      createTransactionsResponse(mockGroceryTransactions)
+      createHybridTransactionsResponse(mockGroceryTransactions)
     );
 
-    const result = await handleListCategoryTransactions(
+    const parsed = await handleListCategoryTransactions(
       { category_id: CATEGORY_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.category_id).toBe(CATEGORY_ID);
     expect(parsed.transactions.length).toBe(mockGroceryTransactions.length);
@@ -46,20 +49,19 @@ describe('handleListCategoryTransactions', () => {
 
   it('does not mutate the response and applies limit', async () => {
     mockClient.getCategoryTransactions.mockResolvedValue(
-      createTransactionsResponse(mockGroceryTransactions)
+      createHybridTransactionsResponse(mockGroceryTransactions)
     );
 
-    const result = await handleListCategoryTransactions(
+    const parsed = await handleListCategoryTransactions(
       { category_id: CATEGORY_ID, limit: 2 },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.transactions.length).toBe(2);
   });
 
   it('passes parsed since_date', async () => {
-    mockClient.getCategoryTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getCategoryTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
     await handleListCategoryTransactions(
       { category_id: CATEGORY_ID, since_date: '2024-01-01' },
@@ -74,20 +76,19 @@ describe('handleListCategoryTransactions', () => {
   });
 
   it('handles empty results', async () => {
-    mockClient.getCategoryTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getCategoryTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
-    const result = await handleListCategoryTransactions(
+    const parsed = await handleListCategoryTransactions(
       { category_id: CATEGORY_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.transactions.length).toBe(0);
     expect(parsed.summary.top_payees).toEqual([]);
   });
 
   it('respects budget_id parameter', async () => {
-    mockClient.getCategoryTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getCategoryTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
     await handleListCategoryTransactions(
       { category_id: CATEGORY_ID, budget_id: 'custom-budget' },
@@ -98,14 +99,12 @@ describe('handleListCategoryTransactions', () => {
   });
 
   it('passes parsed until_date through and omits the default-range note', async () => {
-    mockClient.getCategoryTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getCategoryTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
-    const parsed = JSON.parse(
-      await handleListCategoryTransactions(
+    const parsed = await handleListCategoryTransactions(
         { category_id: CATEGORY_ID, since_date: '2023-01-01', until_date: '2023-12-31' },
         mockClient as never
-      )
-    );
+      );
 
     expect(mockClient.getCategoryTransactions).toHaveBeenCalledWith('test-budget-id', CATEGORY_ID, {
       sinceDate: '2023-01-01',
@@ -116,17 +115,15 @@ describe('handleListCategoryTransactions', () => {
   });
 
   it('notes the 12-month YNAB default when since_date is omitted', async () => {
-    mockClient.getCategoryTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getCategoryTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
-    const parsed = JSON.parse(
-      await handleListCategoryTransactions({ category_id: CATEGORY_ID }, mockClient as never)
-    );
+    const parsed = await handleListCategoryTransactions({ category_id: CATEGORY_ID }, mockClient as never);
 
     expect(parsed.summary.date_range_note).toContain('last 12 months');
   });
 
   it('passes the type filter through to the client', async () => {
-    mockClient.getCategoryTransactions.mockResolvedValue(createTransactionsResponse([]));
+    mockClient.getCategoryTransactions.mockResolvedValue(createHybridTransactionsResponse([]));
 
     await handleListCategoryTransactions(
       { category_id: CATEGORY_ID, type: 'unapproved' },

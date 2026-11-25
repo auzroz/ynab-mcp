@@ -20,7 +20,7 @@ import {
   tools,
   accountTools,
   getTool,
-  handleAccountToolCall,
+  runAccountToolCall,
   isAccountToolName,
   runToolCall,
   type ToolCallOutput,
@@ -382,21 +382,25 @@ export function createServerFromClient(
         }
         result = outcome.value;
       }
-      const content = [{ type: 'text' as const, text: result.text }];
-      if (result.structured === undefined) return { content };
-      // Structured output (#45, ADR-0001 D15): the object the text block was
-      // serialized from, projected for the connection's era against the same
-      // schema tools/list advertises. Error results never carry it.
-      return server.projectCallToolResult(
-        { content, structuredContent: result.structured },
-        getTool(name)?.outputSchema
-      );
+      return structuredResult(name, result);
     } catch (error) {
       return {
         content: [{ type: 'text' as const, text: formatErrorResponse(error) }],
         isError: true as const,
       };
     }
+  };
+
+  /**
+   * A successful tool call's result. Structured output (#45, ADR-0001 D15):
+   * the object the text block was serialized from, projected for the
+   * connection's era against the same schema tools/list advertises. Error
+   * and timeout results never carry it.
+   */
+  const structuredResult = (name: string, result: ToolCallOutput) => {
+    const content = [{ type: 'text' as const, text: result.text }];
+    if (result.structured === undefined) return { content };
+    return server.projectCallToolResult({ content, structuredContent: result.structured }, getTool(name)?.outputSchema);
   };
 
   /**
@@ -410,8 +414,8 @@ export function createServerFromClient(
       assertSafeToolInput(args);
       const denial = accountToolDenial(name, ctx);
       if (denial !== undefined) throw new AccountChangeNotAllowedError(denial);
-      const call = (): Promise<string> => handleAccountToolCall(name, args, ctx);
-      let result: string;
+      const call = (): Promise<ToolCallOutput> => runAccountToolCall(name, args, ctx);
+      let result: ToolCallOutput;
       if (toolCalls === undefined) {
         result = await call();
       } else {
@@ -419,7 +423,7 @@ export function createServerFromClient(
         if (!outcome.done) return accountToolTimeoutResult(outcome.started && name !== 'ynab_list_connections');
         result = outcome.value;
       }
-      return { content: [{ type: 'text' as const, text: result }] };
+      return structuredResult(name, result);
     } catch (error) {
       return {
         content: [{ type: 'text' as const, text: formatErrorResponse(error) }],

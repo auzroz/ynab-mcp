@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { handleUnusedCategories as rawHandleUnusedCategories, unusedCategoriesOutputSchema } from '../../../../src/tools/analytics/unused-categories.js';
-import { validating } from './output.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createTransactionsResponse,
