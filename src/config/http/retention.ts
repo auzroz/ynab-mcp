@@ -53,7 +53,12 @@ export const loadRetentionSettings: HttpLoader<RetentionSettings> = ({ env, prob
     refreshTokenTtlDays: read('MCP_REFRESH_TOKEN_TTL_DAYS', REFRESH_TOKEN_TTL_DAYS, 1, MAX_RETENTION_DAYS),
     abandonedClientHours: read('MCP_ABANDONED_CLIENT_HOURS', ABANDONED_CLIENT_HOURS, MIN_ABANDONED_CLIENT_HOURS, MAX_ABANDONED_CLIENT_HOURS),
     unusedClientDays: read('MCP_UNUSED_CLIENT_DAYS', UNUSED_CLIENT_DAYS, 1, MAX_RETENTION_DAYS),
-    auditRetentionDays: read('AUDIT_RETENTION_DAYS', AUDIT_RETENTION_DAYS, 1, MAX_RETENTION_DAYS),
+    // Read by its literal name, so the docs check (tests/unit/site.test.ts) finds it: it is on install.html.
+    auditRetentionDays: problems.capture(
+      'AUDIT_RETENTION_DAYS',
+      () => parseBoundedInteger(env['AUDIT_RETENTION_DAYS'], AUDIT_RETENTION_DAYS, 'AUDIT_RETENTION_DAYS', 1, MAX_RETENTION_DAYS),
+      AUDIT_RETENTION_DAYS
+    ),
   };
 };
 

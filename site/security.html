@@ -81,8 +81,10 @@
 
         <section aria-labelledby="audit">
           <h2 id="audit">The audit log</h2>
-          <p>Every write attempt through ynab-mcp is recorded with its time, tool, the kind of record and its ID, and how it ended: done, refused (the server or the connection is read-only, or the hourly write limit was reached) or failed. Ask Claude to <q>show the audit log</q> to review changes; the <a href="tools.html#ynab_audit_log"><code>ynab_audit_log</code></a> tool filters by operation, record type and outcome.</p>
-          <p>On your own computer the log is kept in memory for the life of the server process (the most recent 1,000 entries). A self-hosted server with OAuth and a database keeps it in the database, so it survives restarts, and each entry also names the app (MCP client) and request that made it. On a shared server, each connection sees only its own entries (no other user, and no other app of the same user, can read them), and deleting an account deletes its entries.</p>
+          <p>Every write attempt through ynab-mcp is recorded with its time, tool, the kind of record and its ID, and how it ended: done, refused (the server or the connection is read-only, or the hourly write limit was reached) or failed. A bulk change records each transaction it saved. Ask Claude to <q>show the audit log</q> to review changes; the <a href="tools.html#ynab_audit_log"><code>ynab_audit_log</code></a> tool filters by operation, record type and outcome.</p>
+          <p>On your own computer the log is kept in memory for the life of the server process (the most recent 1,000 entries). A self-hosted server with OAuth and a database keeps it in the database, so it survives restarts, for 90 days by default (the operator's <code>AUDIT_RETENTION_DAYS</code>), and each entry also names the app (MCP client) and request that made it. On such a server the log also records each connection that was ended: revoked by you or the app, or ended because a used sign-in credential was presented again. Signing in and refreshing are not recorded, and no entry holds a token.</p>
+          <p>On a shared server, each connection sees only its own entries by default, and can ask for the entries of all of the same person's connections (<code>all_clients</code>). No other user's entries are ever shown, and deleting an account deletes its entries.</p>
+
         </section>
 
         <section aria-labelledby="privacy">

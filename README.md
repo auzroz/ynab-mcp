@@ -328,7 +328,7 @@ Coverage of the YNAB API endpoints:
 <summary><strong>System Tools (3)</strong></summary>
 
 - `ynab_rate_limit_status` — Check API rate limit status
-- `ynab_audit_log` — View the audit log of write attempts, refused ones included
+- `ynab_audit_log` — View the audit log of write attempts, refused ones included, and revoked connections
 - `ynab_health_check` — Test API connectivity
 </details>
 

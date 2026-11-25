@@ -166,11 +166,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New `outcome` filter. The `operation` and `resource_type` filters accept
     every value the log records (`move`, `import`, `audit_suppressed`;
     `category_group`, `payee`, `scheduled_transaction`).
-  - `success: false` now matches every outcome but `success`, refusals
-    included.
+  - `success: false` now matches every write outcome but `success`, refusals
+    included. A revocation entry (#60b) matches neither value and shows
+    `success: null`.
   - In OAuth mode it shows only the calling client's entries; another client
-    of the same user no longer sees them.
-  - The summary adds `by_outcome`.
+    of the same user no longer sees them. `all_clients: true` shows all of the
+    user's clients' entries (#60b), never another user's.
+  - The summary adds `by_outcome` and `revocation_count`.
+  - A bulk call (`ynab_create_transactions`, `ynab_update_transactions`) is
+    one entry per transaction YNAB saved, all with the call's `request_id`
+    (#60b); before, it was one entry for the call.
 - **What operators see after the authorization server move** (#47):
   - The consent page is now at `/oauth/interaction/<id>`, reached by a
     redirect from `/authorize`. Its choices go to `.../start`, and Cancel to
@@ -397,7 +402,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per user. Erasing an account erases its entries. This needs schema 7: one
   `audit_log` table with two indexes, added on startup.
   See "The audit log" in docs/REMOTE_HOSTING.md.
-- `ynab_rate_limit_status` reports the calling client's share of the user's
+- **The audit log, completed** (#60b):
+  - Each revoked connection is one entry in OAuth mode (D-7a): `revoked` (at
+    `/revoke`, or with the account tools), `revoked_reuse` (a spent refresh
+    token or code presented again, or by another client) or `revoked_replay`
+    (one spent twice at once). Issuing and refreshing tokens is not recorded,
+    nor is an account erase. Each revocation is recorded once, by the request
+    that deleted the connection, and no entry holds a token.
+  - A bulk call records one entry per transaction, in one insert under the
+    same 1-second bound and erasure check as a single write.
+  - `AUDIT_RETENTION_DAYS` (1-3650, default 90): the retention sweep deletes
+    older entries, in batches. OAuth mode's durable log only; stdio and
+    header mode keep the newest 1,000 per user in memory, as before.
+  - `ynab_audit_log` takes `all_clients` to show every connection of the
+    user. No schema change.
+- `ynab_rate_limit_status` reports
+ the calling client's share of the user's
   requests and refusals in the last hour, under `client_usage` (#58).
   `client_id` is `null` on stdio and in header mode.
 - `YNAB_WRITE_LIMIT_PER_HOUR`: a per-user write cap on every transport (#61c).
