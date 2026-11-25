@@ -459,6 +459,46 @@ describe('grant-guard (ADR-0002 D6): RFC 9700 revocations the library leaves out
   });
 });
 
+describe('/revoke: a client revokes only its own tokens (#64, OAUTH-20)', () => {
+  // The library's default revocation policy (features.revocation.allowedPolicy,
+  // not overridden here). Another confidential client is refused with
+  // invalid_request, as RFC 7009 section 2.1 asks. Another public client gets a
+  // silent 200: the library's choice, not the RFC's, and it tells an
+  // unauthenticated caller nothing about the token. Either way the owner's
+  // grant is untouched.
+  async function ownerStillWorks(owner: Awaited<ReturnType<typeof tokenPair>>) {
+    expect((await mcpInitialize(app, bearer(owner.access))).status).toBe(200);
+    // Last: a refresh rotates the token.
+    expect((await refresh(app, { clientId: owner.client.clientId, refreshToken: owner.refreshToken })).status).toBe(200);
+  }
+
+  it("another public client presenting the owner's refresh or access token gets 200 and revokes nothing", async () => {
+    const owner = await tokenPair();
+    const other = await registerClient(app);
+    for (const token of [owner.refreshToken, owner.access]) {
+      const res = await request(app).post('/revoke').type('form').send({ token, client_id: other.clientId });
+      expect(res.status).toBe(200);
+      expect(res.text).toBe('');
+    }
+    await ownerStillWorks(owner);
+  });
+
+  it("another confidential client presenting the owner's refresh or access token is refused and revokes nothing", async () => {
+    const owner = await tokenPair();
+    const other = await registerClient(app, { token_endpoint_auth_method: 'client_secret_post' });
+    expect(other.clientSecret).toBeDefined();
+    for (const token of [owner.refreshToken, owner.access]) {
+      const res = await request(app)
+        .post('/revoke')
+        .type('form')
+        .send({ token, client_id: other.clientId, client_secret: other.clientSecret });
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ error: 'invalid_request' });
+    }
+    await ownerStillWorks(owner);
+  });
+});
+
 describe('D8: methods and routes', () => {
   it('POST /authorize answers 405 with Allow: GET (only GET is served)', async () => {
     const res = await request(app).post('/authorize').type('form').send({ client_id: 'x' });
