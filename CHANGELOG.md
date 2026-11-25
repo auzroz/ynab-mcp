@@ -73,8 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read-only. Each connection's own grant still decides its access level, so
   the new client stays read-only. YNAB keeps both authorizations valid
   (checked against YNAB on 2026-11-23), so nothing breaks. A read-write token
-  YNAB has refused (`invalid_grant`) is never kept: the refusal is recorded,
-  and the next sign-in, read-only included, replaces it. No setting and no
+  YNAB has refused (`invalid_grant`) is not kept: the refusal is recorded
+  (best-effort), and the next sign-in, read-only included, replaces it. No setting and no
   migration.
 
 - **What operators see after the authorization server move** (#47):
