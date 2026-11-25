@@ -235,7 +235,42 @@ for (const driver of testDrivers) {
       expect(await h.storage.listAuditEntries('u1', {}, 100)).toEqual([]);
     });
 
+    it("ynab_audit_log (#60b): this client's entries by default, all the user's clients with all_clients, never another user's", async () => {
+      const h = await driver.open();
+      const { client } = await requestServer(h, { readOnly: true, readOnlyReason: 'scope' });
+      const base = { ts: Date.now(), userId: 'u1', familyId: 'g', requestId: 'r', tool: 'ynab_create_payee', operation: 'create', resourceType: 'payee', budgetId: BUDGET, outcome: 'success' };
+      await h.storage.appendAuditEntry({ ...base, clientId: 'client-a', resourceId: 'mine' });
+      await h.storage.appendAuditEntry({ ...base, clientId: 'client-b', resourceId: 'sibling' });
+      await h.storage.appendAuditEntry({ ...base, clientId: undefined, tool: undefined, operation: 'revoke', resourceType: 'grant', resourceId: 'grant-x', budgetId: undefined, outcome: 'revoked_reuse' });
+      await h.storage.appendAuditEntry({ ...base, userId: 'u2', clientId: 'client-a', resourceId: 'other-user' });
+      await h.storage.appendAuditEntry({ ...base, userId: 'u2', clientId: 'client-z', resourceId: 'other-user-2' });
+
+      const list = async (args: Record<string, unknown>) =>
+        JSON.parse(textOf(await client.callTool({ name: 'ynab_audit_log', arguments: args }))) as {
+          entries: Array<{ resource_id: string; success: boolean | null }>;
+          summary: { total_operations: number; revocation_count: number; failure_count: number };
+        };
+      const ids = (r: { entries: Array<{ resource_id: string }> }) => r.entries.map((e) => e.resource_id).sort();
+
+      // A read-only grant may use it: it reads the same user's log.
+      expect(ids(await list({}))).toEqual(['mine']);
+      expect(ids(await list({ all_clients: false }))).toEqual(['mine']);
+      const all = await list({ all_clients: true });
+      expect(ids(all)).toEqual(['grant-x', 'mine', 'sibling']);
+      expect(all.summary).toMatchObject({ total_operations: 3, revocation_count: 1, failure_count: 0 });
+      expect(all.entries.find((e) => e.resource_id === 'grant-x')?.success).toBeNull();
+      expect((await list({})).summary.total_operations).toBe(1);
+      const summary = await list({ all_clients: true, summary_only: true });
+      expect(summary.summary.total_operations).toBe(3);
+      // Filters apply inside the same user scope.
+      expect(ids(await list({ all_clients: true, operation: 'revoke' }))).toEqual(['grant-x']);
+      expect(ids(await list({ all_clients: true, outcome: 'revoked_reuse' }))).toEqual(['grant-x']);
+      expect(ids(await list({ all_clients: true, success: false }))).toEqual([]);
+      expect(ids(await list({ all_clients: true, success: true }))).toEqual(['mine', 'sibling']);
+    });
+
     describe('bulk calls (#60b): one row per item', () => {
+
       const IDS = [
         '55555555-5555-4555-8555-555555555501',
         '55555555-5555-4555-8555-555555555502',

@@ -24,7 +24,9 @@ vi.mock('../../../../src/auth/ynab-oauth.js', async () => {
 import { FULL_SCOPE, cookieSigningKey, normalizeAuthorizeScope } from '../../../../src/auth/oidc/provider.js';
 import { createClientSchemaValidator } from '../../../../src/auth/oidc/client-schema.js';
 import { isClientSecretHash } from '../../../../src/auth/token-hash.js';
-import type { ConsumeOutcome, Storage } from '../../../../src/storage/types.js';
+import type { AuditRecord, ConsumeOutcome, Storage } from '../../../../src/storage/types.js';
+import { createRevocationRecorder } from '../../../../src/auth/revocation-audit.js';
+
 import { REFRESH_TOKEN_IDLE_DAYS } from '../../../../src/auth/retention-defaults.js';
 import { testDrivers, cleanupDrivers, type DriverHandle } from '../../helpers/storage-drivers.js';
 import {
@@ -118,14 +120,14 @@ function consumeBarrier(storage: Storage, n: number): { store: Storage; outcomes
   const store = new Proxy(storage, {
     get(target, prop) {
       if (prop === 'consumeOAuthRow') {
-        return async (key: string): Promise<ConsumeOutcome> => {
+        return async (key: string, onReplay?: Parameters<Storage['consumeOAuthRow']>[1]): Promise<ConsumeOutcome> => {
           if (armed) {
             await new Promise<void>((resolve) => {
               waiting.push(resolve);
               if (waiting.length >= n) for (const release of waiting.splice(0)) release();
             });
           }
-          const outcome = await target.consumeOAuthRow(key);
+          const outcome = await target.consumeOAuthRow(key, onReplay);
           outcomes.push(outcome);
           return outcome;
         };
@@ -135,6 +137,14 @@ function consumeBarrier(storage: Storage, n: number): { store: Storage; outcomes
     },
   });
   return { store, outcomes, arm: () => (armed = true) };
+}
+
+/** The user's revocation rows, once `n` are there and nothing more arrives. */
+async function revokeRows(storage: Storage, n: number): Promise<AuditRecord[]> {
+  const all = (): Promise<AuditRecord[]> => storage.listAuditEntries('ynab-user-1', { operation: 'revoke' }, 100);
+  await vi.waitFor(async () => expect(await all()).toHaveLength(n), { timeout: 3000, interval: 20 });
+  await new Promise((r) => setTimeout(r, 100));
+  return all();
 }
 
 for (const driver of testDrivers) {
@@ -473,6 +483,33 @@ for (const driver of testDrivers) {
         }
       }
       expect(live.length).toBeLessThanOrEqual(1);
+    });
+
+    it("#60b: the library's own reuse check (no grant-guard in front) records one revoked_reuse row", async () => {
+      await setup({ revocations: createRevocationRecorder(handle.storage) });
+      const { tokens } = await signIn(t, clientId);
+      const spent = tokens['refresh_token'] as string;
+      expect((await refresh(t.app, { clientId, refreshToken: spent })).status).toBe(200);
+      expect((await refresh(t.app, { clientId, refreshToken: spent })).body.error).toBe('invalid_grant');
+      const rows = await revokeRows(handle.storage, 1);
+      expect(rows[0]).toMatchObject({ operation: 'revoke', resourceType: 'grant', outcome: 'revoked_reuse', clientId });
+      expect(rows[0]?.resourceId).toBe(rows[0]?.familyId);
+      expect(JSON.stringify(rows)).not.toContain(spent);
+    });
+
+    it('#60b: the forced race records exactly one revoked_replay row, and no reuse row', async () => {
+      const barrier = consumeBarrier(handle.storage, 2);
+      await setup({ providerStore: barrier.store, revocations: createRevocationRecorder(handle.storage) });
+      const { tokens } = await signIn(t, clientId);
+      barrier.arm();
+      await Promise.all([
+        refresh(t.app, { clientId, refreshToken: tokens['refresh_token'] as string }),
+        refresh(t.app, { clientId, refreshToken: tokens['refresh_token'] as string }),
+      ]);
+      expect(barrier.outcomes.slice(-2).sort()).toEqual(['consumed', 'replayed']);
+      const rows = await revokeRows(handle.storage, 1);
+      expect(rows[0]).toMatchObject({ operation: 'revoke', resourceType: 'grant', outcome: 'revoked_replay', clientId });
+      expect(JSON.stringify(rows)).not.toContain(tokens['refresh_token'] as string);
     });
 
     it('#113 note 2: a forced race (both read the token before either consumes it) leaves no live token (spike 32)', async () => {

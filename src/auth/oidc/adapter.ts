@@ -50,12 +50,19 @@
  * carries an id, a key or a payload.
  */
 
-import { errors } from 'oidc-provider';
+import Provider, { errors } from 'oidc-provider';
 import { z } from 'zod';
 import type { Adapter, AdapterFactory, AdapterPayload } from 'oidc-provider';
 import type { LibraryKeyDeriver, TokenKind } from '../token-hash.js';
 import { isClientSecretHash, hashClientSecret } from '../token-hash.js';
-import type { OAuthModel, OAuthRowRecord, OAuthRowStore, OAuthRowWrite } from '../../storage/types.js';
+import type { GrantRevocationTracker, RevocationRecorder } from '../revocation-audit.js';
+import type {
+  OAuthModel,
+  OAuthRowRecord,
+  OAuthRowStore,
+  OAuthRowWrite,
+  ReplayedGrant,
+} from '../../storage/types.js';
 import { CONSUMABLE_MODELS, GRANT_TOKEN_MODELS, plainRowKey } from '../../storage/oauth-rows.js';
 import { isMetadataDocumentClientId, METADATA_DOCUMENT_ANCHOR_FIELD } from '../client-id-url.js';
 
@@ -117,6 +124,8 @@ export interface OidcAdapterDeps {
   keys: LibraryKeyDeriver;
   /** The adapter's clock (epoch ms) for expiry; defaults to `Date.now`. */
   now?: () => number;
+  /** #60b: where revocations are audited (src/auth/revocation-audit.ts); absent, nothing is recorded. */
+  revocations?: { tracker: GrantRevocationTracker; recorder: RevocationRecorder } | undefined;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -208,15 +217,29 @@ export class OidcAdapter implements Adapter {
     }
     const key = this.keyFor(id);
     if (key === undefined) throw new errors.InvalidGrant('grant request is invalid');
-    const outcome = await this.deps.store.consumeOAuthRow(key);
+    let replayed: ReplayedGrant | undefined;
+    const outcome = await this.deps.store.consumeOAuthRow(key, (grant) => {
+      replayed = grant;
+    });
     // `replayed`: consumed by someone else first; storage revoked the grant in the same step.
+    // Audited (#60b) only when this call's revocation deleted the grant's rows.
+    if (replayed !== undefined && this.deps.revocations !== undefined) {
+      const clientId = Provider.ctx?.oidc?.client?.clientId ?? replayed.clientId;
+      await this.deps.revocations.recorder.record({
+        userId: replayed.accountId,
+        clientId,
+        familyId: clientId === replayed.clientId ? replayed.grantId : undefined,
+        grantId: replayed.grantId,
+        outcome: 'revoked_replay',
+      });
+    }
     if (outcome !== 'consumed') throw new errors.InvalidGrant('grant request is invalid');
   }
 
   async destroy(id: string): Promise<void> {
     if (this.spec.model === 'Grant') {
-      // A grant goes with every row under it (the library destroys a grant only to revoke it).
-      if (typeof id === 'string' && LIBRARY_ID.test(id)) await this.deps.store.revokeOAuthGrant(id);
+      // A grant goes with every row under it (the library's revocation; our failed-sign-in cleanup).
+      if (typeof id === 'string' && LIBRARY_ID.test(id)) await this.revokeGrant(id);
       return;
     }
     const key = this.keyFor(id);
@@ -230,7 +253,22 @@ export class OidcAdapter implements Adapter {
     // revocation then can't save a successor. The library keeps the row only
     // after revoking an access token, when every token of the grant is gone
     // and nothing can use the grant again.
-    await this.deps.store.revokeOAuthGrant(grantId);
+    await this.revokeGrant(grantId);
+  }
+
+  /**
+   * Delete a grant with everything under it. When this call deleted rows,
+   * the request is marked for #60b's audit row (see GrantRevocationTracker):
+   * the library's `grant.revoked` event records a marked grant only, once.
+   */
+  private async revokeGrant(grantId: string): Promise<void> {
+    const revocations = this.deps.revocations;
+    // Who the grant belonged to, read before it goes (a revocation is rare; a refresh never gets here).
+    const before = revocations === undefined ? undefined : await this.deps.store.findOAuthRow(plainRowKey('Grant', grantId));
+    const deleted = await this.deps.store.revokeOAuthGrant(grantId);
+    if (revocations !== undefined && deleted > 0) {
+      revocations.tracker.deleted(grantId, { accountId: before?.accountId, clientId: before?.clientId });
+    }
   }
 
   /** The row to store: the indexed columns, and the payload without `jti` or `consumed`. */

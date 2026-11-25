@@ -653,6 +653,13 @@ export type CodeSaveOutcome = 'saved' | 'client-gone' | 'grant-gone' | 'no-sign-
  */
 export type ConsumeOutcome = 'consumed' | 'replayed' | 'missing';
 
+/** The grant a replayed consume revoked, as its row said (ids only). */
+export interface ReplayedGrant {
+  grantId: string;
+  accountId: string | undefined;
+  clientId: string | undefined;
+}
+
 /**
  * The driver-facing contract behind the oidc-provider adapter. Every method
  * is atomic. "Grant-bound" rows are AccessToken, RefreshToken and
@@ -721,8 +728,12 @@ export interface OAuthRowStore {
    * only while it is unset. When it was already set, revoke the row's whole
    * grant ({@link revokeOAuthGrant}) in the same transaction. Throws for a row
    * of another model.
+   *
+   * `onReplay` (#60b's audit row) is called, before the promise settles,
+   * when that revocation deleted the grant's rows: of two calls losing the
+   * compare-and-set at once, only the one whose delete removed them reports.
    */
-  consumeOAuthRow(key: string): Promise<ConsumeOutcome>;
+  consumeOAuthRow(key: string, onReplay?: (grant: ReplayedGrant) => void): Promise<ConsumeOutcome>;
   /**
    * Delete one row (not a grant's: use {@link revokeOAuthGrant}). Returns
    * whether this call deleted it: of two concurrent deletes of one row, exactly

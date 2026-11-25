@@ -1096,16 +1096,25 @@ describe('createTransaction (write)', () => {
   it('succeeds, sets resourceId when present, logs success', async () => {
     const client = makeClient(false);
     setResolve(mockApi.transactions.createTransaction, {
-      data: { transaction: { id: 'txn-new' } },
+      data: { transaction: { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1' } },
     });
     await client.createTransaction(BUDGET, {
       transaction: { amount: -1000, date: '2026-06-01', payee_name: 'Store', account_id: 'a' },
     } as never);
     expect((await auditEntries())[0]).toMatchObject({
       tool: 'ynab_create_transaction',
-      resourceId: 'txn-new',
+      resourceId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
       success: true,
     });
+  });
+
+  it('#60b: records only an id shaped like a YNAB transaction id, never other text from the response', async () => {
+    const client = makeClient(false);
+    setResolve(mockApi.transactions.createTransaction, {
+      data: { transactions: [{ id: 'Sentinel Payee text' }, { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2_2026-06-01' }], transaction_ids: [] },
+    });
+    await client.createTransaction(BUDGET, { transactions: [] } as never);
+    expect((await auditEntries()).map((e) => e.resourceId)).toEqual(['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2_2026-06-01']);
   });
 
   it('omits resourceId when the created transaction id is absent', async () => {

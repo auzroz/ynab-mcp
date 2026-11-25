@@ -35,6 +35,7 @@ import type {
   StagedSignIn,
   CodeSaveOutcome,
   ConsumeOutcome,
+  ReplayedGrant,
   KeyCheckOutcome,
   KeyFloors,
   StoredUserCiphertext,
@@ -1270,8 +1271,10 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     return row && oauthRowFromRow(row);
   }
 
-  async consumeOAuthRow(key: string): Promise<ConsumeOutcome> {
-    return this.inTransaction<ConsumeOutcome>(async (client) => {
+  async consumeOAuthRow(key: string, onReplay?: (grant: ReplayedGrant) => void): Promise<ConsumeOutcome> {
+    let replayed: ReplayedGrant | undefined;
+    const outcome = await this.inTransaction<ConsumeOutcome>(async (client) => {
+      replayed = undefined;
       // Compare-and-set: under READ COMMITTED a concurrent second UPDATE waits
       // for this row's lock, rechecks consumed_at IS NULL against the committed
       // version and matches nothing.
@@ -1281,10 +1284,12 @@ export class PostgresStorage implements Storage, OAuthRowStore {
         [key, Date.now()]
       );
       if (won.rowCount === 1) return 'consumed';
-      const found = await client.query<{ model: OAuthModel; grant_id: string | null }>(
-        'SELECT model, grant_id FROM oauth_rows WHERE key = $1',
-        [key]
-      );
+      const found = await client.query<{
+        model: OAuthModel;
+        grant_id: string | null;
+        account_id: string | null;
+        client_id: string | null;
+      }>('SELECT model, grant_id, account_id, client_id FROM oauth_rows WHERE key = $1', [key]);
       const row = found.rows[0];
       if (!row) return 'missing';
       if (!CONSUMABLE_MODELS.has(row.model)) throw new Error(`consumeOAuthRow cannot consume a ${row.model} row`);
@@ -1293,11 +1298,19 @@ export class PostgresStorage implements Storage, OAuthRowStore {
         await client.query('DELETE FROM oauth_rows WHERE key = $1', [key]);
       } else {
         await client.query(LOCK_FAMILY, [row.grant_id]);
-        await client.query('DELETE FROM oauth_rows WHERE grant_id = $1', [row.grant_id]);
+        // A second loser (another replica) waited on the lock and deletes nothing: it reports nothing.
+        const deleted = await client.query('DELETE FROM oauth_rows WHERE grant_id = $1', [row.grant_id]);
+        if ((deleted.rowCount ?? 0) > 0) {
+          replayed = { grantId: row.grant_id, accountId: row.account_id ?? undefined, clientId: row.client_id ?? undefined };
+        }
       }
       return 'replayed';
     });
+    // After the commit: the report is of a revocation that happened.
+    if (replayed !== undefined) onReplay?.(replayed);
+    return outcome;
   }
+
 
   async destroyOAuthRow(key: string): Promise<boolean> {
     // One statement: the row and, when it is a client, its registration access

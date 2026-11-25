@@ -45,7 +45,7 @@ function request(n = 0): { url: string; method: string | undefined; body: any } 
 }
 
 const savedTxn = {
-  id: 't1',
+  id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
   date: '2024-02-01',
   amount: -100000,
   cleared: 'uncleared',
@@ -97,7 +97,7 @@ describe('split transactions on the wire', () => {
 
   it('ynab_create_transactions sends subtransactions on the split item only', async () => {
     fetchMock.mockImplementation(async () =>
-      json({ data: { transactions: [savedTxn], transaction_ids: ['t1'], server_knowledge: 1 } })
+      json({ data: { transactions: [savedTxn], transaction_ids: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'], server_knowledge: 1 } })
     );
 
     await handleCreateTransactions(
@@ -174,7 +174,7 @@ describe('clearing fields with null on the wire', () => {
 
   it('ynab_update_transactions sends nulls in the bulk PATCH', async () => {
     fetchMock.mockImplementation(async () =>
-      json({ data: { transaction_ids: ['t1', 't2'], transactions: [], server_knowledge: 1 } })
+      json({ data: { transaction_ids: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'], transactions: [], server_knowledge: 1 } })
     );
 
     await handleUpdateTransactions(
@@ -207,7 +207,7 @@ describe('import_id on the wire', () => {
   it('ynab_create_transaction sends import_id', async () => {
     fetchMock.mockImplementation(async () =>
       json({
-        data: { transaction_ids: ['t1'], transactions: [savedTxn], duplicate_import_ids: [], server_knowledge: 1 },
+        data: { transaction_ids: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'], transactions: [savedTxn], duplicate_import_ids: [], server_knowledge: 1 },
       })
     );
 
@@ -223,8 +223,8 @@ describe('import_id on the wire', () => {
     expect(body.transactions).toHaveLength(1);
     expect(body.transactions[0].import_id).toBe('YNAB:-1000:2024-02-01:1');
     expect(out.success).toBe(true);
-    expect(out.transaction.id).toBe('t1');
-    expect((await entries()).some((e) => e.resourceId === 't1')).toBe(true);
+    expect(out.transaction.id).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1');
+    expect((await entries()).some((e) => e.resourceId === 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1')).toBe(true);
   });
 
   it('ynab_create_transaction reports a duplicate import_id (skip-duplicates response) as a result', async () => {
@@ -252,7 +252,7 @@ describe('import_id on the wire', () => {
 
   it('ynab_update_transactions addresses rows by import_id without an id', async () => {
     fetchMock.mockImplementation(async () =>
-      json({ data: { transaction_ids: ['t1', 't2'], transactions: [], server_knowledge: 1 } })
+      json({ data: { transaction_ids: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'], transactions: [], server_knowledge: 1 } })
     );
 
     await handleUpdateTransactions(

@@ -35,6 +35,7 @@ import type {
   StagedSignIn,
   CodeSaveOutcome,
   ConsumeOutcome,
+  ReplayedGrant,
   KeyCheckOutcome,
   KeyFloors,
   StoredUserCiphertext,
@@ -1094,9 +1095,10 @@ export class SqliteStorage implements Storage, OAuthRowStore {
     return row && oauthRowFromRow(row);
   }
 
-  async consumeOAuthRow(key: string): Promise<ConsumeOutcome> {
+  async consumeOAuthRow(key: string, onReplay?: (grant: ReplayedGrant) => void): Promise<ConsumeOutcome> {
     const now = Date.now();
-    return this.database
+    let replayed: ReplayedGrant | undefined;
+    const outcome = this.database
       .transaction((): ConsumeOutcome => {
         const db = this.database;
         const won = db
@@ -1106,18 +1108,25 @@ export class SqliteStorage implements Storage, OAuthRowStore {
           )
           .run(now, key);
         if (won.changes === 1) return 'consumed';
-        const row = db.prepare('SELECT model, grant_id FROM oauth_rows WHERE key = ?').get(key) as
-          | { model: OAuthModel; grant_id: string | null }
+        const row = db.prepare('SELECT model, grant_id, account_id, client_id FROM oauth_rows WHERE key = ?').get(key) as
+          | { model: OAuthModel; grant_id: string | null; account_id: string | null; client_id: string | null }
           | undefined;
         if (!row) return 'missing';
         if (!CONSUMABLE_MODELS.has(row.model)) throw new Error(`consumeOAuthRow cannot consume a ${row.model} row`);
         // Lost the compare-and-set: someone consumed it first. That is reuse.
-        if (row.grant_id !== null) db.prepare('DELETE FROM oauth_rows WHERE grant_id = ?').run(row.grant_id);
-        else db.prepare('DELETE FROM oauth_rows WHERE key = ?').run(key);
+        if (row.grant_id !== null) {
+          if (db.prepare('DELETE FROM oauth_rows WHERE grant_id = ?').run(row.grant_id).changes > 0) {
+            replayed = { grantId: row.grant_id, accountId: row.account_id ?? undefined, clientId: row.client_id ?? undefined };
+          }
+        } else db.prepare('DELETE FROM oauth_rows WHERE key = ?').run(key);
         return 'replayed';
       })
       .immediate();
+    // After the commit: the report is of a revocation that happened.
+    if (replayed !== undefined) onReplay?.(replayed);
+    return outcome;
   }
+
 
   async destroyOAuthRow(key: string): Promise<boolean> {
     return this.database

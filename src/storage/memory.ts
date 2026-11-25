@@ -35,6 +35,7 @@ import type {
   StagedSignIn,
   CodeSaveOutcome,
   ConsumeOutcome,
+  ReplayedGrant,
   KeyCheckOutcome,
   KeyFloors,
   StoredUserCiphertext,
@@ -819,7 +820,7 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     return newest && { ...newest };
   }
 
-  async consumeOAuthRow(key: string): Promise<ConsumeOutcome> {
+  async consumeOAuthRow(key: string, onReplay?: (grant: ReplayedGrant) => void): Promise<ConsumeOutcome> {
     const row = this.oauthRows.get(key);
     if (!row) return 'missing';
     if (!CONSUMABLE_MODELS.has(row.model)) throw new Error(`consumeOAuthRow cannot consume a ${row.model} row`);
@@ -828,9 +829,13 @@ export class MemoryStorage implements Storage, OAuthRowStore {
       return 'consumed';
     }
     // Lost the compare-and-set: someone consumed it first. That is reuse.
-    if (row.grantId !== undefined) this.revokeGrantSync(row.grantId);
-    else this.oauthRows.delete(key);
+    if (row.grantId !== undefined) {
+      if (this.revokeGrantSync(row.grantId) > 0) {
+        onReplay?.({ grantId: row.grantId, accountId: row.accountId, clientId: row.clientId });
+      }
+    } else this.oauthRows.delete(key);
     return 'replayed';
+
   }
 
   async destroyOAuthRow(key: string): Promise<boolean> {

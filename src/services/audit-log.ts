@@ -246,6 +246,11 @@ export class AuditLog {
     return id(this.context.clientId);
   }
 
+  /** The user this log records for (the registry user key). */
+  get userId(): string {
+    return this.context.userId;
+  }
+
   /** Wait for `work`, or until the cap (and half the time left before the deadline) has passed. */
   private async boundedWait(work: Promise<void>): Promise<void> {
     const deadline = this.context.deadline;
