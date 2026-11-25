@@ -140,12 +140,12 @@ describe('ynab_list_categories', () => {
 describe('ynab_list_months / ynab_list_payees / ynab_list_scheduled_transactions', () => {
   it('months: full adds server_knowledge; delta lists deleted months', async () => {
     mockClient.getBudgetMonths.mockResolvedValue(createMonthsResponse());
-    expect(parse(await handleListMonths({}, mockClient as never)).server_knowledge).toBe(12345);
+    expect((await handleListMonths({}, mockClient as never)).server_knowledge).toBe(12345);
     expect(mockClient.getBudgetMonths).toHaveBeenLastCalledWith('test-budget-id');
 
     const [kept, gone] = [mockMonthSummaries[0]!, { ...mockMonthSummaries[1]!, deleted: true }];
     mockClient.getBudgetMonths.mockResolvedValue({ data: { months: [kept, gone], server_knowledge: 9 } });
-    const out = parse(await handleListMonths({ since_server_knowledge: 5 }, mockClient as never));
+    const out = await handleListMonths({ since_server_knowledge: 5 }, mockClient as never);
     expect(mockClient.getBudgetMonths).toHaveBeenLastCalledWith('test-budget-id', { lastKnowledgeOfServer: 5 });
     expect(out).toMatchObject({ delta: true, deleted_months: [gone.month], count: 1, server_knowledge: 9 });
   });

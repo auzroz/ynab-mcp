@@ -48,7 +48,6 @@ const inputSchema = z
     path: ['amount'],
   });
 
-// Tool definition
 const FAILED = 'In-band failure results only';
 const DONE = 'Successful move only';
 
@@ -97,6 +96,7 @@ export const moveMoneyOutputSchema = z.object({
 });
 export type MoveMoneyOutput = z.output<typeof moveMoneyOutputSchema>;
 
+// Tool definition
 export const moveMoneyTool: Tool = {
   name: 'ynab_move_money',
   description: `Move budgeted money from one category to another within a single month.

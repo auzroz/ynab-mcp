@@ -39,6 +39,8 @@ import { updatePayeeOutputSchema } from '../../../src/tools/payees/update-payee.
 import { listPayeeLocationsOutputSchema } from '../../../src/tools/payees/list-payee-locations.js';
 import { getPayeeLocationOutputSchema } from '../../../src/tools/payees/get-payee-location.js';
 import { listPayeeLocationsByPayeeOutputSchema } from '../../../src/tools/payees/list-payee-locations-by-payee.js';
+import { listMonthsOutputSchema } from '../../../src/tools/months/list-months.js';
+import { getMonthOutputSchema } from '../../../src/tools/months/get-month.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
@@ -60,8 +62,6 @@ const PENDING_OUTPUT_SCHEMA = [
   // Categories
   // Payees
   // Months
-  'ynab_list_months',
-  'ynab_get_month',
   // Transactions
   'ynab_list_transactions',
   'ynab_get_transaction',
@@ -137,6 +137,8 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_list_payee_locations: listPayeeLocationsOutputSchema,
   ynab_get_payee_location: getPayeeLocationOutputSchema,
   ynab_list_payee_locations_by_payee: listPayeeLocationsByPayeeOutputSchema,
+  ynab_list_months: listMonthsOutputSchema,
+  ynab_get_month: getMonthOutputSchema,
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,

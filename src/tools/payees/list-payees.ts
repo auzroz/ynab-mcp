@@ -21,7 +21,6 @@ const inputSchema = z.object({
   since_server_knowledge: sinceServerKnowledge(),
 });
 
-// Tool definition
 const payeeSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -47,6 +46,7 @@ export const listPayeesOutputSchema = z.object({
 });
 export type ListPayeesOutput = z.output<typeof listPayeesOutputSchema>;
 
+// Tool definition
 export const listPayeesTool: Tool = {
   name: 'ynab_list_payees',
   description: `List all payees in a budget.

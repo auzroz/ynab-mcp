@@ -31,7 +31,6 @@ const inputSchema = z.object({
   since_server_knowledge: sinceServerKnowledge(),
 });
 
-// Tool definition
 const categorySchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -88,6 +87,7 @@ export const listCategoriesOutputSchema = z.object({
 });
 export type ListCategoriesOutput = z.output<typeof listCategoriesOutputSchema>;
 
+// Tool definition
 export const listCategoriesTool: Tool = {
   name: 'ynab_list_categories',
   description: `List all category groups and categories in a budget with budgeted amounts and balances.

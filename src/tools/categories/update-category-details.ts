@@ -52,7 +52,6 @@ const inputSchema = z
     message: `Provide at least one field to update: ${UPDATABLE_FIELDS.join(', ')}`,
   });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). Nulls are reported on purpose. */
 export const updateCategoryDetailsOutputSchema = z.object({
   success: z.literal(true),
@@ -71,6 +70,7 @@ export const updateCategoryDetailsOutputSchema = z.object({
 });
 export type UpdateCategoryDetailsOutput = z.output<typeof updateCategoryDetailsOutputSchema>;
 
+// Tool definition
 export const updateCategoryDetailsTool: Tool = {
   name: 'ynab_update_category_details',
   description: `Update a category's details: rename it, change its note, move it to a different category group, or set/clear its target (goal).

@@ -25,6 +25,8 @@ import { getMonthCategoryOutputSchema, handleGetMonthCategory } from '../../../s
 import { moveMoneyOutputSchema, handleMoveMoney } from '../../../src/tools/categories/move-money.js';
 import { AuditLog } from '../../../src/services/audit-log.js';
 import { listPayeesOutputSchema, handleListPayees } from '../../../src/tools/payees/list-payees.js';
+import { listMonthsOutputSchema, handleListMonths } from '../../../src/tools/months/list-months.js';
+import { getMonthOutputSchema, handleGetMonth } from '../../../src/tools/months/get-month.js';
 import {
   CircuitOpenError,
   errorResponseSchema,
@@ -41,6 +43,9 @@ import {
 } from '../../../src/utils/errors.js';
 import {
   createMockClient,
+  createMonthsResponse,
+  createMonthResponse,
+  mockMonthSummaries,
   createPayeesResponse,
   mockPayees,
   mockTransferPayees,
@@ -251,5 +256,26 @@ describe('core output schemas: payees', () => {
     const delta = await handleListPayees({ since_server_knowledge: 10 }, c());
     expect(delta.deleted_ids).toHaveLength(1);
     expectValid(listPayeesOutputSchema, delta);
+  });
+});
+
+describe('core output schemas: months', () => {
+  it('ynab_list_months: full and delta (deleted months by month)', async () => {
+    client.getBudgetMonths.mockResolvedValue(createMonthsResponse());
+    expectValid(listMonthsOutputSchema, await handleListMonths({}, c()));
+    client.getBudgetMonths.mockResolvedValue({
+      data: { months: [mockMonthSummaries[0]!, { ...mockMonthSummaries[1]!, deleted: true }], server_knowledge: 20 },
+    });
+    const delta = await handleListMonths({ since_server_knowledge: 10 }, c());
+    expect(delta.deleted_months).toHaveLength(1);
+    expectValid(listMonthsOutputSchema, delta);
+  });
+
+  it('ynab_get_month: with age of money', async () => {
+    client.getBudgetMonth.mockResolvedValue(createMonthResponse());
+    client.getCategories.mockResolvedValue(createCategoriesResponse());
+    const out = await handleGetMonth({ month: '2024-01-01' }, c());
+    expect(out.summary.age_of_money).toBeDefined();
+    expectValid(getMonthOutputSchema, out);
   });
 });

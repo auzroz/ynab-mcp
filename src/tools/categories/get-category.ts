@@ -24,7 +24,6 @@ const inputSchema = z.object({
   category_id: ynabId().describe('The category UUID to retrieve'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getCategoryOutputSchema = z.object({
   category: z.object({
@@ -43,6 +42,7 @@ export const getCategoryOutputSchema = z.object({
 });
 export type GetCategoryOutput = z.output<typeof getCategoryOutputSchema>;
 
+// Tool definition
 export const getCategoryTool: Tool = {
   name: 'ynab_get_category',
   description: `Get details about a specific budget category including budgeted amount, activity, and goal status.

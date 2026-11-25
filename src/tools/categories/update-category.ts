@@ -30,7 +30,6 @@ const inputSchema = z.object({
     .describe('The new budgeted amount in dollars (e.g., 500.00 for $500)'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const updateCategoryOutputSchema = z.object({
   success: z.literal(true),
@@ -46,6 +45,7 @@ export const updateCategoryOutputSchema = z.object({
 });
 export type UpdateCategoryOutput = z.output<typeof updateCategoryOutputSchema>;
 
+// Tool definition
 export const updateCategoryTool: Tool = {
   name: 'ynab_update_category',
   description: `Update the budgeted amount for a category in a specific month.

@@ -20,7 +20,6 @@ const inputSchema = z.object({
   payee_id: ynabId('Invalid payee UUID format').describe('The payee UUID'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const listPayeeLocationsByPayeeOutputSchema = z.object({
   payee_id: z.string(),
@@ -29,6 +28,7 @@ export const listPayeeLocationsByPayeeOutputSchema = z.object({
 });
 export type ListPayeeLocationsByPayeeOutput = z.output<typeof listPayeeLocationsByPayeeOutputSchema>;
 
+// Tool definition
 export const listPayeeLocationsByPayeeTool: Tool = {
   name: 'ynab_list_payee_locations_by_payee',
   description: `List all locations for a specific payee.

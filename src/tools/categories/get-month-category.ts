@@ -27,7 +27,6 @@ const inputSchema = z.object({
   category_id: ynabId().describe('The category UUID to retrieve'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getMonthCategoryOutputSchema = z.object({
   month: z.string(),
@@ -45,6 +44,7 @@ export const getMonthCategoryOutputSchema = z.object({
 });
 export type GetMonthCategoryOutput = z.output<typeof getMonthCategoryOutputSchema>;
 
+// Tool definition
 export const getMonthCategoryTool: Tool = {
   name: 'ynab_get_month_category',
   description: `Get category details for a specific month, including that month's budgeted amount, activity, and balance.

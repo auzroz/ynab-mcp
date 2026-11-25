@@ -19,7 +19,6 @@ const inputSchema = z.object({
   payee_location_id: ynabId().describe('The payee location UUID'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getPayeeLocationOutputSchema = z.object({
   payee_location: z.object({
@@ -31,6 +30,7 @@ export const getPayeeLocationOutputSchema = z.object({
 });
 export type GetPayeeLocationOutput = z.output<typeof getPayeeLocationOutputSchema>;
 
+// Tool definition
 export const getPayeeLocationTool: Tool = {
   name: 'ynab_get_payee_location',
   description: `Get a specific payee location by ID.

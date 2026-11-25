@@ -23,7 +23,6 @@ const inputSchema = z.object({
   account_id: ynabId().describe('The account UUID to retrieve'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getAccountOutputSchema = z.object({
   account: z.object({
@@ -38,6 +37,7 @@ export const getAccountOutputSchema = z.object({
 });
 export type GetAccountOutput = z.output<typeof getAccountOutputSchema>;
 
+// Tool definition
 export const getAccountTool: Tool = {
   name: 'ynab_get_account',
   description: `Get details about a specific account including balance and recent activity.

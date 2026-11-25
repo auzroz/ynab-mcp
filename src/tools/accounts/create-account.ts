@@ -41,7 +41,6 @@ const inputSchema = z.object({
     .describe('The starting balance in dollars (e.g., 1000.50 for $1,000.50)'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const createAccountOutputSchema = z.object({
   success: z.literal(true),
@@ -56,6 +55,7 @@ export const createAccountOutputSchema = z.object({
 });
 export type CreateAccountOutput = z.output<typeof createAccountOutputSchema>;
 
+// Tool definition
 export const createAccountTool: Tool = {
   name: 'ynab_create_account',
   description: `Create a new account in a budget.

@@ -32,7 +32,6 @@ const inputSchema = z.object({
   ...categoryTargetCreateShape,
 }).superRefine(refineGoalFrequency);
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). Nulls are reported on purpose. */
 export const createCategoryOutputSchema = z.object({
   success: z.literal(true),
@@ -47,6 +46,7 @@ export const createCategoryOutputSchema = z.object({
 });
 export type CreateCategoryOutput = z.output<typeof createCategoryOutputSchema>;
 
+// Tool definition
 export const createCategoryTool: Tool = {
   name: 'ynab_create_category',
   description: `Create a new category inside an existing category group.

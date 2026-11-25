@@ -21,7 +21,6 @@ const inputSchema = z.object({
   name: z.string().min(1).max(CATEGORY_GROUP_NAME_MAX_LENGTH).describe('The new name for the category group'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const updateCategoryGroupOutputSchema = z.object({
   success: z.literal(true),
@@ -30,6 +29,7 @@ export const updateCategoryGroupOutputSchema = z.object({
 });
 export type UpdateCategoryGroupOutput = z.output<typeof updateCategoryGroupOutputSchema>;
 
+// Tool definition
 export const updateCategoryGroupTool: Tool = {
   name: 'ynab_update_category_group',
   description: `Rename an existing category group.

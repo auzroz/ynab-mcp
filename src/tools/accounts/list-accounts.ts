@@ -32,7 +32,6 @@ const inputSchema = z.object({
   since_server_knowledge: sinceServerKnowledge(),
 });
 
-// Tool definition
 const accountSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -65,6 +64,7 @@ export const listAccountsOutputSchema = z.object({
 });
 export type ListAccountsOutput = z.output<typeof listAccountsOutputSchema>;
 
+// Tool definition
 export const listAccountsTool: Tool = {
   name: 'ynab_list_accounts',
   description: `List all accounts in a budget with their current balances.

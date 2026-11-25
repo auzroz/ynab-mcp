@@ -20,7 +20,6 @@ const inputSchema = z.object({
   name: z.string().min(1).max(CATEGORY_GROUP_NAME_MAX_LENGTH).describe('The name of the new category group'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const createCategoryGroupOutputSchema = z.object({
   success: z.literal(true),
@@ -29,6 +28,7 @@ export const createCategoryGroupOutputSchema = z.object({
 });
 export type CreateCategoryGroupOutput = z.output<typeof createCategoryGroupOutputSchema>;
 
+// Tool definition
 export const createCategoryGroupTool: Tool = {
   name: 'ynab_create_category_group',
   description: `Create a new category group.

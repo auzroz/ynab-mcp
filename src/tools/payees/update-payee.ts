@@ -21,7 +21,6 @@ const inputSchema = z.object({
   name: z.string().min(1).max(PAYEE_NAME_MAX_LENGTH).describe('The new name for the payee'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const updatePayeeOutputSchema = z.object({
   success: z.literal(true),
@@ -30,6 +29,7 @@ export const updatePayeeOutputSchema = z.object({
 });
 export type UpdatePayeeOutput = z.output<typeof updatePayeeOutputSchema>;
 
+// Tool definition
 export const updatePayeeTool: Tool = {
   name: 'ynab_update_payee',
   description: `Rename an existing payee.

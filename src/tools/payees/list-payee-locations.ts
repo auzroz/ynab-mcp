@@ -19,7 +19,6 @@ const inputSchema = z.object({
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const listPayeeLocationsOutputSchema = z.object({
   location_count: count(),
@@ -29,6 +28,7 @@ export const listPayeeLocationsOutputSchema = z.object({
 });
 export type ListPayeeLocationsOutput = z.output<typeof listPayeeLocationsOutputSchema>;
 
+// Tool definition
 export const listPayeeLocationsTool: Tool = {
   name: 'ynab_list_payee_locations',
   description: `List all payee locations for a budget.

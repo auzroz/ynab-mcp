@@ -13,6 +13,8 @@ import { getCurrentMonth } from '../../utils/dates.js';
 import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
 import { omitNull } from '../../utils/omit-null.js';
+import { toOutputSchema } from '../output-schema.js';
+import { count, money } from '../schemas/common.js';
 
 // Input schema - accepts YYYY-MM-DD format or "current"
 const inputSchema = z.object({
@@ -28,6 +30,28 @@ const inputSchema = z.object({
     )
     .describe('The budget month in YYYY-MM-DD format (use first of month) or "current"'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const getMonthOutputSchema = z.object({
+  month: z.string(),
+  summary: z.object({
+    note: z.string().nullable(),
+    income: money(),
+    budgeted: money(),
+    activity: money(),
+    to_be_budgeted: money(),
+    age_of_money: z.number().int().exactOptional().describe('Days; omitted when YNAB has no value'),
+  }),
+  category_count: count(),
+  categories_by_group: z.array(
+    z.object({
+      group_id: z.string(),
+      group_name: z.string(),
+      categories: z.array(z.object({ name: z.string(), budgeted: money(), activity: money(), balance: money() })),
+    })
+  ),
+});
+export type GetMonthOutput = z.output<typeof getMonthOutputSchema>;
 
 // Tool definition
 export const getMonthTool: Tool = {
@@ -61,6 +85,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['month'],
   },
+  outputSchema: toOutputSchema(getMonthOutputSchema),
 };
 
 // Handler function
@@ -70,7 +95,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleGetMonth(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetMonthOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -132,21 +157,17 @@ export async function handleGetMonth(
     a.group_name.localeCompare(b.group_name)
   );
 
-  return JSON.stringify(
-    {
-      month: month.month,
-      summary: {
-        note: sanitizeMemo(month.note),
-        income: money(month.income),
-        budgeted: money(month.budgeted),
-        activity: money(month.activity),
-        to_be_budgeted: money(month.to_be_budgeted),
-        ...omitNull({ age_of_money: month.age_of_money }),
-      },
-      category_count: month.categories.filter((c) => !c.hidden).length,
-      categories_by_group: categoriesByGroup,
+  return {
+    month: month.month,
+    summary: {
+      note: sanitizeMemo(month.note),
+      income: money(month.income),
+      budgeted: money(month.budgeted),
+      activity: money(month.activity),
+      to_be_budgeted: money(month.to_be_budgeted),
+      ...omitNull({ age_of_money: month.age_of_money }),
     },
-    null,
-    2
-  );
+    category_count: month.categories.filter((c) => !c.hidden).length,
+    categories_by_group: categoriesByGroup,
+  };
 }

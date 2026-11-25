@@ -19,7 +19,6 @@ const inputSchema = z.object({
   payee_id: ynabId().describe('The payee UUID to retrieve'),
 });
 
-// Tool definition
 /** What the tool returns (#45; rules in ../output-schema.ts). */
 export const getPayeeOutputSchema = z.object({
   payee: z.object({
@@ -31,6 +30,7 @@ export const getPayeeOutputSchema = z.object({
 });
 export type GetPayeeOutput = z.output<typeof getPayeeOutputSchema>;
 
+// Tool definition
 export const getPayeeTool: Tool = {
   name: 'ynab_get_payee',
   description: `Get details about a specific payee.
