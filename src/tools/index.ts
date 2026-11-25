@@ -297,8 +297,12 @@ const toolDefinitions: Tool[] = [
   healthCheckTool,
 ];
 
-// Tool handler mapping
-type ToolHandler = (args: Record<string, unknown>, client: YnabClient) => Promise<string>;
+// Tool handler mapping. A tool with an outputSchema returns its output object
+// (serialized here); every other tool returns its JSON text (#45).
+type ToolHandler = (
+  args: Record<string, unknown>,
+  client: YnabClient
+) => Promise<string | Record<string, unknown>>;
 
 const handlers = {
   // User
@@ -409,14 +413,67 @@ function withMetadata(tool: Tool): Tool {
 // Export all tool definitions with titles and annotations applied
 export const tools: Tool[] = toolDefinitions.map(withMetadata);
 
+const toolsByName = new Map(tools.map((t) => [t.name, t]));
+
+/** The advertised definition of a registered tool (the object tools/list sends). */
+export function getTool(name: string): Tool | undefined {
+  return toolsByName.get(name);
+}
+
 /**
- * Route a tool call to the appropriate handler.
+ * A tool call's result: the text block, and for a tool with an outputSchema
+ * the object that text was serialized from (its `structuredContent`).
+ */
+export interface ToolCallOutput {
+  text: string;
+  structured?: Record<string, unknown>;
+}
+
+/**
+ * Route a tool call to its handler and return its text and, for a tool with
+ * an outputSchema, its structured output. The text is serialized from the
+ * structured object itself (never the reverse), so the two always agree, and
+ * a tool with a schema never answers without it.
+ */
+export async function runToolCall(
+  toolName: string,
+  args: Record<string, unknown>,
+  client: YnabClient
+): Promise<ToolCallOutput> {
+  return toolCallOutput(toolsByName.get(toolName), await dispatch(toolName, args, client));
+}
+
+/** A handler's return value as a tool call's output, by the tool's definition (see runToolCall). */
+export function toolCallOutput(tool: Tool | undefined, result: string | Record<string, unknown>): ToolCallOutput {
+  const toolName = tool?.name ?? 'unknown';
+  const hasSchema = tool?.outputSchema !== undefined;
+  if (typeof result === 'string') {
+    // A v2 client rejects a non-error result without structuredContent from a
+    // tool that has a schema, so this is a bug, reported as a tool error.
+    if (hasSchema) throw new Error(`Tool ${toolName} has an output schema but returned text only`);
+    return { text: result };
+  }
+  const text = JSON.stringify(result, null, 2);
+  return hasSchema ? { text, structured: result } : { text };
+}
+
+/**
+ * Route a tool call to the appropriate handler and return its text block
+ * (the JSON the tool has always returned).
  */
 export async function handleToolCall(
   toolName: string,
   args: Record<string, unknown>,
   client: YnabClient
 ): Promise<string> {
+  return (await runToolCall(toolName, args, client)).text;
+}
+
+async function dispatch(
+  toolName: string,
+  args: Record<string, unknown>,
+  client: YnabClient
+): Promise<string | Record<string, unknown>> {
   // Guard against prototype pollution - only allow own properties
   if (!isToolName(toolName)) {
     const safeName = toolName.slice(0, 100).replace(/[\r\n]/g, '');

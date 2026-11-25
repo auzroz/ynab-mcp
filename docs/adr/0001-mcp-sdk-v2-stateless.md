@@ -392,3 +392,32 @@ WS7.4 (`feat/stateless-http`) builds the decisions above as written. No SDK gap 
 - **The 401 from `request-context` (D3, G6).** The same body and challenge as an invalid token (`invalid_token`, "Invalid or expired access token"), so a client can't tell a revoked YNAB grant from a bad token. Header mode keeps its JSON-RPC `401` (`-32001`) with no challenge.
 - **Account generation (D3).** `request-context` pins the request's `YnabClient` token source to the account generation its `resolve` returned (`accessTokenFor(userId, generation)`), instead of the first YNAB call's.
 - **Shutdown (D1, D5).** `close()` waits until every request is released (its response closed and its started work settled, so a timed-out write's YNAB call is not cut off; the process entry's 10 s deadline bounds the wait), then closes idle connections and calls `mcp.close()`.
+
+### 2026-11-25: #45a structured output, as built (D15)
+
+45a (`feat/structured-output`) builds the mechanism and the system tools' schemas. These are lead decisions, made 2026-11-25; none changes D15's intent.
+
+- **Split, replacing D15.6's ten-tool pilot.** 45a is the mechanism plus `ynab_rate_limit_status`, `ynab_audit_log` and `ynab_health_check`. 45b covers the core tools, by resource. 45c covers the analytics tools. `PENDING_OUTPUT_SCHEMA` in `tests/unit/tools/output-schemas.test.ts` lists the tools still without a schema. The list can only shrink, and it reaches zero with 45c. D15.6(b) still holds: a tool without a schema at the tag ships without `outputSchema`.
+- **Mechanism.**
+  - A tool with a schema has a handler that returns its output object, typed `z.output<typeof schema>`.
+  - `runToolCall` (`src/tools/index.ts`) serializes that object once for the text block, with `JSON.stringify(value, null, 2)` as before, and returns the object as `structuredContent`. Nothing is re-parsed from text.
+  - A tool with a schema whose handler returns text only is an internal error, so the client gets an `isError` result, never a normal result without `structuredContent`.
+  - `handleToolCall` still returns the text, for callers and tests that read it.
+  - The advertised schema is `z.toJSONSchema(schema, { target: 'draft-2020-12', io: 'output' })` (the SDK's own conversion), with two changes: `$schema` is removed, and every `additionalProperties: false` is removed. The function is `toOutputSchema` in `src/tools/output-schema.ts`, which also holds the rules below.
+- **What the v2 client does (checked 2026-11-25 against `@modelcontextprotocol/client` 2.4.0 on both eras; pinned in `tests/unit/server-structured-output.test.ts`).**
+  - It validates `structuredContent` only for a tool it has listed.
+  - It rejects a non-error result without `structuredContent` (`-32600`).
+  - It rejects `structuredContent` that fails the schema (`-32602`).
+  - It passes an `isError` result unvalidated.
+  - The server validates nothing. On the 2025 codec, `projectCallToolResult` wraps a non-object root as `{result: …}`, so every root is a single `z.object`.
+- **Null convention (D15.1, unchanged).** The output keeps the 0.4.x shape: a null-valued key is omitted, as #44 does, and its schema property is optional. A field reported as null on purpose stays required and is `nullable`. For example, `ynab_rate_limit_status`'s `ynab_exhausted`, `client_usage` and `cache`, and every audit entry field. Adding schemas changes no output, so there is no CHANGELOG Breaking entry.
+- **Open advertised schemas, closed in the test.** The advertised schemas accept extra keys, so a field added to a tool's output can't make a validating client reject the tool. The test validates real output (#44's null-payload fixture and the system tools' other shapes) against the closed form, so a field the schema misses still fails CI.
+- **No `$schema`.** 2020-12 is the MCP default dialect. A draft-07 validator, such as the v1 SDK client's Ajv, can't resolve the 2020-12 URI. The test compiles every advertised schema under both dialects.
+- **Stored values are strings.** Audit entries' `operation`, `resource_type` and `outcome`, and `by_outcome`'s keys, are `string`, with the known values (from `AUDIT_OPERATIONS`, `AUDIT_OUTCOMES` and `AUDIT_RESOURCE_TYPES`) in the description. A row that a newer replica wrote must not fail an older replica's schema.
+- **In-band failures (rule for 45b).** A schema covers every non-`isError` shape its tool can return. These are:
+  - `ynab_move_money`'s four `error: true, success: false` results.
+  - `ynab_create_transaction`'s `success: false` with `duplicate_import_ids`.
+  - The scheduled create and update tools' `success: false, error`.
+  
+  Moving these to `isError` would be visible to clients, so it isn't done in 0.5.0. It is a possible later change.
+- **Budgets (D15.5).** Size and truncation budgets count the text block only. Today the only limits are per-tool item limits (`truncated`, `total_count`), which apply to the object before it is serialized, so the text block and `structuredContent` carry the same items. A future byte budget would cut only the text.

@@ -104,15 +104,16 @@ These are the rules reviewers check, and most of them have tests that enforce th
 
 1. **Create the file:** `src/tools/<resource>/<action>-<thing>.ts`. Names are `ynab_<action>_<resource>`, such as `ynab_list_accounts`, `ynab_get_account` and `ynab_update_category`.
 2. **Define the input** as a zod schema, plus the matching JSON schema for the tool definition.
-3. **Write a description that says when to use the tool** (`Use when the user asks: ...`). If YNAB can't do part of what a user might ask, say so ("Not possible through the YNAB API ...").
-4. **Add the tool's title and hints** to `src/tools/annotations.ts`; typecheck fails without them.
+3. **Define the output** as a zod `z.object` schema. Put `outputSchema: toOutputSchema(schema)` on the definition and have the handler return the object, not a JSON string. The rules (nulls, failure shapes, open schemas) are in `src/tools/output-schema.ts`, and `tests/unit/tools/output-schemas.test.ts` checks the tool's real output against the schema. Until a tool has a schema it goes on that test's `PENDING_OUTPUT_SCHEMA` list.
+4. **Write a description that says when to use the tool** (`Use when the user asks: ...`). If YNAB can't do part of what a user might ask, say so ("Not possible through the YNAB API ...").
+5. **Add the tool's title and hints** to `src/tools/annotations.ts`; typecheck fails without them.
    - Reads are `READ`.
    - Writes are `CREATE`, `UPDATE`, `DELETE` or `MOVE`.
    - Update and delete tools are destructive, because YNAB has no undo.
    - A write tool's name must contain `_create_`, `_update_`, `_delete_` or `_move_`. `tests/unit/tools/annotations.test.ts` derives the expected hints from the name.
-5. **Register the tool and its handler** in `src/tools/index.ts`. Read-only sessions hide write tools automatically, based on the annotations.
-6. **Add tests** under `tests/unit/tools/<resource>/`.
-7. **Update the tool count**, in `tests/unit/tools/annotations.test.ts` and in the README headings, and **add the tool to the README list**.
+6. **Register the tool and its handler** in `src/tools/index.ts`. Read-only sessions hide write tools automatically, based on the annotations.
+7. **Add tests** under `tests/unit/tools/<resource>/`.
+8. **Update the tool count**, in `tests/unit/tools/annotations.test.ts` and in the README headings, and **add the tool to the README list**.
 
 ## Storage tests (SQLite and Postgres)
 
