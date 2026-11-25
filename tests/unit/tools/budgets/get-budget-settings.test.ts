@@ -21,8 +21,7 @@ describe('handleGetBudgetSettings', () => {
   it('returns date_format and currency_format', async () => {
     mockClient.getBudgetSettingsById.mockResolvedValue(createBudgetSettingsResponse());
 
-    const result = await handleGetBudgetSettings({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetBudgetSettings({}, mockClient as never);
 
     expect(parsed.budget_id).toBe('test-budget-id');
     expect(parsed.settings.date_format).toBe('MM/DD/YYYY');
@@ -44,8 +43,7 @@ describe('handleGetBudgetSettings', () => {
       createBudgetSettingsResponse(mockEurCurrencyFormat)
     );
 
-    const result = await handleGetBudgetSettings({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetBudgetSettings({}, mockClient as never);
 
     expect(parsed.settings.currency_format.iso_code).toBe('EUR');
     expect(parsed.settings.date_format).toBe('DD/MM/YYYY');
@@ -56,8 +54,7 @@ describe('handleGetBudgetSettings', () => {
       data: { settings: { date_format: null, currency_format: null } },
     });
 
-    const result = await handleGetBudgetSettings({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetBudgetSettings({}, mockClient as never);
 
     expect(parsed.settings.date_format).toBeNull();
     expect(parsed.settings.currency_format).toBeNull();

@@ -9,6 +9,8 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { sanitizeString } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
+import { currencyFormatSchema } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -16,6 +18,16 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Nulls here are reported on purpose. */
+export const getBudgetSettingsOutputSchema = z.object({
+  budget_id: z.string(),
+  settings: z.object({
+    date_format: z.string().nullable().describe('Null when the budget has no date format'),
+    currency_format: currencyFormatSchema.nullable().describe('Null when the budget has no currency format'),
+  }),
+});
+export type GetBudgetSettingsOutput = z.output<typeof getBudgetSettingsOutputSchema>;
 
 // Tool definition
 export const getBudgetSettingsTool: Tool = {
@@ -41,6 +53,7 @@ Not possible through the YNAB API (do it in the YNAB app): creating, renaming or
       },
     },
   },
+  outputSchema: toOutputSchema(getBudgetSettingsOutputSchema),
 };
 
 // Handler function
@@ -49,7 +62,7 @@ Not possible through the YNAB API (do it in the YNAB app): creating, renaming or
  *
  * @param args - Tool arguments containing optional budget_id
  * @param client - YNAB client instance for API calls
- * @returns JSON string with budget settings including date_format and currency_format
+ * @returns The budget settings, including date_format and currency_format
  *
  * @remarks
  * The YNAB SDK types date_format and currency_format as nullable. This handler
@@ -58,7 +71,7 @@ Not possible through the YNAB API (do it in the YNAB app): creating, renaming or
 export async function handleGetBudgetSettings(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetBudgetSettingsOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
 
@@ -68,26 +81,22 @@ export async function handleGetBudgetSettings(
   const dateFormat = settings.date_format;
   const currencyFormat = settings.currency_format;
 
-  return JSON.stringify(
-    {
-      budget_id: sanitizeString(budgetId) ?? '',
-      settings: {
-        date_format: dateFormat?.format ? sanitizeString(dateFormat.format) : null,
-        currency_format: currencyFormat
-          ? {
-              iso_code: sanitizeString(currencyFormat.iso_code) ?? '',
-              example_format: sanitizeString(currencyFormat.example_format) ?? '',
-              decimal_digits: currencyFormat.decimal_digits,
-              decimal_separator: sanitizeString(currencyFormat.decimal_separator) ?? '',
-              symbol_first: currencyFormat.symbol_first,
-              group_separator: sanitizeString(currencyFormat.group_separator) ?? '',
-              currency_symbol: sanitizeString(currencyFormat.currency_symbol) ?? '',
-              display_symbol: currencyFormat.display_symbol,
-            }
-          : null,
-      },
+  return {
+    budget_id: sanitizeString(budgetId) ?? '',
+    settings: {
+      date_format: dateFormat?.format ? sanitizeString(dateFormat.format) : null,
+      currency_format: currencyFormat
+        ? {
+            iso_code: sanitizeString(currencyFormat.iso_code) ?? '',
+            example_format: sanitizeString(currencyFormat.example_format) ?? '',
+            decimal_digits: currencyFormat.decimal_digits,
+            decimal_separator: sanitizeString(currencyFormat.decimal_separator) ?? '',
+            symbol_first: currencyFormat.symbol_first,
+            group_separator: sanitizeString(currencyFormat.group_separator) ?? '',
+            currency_symbol: sanitizeString(currencyFormat.currency_symbol) ?? '',
+            display_symbol: currencyFormat.display_symbol,
+          }
+        : null,
     },
-    null,
-    2
-  );
+  };
 }

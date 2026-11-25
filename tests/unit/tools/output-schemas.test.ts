@@ -16,6 +16,10 @@ import { Ajv } from 'ajv';
 import type { z } from 'zod';
 import { tools, runToolCall, toolCallOutput } from '../../../src/tools/index.js';
 import { closedOutputSchema, toOutputSchema } from '../../../src/tools/output-schema.js';
+import { getUserOutputSchema } from '../../../src/tools/user/get-user.js';
+import { listBudgetsOutputSchema } from '../../../src/tools/budgets/list-budgets.js';
+import { getBudgetOutputSchema } from '../../../src/tools/budgets/get-budget.js';
+import { getBudgetSettingsOutputSchema } from '../../../src/tools/budgets/get-budget-settings.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
@@ -33,10 +37,6 @@ import { createMockClient } from './fixtures/index.js';
  */
 const PENDING_OUTPUT_SCHEMA = [
   // User, budgets
-  'ynab_get_user',
-  'ynab_list_budgets',
-  'ynab_get_budget',
-  'ynab_get_budget_settings',
   // Accounts
   'ynab_list_accounts',
   'ynab_get_account',
@@ -114,6 +114,10 @@ const PENDING_OUTPUT_SCHEMA = [
  * a schema adds it here (the test fails until it does).
  */
 const SCHEMAS: Record<string, z.ZodObject> = {
+  ynab_get_user: getUserOutputSchema,
+  ynab_list_budgets: listBudgetsOutputSchema,
+  ynab_get_budget: getBudgetOutputSchema,
+  ynab_get_budget_settings: getBudgetSettingsOutputSchema,
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,

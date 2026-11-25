@@ -7,9 +7,16 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema (no parameters needed)
 const inputSchema = z.object({}).strict();
+
+/** What the tool returns (#45; rules in ../output-schema.ts). */
+export const getUserOutputSchema = z.object({
+  user: z.object({ id: z.string() }),
+});
+export type GetUserOutput = z.output<typeof getUserOutputSchema>;
 
 // Tool definition
 export const getUserTool: Tool = {
@@ -27,6 +34,7 @@ Returns the user's ID.`,
     properties: {},
     additionalProperties: false,
   },
+  outputSchema: toOutputSchema(getUserOutputSchema),
 };
 
 // Handler function
@@ -36,19 +44,15 @@ Returns the user's ID.`,
 export async function handleGetUser(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<GetUserOutput> {
   inputSchema.parse(args);
 
   const response = await client.getUser();
   const user = response.data.user;
 
-  return JSON.stringify(
-    {
-      user: {
-        id: user.id,
-      },
+  return {
+    user: {
+      id: user.id,
     },
-    null,
-    2
-  );
+  };
 }

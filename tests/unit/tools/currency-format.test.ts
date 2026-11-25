@@ -269,7 +269,7 @@ describe('amounts follow the budget currency format', () => {
       client.getBudgetById.mockResolvedValue(
         createBudgetResponse({ ...mockBudgetDetail, currency_format: mockEurCurrencyFormat })
       );
-      const parsed = JSON.parse(await handleGetBudget({}, client as never));
+      const parsed = await handleGetBudget({}, client as never);
       expect(strings(parsed).some((s) => /€$/.test(s))).toBe(true);
       expect(client.getCurrencyFormat).not.toHaveBeenCalled();
     });
@@ -284,7 +284,7 @@ describe('amounts follow the budget currency format', () => {
           } as never,
         ])
       );
-      const parsed = JSON.parse(await handleListBudgets({ include_accounts: true }, client as never));
+      const parsed = await handleListBudgets({ include_accounts: true }, client as never);
       expect(parsed.budgets[0].accounts[0].balance).toBe('¥1,234');
       expect(client.getCurrencyFormat).not.toHaveBeenCalled();
     });

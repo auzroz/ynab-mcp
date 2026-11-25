@@ -1,5 +1,5 @@
 /**
- * Drop null-valued keys from a flat object.
+ * Drop null-valued (and undefined-valued) keys from a flat object.
  *
  * ynab SDK 5.0 returns `null` for nullable API fields that SDK 4.5 left
  * `undefined`, and JSON.stringify drops `undefined` but writes `null`. Wrap the
@@ -7,14 +7,17 @@
  * response keeps the 0.4.x shape. Fields a tool deliberately reports as null
  * (for example through `?? null`) must stay outside the wrapper.
  *
+ * Undefined values are dropped too, so the result has no `undefined`-valued
+ * keys (output-schema.ts rule 6): structuredContent is the object itself.
+ *
  * Shallow on purpose: nested objects are the caller's to wrap.
  */
-export type OmitNull<T extends object> = { [K in keyof T]?: Exclude<T[K], null> };
+export type OmitNull<T extends object> = { [K in keyof T]?: Exclude<T[K], null | undefined> };
 
 export function omitNull<T extends object>(obj: T): OmitNull<T> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (value !== null) out[key] = value;
+    if (value !== null && value !== undefined) out[key] = value;
   }
   return out as OmitNull<T>;
 }

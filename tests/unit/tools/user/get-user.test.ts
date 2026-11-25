@@ -17,8 +17,7 @@ describe('handleGetUser', () => {
   it("returns the authenticated user's id", async () => {
     mockClient.getUser.mockResolvedValue(createUserResponse());
 
-    const result = await handleGetUser({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleGetUser({}, mockClient as never);
 
     expect(parsed.user.id).toBe(mockUser.id);
     expect(mockClient.getUser).toHaveBeenCalledTimes(1);
