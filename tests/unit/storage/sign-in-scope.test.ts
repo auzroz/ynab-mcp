@@ -11,80 +11,20 @@
  *     the read-only token is stored;
  *   - a read-write client in the middle of its code exchange (its code
  *     consumed, its tokens not yet saved) still counts as live;
- *   - concurrent sign-ins, on two connections: read-write wins in either order.
+ *   - concurrent sign-ins, on two connections: read-write wins in either order;
+ *   - a stored read-write token YNAB refused (a YnabTokenRejected marker for
+ *     its exact ciphertext), then read-only: the read-only token replaces it,
+ *     even while another read-write grant is live; a marker for another
+ *     ciphertext changes nothing; a rekey of the token carries its marker.
+ *     Erasure and the sweep remove markers.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { randomUUID } from 'node:crypto';
-import type { GrantedScope, OAuthRowStore, OAuthRowWrite, Storage } from '../../../src/storage/types.js';
-import { plainRowKey } from '../../../src/storage/oauth-rows.js';
+import { plainRowKey, rejectedYnabTokenKey, rejectedYnabTokenRow } from '../../../src/storage/oauth-rows.js';
 import { cleanupDrivers, testDrivers } from '../helpers/storage-drivers.js';
+import { complete, staged, stored, type Store } from '../helpers/sign-in.js';
 
-type Store = Storage & OAuthRowStore;
-
-const RESOURCE = 'https://mcp.example.com/mcp';
-const blank = { payload: '{}', grantId: undefined, accountId: undefined, clientId: undefined, uid: undefined, expiresAt: undefined };
-
-/** A grant payload as the library writes one for the consent choice (D7). */
-function grantPayload(scope: GrantedScope, accountId: string, clientId: string): string {
-  return JSON.stringify(
-    scope === 'read-write'
-      ? { accountId, clientId, resources: { [RESOURCE]: 'read-only read-write' } }
-      : { accountId, clientId, resources: { [RESOURCE]: 'read-only' }, rejected: { resources: { [RESOURCE]: 'read-write' } } }
-  );
-}
-
-interface SignIn {
-  grantId: string;
-  code: OAuthRowWrite;
-}
-
-/** A client, a grant of `scope` for `userId`, and a sign-in staged with YNAB token `token`; returns its code row. */
-async function staged(store: Store, userId: string, scope: GrantedScope, token: string): Promise<SignIn> {
-  const clientId = `c-${randomUUID()}`;
-  const grantId = `g-${randomUUID()}`;
-  await store.upsertOAuthRow({ ...blank, key: plainRowKey('Client', clientId), model: 'Client', clientId });
-  await store.upsertOAuthRow({
-    ...blank,
-    key: plainRowKey('Grant', grantId),
-    model: 'Grant',
-    payload: grantPayload(scope, userId, clientId),
-    grantId,
-    accountId: userId,
-    clientId,
-    expiresAt: Date.now() + 3_600_000,
-  });
-  expect(
-    await store.stageSignIn({
-      grantId,
-      user: { userId, grantedScope: scope, encryptedRefreshToken: token, updatedAt: Date.now() },
-      expiresAt: Date.now() + 60_000,
-    })
-  ).toBe(true);
-  return {
-    grantId,
-    code: {
-      ...blank,
-      key: `h1.${randomUUID()}`,
-      model: 'AuthorizationCode',
-      grantId,
-      accountId: userId,
-      clientId,
-      expiresAt: Date.now() + 600_000,
-    },
-  };
-}
-
-async function complete(store: Store, userId: string, scope: GrantedScope, token: string): Promise<SignIn> {
-  const signIn = await staged(store, userId, scope, token);
-  expect(await store.saveAuthorizationCode(signIn.code)).toBe('saved');
-  return signIn;
-}
-
-async function stored(store: Store, userId: string) {
-  const user = await store.getUser(userId);
-  return { token: user?.encryptedRefreshToken, scope: user?.grantedScope };
-}
+const DAY = 86_400_000;
 
 afterEach(async () => {
   await cleanupDrivers();
@@ -157,6 +97,77 @@ for (const driver of testDrivers) {
       await complete(store, 'u1', 'read-only', 'enc-ro-u1');
       expect(await stored(store, 'u1')).toEqual({ token: 'enc-ro-u1', scope: 'read-only' });
       expect(await stored(store, 'u2')).toEqual({ token: 'enc-rw-u2', scope: 'read-write' });
+    });
+
+    it('a stored read-write token YNAB refused, another read-write grant live, then read-only: the read-only token replaces it', async () => {
+      const store = (await driver.open()).storage as Store;
+      // The read-write grant stays live; YNAB has refused its token.
+      await complete(store, 'u1', 'read-write', 'enc-rw');
+      await store.upsertOAuthRow(rejectedYnabTokenRow('u1', 'enc-rw', Date.now() + DAY));
+      await complete(store, 'u1', 'read-only', 'enc-ro');
+      expect(await stored(store, 'u1')).toEqual({ token: 'enc-ro', scope: 'read-only' });
+    });
+
+    it('a marker for an older ciphertext, or for another user, does not stop the read-write token being kept', async () => {
+      const store = (await driver.open()).storage as Store;
+      await complete(store, 'u1', 'read-write', 'enc-rw-old');
+      await store.upsertOAuthRow(rejectedYnabTokenRow('u1', 'enc-rw-old', Date.now() + DAY));
+      // A newer read-write sign-in stored another ciphertext: the marker no longer matches.
+      await complete(store, 'u1', 'read-write', 'enc-rw');
+      // The same ciphertext refused for another user names a different marker.
+      await store.upsertOAuthRow(rejectedYnabTokenRow('u2', 'enc-rw', Date.now() + DAY));
+      await complete(store, 'u1', 'read-only', 'enc-ro');
+      expect(await stored(store, 'u1')).toEqual({ token: 'enc-rw', scope: 'read-write' });
+    });
+
+    it('an expired marker that the sweep has not removed yet still counts', async () => {
+      const store = (await driver.open()).storage as Store;
+      await complete(store, 'u1', 'read-write', 'enc-rw');
+      await store.upsertOAuthRow(rejectedYnabTokenRow('u1', 'enc-rw', Date.now() - DAY));
+      await complete(store, 'u1', 'read-only', 'enc-ro');
+      expect(await stored(store, 'u1')).toEqual({ token: 'enc-ro', scope: 'read-only' });
+    });
+
+    it('a rekey of a refused token carries its marker to the new ciphertext; a rekey of a healthy one writes none', async () => {
+      const store = (await driver.open()).storage as Store;
+      const expiresAt = Date.now() + DAY;
+      await complete(store, 'u1', 'read-write', 'enc-rw');
+      await store.upsertOAuthRow(rejectedYnabTokenRow('u1', 'enc-rw', expiresAt));
+      expect(await store.rekeyUserRefreshToken('u1', 'enc-rw', 'enc-rw-rekeyed')).toBe(true);
+      expect(await store.findOAuthRow(rejectedYnabTokenKey('u1', 'enc-rw'))).toBeUndefined();
+      const carried = await store.findOAuthRow(rejectedYnabTokenKey('u1', 'enc-rw-rekeyed'));
+      expect(carried).toMatchObject({ model: 'YnabTokenRejected', accountId: 'u1', expiresAt });
+      await complete(store, 'u1', 'read-only', 'enc-ro');
+      expect(await stored(store, 'u1')).toEqual({ token: 'enc-ro', scope: 'read-only' });
+
+      await complete(store, 'u2', 'read-write', 'enc-rw-u2');
+      expect(await store.rekeyUserRefreshToken('u2', 'enc-rw-u2', 'enc-rw-u2-rekeyed')).toBe(true);
+      expect(await store.findOAuthRow(rejectedYnabTokenKey('u2', 'enc-rw-u2-rekeyed'))).toBeUndefined();
+      await complete(store, 'u2', 'read-only', 'enc-ro-u2');
+      expect(await stored(store, 'u2')).toEqual({ token: 'enc-rw-u2-rekeyed', scope: 'read-write' });
+    });
+
+    it("the user's erasure removes their markers, and no one else's", async () => {
+      const store = (await driver.open()).storage as Store;
+      await complete(store, 'u1', 'read-write', 'enc-rw');
+      await complete(store, 'u2', 'read-write', 'enc-rw-u2');
+      await store.upsertOAuthRow(rejectedYnabTokenRow('u1', 'enc-rw', Date.now() + DAY));
+      await store.upsertOAuthRow(rejectedYnabTokenRow('u2', 'enc-rw-u2', Date.now() + DAY));
+      expect(await store.deleteUserData('u1')).toBe(true);
+      expect(await store.findOAuthRow(rejectedYnabTokenKey('u1', 'enc-rw'))).toBeUndefined();
+      expect((await store.findOAuthRow(rejectedYnabTokenKey('u2', 'enc-rw-u2')))?.model).toBe('YnabTokenRejected');
+    });
+
+    it('the sweep removes an expired marker and keeps an unexpired one', async () => {
+      const store = (await driver.open()).storage as Store;
+      const now = Date.now();
+      await complete(store, 'u1', 'read-write', 'enc-rw');
+      await store.upsertOAuthRow(rejectedYnabTokenRow('u1', 'enc-old', now - DAY));
+      await store.upsertOAuthRow(rejectedYnabTokenRow('u1', 'enc-rw', now + DAY));
+      const result = await store.sweepExpired({ now });
+      expect(result.ran).toBe(true);
+      expect(await store.findOAuthRow(rejectedYnabTokenKey('u1', 'enc-old'))).toBeUndefined();
+      expect((await store.findOAuthRow(rejectedYnabTokenKey('u1', 'enc-rw')))?.model).toBe('YnabTokenRejected');
     });
 
     it('concurrent read-write and read-only sign-ins, on two connections: read-write wins either way', async () => {

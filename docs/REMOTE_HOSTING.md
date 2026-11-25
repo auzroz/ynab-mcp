@@ -243,7 +243,23 @@ the stored read-write YNAB token is kept and the new read-only one is
 discarded (YNAB keeps both authorizations valid, so nothing breaks). The new
 client is still read-only: its own grant decides that. Connecting read-write
 always stores the new token, and so does a read-only sign-in when the user
-has no live read-write connection left. Before 0.5.0, the latest sign-in's
+has no live read-write connection left, or when YNAB has already refused the
+stored token. That last case is a read-write YNAB authorization the user
+revoked at YNAB, or one that stopped working: when a refresh gets
+`invalid_grant`, the server records that refusal in `oauth_rows` (a
+`YnabTokenRejected` row holding only a hash of that exact stored
+ciphertext, the user id and an expiry), so the next sign-in, read-only
+included, replaces the dead token on any replica instead of keeping it.
+Nothing is recorded for a transient failure (a timeout, a 5xx, a 429), for
+another refusal such as `invalid_client` (which may be this server's
+configuration, not the user's token), or for a token this replica's keys
+can't open. The record stops matching as soon as another token is stored
+(a refresh, a sign-in); the rekey job's re-encryption of the same token
+carries it to the new ciphertext, also when the rekey lands during the
+refused refresh. A record written while the account was being erased is
+removed again. It expires with the grant lifetime
+(`MCP_REFRESH_TOKEN_TTL_DAYS` plus the sign-in window), the sweep removes
+it, and it goes with the user's account. Before 0.5.0, the latest sign-in's
 YNAB token replaced the stored one, so connecting a second client read-only
 made every connection of that user read-only. The discarded read-only
 authorization stays valid at YNAB, unused (YNAB offers no way for the server

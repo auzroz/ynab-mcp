@@ -45,6 +45,8 @@ import {
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { refreshAccessToken, YnabOAuthError, type YnabOAuthConfig, type YnabTokenSet } from './ynab-oauth.js';
 import { assertKeyWritable, KeyRetiredError } from './rekey-job.js';
+import { rejectedYnabTokenKey, rejectedYnabTokenRow } from '../storage/oauth-rows.js';
+import { DEFAULT_RETENTION } from './retention-defaults.js';
 
 /** Refresh a bit early so an access token doesn't expire mid-request. */
 const REFRESH_SKEW_MS = 60_000;
@@ -185,6 +187,17 @@ export interface RefreshLeaseOptions {
   monotonic?: () => number;
 }
 
+/** Other resolver settings. */
+export interface YnabTokenResolverOptions {
+  /**
+   * #64b: how long a marker of a YNAB refresh token YNAB refused is kept: the
+   * MCP grant lifetime (the provider's Grant TTL), so it outlasts every
+   * read-write grant that was live when it was written. Defaults to the
+   * default refresh-token absolute lifetime.
+   */
+  rejectedTokenMarkerTtlMs?: number;
+}
+
 /** The user row is gone (erased or never connected): the client must re-authorize. */
 const RECONNECT = 'Unknown user: re-authorize the YNAB connection';
 
@@ -227,14 +240,17 @@ export class YnabTokenResolver {
   private readonly pollMaxMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly monotonic: () => number;
+  private readonly rejectedTokenMarkerTtlMs: number;
 
   constructor(
     private readonly storage: Storage,
     private readonly encryptor: Encryptor,
     private readonly ynab: YnabOAuthConfig,
     private readonly now: () => number = Date.now,
-    lease: RefreshLeaseOptions = {}
+    lease: RefreshLeaseOptions = {},
+    options: YnabTokenResolverOptions = {}
   ) {
+    this.rejectedTokenMarkerTtlMs = options.rejectedTokenMarkerTtlMs ?? DEFAULT_RETENTION.refreshTokenTtlMs;
     this.leaseTtlMs = lease.leaseTtlMs ?? REFRESH_LEASE_TTL_MS;
     this.leaseWaitMs = lease.leaseWaitMs ?? REFRESH_LEASE_WAIT_MS;
     this.pollFirstMs = lease.pollFirstMs ?? LEASE_POLL_FIRST_MS;
@@ -423,6 +439,8 @@ export class YnabTokenResolver {
     const context = refreshTokenContext(userId);
     let set: YnabTokenSet;
     let refreshToken: string;
+    /** The refresh token presented to YNAB, once it is. */
+    let sent: string | undefined;
     let called = false;
     try {
       // Before the YNAB call: a replica whose key is being retired must not
@@ -452,6 +470,7 @@ export class YnabTokenResolver {
     try {
       refreshToken = this.encryptor.decrypt(user.encryptedRefreshToken, context);
       called = true;
+      sent = refreshToken;
       set = await refreshAccessToken(this.ynab, refreshToken);
     } catch (error) {
       await this.release(userId, holder);
@@ -470,6 +489,12 @@ export class YnabTokenResolver {
         encryptedRefreshToken: user.encryptedRefreshToken,
         until: this.now() + REFRESH_FAILURE_TTL_MS,
       });
+      // Only YNAB's `invalid_grant` marks the token as dead: a ciphertext this
+      // replica can't open (an older keyring) may open on the others, and
+      // another refusal (`invalid_client`) may be this server's fault.
+      if (sent !== undefined && error instanceof YnabOAuthError && error.oauthError === 'invalid_grant') {
+        await this.markRejected(user, sent);
+      }
       throw error;
     }
     this.failed.delete(userId);
@@ -564,6 +589,47 @@ export class YnabTokenResolver {
       return this.encryptor.decrypt(ciphertext, accessTokenContext(userId));
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * #64b: record, on every replica, that YNAB refused `user`'s stored refresh
+   * token with `invalid_grant`, keyed to the exact ciphertext the refresh
+   * started from (a token another replica stored meanwhile is not the one
+   * refused). A later sign-in then replaces that token even when it is
+   * read-only and another read-write grant is live, instead of keeping a
+   * token that no longer works.
+   *
+   * The row is re-read after the write, which settles two races with the
+   * YNAB call without a transaction:
+   *   - the account was erased (or erased and re-created) meanwhile: the
+   *     marker is deleted. Erasure deletes markers by account, so an erasure
+   *     before the write is undone here and one after it removes the marker
+   *     itself;
+   *   - the rekey job re-encrypted the same token meanwhile (`holdsToken`):
+   *     its new ciphertext is marked too. A rekey after the write carries the
+   *     marker itself (`rekeyUserRefreshToken`). A newer token is never
+   *     marked: it doesn't hold the refused value.
+   *
+   * Best-effort: a failure is logged without values and the caller's error
+   * is unchanged (the sign-in then keeps the token, as before this marker;
+   * the next refusal writes it).
+   */
+  private async markRejected(user: UserRecord, refreshToken: string): Promise<void> {
+    const { userId, encryptedRefreshToken } = user;
+    const expiresAt = this.now() + this.rejectedTokenMarkerTtlMs;
+    try {
+      await this.storage.upsertOAuthRow(rejectedYnabTokenRow(userId, encryptedRefreshToken, expiresAt));
+      const current = await this.storage.getUser(userId);
+      if (!current || generationOf(current) !== generationOf(user)) {
+        await this.storage.destroyOAuthRow(rejectedYnabTokenKey(userId, encryptedRefreshToken));
+        return;
+      }
+      if (current.encryptedRefreshToken !== encryptedRefreshToken && this.holdsToken(current, refreshToken)) {
+        await this.storage.upsertOAuthRow(rejectedYnabTokenRow(userId, current.encryptedRefreshToken, expiresAt));
+      }
+    } catch {
+      console.error('[YnabToken] could not record a refused YNAB refresh token; a read-only sign-in may keep it');
     }
   }
 

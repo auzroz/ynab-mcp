@@ -554,7 +554,8 @@ export interface Storage extends OAuthRowStore, CiphertextStore {
 /**
  * What a row holds: the oidc-provider models the adapter stores, plus
  * `SignIn`, the sign-in `complete` stages under its grant until the code's
- * upsert applies it (#94, D4).
+ * upsert applies it (#94, D4), `RefreshGrace` (#64a) and `YnabTokenRejected`
+ * (#64b, a YNAB refresh token YNAB refused; src/storage/oauth-rows.ts).
  */
 export type OAuthModel =
   | 'AccessToken'
@@ -566,7 +567,8 @@ export type OAuthModel =
   | 'Grant'
   | 'Client'
   | 'SignIn'
-  | 'RefreshGrace';
+  | 'RefreshGrace'
+  | 'YnabTokenRejected';
 
 /** One `oauth_rows` row as the adapter writes it. */
 export interface OAuthRowWrite {
@@ -574,8 +576,10 @@ export interface OAuthRowWrite {
    * The primary key: `h1.` + HMAC of the row's kind and id for every model
    * whose id is a credential (tokens, codes, sessions, interactions,
    * registration tokens), `Grant:<id>`, `Client:<id>` or `SignIn:<grant id>`
-   * for the others (src/storage/oauth-rows.ts), and `RefreshGrace:<grant id>`
-   * for #64a's refresh grace record (src/auth/refresh-grace.ts).
+   * for the others (src/storage/oauth-rows.ts), `RefreshGrace:<grant id>`
+   * for #64a's refresh grace record (src/auth/refresh-grace.ts), and
+   * `YnabTokenRejected:<hash>` for #64b's marker of a YNAB refresh token YNAB
+   * refused (src/storage/oauth-rows.ts, rejectedYnabTokenRow).
    */
   key: string;
   model: OAuthModel;
@@ -641,7 +645,8 @@ export type ConsumeOutcome = 'consumed' | 'replayed' | 'missing';
 export interface OAuthRowStore {
   /**
    * Insert or update a row that isn't grant-bound or staged (Client, Grant,
-   * Session, Interaction, RegistrationAccessToken). An update replaces the
+   * Session, Interaction, RegistrationAccessToken, and #64b's
+   * YnabTokenRejected marker, which YnabTokenResolver writes). An update replaces the
    * payload and the indexed columns and keeps `createdAt`, `consumedAt` and
    * `authorizedAt`. Throws for a grant-bound or `SignIn` row.
    */

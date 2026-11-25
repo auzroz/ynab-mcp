@@ -53,6 +53,7 @@ import { TokenHasher } from './auth/token-hash.js';
 import type { GrantedScope, Storage } from './storage/types.js';
 import { mountAuthorizationServer, type AuthorizationServer } from './auth/as-router.js';
 import { YnabTokenResolver, YnabTokenUnavailableError } from './auth/user-session.js';
+import { grantLifetimeSec } from './auth/oidc/provider.js';
 import { deriveOriginsFromHosts, hostValidation, originValidation } from './middleware/origin-validation.js';
 import {
   MAX_JSON_BODY,
@@ -282,7 +283,17 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
         ynab,
         observeStage: options.observeStage,
       }),
-      resolver: new YnabTokenResolver(storage, keyring, ynab),
+      resolver: new YnabTokenResolver(
+        storage,
+        keyring,
+        ynab,
+        Date.now,
+        {},
+        {
+          rejectedTokenMarkerTtlMs:
+            grantLifetimeSec(retentionPolicyFromSettings(config).refreshTokenTtlMs, config.authCodeTtlSec) * 1000,
+        }
+      ),
     };
   }
   const asPipeline = oauth?.as.routes.map((r) => ({ route: r.route, stages: [...upstreamStages, ...r.stages] }));

@@ -294,6 +294,15 @@ const epochSec = (): number => Math.floor(Date.now() / 1000);
 /** A TTL the library accepts: a positive integer (it throws, as a 500, on anything else). */
 const positive = (seconds: number): number => Math.max(1, Math.floor(seconds));
 
+/**
+ * A grant's lifetime (its `Grant` TTL), in seconds: the refresh token's
+ * absolute lifetime plus the sign-in window, so a grant outlives every token
+ * issued under it. #64b's rejected-token marker lives as long.
+ */
+export function grantLifetimeSec(refreshTokenTtlMs: number, authCodeTtlSec: number): number {
+  return positive(refreshTokenTtlMs / 1000 + 2 * authCodeTtlSec);
+}
+
 /** Build the provider (D2). See the file comment. */
 export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
   const publicUrl = new URL(options.publicUrl);
@@ -350,7 +359,7 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
       AuthorizationCode: authCodeTtlSec,
       Interaction: interactionTtlSec,
       Session: interactionTtlSec,
-      Grant: positive(absoluteSec + 2 * authCodeTtlSec),
+      Grant: grantLifetimeSec(retention.refreshTokenTtlMs, authCodeTtlSec),
       RefreshToken: (ctx, token) => {
         const now = epochSec();
         const iiat = typeof token.iiat === 'number' ? token.iiat : now;

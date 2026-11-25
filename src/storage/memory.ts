@@ -53,6 +53,8 @@ import {
   GRANT_TOKEN_MODELS,
   connectionsFromGrantRows,
   plainRowKey,
+  rejectedYnabTokenKey,
+  rejectedYnabTokenRow,
   signInKeepsStoredToken,
   signInPayload,
   sortConnections,
@@ -260,6 +262,13 @@ export class MemoryStorage implements Storage, OAuthRowStore {
     const rec = this.users.get(userId);
     if (!rec || rec.encryptedRefreshToken !== oldCiphertext) return false;
     this.users.set(userId, { ...rec, encryptedRefreshToken: newCiphertext });
+    // #64b: the same token, so a refusal marker moves with it.
+    const oldKey = rejectedYnabTokenKey(userId, oldCiphertext);
+    const marker = this.oauthRows.get(oldKey);
+    if (marker?.model === 'YnabTokenRejected' && marker.accountId === userId) {
+      this.oauthRows.delete(oldKey);
+      this.putOAuthRow(rejectedYnabTokenRow(userId, newCiphertext, marker.expiresAt ?? Date.now()), Date.now());
+    }
     return true;
   }
   async rekeyUserAccessToken(userId: string, oldCiphertext: string, newCiphertext: string | undefined): Promise<boolean> {
@@ -820,17 +829,33 @@ export class MemoryStorage implements Storage, OAuthRowStore {
 
   /**
    * A completed sign-in's users-row write (#64b): its YNAB token replaces the
-   * stored one, unless signInKeepsStoredToken says to keep a read-write one,
-   * when only `last_seen_at` is stamped (a sign-in is activity, #54e).
-   * Synchronous, as OTHER_LIVE_GRANTS_SQL's rule is applied on the SQL drivers.
+   * stored one, unless signInKeepsStoredToken says to keep a read-write one
+   * (never one YNAB refused: a marker for the stored ciphertext), when only
+   * `last_seen_at` is stamped (a sign-in is activity, #54e). Synchronous, as
+   * OTHER_LIVE_GRANTS_SQL's and REJECTED_YNAB_TOKEN_SQL's rules are applied
+   * on the SQL drivers.
    */
   private applySignIn(user: UserRecord, grantId: string, now: number): void {
     const stored = this.users.get(user.userId);
-    if (stored && signInKeepsStoredToken(stored, user, this.otherLiveGrantPayloads(user.userId, grantId, now))) {
+    if (
+      stored &&
+      signInKeepsStoredToken(
+        stored,
+        user,
+        this.otherLiveGrantPayloads(user.userId, grantId, now),
+        this.storedTokenRejected(stored)
+      )
+    ) {
       stored.lastSeenAt = now;
       return;
     }
     this.applyStagedUser(user, now);
+  }
+
+  /** REJECTED_YNAB_TOKEN_SQL over the map, for the user's stored ciphertext. */
+  private storedTokenRejected(stored: UserRecord): boolean {
+    const marker = this.oauthRows.get(rejectedYnabTokenKey(stored.userId, stored.encryptedRefreshToken));
+    return marker?.model === 'YnabTokenRejected' && marker.accountId === stored.userId;
   }
 
   /** OTHER_LIVE_GRANTS_SQL over the map. */

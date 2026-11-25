@@ -11,7 +11,8 @@
  * id inside its own transactions.
  */
 
-import type { ConnectionRecord, GrantedScope, OAuthModel, UserRecord } from './types.js';
+import { createHash } from 'node:crypto';
+import type { ConnectionRecord, GrantedScope, OAuthModel, OAuthRowWrite, UserRecord } from './types.js';
 import { parseGrantedScope } from '../auth/scope.js';
 import { clientNameFromJson, optionalMillis } from './retention.js';
 
@@ -27,6 +28,7 @@ export const OAUTH_MODELS: ReadonlySet<OAuthModel> = new Set<OAuthModel>([
   'Client',
   'SignIn',
   'RefreshGrace',
+  'YnabTokenRejected',
 ]);
 
 /**
@@ -44,11 +46,12 @@ export const GRANT_TOKEN_MODELS: ReadonlySet<OAuthModel> = new Set<OAuthModel>([
 export const CONSUMABLE_MODELS: ReadonlySet<OAuthModel> = new Set<OAuthModel>(['RefreshToken', 'AuthorizationCode']);
 
 /** The models keyed by their plain id. */
-export type PlainKeyModel = 'Grant' | 'Client' | 'SignIn' | 'RefreshGrace';
+export type PlainKeyModel = 'Grant' | 'Client' | 'SignIn' | 'RefreshGrace' | 'YnabTokenRejected';
 
 /**
  * The key of a grant (by its id), a client (by its client_id), a staged
- * sign-in or #64a's refresh grace record (each by its grant's id).
+ * sign-in or #64a's refresh grace record (each by its grant's id), or a
+ * rejected YNAB token's marker (by {@link rejectedYnabTokenId}).
  */
 export function plainRowKey(model: PlainKeyModel, id: string): string {
   return `${model}:${id}`;
@@ -131,8 +134,8 @@ export function grantedScopeOfGrant(payload: string): GrantedScope {
  * because the library consumes it before it saves the exchange's tokens, so a
  * read-write client in the middle of its exchange has only its code; a code
  * that was replayed or revoked is gone with its grant, so a consumed code
- * still on file belongs to a live grant. Other models (RefreshGrace, SignIn)
- * never count.
+ * still on file belongs to a live grant. Other models (RefreshGrace, SignIn,
+ * YnabTokenRejected) never count.
  *
  * Parameters, each `$n` once and in order (SQLite's positional form): the
  * account, the grant to leave out (the sign-in's own), then `now` three times.
@@ -153,10 +156,14 @@ export function otherLiveGrantsParams(accountId: string, grantId: string, now: n
  * #64b (the D-9 result: a second, read-only YNAB authorization doesn't
  * invalidate the first, read-write one). A completed sign-in keeps the stored
  * YNAB token, and discards its own, when it brings a read-only token, the
- * stored one is read-write, and another of the user's grants is read-write
- * and live (its payloads from {@link OTHER_LIVE_GRANTS_SQL}). Otherwise the
- * sign-in's token replaces the stored one, as before: read-only after
- * read-only, any read-write, or read-only once no read-write grant is left.
+ * stored one is read-write, YNAB hasn't rejected it (`storedRejected`, a
+ * {@link rejectedYnabTokenRow} marker for its exact ciphertext), and another
+ * of the user's grants is read-write and live (its payloads from
+ * {@link OTHER_LIVE_GRANTS_SQL}). Otherwise the sign-in's token replaces the
+ * stored one, as before: read-only after read-only, any read-write,
+ * read-only once no read-write grant is left, or read-only over a token YNAB
+ * has refused (keeping a dead token would leave the reconnect looking
+ * successful while YNAB access stays broken).
  *
  * Keeping the read-write token widens nothing: each request's level is its
  * own token's scope AND the user's YNAB level (http.ts), so the new client's
@@ -166,14 +173,80 @@ export function otherLiveGrantsParams(accountId: string, grantId: string, now: n
 export function signInKeepsStoredToken(
   stored: Pick<UserRecord, 'grantedScope'> | undefined,
   incoming: Pick<UserRecord, 'grantedScope'>,
-  otherLiveGrantPayloads: readonly string[]
+  otherLiveGrantPayloads: readonly string[],
+  storedRejected: boolean
 ): boolean {
   return (
     incoming.grantedScope === 'read-only' &&
     stored?.grantedScope === 'read-write' &&
+    !storedRejected &&
     otherLiveGrantPayloads.some((payload) => grantedScopeOfGrant(payload) === 'read-write')
   );
 }
+
+const REJECTED_TOKEN_DOMAIN = 'ynab-mcp/ynab-token-rejected/v1';
+
+/**
+ * #64b: the id of a rejected YNAB token's marker, SHA-256 (hex) of a domain
+ * tag, the user id and the stored refresh-token ciphertext YNAB refused.
+ *
+ * Unkeyed, unlike the `h1.` keys: every driver computes it inside the
+ * sign-in's transaction from the ciphertext it reads there, and storage has
+ * no pepper. A key adds no secrecy here: the input is AES-GCM ciphertext
+ * (random IV) that the same database's `users` row held, never a token value,
+ * and the hash can't be opened or guessed. Not `h1.`, which means a peppered
+ * HMAC of a credential everywhere else.
+ */
+export function rejectedYnabTokenId(userId: string, encryptedRefreshToken: string): string {
+  return createHash('sha256').update(`${REJECTED_TOKEN_DOMAIN}\0${userId}\0${encryptedRefreshToken}`).digest('hex');
+}
+
+/** The key of the marker for `encryptedRefreshToken` of `userId`. */
+export function rejectedYnabTokenKey(userId: string, encryptedRefreshToken: string): string {
+  return plainRowKey('YnabTokenRejected', rejectedYnabTokenId(userId, encryptedRefreshToken));
+}
+
+/**
+ * #64b: the marker YnabTokenResolver writes when YNAB refuses the stored
+ * refresh token with `invalid_grant` (the token is dead; any other refusal,
+ * such as `invalid_client`, may be this server's fault and marks nothing). A
+ * completed sign-in reads it ({@link signInKeepsStoredToken}'s
+ * `storedRejected`) against the ciphertext stored at that moment, so a newer
+ * token (a refresh, a sign-in) never matches it, on any replica. The rekey
+ * job's re-encryption of the same token carries it to the new ciphertext, in
+ * the same step (`rekeyUserRefreshToken`); a rekey during the refused refresh
+ * is caught by the writer's re-read (YnabTokenResolver.markRejected), which
+ * also removes a marker written while the account was being erased.
+ *
+ * In the clear it holds only the key (a hash), the user id (`account_id`, so
+ * the account's erasure deletes it) and its expiry; no grant or client, so it
+ * never keeps a grant or a client from the sweep. It expires at `expiresAt`:
+ * the writer sets the grant lifetime from now (every read-write grant that
+ * could keep the dead token was live when it was written, and ends within
+ * that), and the sweep's expiry rule then removes it. Every later refusal
+ * rewrites it, restarting that clock.
+ */
+export function rejectedYnabTokenRow(userId: string, encryptedRefreshToken: string, expiresAt: number): OAuthRowWrite {
+  return {
+    key: rejectedYnabTokenKey(userId, encryptedRefreshToken),
+    model: 'YnabTokenRejected',
+    payload: '{}',
+    grantId: undefined,
+    accountId: userId,
+    clientId: undefined,
+    uid: undefined,
+    expiresAt,
+  };
+}
+
+/**
+ * The marker for `encryptedRefreshToken` of `accountId`, as its `expires_at`;
+ * no row when there is none. A sign-in counts it whatever its expiry (a
+ * refused YNAB token never works again; expiry only bounds how long the row
+ * is kept). Parameters: the marker's key, the account.
+ */
+export const REJECTED_YNAB_TOKEN_SQL = `SELECT expires_at FROM oauth_rows
+  WHERE key = $1 AND model = 'YnabTokenRejected' AND account_id = $2`;
 
 /**
  * One live access or refresh token of one of the user's grants, joined to the

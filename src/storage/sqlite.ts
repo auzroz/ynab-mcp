@@ -64,6 +64,9 @@ import {
   connectionsFromGrantRows,
   OTHER_LIVE_GRANTS_SQL,
   otherLiveGrantsParams,
+  REJECTED_YNAB_TOKEN_SQL,
+  rejectedYnabTokenKey,
+  rejectedYnabTokenRow,
   plainRowKey,
   signInKeepsStoredToken,
   signInPayload,
@@ -483,20 +486,29 @@ export class SqliteStorage implements Storage, OAuthRowStore {
   /**
    * A completed sign-in's users-row write (#64b), inside saveAuthorizationCode's
    * IMMEDIATE transaction: its YNAB token replaces the stored one, unless
-   * signInKeepsStoredToken says to keep a read-write one, when only
+   * signInKeepsStoredToken says to keep a read-write one (never one YNAB
+   * refused: a marker for the ciphertext read here), when only
    * `last_seen_at` is stamped (a sign-in is activity, #54e).
    */
   private applySignIn(user: UserRecord, grantId: string, now: number): void {
     const db = this.database;
-    const stored = db.prepare('SELECT granted_scope FROM users WHERE user_id = ?').get(user.userId) as
-      | { granted_scope: string | null }
-      | undefined;
+    const stored = db
+      .prepare('SELECT granted_scope, encrypted_refresh_token FROM users WHERE user_id = ?')
+      .get(user.userId) as { granted_scope: string | null; encrypted_refresh_token: string } | undefined;
     const others = (
       db.prepare(toPositional(OTHER_LIVE_GRANTS_SQL)).all(...otherLiveGrantsParams(user.userId, grantId, now)) as Array<{
         payload: string;
       }>
     ).map((r) => r.payload);
-    if (stored && signInKeepsStoredToken({ grantedScope: parseGrantedScope(stored.granted_scope) }, user, others)) {
+    const rejected =
+      stored !== undefined &&
+      db
+        .prepare(toPositional(REJECTED_YNAB_TOKEN_SQL))
+        .get(rejectedYnabTokenKey(user.userId, stored.encrypted_refresh_token), user.userId) !== undefined;
+    if (
+      stored &&
+      signInKeepsStoredToken({ grantedScope: parseGrantedScope(stored.granted_scope) }, user, others, rejected)
+    ) {
       db.prepare('UPDATE users SET last_seen_at = ? WHERE user_id = ?').run(now, user.userId);
       return;
     }
@@ -640,10 +652,28 @@ export class SqliteStorage implements Storage, OAuthRowStore {
   }
 
   async rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
-    const result = this.database
-      .prepare('UPDATE users SET encrypted_refresh_token = ? WHERE user_id = ? AND encrypted_refresh_token = ?')
-      .run(newCiphertext, userId, oldCiphertext);
-    return result.changes === 1;
+    const db = this.database;
+    return db
+      .transaction((): boolean => {
+        const result = db
+          .prepare('UPDATE users SET encrypted_refresh_token = ? WHERE user_id = ? AND encrypted_refresh_token = ?')
+          .run(newCiphertext, userId, oldCiphertext);
+        if (result.changes !== 1) return false;
+        // #64b: the same token, so a refusal marker moves with it.
+        const oldKey = rejectedYnabTokenKey(userId, oldCiphertext);
+        const marker = db.prepare(toPositional(REJECTED_YNAB_TOKEN_SQL)).get(oldKey, userId) as
+          | { expires_at: number | null }
+          | undefined;
+        if (marker) {
+          const now = Date.now();
+          db.prepare('DELETE FROM oauth_rows WHERE key = ?').run(oldKey);
+          db.prepare(UPSERT_OAUTH_ROW).run(
+            ...this.oauthRowParams(rejectedYnabTokenRow(userId, newCiphertext, marker.expires_at ?? now), now)
+          );
+        }
+        return true;
+      })
+      .immediate();
   }
 
   async rekeyUserAccessToken(userId: string, oldCiphertext: string, newCiphertext: string | undefined): Promise<boolean> {
