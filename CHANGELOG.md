@@ -62,7 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Operators:** if a newly registered client can't send it yet, set
   `MCP_REQUIRE_RESOURCE=false` until it can. That setting is deprecated and is
   removed in 0.6.
-
 - **HTTP mode is stateless** (#41, ADR-0001). `/mcp` no longer issues an
   `Mcp-Session-Id`, and `GET` and `DELETE /mcp` answer `405`, so nothing needs
   sticky sessions: remove any sticky-session routing at your proxy. Each
@@ -89,8 +88,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `MCP_BIND_HOST=127.0.0.1`. Behind a reverse proxy on the same host a
     loopback bind does not protect the token. A Docker deployment in header
     mode with a token needs `MCP_ALLOW_ANONYMOUS_FALLBACK=true`.
-  - Numeric settings are bounds-checked: for example `RATE_LIMIT_PER_HOUR` is
-    1 to 195 in HTTP mode (stdio still allows 200).
+  - Numeric settings are bounds-checked, so some values 0.4.x accepted now
+    refuse to start. In HTTP mode: `RATE_LIMIT_PER_HOUR` 1 to 195 (stdio still
+    allows 200), `MCP_ACCESS_TOKEN_TTL_SEC` 60 to 3600, `MCP_AUTH_CODE_TTL_SEC`
+    30 to 600, `CACHE_TTL_MS` at most 24 hours, `PORT` 1 to 65535 and
+    `TRUST_PROXY` 0 to 10. Each new setting states its own range.
+  - An unknown `LOG_LEVEL` refuses to start in HTTP mode too.
   - `/health` returns only `{"status":"ok"}`.
   - An `MCP_TRANSPORT` other than `stdio` or `http` refuses to start (0.4.x
     ran stdio for any other value).
@@ -140,6 +143,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only one call waits at a time. The error `type` is now `rate_limited` (was
   `rate_limit`): anything that matches on the old value must change. This
   applies to stdio too.
+- **`ynab_audit_log` output changes** (#60). Anything that reads the tool's
+  entries must change:
+  - Entry fields are snake_case: `timestamp`, `tool`, `operation`,
+    `resource_type` (was `resourceType`), `resource_id` (was `resourceId`),
+    `budget_id` (was `budgetId`), `outcome`, `success`, `client_id`,
+    `family_id` and `request_id`.
+  - Entries no longer carry `details` (amounts, dates, presence flags and
+    counts) or `error` text.
+  - `success: false` now matches every write outcome but `success`, refusals
+    included. A revocation entry matches neither value and shows
+    `success: null`.
+  - In OAuth mode it shows only the calling client's entries by default;
+    another client of the same user no longer sees them. `all_clients: true`
+    shows all of the user's clients' entries, never another user's.
+  - A bulk call (`ynab_create_transactions`, `ynab_update_transactions`) is
+    one entry per transaction YNAB saved, each with the id YNAB returned and
+    all with the call's `request_id`; before, it was one entry for the call.
+  - New: an `outcome` filter, and the summary's `by_outcome` and
+    `revocation_count`. The `operation` and `resource_type` filters accept
+    every value the log records (`move`, `import`, `audit_suppressed`,
+    `revoke`; `category_group`, `payee`, `scheduled_transaction`, `grant`,
+    `client`).
 - The `ynab-mcp-server` command is removed (#43); use `ynab-mcp`. That name
   belongs to an unrelated npm package. `npx -y ynab-mcp` is unchanged.
 
@@ -156,26 +181,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   YNAB has refused (`invalid_grant`) is not kept: the refusal is recorded
   (best-effort), and the next sign-in, read-only included, replaces it. No
   setting and no migration.
-- `ynab_audit_log` changes (#60a):
-  - Entry fields are snake_case: `timestamp`, `tool`, `operation`,
-    `resource_type` (was `resourceType`), `resource_id` (was `resourceId`),
-    `budget_id` (was `budgetId`), `outcome`, `success`, `client_id`,
-    `family_id` and `request_id`.
-  - Entries no longer carry `details` (amounts, dates, presence flags) or
-    `error` text.
-  - New `outcome` filter. The `operation` and `resource_type` filters accept
-    every value the log records (`move`, `import`, `audit_suppressed`;
-    `category_group`, `payee`, `scheduled_transaction`).
-  - `success: false` now matches every write outcome but `success`, refusals
-    included. A revocation entry (#60b) matches neither value and shows
-    `success: null`.
-  - In OAuth mode it shows only the calling client's entries; another client
-    of the same user no longer sees them. `all_clients: true` shows all of the
-    user's clients' entries (#60b), never another user's.
-  - The summary adds `by_outcome` and `revocation_count`.
-  - A bulk call (`ynab_create_transactions`, `ynab_update_transactions`) is
-    one entry per transaction YNAB saved, all with the call's `request_id`
-    (#60b); before, it was one entry for the call.
 - **What operators see after the authorization server move** (#47):
   - The consent page is now at `/oauth/interaction/<id>`, reached by a
     redirect from `/authorize`. Its choices go to `.../start`, and Cancel to
@@ -219,10 +224,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*_formatted` fields, messages). Raw milliunit fields, keys and the shape of
   every response are unchanged, and no field is added. For a USD budget,
   amounts of 1,000 or more now carry group separators (`$3,000.00`, was
-  `$3000.00`). The format comes from the budget's cached settings, so it costs
-  at most one extra request per budget every 5 minutes; if the settings cannot
-  be read, amounts keep the previous `$1234.56` style. The format is reused for
-  an hour per budget, so it costs well under one request an hour. Symbols and
+  `$3000.00`). The format comes from the budget's settings and is reused for
+  an hour per budget, so it costs at most one extra request per budget an
+  hour; if the settings cannot be read, amounts keep the previous `$1234.56`
+  style (retried after a minute). Symbols and
   separators are cleaned of control and bidi characters but never trimmed, so
   space group separators (French, Swedish, Polish, Czech, Norwegian) survive.
   `ynab_transaction_search` now writes its `min`/`max` criteria as formatted
@@ -232,7 +237,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must be at least 0.001 (1 milliunit)`). `ynab_detect_recurring`'s
   `estimated_monthly_total` is now summed from milliunits, so it can differ by a
   milliunit or two.
-
 - **MCP SDK v2** (#41, ADR-0001). The server moves from `@modelcontextprotocol/sdk`
   1.x to the v2 packages (`@modelcontextprotocol/server`, `node` and
   `express`), and serves MCP protocol revision 2026-07-28 next to 2025-11-25 on
@@ -281,13 +285,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The database records a schema version and a minimum compatible release
   (#73). A start that finds the database's floor above its own release, or an
   unreadable one, refuses to start. The 0.5.0 migrations add nullable columns
-  and indexes (retention clocks for #54), which briefly lock each table at
-  startup, so take the backup first.
+  (retention clocks for #54, the refresh lease for #48), tables (`oauth_rows`;
+  `audit_log` in schema 7; the shared rate-limit tables in schema 8) and
+  indexes, which briefly lock each table at startup, so take the backup first.
 - Tool descriptions and the server's MCP `instructions` tell the model that
   budget free text (payee, account and category names, memos) is untrusted
   data, not instructions (#61). Only descriptions change; schemas and output
   are unchanged. Every write tool and the 17 read tools that return memos or
   notes carry the note.
+
 ### Security
 
 - A refresh whose response was lost can be retried (#64, OAUTH-15). An
@@ -299,7 +305,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The record is kept in the database, so it works across replicas, encrypted
   under a key that needs the old refresh token (never stored), and is swept
   after the 60 seconds. No migration and no setting.
-- Audit entries hold ids only (#60a): no amount or other financial value, no
+- Audit entries hold ids only (#60): no amount or other financial value, no
   payee, account, category or memo text, and no error message, by
   construction (the table has no column for one). Before, an entry's details
   could carry a transaction's amount and date.
@@ -317,22 +323,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   past the retirement is refused instead of storing a token no replica can
   read. An hour later it retires `v1` and the older key ids for every
   replica, unless a token was written under an older key in the meantime.
-- `ENCRYPTION_KEY` can be rotated without logging anyone out.
+- `ENCRYPTION_KEY` can be rotated without logging anyone out (#57).
   `ENCRYPTION_KEY_ID` (default 1) names the current key, and
   `ENCRYPTION_KEY_PREVIOUS` (`<id>:<key>,…`) lists keys that are kept for
   reading only. The new `ynab-mcp derive-pepper` command prints the token
   pepper derived from `ENCRYPTION_KEY`, so it can be pinned as `TOKEN_PEPPER`
   before a rotation. See "Rotating ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md.
-- The server refuses to start if:
+- With key ids (#57), the server refuses to start if:
   - the key under an id differs from the one the database recorded for that id;
   - `ENCRYPTION_KEY_ID` is below a retired id;
   - `ENCRYPTION_KEY_PREVIOUS` is set without `TOKEN_PEPPER`.
-- Upgrading needs no configuration change. Back up the database first:
-  rolling back means restoring that backup. 0.4.x has no schema-version check,
+- The new token format needs no configuration change (#57; see Breaking for
+  the settings 0.5.0 does change). Back up the database first: rolling back
+  means restoring that backup. 0.4.x has no schema-version check,
   so it does start on a 0.5.0 database, but it can't read the tokens 0.5.0
   stores. Don't run 0.4.x and 0.5.0 replicas against the same database, not
   even during a rolling deploy.
-- The binding protects tokens from the upgrade on. A `v1` token carries none,
+- The binding (#57) protects tokens from the upgrade on. A `v1` token carries none,
   so one copied into another user's row before the upgrade is re-encrypted as
   that row's.
 - Release tags are verified (#62). `Release: Verify` refuses a `v*` tag,
@@ -344,7 +351,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package gives the repository's workflows read access only, so a workflow
   run outside an approved release can't push an image (#62). The
   image's attestation remains its proof of origin.
-
 - MCP access tokens, refresh tokens, authorization codes and sign-in `state`
   are stored only as keyed hashes, and client secrets as SHA-256 hashes (#52).
   A copy of the database holds no usable MCP credential. A token or code that
@@ -385,6 +391,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issued before an account was erased stay dead if the same person connects
   again. A YNAB token refresh that finishes after the account was erased
   fails instead of recreating the user, and the user reconnects (#93).
+
 ### Added
 
 - **Manage connections from a client** (#53), in OAuth HTTP mode only, as
@@ -403,45 +410,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (never budget data, and not YNAB's own authorization). Stdio and header mode
   don't have these tools. See "Managing connections" in
   docs/REMOTE_HOSTING.md.
-- **Structured tool output** (#45). A tool can declare an `outputSchema` and
-  return its result as `structuredContent`, alongside the same JSON in a text
-  block. Clients that don't read `structuredContent` see no change. The output
-  keeps its 0.4.x shape: a key whose value is null is still left out, and the
-  schema marks that key optional. The advertised schemas allow extra keys, so a
-  field added in a later release can't make a validating client reject the
-  tool, and values copied as they are from YNAB (ids, dates, flags) are
-  advertised as optional and nullable, so a change on YNAB's side can't
-  either. Errors stay `isError` results with no `structuredContent`. Every
-  tool declares one.
-- **A durable, attributable audit log** (#60a). Every write tool call is
+- **Structured tool output** (#45). Every tool declares an `outputSchema`
+  and returns its result as `structuredContent`, alongside the same JSON in a
+  text block. Clients that don't read `structuredContent` see no change. The
+  output keeps its 0.4.x shape: a key whose value is null is still left out,
+  and the schema marks that key optional. The advertised schemas allow extra
+  keys, so a field added in a later release can't make a validating client
+  reject the tool, and values copied as they are from YNAB (ids, dates, flags,
+  enum strings and raw amounts) are advertised as optional and nullable, so a
+  change on YNAB's side can't either. Errors stay `isError` results with no
+  `structuredContent`.
+- **A durable, attributable audit log** (#60). Every write tool call is
   recorded with how it ended: `success`, `denied_read_only`, `denied_scope`
   (a read-only grant), `denied_write_limit` or `error`. Refused writes are
   recorded too, up to 20 read-only or scope refusals per user per hour, then
   one `audit_suppressed` entry marks that later ones are missing; a call that
-  fails input validation is not. Recording never fails a write and holds it up
-  for at most 1 second: a slower insert finishes in the background, and if the
-  store can't be written the write stands and the entry is lost (logged). Each entry names
-  the user, the MCP client, its grant and the request, the tool, the operation,
-  and the resource and budget ids. In OAuth mode entries go to the storage
-  driver, so with `sqlite` or `postgres` they survive restarts and are shared
-  by replicas. In header mode and on stdio they stay in memory, newest 1,000
-  per user. Erasing an account erases its entries. This needs schema 7: one
-  `audit_log` table with two indexes, added on startup.
-  See "The audit log" in docs/REMOTE_HOSTING.md.
-- **The audit log, completed** (#60b):
-  - Each revoked connection is one entry in OAuth mode (D-7a): `revoked` (at
+  fails input validation is not. Recording never fails a write and holds it
+  up for at most 1 second: a slower insert finishes in the background, and if
+  the store can't be written the write stands and the entry is lost (logged).
+  Each entry names the user, the MCP client, its grant and the request, the
+  tool, the operation, and the resource and budget ids. A bulk call records
+  one entry per transaction, in one insert under the same bound. In OAuth
+  mode entries go to the storage driver, so with `sqlite` or `postgres` they
+  survive restarts and are shared by replicas. In header mode and on stdio
+  they stay in memory, newest 1,000 per user. Erasing an account erases its
+  entries. This needs schema 7: one `audit_log` table with two indexes, added
+  on startup. See "The audit log" in docs/REMOTE_HOSTING.md. Also:
+  - Each revoked connection is one entry in OAuth mode: `revoked` (at
     `/revoke`, or with the account tools), `revoked_reuse` (a spent refresh
     token or code presented again, or by another client) or `revoked_replay`
     (one spent twice at once). Issuing and refreshing tokens is not recorded,
     nor is an account erase. Each revocation is recorded once, by the request
     that deleted the connection, and no entry holds a token.
-  - A bulk call records one entry per transaction, in one insert under the
-    same 1-second bound and erasure check as a single write.
   - `AUDIT_RETENTION_DAYS` (1-3650, default 90): the retention sweep deletes
     older entries, in batches. OAuth mode's durable log only; stdio and
-    header mode keep the newest 1,000 per user in memory, as before.
+    header mode keep the newest 1,000 per user in memory.
   - `ynab_audit_log` takes `all_clients` to show every connection of the
-    user. No schema change.
+    user, and an `outcome` filter (see Breaking).
 - **Shared rate limits for several replicas** (#67), opt-in with
   `RATE_LIMIT_STORE=postgres` (default `memory`; needs `AUTH_MODE=oauth` and
   `STORAGE_DRIVER=postgres`, any other value or driver refuses to start). The
@@ -555,8 +560,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `YNAB_BUDGET_ID` is unset) is resolved to the budget's UUID with one request
   per user, reused by reads for 5 minutes, so a change of last-used budget in
   YNAB is picked up within 5 minutes for reads. Writes always resolve fresh, and
-  a write invalidates exactly the entries a read created. The budget-settings cache now has the same generation guard as the
-  other caches.
+  a write invalidates exactly the entries a read created. The budget-settings
+  cache now has the same generation guard as the other caches.
+- A `/mcp` request whose body is over 512 KB gets its `413` instead of a
+  connection reset (#137). The server used to close the connection on the
+  unread upload, so a client still sending it often saw `EPIPE` or
+  `ECONNRESET` before it could read the status. It now reads and discards the
+  rest of the body, at most 1 MB and 3 seconds, before closing; past either
+  bound the connection is cut. The body is never processed.
 - The release workflow's MCP Registry job waits up to 10 minutes for npm to
   serve the new version before it publishes `server.json`, and retries the
   publish twice on the registry's "version not found" error, so a release no
