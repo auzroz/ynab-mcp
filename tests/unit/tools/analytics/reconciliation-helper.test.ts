@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { handleReconciliationHelper } from '../../../../src/tools/analytics/reconciliation-helper.js';
+import { handleReconciliationHelper as rawHandleReconciliationHelper, reconciliationHelperOutputSchema } from '../../../../src/tools/analytics/reconciliation-helper.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createAccountsResponse,
@@ -15,6 +16,8 @@ import {
   mockFlaggedTransaction,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleReconciliationHelper = validating(reconciliationHelperOutputSchema, rawHandleReconciliationHelper);
 
 describe('handleReconciliationHelper', () => {
   let mockClient: MockClient;
@@ -35,7 +38,7 @@ describe('handleReconciliationHelper', () => {
     // All cleared/reconciled transactions get filtered out
     mockClient.getTransactions.mockResolvedValue(createTransactionsResponse([]));
 
-    const result = JSON.parse(await handleReconciliationHelper({}, mockClient as never));
+    const result = await handleReconciliationHelper({}, mockClient as never);
 
     expect(result.status).toBe('up_to_date');
     expect(result.message).toContain('cleared or reconciled');
@@ -50,7 +53,7 @@ describe('handleReconciliationHelper', () => {
       createTransactionsResponse([mockUnclearedTransaction])
     );
 
-    const result = JSON.parse(await handleReconciliationHelper({}, mockClient as never));
+    const result = await handleReconciliationHelper({}, mockClient as never);
 
     expect(result.summary.total_uncleared_transactions).toBe(1);
     expect(result.accounts.length).toBe(1);
@@ -70,7 +73,7 @@ describe('handleReconciliationHelper', () => {
       ])
     );
 
-    const result = JSON.parse(await handleReconciliationHelper({}, mockClient as never));
+    const result = await handleReconciliationHelper({}, mockClient as never);
 
     expect(result.status).toBe('overdue');
     expect(result.summary.accounts_needing_attention).toBe(1);
@@ -86,7 +89,7 @@ describe('handleReconciliationHelper', () => {
       ])
     );
 
-    const result = JSON.parse(await handleReconciliationHelper({}, mockClient as never));
+    const result = await handleReconciliationHelper({}, mockClient as never);
 
     expect(result.status).toBe('needs_attention');
     expect(result.summary.accounts_needing_attention).toBe(0);
@@ -99,12 +102,10 @@ describe('handleReconciliationHelper', () => {
       createTransactionsResponse([mockUnclearedTransaction, mockFlaggedTransaction])
     );
 
-    const result = JSON.parse(
-      await handleReconciliationHelper(
+    const result = await handleReconciliationHelper(
         { account_id: mockCheckingAccount.id },
         mockClient as never
-      )
-    );
+      );
 
     // Specific account always shown even though all txns are on it here
     expect(result.accounts.length).toBe(1);

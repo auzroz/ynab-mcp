@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleAgeOfMoney } from '../../../../src/tools/analytics/age-of-money.js';
+import { handleAgeOfMoney as rawHandleAgeOfMoney, ageOfMoneyOutputSchema } from '../../../../src/tools/analytics/age-of-money.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createBudgetResponse,
@@ -12,6 +13,8 @@ import {
   mockBudgetAccounts,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleAgeOfMoney = validating(ageOfMoneyOutputSchema, rawHandleAgeOfMoney);
 
 // Build a budget whose plan.months carry age_of_money values.
 function budgetWithMonths(months: Array<{ month: string; age_of_money: number | null }>) {
@@ -47,7 +50,7 @@ describe('handleAgeOfMoney', () => {
       ])
     );
 
-    const result = JSON.parse(await handleAgeOfMoney({}, mockClient as never));
+    const result = await handleAgeOfMoney({}, mockClient as never);
 
     expect(result.status).toBe('excellent');
     expect(result.age_of_money_raw).toBe(45);
@@ -60,7 +63,7 @@ describe('handleAgeOfMoney', () => {
       budgetWithMonths([{ month: '2024-01-01', age_of_money: 25 }])
     );
 
-    const result = JSON.parse(await handleAgeOfMoney({}, mockClient as never));
+    const result = await handleAgeOfMoney({}, mockClient as never);
 
     expect(result.status).toBe('good');
   });
@@ -70,7 +73,7 @@ describe('handleAgeOfMoney', () => {
       budgetWithMonths([{ month: '2024-01-01', age_of_money: 15 }])
     );
 
-    const result = JSON.parse(await handleAgeOfMoney({}, mockClient as never));
+    const result = await handleAgeOfMoney({}, mockClient as never);
 
     expect(result.status).toBe('fair');
     expect(result.tips_to_improve.length).toBeGreaterThan(0);
@@ -81,7 +84,7 @@ describe('handleAgeOfMoney', () => {
       budgetWithMonths([{ month: '2024-01-01', age_of_money: 5 }])
     );
 
-    const result = JSON.parse(await handleAgeOfMoney({}, mockClient as never));
+    const result = await handleAgeOfMoney({}, mockClient as never);
 
     expect(result.status).toBe('needs_work');
   });
@@ -91,7 +94,7 @@ describe('handleAgeOfMoney', () => {
       budgetWithMonths([{ month: '2024-01-01', age_of_money: null }])
     );
 
-    const result = JSON.parse(await handleAgeOfMoney({}, mockClient as never));
+    const result = await handleAgeOfMoney({}, mockClient as never);
 
     expect(result.status).toBe('unknown');
     expect(result.age_of_money).toBe('Not calculated yet');
@@ -101,7 +104,7 @@ describe('handleAgeOfMoney', () => {
   it('handles a budget with no months', async () => {
     mockClient.getBudgetById.mockResolvedValue(budgetWithMonths([]));
 
-    const result = JSON.parse(await handleAgeOfMoney({}, mockClient as never));
+    const result = await handleAgeOfMoney({}, mockClient as never);
 
     expect(result.status).toBe('unknown');
   });
@@ -111,7 +114,7 @@ describe('handleAgeOfMoney', () => {
       budgetWithMonths([{ month: '2024-01-01', age_of_money: 30 }])
     );
 
-    const result = JSON.parse(await handleAgeOfMoney({}, mockClient as never));
+    const result = await handleAgeOfMoney({}, mockClient as never);
 
     // mockBudgetAccounts: checking $2,500 + savings $10,000 + Chase Visa -$1,500 + Amex +$50
     expect(result.context.budget_accounts).toBe(mockBudgetAccounts.length);

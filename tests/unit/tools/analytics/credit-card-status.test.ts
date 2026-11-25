@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { handleCreditCardStatus } from '../../../../src/tools/analytics/credit-card-status.js';
+import { handleCreditCardStatus as rawHandleCreditCardStatus, creditCardStatusOutputSchema } from '../../../../src/tools/analytics/credit-card-status.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createAccountsResponse,
@@ -15,6 +16,8 @@ import {
   mockCreditCardAccount,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleCreditCardStatus = validating(creditCardStatusOutputSchema, rawHandleCreditCardStatus);
 
 // A month response that sets the Chase Visa payment category balance.
 function monthWithPaymentBalance(balance: number) {
@@ -51,7 +54,7 @@ describe('handleCreditCardStatus', () => {
     );
     mockClient.getBudgetMonth.mockResolvedValue(monthWithPaymentBalance(0));
 
-    const result = JSON.parse(await handleCreditCardStatus({}, mockClient as never));
+    const result = await handleCreditCardStatus({}, mockClient as never);
 
     expect(result.status).toBe('no_credit_cards');
     expect(result.credit_cards).toEqual([]);
@@ -62,7 +65,7 @@ describe('handleCreditCardStatus', () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse([mockCreditCardAccount]));
     mockClient.getBudgetMonth.mockResolvedValue(monthWithPaymentBalance(1500000));
 
-    const result = JSON.parse(await handleCreditCardStatus({}, mockClient as never));
+    const result = await handleCreditCardStatus({}, mockClient as never);
 
     expect(result.status).toBe('all_covered');
     expect(result.credit_cards[0].status).toBe('covered');
@@ -73,7 +76,7 @@ describe('handleCreditCardStatus', () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse([mockCreditCardAccount]));
     mockClient.getBudgetMonth.mockResolvedValue(monthWithPaymentBalance(0));
 
-    const result = JSON.parse(await handleCreditCardStatus({}, mockClient as never));
+    const result = await handleCreditCardStatus({}, mockClient as never);
 
     expect(result.status).toBe('underfunded');
     expect(result.credit_cards[0].status).toBe('underfunded');
@@ -86,7 +89,7 @@ describe('handleCreditCardStatus', () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse([mockCreditCardAccount]));
     mockClient.getBudgetMonth.mockResolvedValue(monthWithPaymentBalance(500000));
 
-    const result = JSON.parse(await handleCreditCardStatus({}, mockClient as never));
+    const result = await handleCreditCardStatus({}, mockClient as never);
 
     expect(result.credit_cards[0].status).toBe('partial');
     expect(result.status).toBe('some_covered');
@@ -97,7 +100,7 @@ describe('handleCreditCardStatus', () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse([overpaid]));
     mockClient.getBudgetMonth.mockResolvedValue(monthWithPaymentBalance(0));
 
-    const result = JSON.parse(await handleCreditCardStatus({}, mockClient as never));
+    const result = await handleCreditCardStatus({}, mockClient as never);
 
     expect(result.credit_cards[0].status).toBe('covered');
     expect(result.status).toBe('all_covered');

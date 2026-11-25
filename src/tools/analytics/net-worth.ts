@@ -10,6 +10,7 @@ import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { sanitizeName } from '../../utils/sanitize.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -21,6 +22,36 @@ const inputSchema = z.object({
     .optional()
     .describe('Include closed accounts in calculation (default false)'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const netWorthOutputSchema = z.object({
+  status: z.enum(['positive', 'negative', 'zero']),
+  message: z.string(),
+  net_worth: z.string(),
+  summary: z.object({
+    total_assets: z.string(),
+    total_liabilities: z.string(),
+    net_worth: z.string(),
+  }),
+  breakdown: z.object({
+    budget_accounts: z.object({ count: z.number().int(), total: z.string() }),
+    tracking_accounts: z.object({ count: z.number().int(), total: z.string() }),
+  }),
+  by_account_type: z.array(
+    z.object({
+      type: z.string().describe('YNAB account type, such as checking or creditCard'),
+      total: z.string(),
+      accounts: z.array(z.object({ name: z.string(), balance: z.string(), on_budget: z.boolean() })),
+    })
+  ),
+  account_count: z.object({
+    total: z.number().int(),
+    budget: z.number().int(),
+    tracking: z.number().int(),
+    closed_excluded: z.number().int().describe('0 when include_closed is true'),
+  }),
+});
+export type NetWorthOutput = z.output<typeof netWorthOutputSchema>;
 
 // Tool definition
 export const netWorthTool: Tool = {
@@ -50,6 +81,7 @@ Returns breakdown by account type with total assets, liabilities, and net worth.
     },
     required: [],
   },
+  outputSchema: toOutputSchema(netWorthOutputSchema),
 };
 
 interface AccountSummary {
@@ -74,7 +106,7 @@ interface AccountTypeGroup {
 export async function handleNetWorth(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<NetWorthOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -188,43 +220,39 @@ export async function handleNetWorth(
     message = 'Assets equal liabilities';
   }
 
-  return JSON.stringify(
-    {
-      status,
-      message,
+  return {
+    status,
+    message,
+    net_worth: money(netWorth),
+    summary: {
+      total_assets: money(totalAssets),
+      total_liabilities: money(totalLiabilities),
       net_worth: money(netWorth),
-      summary: {
-        total_assets: money(totalAssets),
-        total_liabilities: money(totalLiabilities),
-        net_worth: money(netWorth),
+    },
+    breakdown: {
+      budget_accounts: {
+        count: budgetAccounts.length,
+        total: money(budgetTotal),
       },
-      breakdown: {
-        budget_accounts: {
-          count: budgetAccounts.length,
-          total: money(budgetTotal),
-        },
-        tracking_accounts: {
-          count: trackingAccounts.length,
-          total: money(trackingTotal),
-        },
-      },
-      by_account_type: typeGroups.map((g) => ({
-        type: g.type,
-        total: g.total,
-        accounts: g.accounts.map((a) => ({
-          name: a.name,
-          balance: a.balance,
-          on_budget: a.on_budget,
-        })),
-      })),
-      account_count: {
-        total: accounts.length,
-        budget: budgetAccounts.length,
-        tracking: trackingAccounts.length,
-        closed_excluded: includeClosed ? 0 : accountsResponse.data.accounts.filter((a) => a.closed && !a.deleted).length,
+      tracking_accounts: {
+        count: trackingAccounts.length,
+        total: money(trackingTotal),
       },
     },
-    null,
-    2
-  );
+    by_account_type: typeGroups.map((g) => ({
+      type: g.type,
+      total: g.total,
+      accounts: g.accounts.map((a) => ({
+        name: a.name,
+        balance: a.balance,
+        on_budget: a.on_budget,
+      })),
+    })),
+    account_count: {
+      total: accounts.length,
+      budget: budgetAccounts.length,
+      tracking: trackingAccounts.length,
+      closed_excluded: includeClosed ? 0 : accountsResponse.data.accounts.filter((a) => a.closed && !a.deleted).length,
+    },
+  };
 }

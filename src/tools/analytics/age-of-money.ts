@@ -9,6 +9,7 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
 import { moneyFormatterFor, sumMilliunits } from '../../utils/milliunits.js';
 import { budgetId } from '../../utils/schemas.js';
+import { toOutputSchema } from '../output-schema.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -16,6 +17,32 @@ const inputSchema = z.object({
     .optional()
     .describe('Budget UUID, "last-used", or "default". Defaults to YNAB_BUDGET_ID env var or "last-used"'),
 });
+
+/** What the tool returns (#45; rules in ../output-schema.ts). Amounts are formatted strings. */
+export const ageOfMoneyOutputSchema = z.object({
+  status: z.enum(['excellent', 'good', 'fair', 'needs_work', 'unknown']),
+  message: z.string(),
+  age_of_money: z.string().describe('"N days", or "Not calculated yet"'),
+  age_of_money_raw: z
+    .number()
+    .int()
+    .nullable()
+    .describe('Days, from the most recent month; null until YNAB has calculated it'),
+  target: z.string(),
+  context: z.object({
+    cash_on_hand: z.string(),
+    budget_accounts: z.number().int(),
+    estimated_buffer: z.string(),
+  }),
+  explanation: z.object({
+    what_is_it: z.string(),
+    why_it_matters: z.string(),
+    how_calculated: z.string(),
+  }),
+  milestones: z.array(z.object({ days: z.number().int(), meaning: z.string() })),
+  tips_to_improve: z.array(z.string()),
+});
+export type AgeOfMoneyOutput = z.output<typeof ageOfMoneyOutputSchema>;
 
 // Tool definition
 export const ageOfMoneyTool: Tool = {
@@ -41,6 +68,7 @@ Returns the current age of money with context and improvement tips.`,
     },
     required: [],
   },
+  outputSchema: toOutputSchema(ageOfMoneyOutputSchema),
 };
 
 // Handler function
@@ -50,7 +78,7 @@ Returns the current age of money with context and improvement tips.`,
 export async function handleAgeOfMoney(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<AgeOfMoneyOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id);
   const money = await moneyFormatterFor(client, budgetId);
@@ -110,50 +138,46 @@ export async function handleAgeOfMoney(
     estimatedBuffer = `~${ageOfMoney} days`;
   }
 
-  return JSON.stringify(
-    {
-      status,
-      message,
-      age_of_money: ageOfMoney !== null ? `${ageOfMoney} days` : 'Not calculated yet',
-      age_of_money_raw: ageOfMoney,
-      target,
-      context: {
-        cash_on_hand: money(cashOnHand),
-        budget_accounts: budgetAccounts.length,
-        estimated_buffer: estimatedBuffer,
-      },
-      explanation: {
-        what_is_it:
-          'Age of Money measures the average age of the dollars you spend. It shows how long money sits in your accounts before being spent.',
-        why_it_matters:
-          'A higher Age of Money means you have more buffer between earning and spending. At 30+ days, you\'re spending last month\'s income, not this month\'s.',
-        how_calculated:
-          'YNAB looks at the last 10 cash outflows and calculates how old those dollars were when spent, then averages them.',
-      },
-      milestones: [
-        { days: 7, meaning: 'One week buffer' },
-        { days: 14, meaning: 'Two week buffer' },
-        { days: 21, meaning: 'Three week buffer' },
-        { days: 30, meaning: 'Living on last month\'s income - YNAB\'s goal!' },
-        { days: 60, meaning: 'Two month buffer - excellent financial health' },
-        { days: 90, meaning: 'Three month buffer - very secure' },
-      ],
-      tips_to_improve:
-        ageOfMoney !== null && ageOfMoney < 30
-          ? [
-              'Spend less than you earn each month',
-              'Build up Ready to Assign instead of immediately budgeting everything',
-              'Avoid using credit cards for cash-flow management',
-              'Focus on reducing expenses in discretionary categories',
-              'Consider a no-spend challenge to accelerate progress',
-            ]
-          : [
-              'Great job! Maintain your buffer by continuing to spend less than you earn',
-              'Consider building additional savings goals',
-              'Your buffer protects you from unexpected expenses',
-            ],
+  return {
+    status,
+    message,
+    age_of_money: ageOfMoney !== null ? `${ageOfMoney} days` : 'Not calculated yet',
+    age_of_money_raw: ageOfMoney,
+    target,
+    context: {
+      cash_on_hand: money(cashOnHand),
+      budget_accounts: budgetAccounts.length,
+      estimated_buffer: estimatedBuffer,
     },
-    null,
-    2
-  );
+    explanation: {
+      what_is_it:
+        'Age of Money measures the average age of the dollars you spend. It shows how long money sits in your accounts before being spent.',
+      why_it_matters:
+        'A higher Age of Money means you have more buffer between earning and spending. At 30+ days, you\'re spending last month\'s income, not this month\'s.',
+      how_calculated:
+        'YNAB looks at the last 10 cash outflows and calculates how old those dollars were when spent, then averages them.',
+    },
+    milestones: [
+      { days: 7, meaning: 'One week buffer' },
+      { days: 14, meaning: 'Two week buffer' },
+      { days: 21, meaning: 'Three week buffer' },
+      { days: 30, meaning: 'Living on last month\'s income - YNAB\'s goal!' },
+      { days: 60, meaning: 'Two month buffer - excellent financial health' },
+      { days: 90, meaning: 'Three month buffer - very secure' },
+    ],
+    tips_to_improve:
+      ageOfMoney !== null && ageOfMoney < 30
+        ? [
+            'Spend less than you earn each month',
+            'Build up Ready to Assign instead of immediately budgeting everything',
+            'Avoid using credit cards for cash-flow management',
+            'Focus on reducing expenses in discretionary categories',
+            'Consider a no-spend challenge to accelerate progress',
+          ]
+        : [
+            'Great job! Maintain your buffer by continuing to spend less than you earn',
+            'Consider building additional savings goals',
+            'Your buffer protects you from unexpected expenses',
+          ],
+  };
 }

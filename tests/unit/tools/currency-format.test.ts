@@ -246,7 +246,7 @@ describe('amounts follow the budget currency format', () => {
     it('ynab_quick_summary formats metrics in the budget currency', async () => {
       client.getCurrencyFormat.mockResolvedValue(mockJpyCurrencyFormat);
       client.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
-      const parsed = JSON.parse(await handleQuickSummary({}, client as never));
+      const parsed = await handleQuickSummary({}, client as never);
 
       expect(parsed.key_metrics.ready_to_assign).toMatch(/^-?¥[\d,]+$/);
       expect(parsed.key_metrics.spent_this_month).toMatch(/^-?¥[\d,]+$/);

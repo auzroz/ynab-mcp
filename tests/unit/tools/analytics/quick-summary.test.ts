@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleQuickSummary } from '../../../../src/tools/analytics/quick-summary.js';
+import { handleQuickSummary as rawHandleQuickSummary, quickSummaryOutputSchema } from '../../../../src/tools/analytics/quick-summary.js';
+import { validating } from './output.js';
 import {
   createMockClient,
   createMonthResponse,
@@ -12,6 +13,8 @@ import {
   mockAllAccounts,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+const handleQuickSummary = validating(quickSummaryOutputSchema, rawHandleQuickSummary);
 
 describe('handleQuickSummary', () => {
   let mockClient: MockClient;
@@ -24,8 +27,7 @@ describe('handleQuickSummary', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleQuickSummary({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleQuickSummary({}, mockClient as never);
 
     expect(parsed.status).toMatch(/healthy|warning|attention_needed/);
     expect(parsed.message).toBeDefined();
@@ -43,8 +45,7 @@ describe('handleQuickSummary', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleQuickSummary({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleQuickSummary({}, mockClient as never);
 
     expect(parsed.status).toBe('attention_needed');
     expect(parsed.alerts.overspent_categories).not.toBeNull();
@@ -62,8 +63,7 @@ describe('handleQuickSummary', () => {
     );
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleQuickSummary({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleQuickSummary({}, mockClient as never);
 
     expect(parsed.status).toBe('healthy');
     expect(parsed.message).toBe('Budget is on track');
@@ -81,8 +81,7 @@ describe('handleQuickSummary', () => {
     );
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleQuickSummary({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleQuickSummary({}, mockClient as never);
 
     expect(parsed.status).toBe('attention_needed');
     expect(parsed.message).toContain('Ready to Assign is negative');
@@ -92,8 +91,7 @@ describe('handleQuickSummary', () => {
     mockClient.getBudgetMonth.mockResolvedValue(createMonthResponse(mockMonthDetail));
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse(mockAllAccounts));
 
-    const result = await handleQuickSummary({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleQuickSummary({}, mockClient as never);
 
     const cashNames = parsed.account_summary.checking_savings.map(
       (a: { name: string }) => a.name
