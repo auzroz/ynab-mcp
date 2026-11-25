@@ -98,7 +98,11 @@ describe('our tools/call with structured output', () => {
     expect(serialized).not.toContain('token');
     expect(serialized).not.toContain('many');
     const [block] = result.content as Array<{ type: string; text: string }>;
-    expect(JSON.parse(block!.text)).toMatchObject({ error: true });
+    expect(JSON.parse(block!.text)).toMatchObject({
+      error: true,
+      type: 'validation_error',
+      message: 'Invalid input parameters',
+    });
   });
 
   it('a failed check is still a normal, structured result (ynab_health_check, YNAB unreachable)', async () => {
