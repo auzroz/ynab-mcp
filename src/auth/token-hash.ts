@@ -70,6 +70,7 @@ const TAG_BYTES = 16;
 const PEPPER_FROM_ENCRYPTION_KEY = 'ynab-mcp/token-pepper/v1';
 const TAG_KEY_INFO = 'ynab-mcp/ymcp1-tag';
 const STORAGE_KEY_INFO = 'ynab-mcp/h1-key';
+const REFRESH_GRACE_KEY_INFO = 'ynab-mcp/refresh-grace-key';
 /** The fingerprint message the plan fixes: HMAC(pepper, "ynab-mcp/pepper-check"). */
 const FINGERPRINT_MESSAGE = 'ynab-mcp/pepper-check';
 
@@ -128,6 +129,17 @@ export interface LibraryKeyDeriver {
   libraryStorageKey(kind: TokenKind, id: unknown): string | undefined;
 }
 
+/**
+ * What #64a's refresh grace record (src/auth/refresh-grace.ts) needs: the key
+ * that seals a rotation's successor pair, derived from the pepper and the
+ * spent refresh token's value. A database copy alone can't open the record:
+ * the value is never stored.
+ */
+export interface RefreshGraceKeyDeriver {
+  /** 32 bytes for the refresh token `id`, or undefined when it isn't of {@link LIBRARY_ID_SHAPE}. */
+  refreshGraceKey(id: unknown): Buffer | undefined;
+}
+
 /** Where the pepper comes from. */
 export interface PepperSource {
   /** `TOKEN_PEPPER`: 32 bytes as base64 or 64 hex characters. */
@@ -136,9 +148,10 @@ export interface PepperSource {
   encryptionKey?: string | undefined;
 }
 
-export class TokenHasher implements TokenKeyDeriver, LibraryKeyDeriver {
+export class TokenHasher implements TokenKeyDeriver, LibraryKeyDeriver, RefreshGraceKeyDeriver {
   private readonly tagKey: Buffer;
   private readonly storageKeyKey: Buffer;
+  private readonly refreshGraceKeyKey: Buffer;
   readonly fingerprint: string;
 
   /** `pepper`: 32 secret bytes. Use {@link TokenHasher.fromSecrets} for the configured one. */
@@ -146,6 +159,7 @@ export class TokenHasher implements TokenKeyDeriver, LibraryKeyDeriver {
     if (pepper.length !== 32) throw new Error('The token pepper must be 32 bytes');
     this.tagKey = hkdf32(pepper, TAG_KEY_INFO);
     this.storageKeyKey = hkdf32(pepper, STORAGE_KEY_INFO);
+    this.refreshGraceKeyKey = hkdf32(pepper, REFRESH_GRACE_KEY_INFO);
     this.fingerprint = createHmac('sha256', pepper).update(FINGERPRINT_MESSAGE).digest('hex');
   }
 
@@ -204,6 +218,11 @@ export class TokenHasher implements TokenKeyDeriver, LibraryKeyDeriver {
 
   libraryStorageKey(kind: TokenKind, id: unknown): string | undefined {
     return typeof id === 'string' && LIBRARY_ID_SHAPE.test(id) ? this.storageKey(kind, id) : undefined;
+  }
+
+  refreshGraceKey(id: unknown): Buffer | undefined {
+    if (typeof id !== 'string' || !LIBRARY_ID_SHAPE.test(id)) return undefined;
+    return createHmac('sha256', this.refreshGraceKeyKey).update(`refresh\0${id}`).digest();
   }
 
   clientSecretHash(secret: string): string {

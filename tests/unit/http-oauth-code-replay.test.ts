@@ -29,7 +29,7 @@ vi.mock('../../src/auth/ynab-oauth.js', async () => {
 import { createHttpApp } from '../../src/http.js';
 import * as ynabOauth from '../../src/auth/ynab-oauth.js';
 import { makeHttpConfig } from './helpers/http-config.js';
-import { CookieJar, REDIRECT_URI, browserFlow, pkcePair } from './helpers/oidc-app.js';
+import { CookieJar, REDIRECT_URI, RESOURCE, browserFlow, pkcePair } from './helpers/oidc-app.js';
 
 const CALLBACK = REDIRECT_URI;
 /** The one description of every refused grant: the library's, and grant-guard's (D6). */
@@ -80,6 +80,7 @@ function exchange(app: Express, grant: Grant, code = grant.code): request.Test {
     code,
     code_verifier: grant.verifier,
     redirect_uri: CALLBACK,
+    resource: RESOURCE,
   });
 }
 
@@ -87,7 +88,7 @@ function refresh(app: Express, clientId: string, refreshToken: string): request.
   return request(app)
     .post('/token')
     .type('form')
-    .send({ grant_type: 'refresh_token', client_id: clientId, refresh_token: refreshToken });
+    .send({ grant_type: 'refresh_token', client_id: clientId, refresh_token: refreshToken, resource: RESOURCE });
 }
 
 /** An MCP initialize with `access`: 401 once the token is revoked. */

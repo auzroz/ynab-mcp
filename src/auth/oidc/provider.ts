@@ -73,7 +73,11 @@
  * only one consumes it and the other revokes the whole grant in the same
  * step; and a token is saved only while its grant row exists, so the winner's
  * successors are refused (or deleted with the grant if they were saved
- * first). Two refreshes can therefore never both leave a live token. A crash
+ * first). Two refreshes can therefore never both leave a live token. (Since
+ * #64a, a second request that arrives after the first's response was recorded
+ * is an identical retry: refresh-guard answers it with the same pair, before
+ * the library, so there is still one chain; one that arrives earlier still
+ * revokes, as here. See ../refresh-grace.ts.) A crash
  * between the consume and the saves leaves the client without a refresh
  * token: it signs in again, nothing is reusable. Wrapping the three calls in
  * one storage transaction would need a hook the library doesn't have.
@@ -190,7 +194,7 @@ export function normalizeAuthorizeScope(raw: unknown): string | undefined {
 }
 
 /** A `resource` value with every spelling of the MCP resource replaced by its canonical form. */
-function canonicalizeResource(raw: unknown, resource: string): unknown {
+export function canonicalizeResource(raw: unknown, resource: string): unknown {
   const one = (value: unknown): unknown =>
     typeof value === 'string' && isSameResource(value, resource) ? resource : value;
   return Array.isArray(raw) ? raw.map(one) : one(raw);
@@ -299,6 +303,15 @@ const epochSec = (): number => Math.floor(Date.now() / 1000);
 /** A TTL the library accepts: a positive integer (it throws, as a 500, on anything else). */
 const positive = (seconds: number): number => Math.max(1, Math.floor(seconds));
 
+/**
+ * A grant's lifetime (its `Grant` TTL), in seconds: the refresh token's
+ * absolute lifetime plus the sign-in window, so a grant outlives every token
+ * issued under it. #64b's rejected-token marker lives as long.
+ */
+export function grantLifetimeSec(refreshTokenTtlMs: number, authCodeTtlSec: number): number {
+  return positive(refreshTokenTtlMs / 1000 + 2 * authCodeTtlSec);
+}
+
 /** Build the provider (D2). See the file comment. */
 export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
   const publicUrl = new URL(options.publicUrl);
@@ -366,7 +379,7 @@ export function createOidcProvider(options: OidcProviderOptions): OidcProvider {
       AuthorizationCode: authCodeTtlSec,
       Interaction: interactionTtlSec,
       Session: interactionTtlSec,
-      Grant: positive(absoluteSec + 2 * authCodeTtlSec),
+      Grant: grantLifetimeSec(retention.refreshTokenTtlMs, authCodeTtlSec),
       RefreshToken: (ctx, token) => {
         const now = epochSec();
         const iiat = typeof token.iiat === 'number' ? token.iiat : now;

@@ -25,6 +25,7 @@ import { loadDcrSettings } from './dcr.js';
 import { loadEncryptionSettings } from './encryption.js';
 import { loadInactiveUserSettings } from './inactive-users.js';
 import { loadRetentionSettings } from './retention.js';
+import { loadOAuthSettings } from './oauth.js';
 
 export type { HttpAuthMode, AuthSettings } from './auth.js';
 export type { RateLimitSettings } from './rate-limit.js';
@@ -39,6 +40,7 @@ export type { DcrSettings } from './dcr.js';
 export type { EncryptionSettings } from './encryption.js';
 export type { InactiveUserSettings } from './inactive-users.js';
 export type { RetentionSettings } from './retention.js';
+export type { OAuthSettings } from './oauth.js';
 
 /** Append-only: one line per topic. */
 const LOADERS = [
@@ -55,6 +57,7 @@ const LOADERS = [
   loadEncryptionSettings,
   loadInactiveUserSettings,
   loadRetentionSettings,
+  loadOAuthSettings,
 ] as const;
 
 type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (k: infer I) => void ? I : never;

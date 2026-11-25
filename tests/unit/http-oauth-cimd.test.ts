@@ -222,6 +222,25 @@ describe('MCP_CLIENT_ID_METADATA_DOCUMENTS=true', () => {
     expect(hitsOf('valid')).toBe(1);
   });
 
+  it('#64a: a metadata-document client counts as 0.5.0+, so /authorize without resource is invalid_target', async () => {
+    const app = await makeApp(true);
+    const clientId = validDocument('no-resource');
+    const { challenge } = pkcePair();
+    const res = await request(app).get(authorizeUrl({ clientId, challenge, redirectUri: CALLBACK, resource: undefined }));
+    // An unverified client: this server's page, never a redirect.
+    expect(res.status).toBe(400);
+    expect(res.headers['location']).toBeUndefined();
+    expect(res.text).toContain('invalid_target');
+    expect(hitsOf('no-resource')).toBe(1);
+
+    // With MCP_REQUIRE_RESOURCE off, the same request goes on to consent.
+    await handle?.mcp.close();
+    const off = await makeApp(true, localTransport(), { requireResource: false });
+    const allowed = await request(off).get(authorizeUrl({ clientId, challenge, redirectUri: CALLBACK, resource: undefined }));
+    expect(allowed.status).toBe(303);
+    expect(allowed.headers['location']).toMatch(/\/oauth\/interaction\//);
+  });
+
   it('the document is held to /register rules: a redirect_uri it does not list is refused', async () => {
     const app = await makeApp(true);
     const clientId = validDocument('strict');

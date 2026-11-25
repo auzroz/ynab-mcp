@@ -46,6 +46,9 @@ const RESOURCE = `${PUBLIC_URL}/mcp`;
 const USER = 'ynab-user-1';
 const SECRET = 'a-0.4.x-client-secret';
 const DAY = 86_400_000;
+/** 0.4.x client ids, as 0.4.x registered them (`crypto.randomUUID()`): #64a's pre-0.5.0 marker. */
+const CONFIDENTIAL_ID = '3f2c9a4e-8b1d-4c6f-9e2a-7d5b1c0f4a8e';
+const PUBLIC_ID = 'b7e4d2a1-5c3f-4e8b-a9d6-2f1c8e7b3a50';
 
 /** 0.4.x clients as M3 left them (the secret hashed). */
 const CONFIDENTIAL = {
@@ -95,8 +98,8 @@ async function plant04x(h: DriverHandle, encryptionKey: string) {
   const sql = h.sql!;
   const at = Date.now() - 10 * DAY;
   for (const [id, client] of [
-    ['c-confidential', CONFIDENTIAL],
-    ['c-public', PUBLIC],
+    [CONFIDENTIAL_ID, CONFIDENTIAL],
+    [PUBLIC_ID, PUBLIC],
   ] as const) {
     await sql('INSERT INTO oauth_clients (client_id, client_json, created_at, last_authorized_at) VALUES ($1, $2, $3, $4)', [
       id,
@@ -113,7 +116,7 @@ async function plant04x(h: DriverHandle, encryptionKey: string) {
   });
   const values = { access: legacyToken(), refresh: legacyToken(), code: legacyToken() };
   const verifier = 'v'.repeat(64);
-  const grant = { clientId: 'c-confidential', userId: USER, scopes: ['read-write'], resource: RESOURCE, grantedScope: 'read-write' as const };
+  const grant = { clientId: CONFIDENTIAL_ID, userId: USER, scopes: ['read-write'], resource: RESOURCE, grantedScope: 'read-write' as const };
   await h.storage.saveAccessToken({ token: testKey('access', values.access), ...grant, expiresAt: Date.now() + 3_600_000, familyId: 'f1' });
   await h.storage.saveRefreshToken({ token: testKey('refresh', values.refresh), ...grant, familyId: 'f1' });
   await h.storage.saveAuthCode({
@@ -174,9 +177,9 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
     it('converts the registered clients: the confidential one authenticates with its original secret', async () => {
       const { app } = await upgrade();
       const { verifier, challenge } = pkcePair();
-      const flow = await browserFlow(app, new CookieJar(), { clientId: 'c-confidential', challenge, resource: RESOURCE });
+      const flow = await browserFlow(app, new CookieJar(), { clientId: CONFIDENTIAL_ID, challenge, resource: RESOURCE });
       const tokens = await exchangeCode(app, {
-        clientId: 'c-confidential',
+        clientId: CONFIDENTIAL_ID,
         clientSecret: SECRET,
         code: flow.params.get('code') as string,
         verifier,
@@ -184,9 +187,9 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
       expect(tokens.status).toBe(200);
       expect((await mcpInitialize(app, bearer(tokens.body.access_token as string))).status).toBe(200);
       // A wrong secret is still refused.
-      const again = await browserFlow(app, new CookieJar(), { clientId: 'c-confidential', challenge, resource: RESOURCE });
+      const again = await browserFlow(app, new CookieJar(), { clientId: CONFIDENTIAL_ID, challenge, resource: RESOURCE });
       const wrong = await exchangeCode(app, {
-        clientId: 'c-confidential',
+        clientId: CONFIDENTIAL_ID,
         clientSecret: 'not-the-secret',
         code: again.params.get('code') as string,
         verifier,
@@ -198,9 +201,21 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
     it('converts the registered clients: the public one signs in', async () => {
       const { app } = await upgrade();
       const { verifier, challenge } = pkcePair();
-      const flow = await browserFlow(app, new CookieJar(), { clientId: 'c-public', challenge, resource: RESOURCE });
-      const tokens = await exchangeCode(app, { clientId: 'c-public', code: flow.params.get('code') as string, verifier });
+      const flow = await browserFlow(app, new CookieJar(), { clientId: PUBLIC_ID, challenge, resource: RESOURCE });
+      const tokens = await exchangeCode(app, { clientId: PUBLIC_ID, code: flow.params.get('code') as string, verifier });
       expect(tokens.status).toBe(200);
+    });
+
+    it('a converted client keeps working without resource: it was registered before 0.5.0 (#64a)', async () => {
+      const { app } = await upgrade();
+      const { verifier, challenge } = pkcePair();
+      // MCP_REQUIRE_RESOURCE is on (the default); a 0.4.x client never had to send resource.
+      const flow = await browserFlow(app, new CookieJar(), { clientId: PUBLIC_ID, challenge, resource: undefined });
+      const tokens = await exchangeCode(app, { clientId: PUBLIC_ID, code: flow.params.get('code') as string, verifier, resource: null });
+      expect(tokens.status).toBe(200);
+      const rotated = await refresh(app, { clientId: PUBLIC_ID, refreshToken: tokens.body.refresh_token as string, resource: null });
+      expect(rotated.status).toBe(200);
+      expect((await mcpInitialize(app, bearer(rotated.body.access_token as string))).status).toBe(200);
     });
 
     it('refuses a 0.4.x access token, refresh token and code, and leaves the old rows for a rollback', async () => {
@@ -212,11 +227,11 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
       const refreshed = await request(app)
         .post('/token')
         .type('form')
-        .send({ grant_type: 'refresh_token', refresh_token: old.refresh, client_id: 'c-confidential', client_secret: SECRET });
+        .send({ grant_type: 'refresh_token', refresh_token: old.refresh, client_id: CONFIDENTIAL_ID, client_secret: SECRET });
       expect(refreshed.status).toBe(400);
       expect(refreshed.body.error).toBe('invalid_grant');
 
-      const redeemed = await exchangeCode(app, { clientId: 'c-confidential', clientSecret: SECRET, code: old.code, verifier: old.verifier });
+      const redeemed = await exchangeCode(app, { clientId: CONFIDENTIAL_ID, clientSecret: SECRET, code: old.code, verifier: old.verifier });
       expect(redeemed.status).toBe(400);
       expect(redeemed.body.error).toBe('invalid_grant');
 
@@ -229,7 +244,7 @@ for (const driver of testDrivers.filter((d) => d.kind !== 'memory')) {
 
     it('a public client refreshing with a 0.4.x refresh token is refused too', async () => {
       const { app, old } = await upgrade();
-      const res = await refresh(app, { clientId: 'c-public', refreshToken: old.refresh });
+      const res = await refresh(app, { clientId: PUBLIC_ID, refreshToken: old.refresh });
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('invalid_grant');
     });

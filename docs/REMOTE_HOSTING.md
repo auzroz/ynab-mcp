@@ -68,6 +68,7 @@ Set these environment variables (see `.env.example`):
 | `MCP_VERIFIED_REDIRECT_URIS` | no | Comma-separated redirect URIs of trusted clients. Default: Claude's connector callbacks, `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`. An authorization error at `/authorize` is redirected back only to these (and to loopback, see below); for any other client it is shown on this server's own page with a "Return to" link, so the server can't be used as an open redirector. The consent page names a verified client plainly and any other as "calls itself". `none` empties the list. Each entry must be https (http only for loopback), at most 512 characters, with no userinfo or fragment |
 | `MCP_DCR_PRIVATE_USE_SCHEMES` | no | Comma-separated private-use URI schemes (RFC 8252, e.g. `com.example.app`) a registering native app may use for its redirect URI. Default: none, so registrations need `https://` or `http://` to `localhost`, `127.0.0.1` or `[::1]` |
 | `MCP_TRUST_LOOPBACK_REDIRECTS` | no | Redirect authorization errors back to loopback redirect URIs (default `true`). The consent page labels a loopback address either way |
+| `MCP_REQUIRE_RESOURCE` | no | Clients registered on 0.5.0 or later (Client ID Metadata Document clients included) must send the RFC 8707 `resource` parameter at `/authorize` (default `true`; `/token` never requires it). Clients registered before 0.5.0 never need it. `false` turns the requirement off for every client. **Deprecated: removed in 0.6.** See "Token audience (RFC 8707)" |
 | `MCP_CLIENT_ID_METADATA_DOCUMENTS` | no | `true` to accept Client ID Metadata Documents: an https URL as `client_id`, with the client's metadata fetched from it instead of registered at `/register` (default `false`). It makes the server fetch URLs that clients name. See "Client ID Metadata Documents" |
 | `MCP_INACTIVE_USER_DAYS` | no | Erase users inactive for this many days who have no live connection (integer 30-3650). Default: off. See "Erasing inactive users" |
 | `MCP_REFRESH_TOKEN_IDLE_DAYS` | no | A refresh token not used for this many days expires (integer 1-3650, default `30`). Must not exceed `MCP_REFRESH_TOKEN_TTL_DAYS`. See "Retention and the sweep" |
@@ -373,6 +374,35 @@ user's current YNAB connection is read-write. A client that asks for the
 If a read-only grant was requested with `read-write`, the issued `scope` says
 `read-only`.
 
+**One YNAB token per user, the widest one kept (0.5.0).** The server stores
+one YNAB token per user, shared by all of that user's connections. When a
+user who has a live read-write connection connects another client read-only,
+the stored read-write YNAB token is kept and the new read-only one is
+discarded (YNAB keeps both authorizations valid, so nothing breaks). The new
+client is still read-only: its own grant decides that. Connecting read-write
+always stores the new token, and so does a read-only sign-in when the user
+has no live read-write connection left, or when YNAB has already refused the
+stored token. That last case is a read-write YNAB authorization the user
+revoked at YNAB, or one that stopped working: when a refresh gets
+`invalid_grant`, the server records that refusal in `oauth_rows` (a
+`YnabTokenRejected` row holding only a hash of that exact stored
+ciphertext, the user id and an expiry), so the next sign-in, read-only
+included, replaces the dead token on any replica instead of keeping it.
+Nothing is recorded for a transient failure (a timeout, a 5xx, a 429), for
+another refusal such as `invalid_client` (which may be this server's
+configuration, not the user's token), or for a token this replica's keys
+can't open. The record stops matching as soon as another token is stored
+(a refresh, a sign-in); the rekey job's re-encryption of the same token
+carries it to the new ciphertext, also when the rekey lands during the
+refused refresh. A record written while the account was being erased is
+removed again. It expires with the grant lifetime
+(`MCP_REFRESH_TOKEN_TTL_DAYS` plus the sign-in window), the sweep removes
+it, and it goes with the user's account. Before 0.5.0, the latest sign-in's
+YNAB token replaced the stored one, so connecting a second client read-only
+made every connection of that user read-only. The discarded read-only
+authorization stays valid at YNAB, unused (YNAB offers no way for the server
+to revoke it).
+
 **Upgrade note:** tokens issued by 0.3.x carry no recorded access level and are
 treated as **read-only**. Users who had read-write access must reconnect once
 (remove and re-add the connector, or re-run `mcp-remote`) to get write access
@@ -657,17 +687,33 @@ No new environment variables.
 ### Token audience (RFC 8707)
 
 Every authorization code, access token and refresh token is bound to the MCP
-resource (`MCP_RESOURCE_URL`). Clients may send a `resource` parameter to
-`/authorize` and `/token`. If they do, it must name this server's resource. The
-comparison ignores the case of the scheme and host, a default port, a fragment
-and one trailing slash. Any other value is refused with `invalid_target`. A
-refresh may ask for a narrower scope than the original grant but never a wider
-one (`invalid_scope`). `/mcp` returns `401 invalid_token` for a token bound to a
-different resource.
+resource (`MCP_RESOURCE_URL`). The `resource` parameter at `/authorize` and
+`/token` must name this server's resource. The comparison ignores the case of
+the scheme and host, a default port, a fragment and one trailing slash. Any
+other value is refused with `invalid_target`. A refresh may ask for a narrower
+scope than the original grant but never a wider one (`invalid_scope`). `/mcp`
+returns `401 invalid_token` for a token bound to a different resource.
 
-Clients that send no `resource` still work. If you change `MCP_RESOURCE_URL` (or `PUBLIC_URL`
-when it supplies the default), tokens issued for the old URL stop working and
-users must reconnect.
+**`resource` is required at `/authorize` (0.5.0).** As the MCP authorization
+spec asks, a client registered on 0.5.0 or later must send `resource` at
+`/authorize`. Without it, `/authorize` answers `invalid_target` (redirected to
+a verified client, shown on this server's page for any other). That is where
+the connection is bound to this server's resource. At `/token` (the code
+exchange and each refresh) `resource` stays optional for every client: a
+request without it gets the resource the user authorized, so a client that
+omits it there still works, including at its first refresh. A `resource`
+that is sent at `/token` must name this server's resource; any other is
+`400 invalid_target`, and the code or refresh token is not spent, so the
+client can retry. MCP clients that follow the MCP authorization spec send it
+everywhere. Clients registered before 0.5.0 (those the upgrade
+converted) keep working without it. If a newly registered client can't send
+it yet, set `MCP_REQUIRE_RESOURCE=false` until it can; that turns the
+requirement off for every client. The setting is deprecated and goes away in
+0.6. A client identified by a Client ID Metadata Document (a URL `client_id`,
+#46) counts as registered on 0.5.0.
+
+If you change `MCP_RESOURCE_URL` (or `PUBLIC_URL` when it supplies the
+default), tokens issued for the old URL stop working and users must reconnect.
 
 ### Refresh-token rotation and reuse detection (RFC 9700)
 
@@ -678,12 +724,28 @@ again, the server treats it as stolen: it revokes the whole family (every access
 and refresh token of that connection, effective immediately) and answers
 `invalid_grant`, exactly as for an unknown token, so the user must reconnect
 that client. The same happens when a refresh token is presented by a client it
-wasn't issued to, or revoked at `/revoke`. A client that sends two refreshes
-with the same token at once also trips this: one request wins, the other looks
-like reuse and revokes the family, including the pair the winner just got.
-That is the intended RFC 9700 behaviour; well-behaved clients serialize their
-refreshes. Other connections of the same user are unaffected. A spent refresh
-token presented after it expired still counts as reuse while it is remembered.
+wasn't issued to, or revoked at `/revoke`. Other connections of the same user
+are unaffected. A spent refresh token presented after it expired still counts
+as reuse while it is remembered.
+
+**A lost refresh response can be retried (0.5.0).** If a client's refresh
+response is lost (a timeout, a dropped connection) and it sends the same
+refresh again within 60 seconds, it gets the same new pair back instead of a
+revoked connection. The retry must come from the same client, with the same
+`scope` and `resource`, before the new pair is used (its refresh token
+refreshed, or its access token used at `/mcp`). Anything else (a retry after
+60 seconds, from another client, with other parameters, or after the new pair
+was used) is reuse and revokes the connection as described above. The record
+of the new pair lives in the database, so this works across replicas. It is
+encrypted with a key that needs the old refresh token, which is never stored,
+goes with the connection when it is revoked, and is removed by the expiry
+sweep once the 60 seconds are over. No setting controls it. Two
+refreshes with the same token sent at the same instant can still both fail and
+revoke the connection: the second may arrive before the first has finished.
+Well-behaved clients serialize their refreshes. For a public client (no client
+secret), anyone holding the old refresh token during those 60 seconds could
+also get the new pair; the next use of its refresh token by the other holder
+then counts as reuse.
 
 Authorization codes get the same treatment (RFC 9700 section 4.2.4, RFC 6749
 section 4.1.2). A code is single-use, and a spent code is remembered for 30
@@ -930,6 +992,9 @@ Clients, tokens and codes now live in one `oauth_rows` table, which the first
   discovery documents, including the return through `/authorize/<id>`), as
   0.4.x published them. Such a deployment must route those root paths to the
   server as well as the prefixed ones.
+- **`resource` is required at `/authorize` for clients registered from now
+  on** (see "Token audience (RFC 8707)"). Converted clients don't need it.
+  `MCP_REQUIRE_RESOURCE=false` turns the requirement off until 0.6.
 - **What clients may notice:** `POST /authorize` answers `405`;
   `prompt=none` answers `login_required`; `token_type` is `Bearer`; a
   read-write token's `scope` is `read-only read-write`; the registration

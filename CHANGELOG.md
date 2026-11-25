@@ -50,6 +50,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an hour (stdio included) is now refused with `write_limit_exceeded` until the
   window frees up. Set `YNAB_WRITE_LIMIT_PER_HOUR` (0 to 1000) to change it;
   `0` turns the cap off.
+- **OAuth clients registered on 0.5.0 or later must send `resource`** (RFC
+  8707) at `/authorize` (#64). Without it `/authorize` answers
+  `invalid_target`. At `/token` it stays optional: a code exchange or refresh
+  without it gets the resource the user authorized. A `resource` sent to
+  `/token` that isn't this server's is `400 invalid_target`, and the code or
+  refresh token is no longer spent by that mistake. Clients registered before
+  0.5.0, which the upgrade converts, keep working without it. MCP clients that
+  follow the MCP authorization spec already send it. **Clients:** send
+  `resource` (this server's MCP endpoint URL) on every authorization request.
+  **Operators:** if a newly registered client can't send it yet, set
+  `MCP_REQUIRE_RESOURCE=false` until it can. That setting is deprecated and is
+  removed in 0.6.
 
 - **HTTP mode is stateless** (#41, ADR-0001). `/mcp` no longer issues an
   `Mcp-Session-Id`, and `GET` and `DELETE /mcp` answer `405`, so nothing needs
@@ -133,6 +145,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A read-only sign-in no longer downgrades a user's other connections (#64).
+  The server stores one YNAB token per user. When a user with a live
+  read-write connection connects another client read-only, the read-write
+  YNAB token is now kept and the new read-only one discarded; before, the
+  latest sign-in's token replaced it and every connection of that user became
+  read-only. Each connection's own grant still decides its access level, so
+  the new client stays read-only. YNAB keeps both authorizations valid
+  (checked against YNAB on 2026-11-23), so nothing breaks. A read-write token
+  YNAB has refused (`invalid_grant`) is not kept: the refusal is recorded
+  (best-effort), and the next sign-in, read-only included, replaces it. No
+  setting and no migration.
 - `ynab_audit_log` changes (#60a):
   - Entry fields are snake_case: `timestamp`, `tool`, `operation`,
     `resource_type` (was `resourceType`), `resource_id` (was `resourceId`),
@@ -262,6 +285,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notes carry the note.
 ### Security
 
+- A refresh whose response was lost can be retried (#64, OAUTH-15). An
+  identical refresh from the same client within 60 seconds, before the new
+  pair is used, gets the same new pair back; before, it counted as refresh
+  token reuse and revoked the connection, so the user had to sign in again.
+  A retry after 60 seconds, from another client, with another `scope` or
+  `resource`, or after the new pair was used still revokes the connection.
+  The record is kept in the database, so it works across replicas, encrypted
+  under a key that needs the old refresh token (never stored), and is swept
+  after the 60 seconds. No migration and no setting.
 - Audit entries hold ids only (#60a): no amount or other financial value, no
   payee, account, category or memo text, and no error message, by
   construction (the table has no column for one). Before, an entry's details

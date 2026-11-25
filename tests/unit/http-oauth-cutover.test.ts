@@ -528,6 +528,7 @@ describe('the authorize guard over the library (#55b)', () => {
       code_challenge: challenge,
       code_challenge_method: 'S256',
       state: 's',
+      resource: RESOURCE,
       ...extra,
     });
     return request(app).get(`/authorize?${query.toString()}`);
@@ -739,7 +740,7 @@ describe('CORS on /token, /revoke and /register (D8)', () => {
       .post('/token')
       .set('Origin', 'https://evil.example')
       .type('form')
-      .send({ grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: REDIRECT_URI, client_id: client.clientId });
+      .send({ grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: REDIRECT_URI, client_id: client.clientId, resource: RESOURCE });
     expect(res.status).toBe(200);
     expect(res.headers['access-control-allow-origin']).toBe('*');
     expect(res.headers['access-control-allow-credentials']).toBeUndefined();

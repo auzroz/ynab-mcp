@@ -57,6 +57,8 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     refreshTokenTtlDays: 90,
     abandonedClientHours: 24,
     unusedClientDays: 90,
+    // The loader's default (#64a).
+    requireResource: true,
     ...overrides,
   };
 }

@@ -80,6 +80,8 @@ function authorizeQuery(
     code_challenge: challenge,
     code_challenge_method: 'S256',
     state: 'client-state',
+    // Clients registered on 0.5.0 must name the resource (#64a).
+    resource: `${ORIGIN}/mcp`,
     ...extra,
   };
 }
@@ -197,6 +199,7 @@ describe('successful authorization response', () => {
       code: code as string,
       code_verifier: verifier,
       redirect_uri: CALLBACK,
+      resource: `${ORIGIN}/mcp`,
     });
     expect(tok.status).toBe(200);
     expect(tok.body.access_token).toBeTruthy();
@@ -237,7 +240,7 @@ describe('successful authorization response', () => {
       jar.take(res);
       return res;
     };
-    let res = await viaProxy(authorizePath(authorizeQuery(clientId)));
+    let res = await viaProxy(authorizePath(authorizeQuery(clientId, { resource: 'https://mcp.example.com/ynab/mcp' })));
     expect(res.status).toBe(303);
     // The library's redirect to the consent page carries the path, like every other /oauth link.
     expect(res.headers['location']).toMatch(/^https:\/\/mcp\.example\.com\/ynab\/oauth\/interaction\//);

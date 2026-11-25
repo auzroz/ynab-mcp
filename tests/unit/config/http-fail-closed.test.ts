@@ -269,7 +269,7 @@ describe('loadHttpConfig composition', () => {
       'enableDnsRebindingProtection', 'encryptionKey', 'encryptionKeyId', 'encryptionKeyPrevious', 'fallbackAccessToken', 'inactiveUserDays', 'logLevel', 'maxInflight',
       'maxInflightPerClient', 'maxInflightPerUser', 'maxSessions', 'maxSessionsPerUser', 'oauthClientId',
       'oauthClientSecret', 'port', 'privateUseSchemes', 'publicUrl', 'rateLimitMaxWaitMs', 'rateLimitPerHour',
-      'readOnly', 'refreshTokenIdleDays', 'refreshTokenTtlDays', 'registerRateLimitPerHost', 'registerRateLimitPerIp', 'requestTimeoutMs', 'resourceUrl',
+      'readOnly', 'refreshTokenIdleDays', 'refreshTokenTtlDays', 'registerRateLimitPerHost', 'registerRateLimitPerIp', 'requestTimeoutMs', 'requireResource', 'resourceUrl',
       'securityContacts', 'securityPolicyUrl', 'sessionIdleTimeoutMs', 'sqlitePath', 'storageDriver', 'tokenPepper',
       'trustCfConnectingIp', 'trustLoopbackRedirects', 'trustProxy', 'unusedClientDays', 'verifiedRedirectUris', 'writeLimitPerHour',
     ]);

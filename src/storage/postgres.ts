@@ -72,7 +72,13 @@ import {
   CONSUMABLE_MODELS,
   GRANT_TOKEN_MODELS,
   connectionsFromGrantRows,
+  OTHER_LIVE_GRANTS_SQL,
+  otherLiveGrantsParams,
+  REJECTED_YNAB_TOKEN_SQL,
+  rejectedYnabTokenKey,
+  rejectedYnabTokenRow,
   plainRowKey,
+  signInKeepsStoredToken,
   signInPayload,
   sortConnections,
   userFromSignIn,
@@ -330,6 +336,48 @@ const upsertUserParams = (rec: UserRecord, now: number = Date.now()): unknown[] 
 async function applyStagedUser(client: PoolClient, user: UserRecord, now: number): Promise<void> {
   await guardCiphertext(client, user.encryptedRefreshToken);
   await client.query(UPSERT_USER_SQL, upsertUserParams(user, now));
+}
+
+/**
+ * A completed sign-in's users-row write (#64b), inside saveAuthorizationCode's
+ * transaction and after its LOCK_ACCOUNT, so concurrent sign-ins of one user
+ * decide one after the other: its YNAB token replaces the stored one, unless
+ * signInKeepsStoredToken says to keep a read-write one (never one YNAB
+ * refused: a marker for the ciphertext read here), when only
+ * `last_seen_at` is stamped (a sign-in is activity, #54e). LOCK_ACCOUNT
+ * orders this against every other sign-in of the user. The users row is read
+ * FOR NO KEY UPDATE, the lock the write takes anyway, only earlier: a
+ * refresh write-back or a rekey (single compare-and-set UPDATEs of that row,
+ * outside LOCK_ACCOUNT) either committed first, and its ciphertext is the one
+ * decided on, or waits and then misses its compare-and-set when the token
+ * was replaced (the sign-in's token wins, as any sign-in during a refresh).
+ */
+async function applySignIn(client: PoolClient, user: UserRecord, grantId: string, now: number): Promise<void> {
+  // Locked as the write below would lock it, so the token decided on is the
+  // token replaced or kept (see the comment above).
+  const stored = await client.query<{ granted_scope: string | null; encrypted_refresh_token: string }>(
+    'SELECT granted_scope, encrypted_refresh_token FROM users WHERE user_id = $1 FOR NO KEY UPDATE',
+    [user.userId]
+  );
+  const row = stored.rows[0];
+  if (row) {
+    const others = await client.query<{ payload: string }>(
+      OTHER_LIVE_GRANTS_SQL,
+      otherLiveGrantsParams(user.userId, grantId, now)
+    );
+    const payloads = others.rows.map((r) => r.payload);
+    // The marker for the ciphertext read in this transaction (a newer token never matches).
+    const marker = await client.query(REJECTED_YNAB_TOKEN_SQL, [
+      rejectedYnabTokenKey(user.userId, row.encrypted_refresh_token),
+      user.userId,
+    ]);
+    const rejected = (marker.rowCount ?? 0) > 0;
+    if (signInKeepsStoredToken({ grantedScope: parseGrantedScope(row.granted_scope) }, user, payloads, rejected)) {
+      await client.query('UPDATE users SET last_seen_at = $2 WHERE user_id = $1', [user.userId, now]);
+      return;
+    }
+  }
+  await applyStagedUser(client, user, now);
 }
 
 /**
@@ -766,11 +814,30 @@ export class PostgresStorage implements Storage, OAuthRowStore {
   }
 
   async rekeyUserRefreshToken(userId: string, oldCiphertext: string, newCiphertext: string): Promise<boolean> {
-    const res = await this.db.query(
-      'UPDATE users SET encrypted_refresh_token = $1 WHERE user_id = $2 AND encrypted_refresh_token = $3',
-      [newCiphertext, userId, oldCiphertext]
-    );
-    return res.rowCount === 1;
+    return this.inTransaction(async (client) => {
+      const res = await client.query(
+        'UPDATE users SET encrypted_refresh_token = $1 WHERE user_id = $2 AND encrypted_refresh_token = $3',
+        [newCiphertext, userId, oldCiphertext]
+      );
+      if (res.rowCount !== 1) return false;
+      // #64b: the same token, so a refusal marker moves with it (under the
+      // users row lock the UPDATE holds, so a sign-in reads one or the other).
+      const oldKey = rejectedYnabTokenKey(userId, oldCiphertext);
+      const marker = await client.query<{ expires_at: string | number | null }>(
+        `${REJECTED_YNAB_TOKEN_SQL} FOR UPDATE`,
+        [oldKey, userId]
+      );
+      const found = marker.rows[0];
+      if (found) {
+        const now = Date.now();
+        await client.query('DELETE FROM oauth_rows WHERE key = $1', [oldKey]);
+        await client.query(
+          UPSERT_OAUTH_ROW,
+          oauthRowParams(rejectedYnabTokenRow(userId, newCiphertext, optionalMillis(found.expires_at) ?? now), now)
+        );
+      }
+      return true;
+    });
   }
 
   async rekeyUserAccessToken(userId: string, oldCiphertext: string, newCiphertext: string | undefined): Promise<boolean> {
@@ -1124,7 +1191,7 @@ export class PostgresStorage implements Storage, OAuthRowStore {
       const staged = signIn.rows[0];
       const user = staged && userFromSignIn(accountId, staged.payload);
       if (!user) throw new Refusal<CodeSaveOutcome>('no-sign-in');
-      await applyStagedUser(client, user, now);
+      await applySignIn(client, user, grantId, now);
       await client.query('DELETE FROM oauth_rows WHERE key = $1', [signInKey]);
       await client.query(UPSERT_OAUTH_ROW, oauthRowParams(row, now));
       return 'saved';

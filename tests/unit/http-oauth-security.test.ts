@@ -152,6 +152,7 @@ async function refresh(
       grant_type: 'refresh_token',
       client_id: clientId,
       refresh_token: refreshToken,
+      resource: 'https://mcp.example.com/mcp',
       ...(scope !== undefined ? { scope } : {}),
     });
   expect(tok.status).toBe(200);
@@ -336,15 +337,20 @@ describe('write access is per token grant', () => {
     expect(readOnlyOfLastRequest()).toBe(true);
   });
 
-  it('a read-write grant is read-only when the user later reconnects YNAB read-only', async () => {
+  it('a read-write grant stays read-write when the user connects another client read-only (#64b)', async () => {
     const app = await createHttpApp(makeConfig());
     const b = await connect(app, 'read-write');
     await initialize(app, b.access);
     expect(readOnlyOfLastRequest()).toBe(false);
-    // The same token's next request after the read-only reconnect is read-only (D4).
-    await connect(app, 'read-only');
+    // The read-only sign-in keeps the stored read-write YNAB token (D-9: YNAB keeps both
+    // authorizations), so B's next request is still read-write...
+    const a = await connect(app, 'read-only');
     await mcp(app, 'post', b.access).send(toolsList);
+    expect(readOnlyOfLastRequest()).toBe(false);
+    // ...and the new client is held to its own read-only grant.
+    const listed = await mcp(app, 'post', a.access).send(toolsList);
     expect(readOnlyOfLastRequest()).toBe(true);
+    expect(listed.text).not.toContain('"name":"ynab_create_transaction"');
   });
 
   it('YNAB_READ_ONLY=true overrides a read-write grant', async () => {
