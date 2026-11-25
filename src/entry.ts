@@ -8,6 +8,7 @@ import type { Server as HttpServer } from 'node:http';
 import { serveStdio, type StdioServerHandle } from '@modelcontextprotocol/server/stdio';
 import { createStdioServerFactory } from './server.js';
 import { redactSecretEnvValues } from './utils/sanitize.js';
+import { logInfo, setLogLevel } from './utils/log.js';
 import { startHttpServer } from './http.js';
 import { loadConfig, loadHttpConfig } from './config/environment.js';
 import { LOOPBACK_HOSTNAMES, type Env } from './config/parse.js';
@@ -47,6 +48,7 @@ export interface ShutdownDeps {
   close: () => Promise<void>;
   exit: (code: number) => void;
   deadlineMs?: number;
+  /** Every line; default: the opening line through LOG_LEVEL's gate, the failures to stderr always. */
   log?: (message: string) => void;
 }
 
@@ -57,8 +59,9 @@ export interface ShutdownDeps {
  */
 export async function shutdownWithDeadline(deps: ShutdownDeps): Promise<void> {
   const log = deps.log ?? ((m: string) => console.error(m));
+  const info = deps.log ?? logInfo;
   const deadlineMs = deps.deadlineMs ?? SHUTDOWN_DEADLINE_MS;
-  log('Shutting down YNAB MCP Server...');
+  info('Shutting down YNAB MCP Server...');
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), deadlineMs);
@@ -67,8 +70,8 @@ export async function shutdownWithDeadline(deps: ShutdownDeps): Promise<void> {
   const closed = deps.close().then(
     () => 'closed' as const,
     (error: unknown) => {
-      // Only the message, with secret env values removed.
-      log(`[DEBUG] Error during shutdown: ${errorMessage(error)}`);
+      // Only the message, with secret env values removed. An error: shown at every LOG_LEVEL.
+      log(`Error during shutdown: ${errorMessage(error)}`);
       return 'closed' as const;
     }
   );
@@ -148,6 +151,7 @@ export async function main(env: Env = process.env): Promise<void> {
   if (transport === 'http') {
     // A stdin that closes (a detached container, a service manager) says nothing about an HTTP server.
     const httpConfig = loadHttpConfig(env);
+    setLogLevel(httpConfig.logLevel);
     for (const warning of proxyWarnings(httpConfig)) console.error(`Warning: ${warning}`);
     httpServer = await startHttpServer(httpConfig);
     return;
@@ -156,10 +160,11 @@ export async function main(env: Env = process.env): Promise<void> {
   // stdio (single-user) mode: the client closing stdin ends the session.
   process.stdin.on('close', shutdown);
   const config = loadConfig();
+  setLogLevel(config.logLevel);
   stdioHandle = serveStdio(createStdioServerFactory(config), {
     onerror: (error) => console.error('MCP stdio error:', errorMessage(error)),
   });
-  console.error(`YNAB MCP Server started (budget: ${config.defaultBudgetId ?? 'last-used'})`);
+  logInfo(`YNAB MCP Server started (budget: ${config.defaultBudgetId ?? 'last-used'})`);
 }
 
 /** What `derive-pepper` needs: its environment and where to write. */

@@ -2,10 +2,10 @@
 
 import { isIP } from 'node:net';
 import { LOOPBACK_HOSTNAMES, parseAbsoluteUrl, parseBoolean, parseBoundedInteger, parseList } from '../parse.js';
+import { DEFAULT_LOG_LEVEL, parseLogLevel, type LogLevel } from '../../utils/log.js';
 import type { HttpLoader } from './types.js';
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
+export type { LogLevel };
 
 export interface ServerSettings {
   port: number;
@@ -25,7 +25,7 @@ export interface ServerSettings {
   resourceUrl: string | undefined;
   /** Number of reverse-proxy hops to trust for X-Forwarded-* headers (Express `trust proxy`). 0 = none (default). */
   trustProxy: number;
-  /** `LOG_LEVEL`, validated in HTTP mode as it is for stdio. */
+  /** `LOG_LEVEL`, parsed as for stdio; startup applies it (src/utils/log.ts). */
   logLevel: LogLevel;
 }
 
@@ -82,17 +82,8 @@ export const loadServerSettings: HttpLoader<ServerSettings> = ({ env, problems }
   const allowedHosts = parseList(env['ALLOWED_HOSTS']) ?? [...new Set(derivedHosts)];
   const allowedOrigins = parseList(env['ALLOWED_ORIGINS']) ?? (publicParsed ? [publicParsed.origin] : undefined);
 
-  const logRaw = env['LOG_LEVEL'];
-  const logLevel = problems.capture<LogLevel>(
-    'LOG_LEVEL',
-    () => {
-      if (logRaw === undefined || logRaw === '') return 'info';
-      const v = logRaw.toLowerCase();
-      if ((LOG_LEVELS as readonly string[]).includes(v)) return v as LogLevel;
-      throw new Error(`Invalid value for LOG_LEVEL. Expected one of: ${LOG_LEVELS.join(', ')}.`);
-    },
-    'info'
-  );
+  // Parsed as stdio parses it (src/config/environment.ts): case-insensitive, unset or empty is info.
+  const logLevel = problems.capture<LogLevel>('LOG_LEVEL', () => parseLogLevel(env['LOG_LEVEL']), DEFAULT_LOG_LEVEL);
 
   return {
     port,

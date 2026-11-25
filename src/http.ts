@@ -40,6 +40,7 @@ import {
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { drainRequest, refuseOversizedBody } from './http/refuse-oversized.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
+import { logInfo } from './utils/log.js';
 import { createServerForRequest, type RequestContext, type UserContext } from './server.js';
 import { UserRegistry, headerUserKey } from './services/user-registry.js';
 import { InflightLimiter, RequestLifetime } from './services/inflight-limiter.js';
@@ -770,7 +771,7 @@ export async function startHttpServer(
   // Storage is ready once the app is built.
   jobs.start();
   const onListening = (): void => {
-    console.error(`YNAB MCP Server (HTTP, ${config.authMode} auth) listening on port ${config.port}`);
+    logInfo(`YNAB MCP Server (HTTP, ${config.authMode} auth) listening on port ${config.port}`);
     console.error(
       config.readOnly ? 'READ-ONLY mode (write operations disabled)' : 'WRITE operations ENABLED'
     );
@@ -796,7 +797,7 @@ export async function startHttpServer(
     const replicas = replicaRateLimitWarning(config);
     if (replicas !== undefined) console.error(replicas);
     if (config.rateLimitStore === 'postgres') {
-      console.error(
+      logInfo(
         'Rate limits: the YNAB budget, the write cap and the authorization-server limits are shared through Postgres (RATE_LIMIT_STORE=postgres); the in-flight caps, the circuit breaker and the caches stay per process'
       );
     }

@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { budgetIdSentinel, ynabId } from '../utils/schemas.js';
 import { parseBoolean, parseInteger } from './parse.js';
+import { LOG_LEVELS, normalizeLogLevel } from '../utils/log.js';
 import {
   parseRateLimitMaxWaitMs,
   RATE_LIMIT_MAX_WAIT_DEFAULT_MS,
@@ -22,7 +23,7 @@ export type { HttpConfig, HttpAuthMode, StorageDriver } from './http/index.js';
 const configSchema = z.object({
   accessToken: z.string().min(1, 'YNAB_ACCESS_TOKEN is required'),
   defaultBudgetId: z.union([ynabId(), budgetIdSentinel()]).optional(),
-  logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  logLevel: z.enum(LOG_LEVELS).default('info'),
   cacheTtlMs: z.number().int().positive().default(300000), // 5 minutes
   rateLimitPerHour: z.number().int().min(1).max(200).default(180),
   rateLimitMaxWaitMs: z
@@ -41,7 +42,8 @@ export function loadConfig(): Config {
   const rawConfig = {
     accessToken: process.env['YNAB_ACCESS_TOKEN'] ?? '',
     defaultBudgetId: process.env['YNAB_BUDGET_ID'] || undefined,
-    logLevel: process.env['LOG_LEVEL'] ?? 'info',
+    // Case-insensitive, unset or empty is info: the same values HTTP mode accepts (parseLogLevel).
+    logLevel: normalizeLogLevel(process.env['LOG_LEVEL']),
     cacheTtlMs: parseInteger(process.env['CACHE_TTL_MS'], 300000, 'CACHE_TTL_MS'),
     rateLimitPerHour: parseInteger(process.env['RATE_LIMIT_PER_HOUR'], 180, 'RATE_LIMIT_PER_HOUR'),
     rateLimitMaxWaitMs: parseRateLimitMaxWaitMs(process.env['RATE_LIMIT_MAX_WAIT_MS']),
