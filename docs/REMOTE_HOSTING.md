@@ -408,6 +408,84 @@ treated as **read-only**. Users who had read-write access must reconnect once
 (remove and re-add the connector, or re-run `mcp-remote`) to get write access
 back. Read access keeps working without reconnecting.
 
+### Managing connections
+
+In OAuth mode a user can see and remove their own connections from inside
+any connected client, with three tools (0.5.0, #53). Stdio and header mode
+have no connections, so they don't register these tools, and a call to one by
+name there gets "Unknown tool".
+
+- **`ynab_list_connections`** lists the user's live connections, one per
+  client grant. Each entry has the client's name as the client declared it
+  (sanitized, not verified), the client's host when its `client_id` is a
+  metadata-document URL (see "Client ID Metadata Documents"), when it was
+  connected, when it last signed in or refreshed (`last_used_at`), when it
+  expires unless refreshed, its access level (`read-only` or `read-write`, the
+  grant's own, see above), and `this_connection: true` on the calling client's
+  own entry. It shows no token values or hashes. The only id it shows is
+  `family_id`, the grant id that `ynab_revoke_connection` takes. Only the
+  calling user's connections are listed.
+- **`ynab_revoke_connection { family_id }`** revokes one connection: the
+  grant and every token and code under it. The client's next request gets
+  `401`, and it has to sign in again. Other connections are not affected. The
+  revoke is scoped to the signed-in user. Another user's `family_id` gets
+  exactly the same `not_found` reply as an id that doesn't exist, and that
+  connection is left alone. A `family_id` that isn't an id this server issues
+  (a 43-character grant id, or a 0.4.x UUID) is refused before storage is
+  read. A client may revoke its own connection. The reply then says
+  `this_connection: true`, the current request still finishes, and the next
+  one is refused.
+- **`ynab_disconnect { confirm: "DISCONNECT" }`** erases the user's account on
+  this server, with the same step as [erasing an inactive
+  user](#erasing-inactive-users). That covers the stored YNAB tokens, every
+  connection with its tokens and codes, and the user's audit log, removed in
+  one transaction on every driver. Anything but the exact string `DISCONNECT`
+  is refused, and nothing is erased. Nothing in the YNAB budget changes. The
+  reply tells the user that YNAB still lists the server as authorized, and how
+  to remove it there, with the consent page's words: open app.ynab.com/settings,
+  find Authorized Applications, and choose Revoke next to the server's app
+  (listed under the name the operator registered it with). The server can't
+  revoke a YNAB authorization itself. To use the server again, the user
+  signs in from the start, as a new account.
+
+**Who may call them.** Any connection may list. Revoking and disconnecting
+need what a YNAB write needs: writes enabled for the instance
+(`YNAB_READ_ONLY=false` and `YNAB_OAUTH_ALLOW_WRITE=true`), a read-write grant
+on the calling connection, and a read-write YNAB connection for the user.
+Otherwise the two tools are left out of `tools/list`, and a call by name gets
+`account_change_not_allowed` with `reason` `read_only` (the instance setting)
+or `scope` (a read-only grant). On an instance with writes off, the default,
+users can list their connections but can't revoke them from a client. They
+can still remove access at YNAB, as above. The write cap
+(`YNAB_WRITE_LIMIT_PER_HOUR`) doesn't apply, since these tools make no YNAB
+request.
+
+**What a disconnect clears on the replica that ran it.** This replica forgets
+the user's in-memory state at once: the cached budget data and delta
+snapshots, the rate limiter and per-client usage, and its cached YNAB access
+token. The user's next request, after signing in again, starts fresh. The
+OAuth endpoints' rate-limit counters are not reset: they hold no user data,
+and resetting them would hand out extra requests.
+
+**Several replicas.** Nothing that decides whether a request is allowed is
+cached. Every `/mcp` request looks its access token up in storage, and every
+replica re-reads the user's row on every request. So a revoked or
+disconnected connection is refused at once on every replica. What remains for
+a while on the other replicas:
+
+- A request that another replica had already accepted when the revoke or
+  disconnect committed runs to its end, bounded by `MCP_REQUEST_TIMEOUT_MS`.
+  An erased user's audit row for that request is not written (audit rows are
+  written only while the account generation exists).
+- The other replicas' in-memory entry for the user (cached budget data,
+  snapshots, the limiter) stays until it is evicted as idle, an hour or more
+  after the user's last request there. Nothing can reach it: a request needs a
+  valid token, and the erased account's tokens are gone. A user who signs in
+  again gets a new account, but the same YNAB user id, so on a replica that
+  still holds the old entry, the new account's first requests share that
+  entry's limiter and cached budget data (their own budget data, read with
+  their own YNAB grant).
+
 ### Requests, limits and timeouts
 
 `/mcp` is stateless (since 0.5.0). The server issues no `Mcp-Session-Id` and

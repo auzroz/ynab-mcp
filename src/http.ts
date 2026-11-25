@@ -48,7 +48,8 @@ import type { HttpConfig } from './config/environment.js';
 import { deprecatedSessionSettingsWarning } from './config/http/limits.js';
 import { Encryptor } from './crypto.js';
 import { RETIRE_GRACE_MS, assertGraceOutlastsWrites, prepareEncryptionKeys } from './auth/rekey-job.js';
-import { createStorage } from './storage/index.js';
+import { createAccountStore, createStorage } from './storage/index.js';
+import type { AccountToolSetup } from './tools/connections/context.js';
 import { retentionPolicyFromSettings } from './config/http/retention.js';
 import { TokenHasher } from './auth/token-hash.js';
 import type { GrantedScope, Storage } from './storage/types.js';
@@ -158,6 +159,12 @@ async function buildStorage(config: HttpConfig, tokenKeys: TokenHasher): ReturnT
  */
 function tokenAccessLevel(auth: AuthInfo): GrantedScope {
   return auth.extra?.['grantedScope'] === 'read-write' ? 'read-write' : 'read-only';
+}
+
+/** What the account tools' policy looks at for one oauth request (#53c). */
+interface AccountAccess {
+  readonly grantScope: GrantedScope;
+  readonly operatorReadOnly: boolean;
 }
 
 /** Who a request is from, as the caps key it: the user, and the client in oauth mode. */
@@ -476,7 +483,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     req: Request,
     identity: Identity,
     lifetime: RequestLifetime
-  ): Promise<{ user: UserContext } | { unavailable: number } | 'refused' | 'ended'> => {
+  ): Promise<{ user: UserContext; access?: AccountAccess } | { unavailable: number } | 'refused' | 'ended'> => {
     const limits = {
       defaultBudgetId: config.defaultBudgetId,
       rateLimitPerHour: config.rateLimitPerHour,
@@ -526,6 +533,10 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
         // Audit rows are written only while this account generation exists.
         generation,
       },
+      // The account tools' policy inputs (#53c): the operator's setting, and this
+      // request's grant, read-write only when both this connection's grant and
+      // the user's YNAB grant are (the same grant check a YNAB write gets).
+      access: { grantScope: grantReadOnly ? 'read-only' : 'read-write', operatorReadOnly },
     };
   };
 
@@ -554,12 +565,37 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     const lease = registry.acquire(identity.userKey);
     if (!lifetime.hold(() => lease.release())) return;
     const grantId = req.auth?.extra?.['grantId'];
+    const familyId = oauth && typeof grantId === 'string' ? grantId : undefined;
+    // oauth mode only: header mode has no connections, so no account tools.
+    let accountTools: AccountToolSetup | undefined;
+    if (oauth && storage !== undefined && resolved.access !== undefined) {
+      const { resolver } = oauth;
+      const accountStorage = storage;
+      const userKey = identity.userKey;
+      const setup: AccountToolSetup = {
+        // The account tools' only handle on storage, scoped to the user each
+        // call names, opened on the request's audit log (#60b records revocations).
+        openAccounts: (_auditLog) => createAccountStore(accountStorage),
+        userId: userKey,
+        currentFamilyId: familyId,
+        grantScope: resolved.access.grantScope,
+        operatorReadOnly: resolved.access.operatorReadOnly,
+        // After an erase: what this replica holds for the user. Other
+        // replicas keep their own in-memory entry until idle eviction; it is
+        // unreachable, since every request looks its token up in storage.
+        afterDisconnect: async () => {
+          registry.drop(userKey);
+          await resolver.invalidate(userKey);
+        },
+      };
+      accountTools = Object.freeze(setup);
+    }
     const ctx: RequestContext = Object.freeze({
       requestId: randomUUID(),
       userKey: identity.userKey,
       clientId: identity.clientId,
       // The token's grant (oauth mode), for the audit log; not part of the caps' identity.
-      familyId: oauth && typeof grantId === 'string' ? grantId : undefined,
+      familyId,
       // Durable storage in oauth mode; header mode has none and keeps the user's rows in memory.
       auditStore: storage ?? lease.components.auditStore,
       user: resolved.user,
@@ -568,6 +604,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
         deadline: lifetime.deadline - toolMarginMs,
         run: <T>(work: () => Promise<T>) => lifetime.run(work),
       }),
+      accountTools,
     });
     issuedContexts.add(ctx);
     const auth = req.auth as AuthInfo;

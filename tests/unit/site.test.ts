@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { tools } from '../../src/tools/index.js';
+import { toolCatalog as tools } from '../../src/tools/index.js';
 import { prompts } from '../../src/prompts/index.js';
 import { buildSite, checkSite, mapToolDirectories, parseDescription, stripComments } from '../../scripts/build-site.mjs';
 

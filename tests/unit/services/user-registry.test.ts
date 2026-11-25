@@ -155,3 +155,46 @@ describe('UserRegistry eviction', () => {
     expect(registry.size).toBe(3);
   });
 });
+
+describe('UserRegistry.drop (#53c, after ynab_disconnect)', () => {
+  it("forgets the user's components at once, even under a live lease; the next acquire starts fresh", async () => {
+    const { registry } = setup();
+    const lease = registry.acquire('user-1');
+    const other = registry.acquire('user-2');
+    const old = lease.components;
+    old.cache.set('k', 'cached budget data');
+    await old.auditStore.appendAuditEntry({
+      ts: 1,
+      userId: 'user-1',
+      clientId: undefined,
+      familyId: undefined,
+      requestId: undefined,
+      tool: 'ynab_create_payee',
+      operation: 'create',
+      resourceType: 'payee',
+      resourceId: undefined,
+      budgetId: 'b',
+      outcome: 'success',
+    });
+
+    registry.drop('user-1');
+    expect(registry.size).toBe(1);
+    expect(old.cache.get('k')).toBeUndefined();
+    expect(old.auditStore.countFor('user-1')).toBe(0);
+
+    // The dropped lease's release touches only its detached entry.
+    lease.release();
+    const next = registry.acquire('user-1');
+    expect(next.components).not.toBe(old);
+    expect(next.components.rateLimiter).not.toBe(old.rateLimiter);
+    expect(registry.leases('user-1')).toBe(1);
+    expect(registry.acquire('user-2').components).toBe(other.components);
+  });
+
+  it('is a no-op for a user with no entry', () => {
+    const { registry } = setup();
+    registry.acquire('user-2');
+    registry.drop('nobody');
+    expect(registry.size).toBe(1);
+  });
+});

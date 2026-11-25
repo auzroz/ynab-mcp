@@ -36,7 +36,8 @@ vi.mock('../../src/storage/index.js', async () => {
 
 import { buildHttpApp, type HttpApp } from '../../src/http.js';
 import { exchangeCode, getYnabUserId, refreshAccessToken } from '../../src/auth/ynab-oauth.js';
-import { tools } from '../../src/tools/index.js';
+// OAuth mode also registers the account tools (#53c): the catalog is what it lists.
+import { toolCatalog as tools } from '../../src/tools/index.js';
 import { makeHttpConfig } from './helpers/http-config.js';
 import {
   CookieJar,
