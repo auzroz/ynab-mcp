@@ -113,6 +113,23 @@ describe.each<Era>(['2025-11-25', '2026-07-28'])('the v2 client over HTTP, %s', 
     expect(handle.inflight.inflight()).toBe(0);
   });
 
+  it('returns structuredContent that the client validates against the listed schema, beside the text block (#45)', async () => {
+    await start();
+    const { client } = await connect(era);
+    const listed = (await client.listTools()).tools.find((t) => t.name === 'ynab_rate_limit_status');
+    expect(listed?.outputSchema?.type).toBe('object');
+    // The client validates structuredContent against the cached tools/list schema.
+    const result = await client.callTool({ name: 'ynab_rate_limit_status', arguments: {} });
+    expect(result.isError).not.toBe(true);
+    const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
+    expect(result.structuredContent).toEqual(JSON.parse(text));
+    expect(result.structuredContent).toMatchObject({ status: 'healthy', upstream: { circuit: 'closed' } });
+    // A tool without a schema yet keeps the text block only.
+    const user = await client.callTool({ name: 'ynab_get_user', arguments: {} });
+    expect(user.isError).not.toBe(true);
+    expect(user.structuredContent).toBeUndefined();
+  });
+
   it('serves two clients of two users concurrently, each as itself', async () => {
     await start();
     const [a, b] = await Promise.all([connect(era, 'dummy-token-a'), connect(era, 'dummy-token-b')]);

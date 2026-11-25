@@ -332,6 +332,10 @@ Coverage of the YNAB API endpoints:
 - `ynab_health_check` — Test API connectivity
 </details>
 
+### Structured output
+
+Every tool returns its result as JSON in a text block. A tool that declares an `outputSchema` in `tools/list` also returns the same object as `structuredContent`, so a client can validate it and use it without parsing text. A key whose value is null is left out, as in 0.4.x, and the schema marks it optional. Fields the tool reports as `null` on purpose are marked nullable. The advertised schemas allow extra keys. Errors are `isError` results with a text block only. Schemas so far: `ynab_rate_limit_status`, `ynab_audit_log` and `ynab_health_check`. The other tools return text only until they get a schema.
+
 ### Tips and Common Recipes
 
 **Recording a transfer between accounts.** A transfer is a transaction whose payee is the *other* account's transfer payee. Look up the target account's `transfer_payee_id` (returned by `ynab_list_accounts` and `ynab_get_account`, or find the payee named "Transfer : <account>" in `ynab_list_payees` under `transfer_payees`), then call `ynab_create_transaction` on the source account with that value as `payee_id`. Leave `category_id` empty for transfers between on-budget accounts; YNAB creates the matching transaction in the other account itself.
