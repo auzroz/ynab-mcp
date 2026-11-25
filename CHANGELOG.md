@@ -397,6 +397,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per user. Erasing an account erases its entries. This needs schema 7: one
   `audit_log` table with two indexes, added on startup.
   See "The audit log" in docs/REMOTE_HOSTING.md.
+- **Shared rate limits for several replicas** (#67), opt-in with
+  `RATE_LIMIT_STORE=postgres` (default `memory`; needs `AUTH_MODE=oauth` and
+  `STORAGE_DRIVER=postgres`, any other value or driver refuses to start). The
+  per-user YNAB budget (`RATE_LIMIT_PER_HOUR`) is then one budget across every
+  replica on the database, with the same rules as before: fail fast with
+  `retry_after_seconds`, at most one waiting call per user (now on any
+  replica) within `RATE_LIMIT_MAX_WAIT_MS`, and a multi-request tool reserves
+  its whole fan-out or refuses. A YNAB `429` pauses every replica. The
+  authorization server's limits and the metadata-document fetch budget are
+  shared the same way, keyed by a SHA-256 of the client address or
+  `client_id`. When the database doesn't answer within 1 to 2 seconds the
+  request is refused (`upstream_unavailable` for a tool call, the route's
+  `429` with `Retry-After: 5` for an OAuth endpoint), never let through on a
+  per-process budget. `MCP_REPLICAS` (default 1) declares the replicas you run;
+  above 1 with `RATE_LIMIT_STORE=memory`, startup warns that every limit is per
+  replica. Still per process whatever the setting: the in-flight caps, the
+  write cap, the circuit breaker, the caches and snapshots, the 20-per-hour
+  bound on audited refusals, the per-client usage counts and the metadata
+  document caches. `ynab_rate_limit_status` shows which store holds the budget
+  (`rate_limit.store`). This needs schema 8: the `rate_limit_hits` and
+  `rate_limit_buckets` tables, added on startup on every SQL driver and
+  swept, and a user's bucket goes with their account. See "Several replicas:
+  shared rate limits" in docs/REMOTE_HOSTING.md.
 - `ynab_rate_limit_status` reports the calling client's share of the user's
   requests and refusals in the last hour, under `client_usage` (#58).
   `client_id` is `null` on stdio and in header mode.

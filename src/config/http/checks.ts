@@ -117,6 +117,24 @@ const refreshIdleWithinTtl: HttpCheck = (config, problems) => {
   }
 };
 
+/**
+ * RATE_LIMIT_STORE=postgres (#67, D-4) keeps the limits in the storage
+ * database, so it needs the Postgres driver, which only oauth mode opens.
+ * Refused, not ignored: an operator who asked for shared limits must not get
+ * per-process ones silently.
+ */
+const rateLimitStoreNeedsPostgres: HttpCheck = (config, problems) => {
+  if (config.rateLimitStore !== 'postgres' || problems.failed('RATE_LIMIT_STORE')) return;
+  if (problems.failed('AUTH_MODE') || problems.failed('STORAGE_DRIVER')) return;
+  if (config.authMode !== 'oauth' || config.storageDriver !== 'postgres') {
+    problems.add(
+      'RATE_LIMIT_STORE',
+      'RATE_LIMIT_STORE=postgres requires AUTH_MODE=oauth and STORAGE_DRIVER=postgres (the limits are kept in that database). ' +
+        'Use RATE_LIMIT_STORE=memory otherwise.'
+    );
+  }
+};
+
 /** Append-only: one line per rule. */
 export const HTTP_CHECKS: readonly HttpCheck[] = [
   oauthRefusesStaticYnab,
@@ -125,4 +143,5 @@ export const HTTP_CHECKS: readonly HttpCheck[] = [
   oauthStorageRequired,
   oauthKeyring,
   refreshIdleWithinTtl,
+  rateLimitStoreNeedsPostgres,
 ];

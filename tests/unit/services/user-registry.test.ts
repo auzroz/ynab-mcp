@@ -6,6 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
+import { RateLimiter } from '../../../src/services/rate-limiter.js';
 import {
   UserRegistry,
   RATE_LIMIT_WINDOW_MS,
@@ -135,6 +136,32 @@ describe('UserRegistry eviction', () => {
     clock.t += MINUTE;
     registry.acquire('other').release();
     expect(registry.acquire('user-1').components).toBe(lease.components);
+  });
+
+  it('builds each user\'s limiter with rateLimiterFor (#67c), and a shared one does not pin an idle entry', () => {
+    const clock = { t: 0 };
+    const built: string[] = [];
+    // A shared limiter's budget lives in the database, so its status says `postgres`
+    // and dropping the entry grants nothing, even while the bucket refills.
+    const sharedStatus = { ...new RateLimiter(180).getStatus(), available: 3, store: 'postgres' as const };
+    const registry = new UserRegistry({
+      rateLimitPerHour: 180,
+      cacheTtlMs: 300000,
+      now: () => clock.t,
+      rateLimiterFor: (userKey) => {
+        built.push(userKey);
+        const limiter = new RateLimiter(180, () => clock.t);
+        limiter.getStatus = () => sharedStatus;
+        return limiter;
+      },
+    });
+    const lease = registry.acquire('user-1');
+    lease.release();
+    expect(built).toEqual(['user-1']);
+    clock.t += RATE_LIMIT_WINDOW_MS;
+    registry.acquire('other').release();
+    expect(registry.acquire('user-1').components).not.toBe(lease.components);
+    expect(built).toEqual(['user-1', 'other', 'user-1']);
   });
 
   it('past maxEntries, drops the least recently used idle entry, never a live one', () => {

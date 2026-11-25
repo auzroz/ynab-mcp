@@ -17,6 +17,7 @@ const defaultRateLimitStatus = {
   sentLastHour: 0,
   rejectedLastHour: 0,
   maxWaitMs: 2000,
+  store: 'memory' as const,
 };
 
 export function createMockClient() {
@@ -25,6 +26,7 @@ export function createMockClient() {
     getDefaultBudgetId: vi.fn(() => 'test-budget-id'),
     isReadOnly: vi.fn(() => true),
     getRateLimitStatus: vi.fn(() => ({ ...defaultRateLimitStatus })),
+    refreshRateLimitStatus: vi.fn(async () => undefined),
     getUpstreamStatus: vi.fn((): ReturnType<YnabClient['getUpstreamStatus']> => ({ circuit: undefined, cache: undefined })),
     getClientUsage: vi.fn((): ReturnType<YnabClient['getClientUsage']> => undefined),
     getServerKnowledge: vi.fn((): number | undefined => undefined),

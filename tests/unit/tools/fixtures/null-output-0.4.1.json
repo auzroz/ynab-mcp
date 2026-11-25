@@ -1726,7 +1726,8 @@
         "available_requests": 10000,
         "total_limit": 10000,
         "used_requests": 0,
-        "percent_used": 0
+        "percent_used": 0,
+        "store": "memory"
       },
       "usage": {
         "requests_last_hour": 0,

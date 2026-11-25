@@ -621,6 +621,19 @@ export class YnabClient {
   }
 
   /**
+   * Read a shared rate limit (RATE_LIMIT_STORE=postgres) again before
+   * getRateLimitStatus(). Status only: when the store can't be read, the last
+   * value read stays and nothing is thrown.
+   */
+  async refreshRateLimitStatus(): Promise<void> {
+    try {
+      await this.rateLimiter.refresh?.();
+    } catch {
+      // Logged by the store; the status shows the last value read.
+    }
+  }
+
+  /**
    * The calling client's share of the user's requests over the last hour
    * (#58): its client id (undefined on stdio and in header mode, where the
    * user is the only caller) and counts; undefined when not tracked.

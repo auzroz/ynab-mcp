@@ -53,7 +53,8 @@ import {
   parseRetiredFloor,
   signInCiphertext,
 } from './encryption-meta.js';
-import { resolveStorageTimeouts } from './timeouts.js';
+import { resolveStorageTimeouts, type StorageTimeouts } from './timeouts.js';
+import { PostgresSharedLimits, runRateLimitSweep, type RateLimitSweepCounts, type SharedLimitStore } from './shared-limits.js';
 import {
   auditCountSql,
   auditInsert,
@@ -647,9 +648,16 @@ function guardClient(client: PoolClient): PoolClient {
   return client;
 }
 
+/** Connections the shared rate limiter's pool opens at most (#67); its statements are single-row and short. */
+export const LIMITER_POOL_MAX = 4;
+
 export class PostgresStorage implements Storage, OAuthRowStore {
   private pool: PgPool | undefined;
   private readonly retention: RetentionPolicy;
+  private poolClass: typeof PgPool | undefined;
+  private timeouts: StorageTimeouts | undefined;
+  /** The shared limiter's pool and store (#67), opened on first use. */
+  private limiter: { pool: PgPool; store: PostgresSharedLimits } | undefined;
 
   constructor(private readonly options: PostgresStorageOptions) {
     this.retention = retentionPolicy(options.retention);
@@ -703,13 +711,54 @@ export class PostgresStorage implements Storage, OAuthRowStore {
     await migration.end().catch(() => undefined);
 
     this.pool = pool;
+    this.poolClass = Pool;
+    this.timeouts = timeouts;
   }
 
   async close(): Promise<void> {
+    if (this.limiter) {
+      const { pool } = this.limiter;
+      this.limiter = undefined;
+      await pool.end();
+    }
     if (this.pool) {
       await this.pool.end();
       this.pool = undefined;
     }
+  }
+
+  /**
+   * The shared rate limiter's store (#67), on a small pool of its own with
+   * short time bounds (the `pgLimiter*` timeouts), so a limiter call never
+   * queues behind the storage pool and fails within those bounds when the
+   * database is slow or gone.
+   */
+  sharedLimits(): SharedLimitStore {
+    if (this.limiter) return this.limiter.store;
+    const Pool = this.poolClass;
+    const timeouts = this.timeouts;
+    if (!Pool || !timeouts) throw new Error('PostgresStorage used before init()');
+    const pool = new Pool({
+      connectionString: this.options.connectionString,
+      max: LIMITER_POOL_MAX,
+      statement_timeout: timeouts.pgLimiterStatementTimeoutMs,
+      query_timeout: timeouts.pgLimiterQueryTimeoutMs,
+      connectionTimeoutMillis: timeouts.pgLimiterConnectionTimeoutMs,
+    });
+    // An idle connection that dies (the server restarts) is an 'error' on the
+    // pool; the next query opens a new one.
+    pool.on('error', () => undefined);
+    this.limiter = { pool, store: new PostgresSharedLimits(pool) };
+    return this.limiter.store;
+  }
+
+  async sweepRateLimitRows(): Promise<RateLimitSweepCounts> {
+    // The database's clock, as the limiters write with it; `now` is unused here.
+    return runRateLimitSweep(
+      'postgres',
+      async (sql, params) => (await this.db.query(sql, params)).rowCount ?? 0,
+      0
+    );
   }
 
 

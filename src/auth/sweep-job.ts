@@ -4,11 +4,14 @@
  * server has storage (oauth mode); the windows are settings
  * (src/config/http/retention.ts) that the storage driver was built with.
  *
- * Today the one {@link SweepStep} is `Storage.sweepExpired`: expired codes,
+ * The first {@link SweepStep} is `Storage.sweepExpired`: expired codes,
  * tokens and sign-ins, consumed credentials past their replay window,
  * orphaned tokens, expired grants, and abandoned or unused client
  * registrations, in batches (on Postgres under an advisory lock, so replicas
  * don't sweep at once; a replica that finds the lock held does nothing).
+ * The second is `Storage.sweepRateLimitRows` (#67): ended rate-limit windows
+ * and full, idle request buckets of the shared limiters (no lock: its
+ * batches skip rows a limiter holds, and deleting a row twice is harmless).
  *
  * Seam for #60b: the audit-log prune (90 days) is a further entry in
  * {@link SWEEP_STEPS}, with no change to the scheduling below.
@@ -43,6 +46,13 @@ export const SWEEP_STEPS: readonly SweepStep[] = [
       const { ran, deleted } = await storage.sweepExpired();
       // Another replica holds the sweep lock: it is doing this work.
       return ran ? { ...deleted } : {};
+    },
+  },
+  {
+    // #67: shared limiter rows that limit nothing any more (RATE_LIMIT_STORE=postgres).
+    name: 'rate-limit-rows',
+    async run(storage) {
+      return { ...(await storage.sweepRateLimitRows()) };
     },
   },
 ];

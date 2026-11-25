@@ -24,7 +24,7 @@ Use when you need to:
 
 YNAB allows 200 requests per hour. This server uses 180 as a safety margin. If YNAB itself has answered 429 (too many requests), ynab_exhausted shows when that happened and when requests are allowed again; until then requests fail fast.
 
-When the budget is used up, tool calls fail at once with a rate_limited error and retry_after_seconds (they wait at most max_wait_ms for a token, and only one call waits at a time). In HTTP mode each user has their own budget, shared by all of that user's clients; usage shows this user's requests and refusals over the last hour, and client_usage the calling client's share of them (client_id is null on stdio and in header mode, where there is one caller).
+When the budget is used up, tool calls fail at once with a rate_limited error and retry_after_seconds (they wait at most max_wait_ms for a token, and only one call waits at a time). In HTTP mode each user has their own budget, shared by all of that user's clients; usage shows this user's requests and refusals over the last hour, and client_usage the calling client's share of them (client_id is null on stdio and in header mode, where there is one caller). rate_limit.store is memory when this server process holds the budget, postgres when every replica shares it (then usage and client_usage count this replica's requests only).
 
 upstream.circuit is the circuit breaker: after 20 consecutive YNAB 5xx responses or timeouts within 60 seconds it opens for 30 seconds, and tool calls fail at once with an upstream_unavailable error and retry_after_seconds. cache shows the bytes this user's cache holds against its budget (8 MiB).`,
   inputSchema: {
@@ -45,6 +45,7 @@ export async function handleRateLimitStatus(
   // Validate input (ensures no unexpected properties)
   inputSchema.parse(args);
 
+  await client.refreshRateLimitStatus();
   const status = client.getRateLimitStatus();
   const upstream = client.getUpstreamStatus();
   const clientUsage = client.getClientUsage();
@@ -95,6 +96,8 @@ export async function handleRateLimitStatus(
         total_limit: status.limit,
         used_requests: status.used,
         percent_used: status.percentUsed,
+        // memory: this process's budget; postgres: shared by every replica (#67c).
+        store: status.store,
       },
       usage: {
         requests_last_hour: status.sentLastHour,

@@ -28,7 +28,8 @@ const PATH_LEAK = '/private/var/db/ynab/secret.sqlite';
 
 function storageWith(sweepExpired: () => Promise<SweepResult>): { storage: Storage; sweepExpired: ReturnType<typeof vi.fn> } {
   const fn = vi.fn(sweepExpired);
-  return { storage: { sweepExpired: fn } as unknown as Storage, sweepExpired: fn };
+  const sweepRateLimitRows = async (): Promise<Record<string, number>> => ({ rateLimitWindows: 0, rateLimitBuckets: 0 });
+  return { storage: { sweepExpired: fn, sweepRateLimitRows } as unknown as Storage, sweepExpired: fn };
 }
 
 const ranWith = (deleted: Partial<ReturnType<typeof emptySweepCounts>>): SweepResult => ({

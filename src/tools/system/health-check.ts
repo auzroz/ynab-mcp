@@ -55,6 +55,7 @@ export async function handleHealthCheck(
   }[] = [];
 
   // Check 1: Rate limiter status
+  await client.refreshRateLimitStatus();
   const rateLimitStatus = client.getRateLimitStatus();
   checks.push({
     name: 'rate_limiter',

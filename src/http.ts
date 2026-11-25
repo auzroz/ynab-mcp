@@ -46,6 +46,10 @@ import { InflightLimiter, RequestLifetime } from './services/inflight-limiter.js
 import { OUTBOUND_TIMEOUT_MS } from './services/outbound.js';
 import type { HttpConfig } from './config/environment.js';
 import { deprecatedSessionSettingsWarning } from './config/http/limits.js';
+import { replicaRateLimitWarning } from './config/http/rate-limit-store.js';
+import { SharedRateLimiter } from './services/shared-rate-limiter.js';
+import { sharedLimiterStores } from './middleware/shared-limiter-store.js';
+import type { SharedLimitStore } from './storage/shared-limits.js';
 import { Encryptor } from './crypto.js';
 import { RETIRE_GRACE_MS, assertGraceOutlastsWrites, prepareEncryptionKeys } from './auth/rekey-job.js';
 import { createStorage } from './storage/index.js';
@@ -259,6 +263,8 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   let storage: Storage | undefined;
   let oauth: { as: AuthorizationServer; resolver: YnabTokenResolver } | undefined;
   let encryptor: Encryptor | undefined;
+  // RATE_LIMIT_STORE=postgres (#67): the limits live in the storage database.
+  let sharedLimits: SharedLimitStore | undefined;
   if (config.authMode === 'oauth') {
     // One hasher (TOKEN_PEPPER, else derived from ENCRYPTION_KEY) for storage's
     // migration and the provider's lookups, so the two can't use different peppers.
@@ -267,6 +273,11 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
       encryptionKey: config.encryptionKey,
     });
     storage = await buildStorage(config, tokenHasher);
+    if (config.rateLimitStore === 'postgres') {
+      // The config check refuses this without Postgres; never fall back to per-process limits.
+      sharedLimits = storage.sharedLimits?.();
+      if (!sharedLimits) throw new Error('RATE_LIMIT_STORE=postgres requires STORAGE_DRIVER=postgres');
+    }
     // The keyring (#57b): ENCRYPTION_KEY under ENCRYPTION_KEY_ID, plus the
     // previous keys. Checked against the database, and the retirement floor
     // applied, before anything decrypts; the rekey job keeps it current.
@@ -295,6 +306,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
         ynab,
         observeStage: options.observeStage,
         clientIdMetadataTransport: options.clientIdMetadataTransport,
+        limiterStore: sharedLimits ? sharedLimiterStores(sharedLimits) : undefined,
       }),
       resolver: new YnabTokenResolver(
         storage,
@@ -311,11 +323,19 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   }
   const asPipeline = oauth?.as.routes.map((r) => ({ route: r.route, stages: [...upstreamStages, ...r.stages] }));
 
+  if (config.rateLimitStore === 'postgres' && !sharedLimits) {
+    throw new Error('RATE_LIMIT_STORE=postgres requires AUTH_MODE=oauth and STORAGE_DRIVER=postgres');
+  }
+  const shared = sharedLimits;
   const registry = new UserRegistry({
     rateLimitPerHour: config.rateLimitPerHour,
     rateLimitMaxWaitMs: config.rateLimitMaxWaitMs,
     cacheTtlMs: config.cacheTtlMs,
     writeLimitPerHour: config.writeLimitPerHour,
+    // The user's YNAB budget in the database, shared by every replica (#67c).
+    rateLimiterFor: shared
+      ? (userKey) => new SharedRateLimiter(shared, userKey, config.rateLimitPerHour, Date.now, config.rateLimitMaxWaitMs)
+      : undefined,
   });
   const inflight = new InflightLimiter({
     perUser: config.maxInflightPerUser,
@@ -733,6 +753,13 @@ export async function startHttpServer(
     }
     const deprecated = deprecatedSessionSettingsWarning(config.deprecatedSessionSettings);
     if (deprecated !== undefined) console.error(deprecated);
+    const replicas = replicaRateLimitWarning(config);
+    if (replicas !== undefined) console.error(replicas);
+    if (config.rateLimitStore === 'postgres') {
+      console.error(
+        'Rate limits: shared through Postgres (RATE_LIMIT_STORE=postgres); the in-flight caps, the write cap, the circuit breaker and the caches stay per process'
+      );
+    }
   };
   const httpServer =
     config.bindHost === undefined ? app.listen(config.port, onListening) : app.listen(config.port, config.bindHost, onListening);
