@@ -736,6 +736,7 @@
           "subtransactions": [
             {
               "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+              "scheduled_transaction_id": "88888888-8888-4888-8888-888888888888",
               "amount": "-$6.17",
               "memo": null,
               "transfer_account_id": null
@@ -774,6 +775,7 @@
         "subtransactions": [
           {
             "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+            "scheduled_transaction_id": "88888888-8888-4888-8888-888888888888",
             "amount": "-$6.17",
             "memo": null
           }

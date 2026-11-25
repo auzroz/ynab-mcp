@@ -3,7 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleListScheduledTransactions } from '../../../../src/tools/scheduled-transactions/list-scheduled.js';
+import { handleListScheduledTransactions as rawHandleListScheduledTransactions, listScheduledTransactionsOutputSchema } from '../../../../src/tools/scheduled-transactions/list-scheduled.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createScheduledTransactionsResponse,
@@ -11,6 +12,9 @@ import {
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
 import type { ScheduledTransactionDetail } from 'ynab';
+
+/** Every result is checked against the output schema (#45). */
+const handleListScheduledTransactions = validating(listScheduledTransactionsOutputSchema, rawHandleListScheduledTransactions);
 
 describe('handleListScheduledTransactions', () => {
   let mockClient: MockClient;
@@ -22,8 +26,7 @@ describe('handleListScheduledTransactions', () => {
   it('lists active scheduled transactions sorted by next date', async () => {
     mockClient.getScheduledTransactions.mockResolvedValue(createScheduledTransactionsResponse());
 
-    const result = await handleListScheduledTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListScheduledTransactions({}, mockClient as never);
 
     expect(parsed.scheduled_transactions).toBeInstanceOf(Array);
     expect(parsed.scheduled_transactions).toHaveLength(mockScheduledTransactions.length);
@@ -37,8 +40,7 @@ describe('handleListScheduledTransactions', () => {
   it('formats amounts as currency and includes summary fields', async () => {
     mockClient.getScheduledTransactions.mockResolvedValue(createScheduledTransactionsResponse());
 
-    const result = await handleListScheduledTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListScheduledTransactions({}, mockClient as never);
 
     const rent = parsed.scheduled_transactions.find((t: { id: string }) => t.id === 'sched-rent-001');
     expect(rent.amount).toBe('-$1500.00');
@@ -57,8 +59,7 @@ describe('handleListScheduledTransactions', () => {
       createScheduledTransactionsResponse(withDeleted)
     );
 
-    const result = await handleListScheduledTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListScheduledTransactions({}, mockClient as never);
 
     const ids = parsed.scheduled_transactions.map((t: { id: string }) => t.id);
     expect(ids).not.toContain('sched-deleted');
@@ -90,8 +91,7 @@ describe('handleListScheduledTransactions', () => {
       createScheduledTransactionsResponse(withSubs)
     );
 
-    const result = await handleListScheduledTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListScheduledTransactions({}, mockClient as never);
 
     const split = parsed.scheduled_transactions[0];
     expect(split.subtransactions).toHaveLength(1);
@@ -125,8 +125,7 @@ describe('handleListScheduledTransactions', () => {
       createScheduledTransactionsResponse(txns)
     );
 
-    const result = await handleListScheduledTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListScheduledTransactions({}, mockClient as never);
 
     expect(parsed.summary.total_count).toBe(frequencies.length);
     expect(parsed.summary.estimated_monthly_total).toMatch(/^\$/);
@@ -135,8 +134,7 @@ describe('handleListScheduledTransactions', () => {
   it('handles empty list', async () => {
     mockClient.getScheduledTransactions.mockResolvedValue(createScheduledTransactionsResponse([]));
 
-    const result = await handleListScheduledTransactions({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleListScheduledTransactions({}, mockClient as never);
 
     expect(parsed.scheduled_transactions).toHaveLength(0);
     expect(parsed.summary.total_count).toBe(0);

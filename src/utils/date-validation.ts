@@ -9,9 +9,11 @@
  * Used for scheduled transaction date validation.
  *
  * @param dateStr - Date in YYYY-MM-DD format
- * @returns Object with valid boolean and optional error message
+ * @returns valid, and the error message when it is not valid
  */
-export function validateScheduledDate(dateStr: string): { valid: boolean; error?: string } {
+export function validateScheduledDate(
+  dateStr: string
+): { valid: true; error?: never } | { valid: false; error: string } {
   // Strict format check to reject malformed dates like "2026-01-01-01"
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
     return { valid: false, error: 'Invalid date format' };

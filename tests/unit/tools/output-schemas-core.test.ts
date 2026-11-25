@@ -43,6 +43,22 @@ import {
   handleListPayeeTransactions,
 } from '../../../src/tools/transactions/list-payee-transactions.js';
 import {
+  listScheduledTransactionsOutputSchema,
+  handleListScheduledTransactions,
+} from '../../../src/tools/scheduled-transactions/list-scheduled.js';
+import {
+  getScheduledTransactionOutputSchema,
+  handleGetScheduledTransaction,
+} from '../../../src/tools/scheduled-transactions/get-scheduled.js';
+import {
+  createScheduledTransactionOutputSchema,
+  handleCreateScheduledTransaction,
+} from '../../../src/tools/scheduled-transactions/create-scheduled.js';
+import {
+  updateScheduledTransactionOutputSchema,
+  handleUpdateScheduledTransaction,
+} from '../../../src/tools/scheduled-transactions/update-scheduled.js';
+import {
   CircuitOpenError,
   errorResponseSchema,
   formatErrorResponse,
@@ -58,6 +74,9 @@ import {
 } from '../../../src/utils/errors.js';
 import {
   createMockClient,
+  createScheduledTransactionsResponse,
+  createScheduledTransactionResponse,
+  mockScheduledTransactions,
   createTransactionsResponse,
   createHybridTransactionsResponse,
   createTransactionResponse,
@@ -381,5 +400,52 @@ describe('core output schemas: transactions', () => {
     const dup = await handleCreateTransaction({ account_id: UUID, date: '2024-01-20', amount: -1, import_id: 'dup-1' }, c());
     expect(dup.success).toBe(false);
     expectValid(createTransactionOutputSchema, dup);
+  });
+});
+
+describe('core output schemas: scheduled transactions', () => {
+  const withSplits = {
+    ...mockScheduledTransactions[0]!,
+    flag_color: 'red',
+    payee_id: 'p1',
+    category_id: null,
+    subtransactions: [
+      { id: 's1', scheduled_transaction_id: mockScheduledTransactions[0]!.id, amount: -1000, memo: 'a', payee_id: null, category_id: 'c1', transfer_account_id: null, deleted: false },
+      { id: 's2', scheduled_transaction_id: mockScheduledTransactions[0]!.id, amount: -500, memo: null, payee_id: 'p2', category_id: null, transfer_account_id: 'acc', deleted: false },
+    ],
+  };
+
+  it('ynab_list_scheduled_transactions: full with splits and flags, and delta', async () => {
+    client.getScheduledTransactions.mockResolvedValue(createScheduledTransactionsResponse([...mockScheduledTransactions, withSplits] as never));
+    const full = await handleListScheduledTransactions({}, c());
+    expect(full.summary.by_frequency).toBeDefined();
+    expectValid(listScheduledTransactionsOutputSchema, full);
+    client.getScheduledTransactions.mockResolvedValue({
+      data: { scheduled_transactions: [withSplits, { ...mockScheduledTransactions[1]!, deleted: true }], server_knowledge: 9 },
+    });
+    const delta = await handleListScheduledTransactions({ since_server_knowledge: 5 }, c());
+    expect(delta.deleted_ids).toHaveLength(1);
+    expectValid(listScheduledTransactionsOutputSchema, delta);
+  });
+
+  it('ynab_get_scheduled_transaction: with splits and a transfer', async () => {
+    client.getScheduledTransactionById.mockResolvedValue(createScheduledTransactionResponse({ ...withSplits, transfer_account_id: 'acc' } as never));
+    expectValid(getScheduledTransactionOutputSchema, await handleGetScheduledTransaction({ scheduled_transaction_id: UUID }, c()));
+  });
+
+  it('ynab_create_ and ynab_update_scheduled_transaction: the in-band refusals (success: false)', async () => {
+    client.isReadOnly.mockReturnValue(false);
+    const past = { account_id: UUID, date: '2000-01-01', amount: -5, frequency: 'monthly', payee_name: 'Rent' };
+    const refused = await handleCreateScheduledTransaction(past, c());
+    expect(refused.success).toBe(false);
+    expectValid(createScheduledTransactionOutputSchema, refused);
+    const badDate = await handleUpdateScheduledTransaction({ scheduled_transaction_id: UUID, date: '2000-01-01' }, c());
+    expect(badDate.success).toBe(false);
+    expectValid(updateScheduledTransactionOutputSchema, badDate);
+    const nothing = await handleUpdateScheduledTransaction({ scheduled_transaction_id: UUID }, c());
+    expect(nothing).toEqual({ success: false, error: 'No fields provided to update' });
+    expectValid(updateScheduledTransactionOutputSchema, nothing);
+    expect(client.createScheduledTransaction).not.toHaveBeenCalled();
+    expect(client.updateScheduledTransaction).not.toHaveBeenCalled();
   });
 });

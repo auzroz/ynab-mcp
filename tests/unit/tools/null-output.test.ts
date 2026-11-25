@@ -81,7 +81,7 @@ const scheduled = {
   memo: null, flag_color: null, flag_name: null, account_id: ACC, payee_id: null, category_id: null,
   transfer_account_id: null, deleted: false, account_name: 'Checking', payee_name: null,
   category_name: null,
-  subtransactions: [{ ...splitNulls(3), transaction_id: SCH }],
+  subtransactions: [{ ...splitNulls(3), transaction_id: undefined, scheduled_transaction_id: SCH }],
 };
 const movement = {
   id: 'mm1', month: '2026-10-01', moved_at: null, note: null, money_movement_group_id: null,

@@ -52,6 +52,11 @@ import { listAccountTransactionsOutputSchema } from '../../../src/tools/transact
 import { listCategoryTransactionsOutputSchema } from '../../../src/tools/transactions/list-category-transactions.js';
 import { listPayeeTransactionsOutputSchema } from '../../../src/tools/transactions/list-payee-transactions.js';
 import { importTransactionsOutputSchema } from '../../../src/tools/transactions/import-transactions.js';
+import { listScheduledTransactionsOutputSchema } from '../../../src/tools/scheduled-transactions/list-scheduled.js';
+import { getScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/get-scheduled.js';
+import { createScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/create-scheduled.js';
+import { updateScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/update-scheduled.js';
+import { deleteScheduledTransactionOutputSchema } from '../../../src/tools/scheduled-transactions/delete-scheduled.js';
 import { rateLimitStatusOutputSchema, handleRateLimitStatus } from '../../../src/tools/system/rate-limit-status.js';
 import { auditLogOutputSchema } from '../../../src/tools/system/audit-log.js';
 import { healthCheckOutputSchema, handleHealthCheck } from '../../../src/tools/system/health-check.js';
@@ -75,11 +80,6 @@ const PENDING_OUTPUT_SCHEMA = [
   // Months
   // Transactions
   // Scheduled transactions
-  'ynab_list_scheduled_transactions',
-  'ynab_get_scheduled_transaction',
-  'ynab_create_scheduled_transaction',
-  'ynab_update_scheduled_transaction',
-  'ynab_delete_scheduled_transaction',
   // Money movements
   'ynab_list_money_movements',
   'ynab_list_money_movement_groups',
@@ -150,6 +150,11 @@ const SCHEMAS: Record<string, z.ZodObject> = {
   ynab_list_category_transactions: listCategoryTransactionsOutputSchema,
   ynab_list_payee_transactions: listPayeeTransactionsOutputSchema,
   ynab_import_transactions: importTransactionsOutputSchema,
+  ynab_list_scheduled_transactions: listScheduledTransactionsOutputSchema,
+  ynab_get_scheduled_transaction: getScheduledTransactionOutputSchema,
+  ynab_create_scheduled_transaction: createScheduledTransactionOutputSchema,
+  ynab_update_scheduled_transaction: updateScheduledTransactionOutputSchema,
+  ynab_delete_scheduled_transaction: deleteScheduledTransactionOutputSchema,
   ynab_rate_limit_status: rateLimitStatusOutputSchema,
   ynab_audit_log: auditLogOutputSchema,
   ynab_health_check: healthCheckOutputSchema,

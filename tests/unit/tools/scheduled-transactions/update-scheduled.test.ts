@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleUpdateScheduledTransaction } from '../../../../src/tools/scheduled-transactions/update-scheduled.js';
+import { handleUpdateScheduledTransaction as rawHandleUpdateScheduledTransaction, updateScheduledTransactionOutputSchema } from '../../../../src/tools/scheduled-transactions/update-scheduled.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createScheduledTransactionResponse,
   mockScheduledTransactions,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleUpdateScheduledTransaction = validating(updateScheduledTransactionOutputSchema, rawHandleUpdateScheduledTransaction);
 
 const SCHEDULED_ID = '99999999-9999-9999-9999-999999999999';
 const ACCOUNT_ID = '11111111-1111-1111-1111-111111111111';
@@ -28,11 +32,10 @@ describe('handleUpdateScheduledTransaction', () => {
   });
 
   it('updates amount with dollars converted to milliunits', async () => {
-    const result = await handleUpdateScheduledTransaction(
+    const parsed = await handleUpdateScheduledTransaction(
       { scheduled_transaction_id: SCHEDULED_ID, amount: -75.25 },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(true);
     expect(mockClient.updateScheduledTransaction).toHaveBeenCalledTimes(1);
@@ -86,11 +89,10 @@ describe('handleUpdateScheduledTransaction', () => {
   });
 
   it('returns error when no fields are provided to update', async () => {
-    const result = await handleUpdateScheduledTransaction(
+    const parsed = await handleUpdateScheduledTransaction(
       { scheduled_transaction_id: SCHEDULED_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(false);
     expect(parsed.error).toBe('No fields provided to update');
@@ -98,11 +100,10 @@ describe('handleUpdateScheduledTransaction', () => {
   });
 
   it('returns error JSON without calling client when date is invalid', async () => {
-    const result = await handleUpdateScheduledTransaction(
+    const parsed = await handleUpdateScheduledTransaction(
       { scheduled_transaction_id: SCHEDULED_ID, date: '2020-01-01' },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(false);
     expect(parsed.error).toBe('Date must be in the future');

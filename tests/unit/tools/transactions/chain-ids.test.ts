@@ -189,7 +189,7 @@ describe('scheduled transaction outputs carry account/payee/category/transfer id
     mockClient.getScheduledTransactions.mockResolvedValue(
       createScheduledTransactionsResponse([mockScheduledTransactions[0]!, withSplit])
     );
-    const parsed = JSON.parse(await handleListScheduledTransactions({}, mockClient as never));
+    const parsed = await handleListScheduledTransactions({}, mockClient as never);
     const byId = Object.fromEntries(
       parsed.scheduled_transactions.map((t: { id: string }) => [t.id, t])
     );
@@ -215,9 +215,7 @@ describe('scheduled transaction outputs carry account/payee/category/transfer id
     mockClient.getScheduledTransactionById.mockResolvedValue(
       createScheduledTransactionResponse(withSplit)
     );
-    const parsed = JSON.parse(
-      await handleGetScheduledTransaction({ scheduled_transaction_id: UUID }, mockClient as never)
-    );
+    const parsed = await handleGetScheduledTransaction({ scheduled_transaction_id: UUID }, mockClient as never);
     const txn = parsed.scheduled_transaction;
     expect(txn.account_id).toBe(withSplit.account_id);
     expect(txn.payee_id).toBe(withSplit.payee_id);

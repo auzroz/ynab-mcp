@@ -59,8 +59,6 @@ beforeEach(() => {
   mockClient = createMockClient();
 });
 
-const parse = (s: string) => JSON.parse(s) as Record<string, any>;
-
 describe('ynab_list_accounts', () => {
   it('full: same call as before, plus server_knowledge', async () => {
     mockClient.getAccounts.mockResolvedValue(createAccountsResponse());
@@ -163,13 +161,13 @@ describe('ynab_list_months / ynab_list_payees / ynab_list_scheduled_transactions
 
   it('scheduled: delta omits the estimated monthly total', async () => {
     mockClient.getScheduledTransactions.mockResolvedValue(createScheduledTransactionsResponse());
-    const full = parse(await handleListScheduledTransactions({}, mockClient as never));
+    const full = await handleListScheduledTransactions({}, mockClient as never);
     expect(full.server_knowledge).toBe(12345);
     expect(full.summary.estimated_monthly_total).toBeDefined();
 
     const gone = { ...mockScheduledTransactions[0]!, deleted: true };
     mockClient.getScheduledTransactions.mockResolvedValue({ data: { scheduled_transactions: [gone], server_knowledge: 4 } });
-    const out = parse(await handleListScheduledTransactions({ since_server_knowledge: 2 }, mockClient as never));
+    const out = await handleListScheduledTransactions({ since_server_knowledge: 2 }, mockClient as never);
     expect(mockClient.getScheduledTransactions).toHaveBeenLastCalledWith('test-budget-id', { lastKnowledgeOfServer: 2 });
     expect(out).toMatchObject({ delta: true, deleted_ids: [gone.id], scheduled_transactions: [] });
     expect(out.summary.estimated_monthly_total).toBeUndefined();

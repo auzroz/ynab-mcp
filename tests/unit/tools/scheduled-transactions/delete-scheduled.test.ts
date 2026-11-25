@@ -3,13 +3,17 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { handleDeleteScheduledTransaction } from '../../../../src/tools/scheduled-transactions/delete-scheduled.js';
+import { handleDeleteScheduledTransaction as rawHandleDeleteScheduledTransaction, deleteScheduledTransactionOutputSchema } from '../../../../src/tools/scheduled-transactions/delete-scheduled.js';
+import { validating } from '../output-validation.js';
 import {
   createMockClient,
   createScheduledTransactionResponse,
   mockScheduledTransactions,
 } from '../fixtures/index.js';
 import type { MockClient } from '../fixtures/index.js';
+
+/** Every result is checked against the output schema (#45). */
+const handleDeleteScheduledTransaction = validating(deleteScheduledTransactionOutputSchema, rawHandleDeleteScheduledTransaction);
 
 const SCHEDULED_ID = '99999999-9999-9999-9999-999999999999';
 
@@ -24,11 +28,10 @@ describe('handleDeleteScheduledTransaction', () => {
   });
 
   it('deletes a scheduled transaction and returns success details', async () => {
-    const result = await handleDeleteScheduledTransaction(
+    const parsed = await handleDeleteScheduledTransaction(
       { scheduled_transaction_id: SCHEDULED_ID },
       mockClient as never
     );
-    const parsed = JSON.parse(result);
 
     expect(parsed.success).toBe(true);
     expect(parsed.message).toContain('-$1500.00');

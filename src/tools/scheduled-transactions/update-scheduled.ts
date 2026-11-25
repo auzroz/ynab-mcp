@@ -15,6 +15,8 @@ import { sanitizeName, sanitizeMemo } from '../../utils/sanitize.js';
 import { validateScheduledDate } from '../../utils/date-validation.js';
 import { frequencies, flagColors } from '../../utils/scheduled-constants.js';
 import { omitNull } from '../../utils/omit-null.js';
+import { toOutputSchema } from '../output-schema.js';
+import { money } from '../schemas/common.js';
 
 // Input schema
 const inputSchema = z.object({
@@ -55,6 +57,33 @@ const inputSchema = z.object({
     .optional()
     .describe('New flag color (null to remove flag)'),
 });
+
+/**
+ * What the tool returns (#45; rules in ../output-schema.ts). One object covers
+ * the updated scheduled transaction and the in-band refusal (success: false,
+ * error), which is an ordinary result, not a tool error.
+ */
+export const updateScheduledTransactionOutputSchema = z.object({
+  success: z.boolean().describe('False when the request was refused before reaching YNAB (see error)'),
+  error: z.string().exactOptional().describe('When success is false: why nothing was sent'),
+  message: z.string().exactOptional().describe('When success is true'),
+  scheduled_transaction: z
+    .object({
+      id: z.string(),
+      date_first: z.string(),
+      date_next: z.string(),
+      frequency: z.string().describe('YNAB frequency, such as monthly or everyOtherWeek'),
+      amount: money(),
+      payee_name: z.string(),
+      category_name: z.string(),
+      account_name: z.string(),
+      memo: z.string().nullable(),
+      flag_color: z.string().exactOptional().describe('YNAB flag colour; omitted when unflagged'),
+    })
+    .exactOptional()
+    .describe('When success is true'),
+});
+export type UpdateScheduledTransactionOutput = z.output<typeof updateScheduledTransactionOutputSchema>;
 
 // Tool definition
 export const updateScheduledTransactionTool: Tool = {
@@ -132,6 +161,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
     },
     required: ['scheduled_transaction_id'],
   },
+  outputSchema: toOutputSchema(updateScheduledTransactionOutputSchema),
 };
 
 // Handler function
@@ -146,7 +176,7 @@ ${UNTRUSTED_TEXT_NOTE}`,
 export async function handleUpdateScheduledTransaction(
   args: Record<string, unknown>,
   client: YnabClient
-): Promise<string> {
+): Promise<UpdateScheduledTransactionOutput> {
   const validated = inputSchema.parse(args);
   const budgetId = await client.resolveBudgetId(validated.budget_id, { fresh: true });
 
@@ -154,14 +184,10 @@ export async function handleUpdateScheduledTransaction(
   if (validated.date !== undefined) {
     const dateValidation = validateScheduledDate(validated.date);
     if (!dateValidation.valid) {
-      return JSON.stringify(
-        {
-          success: false,
-          error: dateValidation.error,
-        },
-        null,
-        2
-      );
+      return {
+        success: false,
+        error: dateValidation.error,
+      };
     }
   }
 
@@ -185,14 +211,10 @@ export async function handleUpdateScheduledTransaction(
 
   // Check if there are any fields to update
   if (Object.keys(updateData).length === 0) {
-    return JSON.stringify(
-      {
-        success: false,
-        error: 'No fields provided to update',
-      },
-      null,
-      2
-    );
+    return {
+      success: false,
+      error: 'No fields provided to update',
+    };
   }
 
   const response = await client.updateScheduledTransaction(
@@ -207,24 +229,20 @@ export async function handleUpdateScheduledTransaction(
   const money = await moneyFormatterFor(client, budgetId);
   const txn = response.data.scheduled_transaction;
 
-  return JSON.stringify(
-    {
-      success: true,
-      message: `Scheduled transaction updated: ${money(txn.amount)} at ${sanitizeName(txn.payee_name)} (${txn.frequency})`,
-      scheduled_transaction: {
-        id: txn.id,
-        date_first: txn.date_first,
-        date_next: txn.date_next,
-        frequency: txn.frequency,
-        amount: money(txn.amount),
-        payee_name: sanitizeName(txn.payee_name),
-        category_name: sanitizeName(txn.category_name),
-        account_name: sanitizeName(txn.account_name),
-        memo: sanitizeMemo(txn.memo),
-        ...omitNull({ flag_color: txn.flag_color }),
-      },
+  return {
+    success: true,
+    message: `Scheduled transaction updated: ${money(txn.amount)} at ${sanitizeName(txn.payee_name)} (${txn.frequency})`,
+    scheduled_transaction: {
+      id: txn.id,
+      date_first: txn.date_first,
+      date_next: txn.date_next,
+      frequency: txn.frequency,
+      amount: money(txn.amount),
+      payee_name: sanitizeName(txn.payee_name),
+      category_name: sanitizeName(txn.category_name),
+      account_name: sanitizeName(txn.account_name),
+      memo: sanitizeMemo(txn.memo),
+      ...omitNull({ flag_color: txn.flag_color }),
     },
-    null,
-    2
-  );
+  };
 }

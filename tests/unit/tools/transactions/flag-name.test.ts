@@ -95,7 +95,7 @@ describe('flag_name in transaction read tools', () => {
     mockClient.getScheduledTransactions.mockResolvedValue(
       createScheduledTransactionsResponse([sched, mockScheduledTransactions[1]!])
     );
-    const list = JSON.parse(await handleListScheduledTransactions({}, mockClient as never));
+    const list = await handleListScheduledTransactions({}, mockClient as never);
     const a = list.scheduled_transactions.find((t: { id: string }) => t.id === sched.id);
     const b = list.scheduled_transactions.find((t: { id: string }) => t.id === mockScheduledTransactions[1]!.id);
     expect(a.flag_color).toBe('blue');
@@ -103,9 +103,7 @@ describe('flag_name in transaction read tools', () => {
     expect(b.flag_name).toBeNull();
 
     mockClient.getScheduledTransactionById.mockResolvedValue(createScheduledTransactionResponse(sched));
-    const got = JSON.parse(
-      await handleGetScheduledTransaction({ scheduled_transaction_id: UUID }, mockClient as never)
-    );
+    const got = await handleGetScheduledTransaction({ scheduled_transaction_id: UUID }, mockClient as never);
     expect(got.scheduled_transaction.flag_name).toBe('Autopay');
   });
 });
@@ -224,9 +222,7 @@ describe('ynab SDK response parsing keeps flag_name and chaining ids', () => {
         },
       })
     );
-    const parsed = JSON.parse(
-      await handleGetScheduledTransaction({ scheduled_transaction_id: UUID }, client() as never)
-    );
+    const parsed = await handleGetScheduledTransaction({ scheduled_transaction_id: UUID }, client() as never);
     expect(parsed.scheduled_transaction.flag_name).toBe('Autopay');
     expect(parsed.scheduled_transaction.transfer_account_id).toBe('t');
   });
