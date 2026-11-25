@@ -150,10 +150,12 @@ for (const driver of testDrivers) {
 
     it("another user's read-write grant doesn't keep this user's token", async () => {
       const store = (await driver.open()).storage as Store;
+      // u1 holds a read-write token whose grant is gone; u2's read-write grant is live.
+      const rw = await complete(store, 'u1', 'read-write', 'enc-rw-u1');
+      await store.revokeOAuthGrant(rw.grantId);
       await complete(store, 'u2', 'read-write', 'enc-rw-u2');
       await complete(store, 'u1', 'read-only', 'enc-ro-u1');
-      await complete(store, 'u1', 'read-only', 'enc-ro-u1-b');
-      expect(await stored(store, 'u1')).toEqual({ token: 'enc-ro-u1-b', scope: 'read-only' });
+      expect(await stored(store, 'u1')).toEqual({ token: 'enc-ro-u1', scope: 'read-only' });
       expect(await stored(store, 'u2')).toEqual({ token: 'enc-rw-u2', scope: 'read-write' });
     });
 
