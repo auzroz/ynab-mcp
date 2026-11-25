@@ -16,7 +16,15 @@ import { createUserComponents, type UserComponents } from './services/user-regis
 import { AuditLog, LOCAL_AUDIT_USER } from './services/audit-log.js';
 import type { AuditOutcome, AuditStore } from './storage/audit-rows.js';
 import { WRITE_TOOL_AUDIT_TARGETS } from './tools/audit-targets.js';
-import { tools, accountTools, handleToolCall, handleAccountToolCall, isAccountToolName } from './tools/index.js';
+import {
+  tools,
+  accountTools,
+  getTool,
+  handleAccountToolCall,
+  isAccountToolName,
+  runToolCall,
+  type ToolCallOutput,
+} from './tools/index.js';
 import type { AccountToolContext, AccountToolSetup } from './tools/connections/context.js';
 import { accountToolAllowed, accountToolDenial, type AccountToolName } from './tools/connections/policy.js';
 import { UNTRUSTED_TEXT_NOTE } from './tools/untrusted-note.js';
@@ -317,9 +325,9 @@ export function createServerFromClient(
           throw error;
         }
       }
-      const call = async (): Promise<string> => {
+      const call = async (): Promise<ToolCallOutput> => {
         try {
-          return await handleToolCall(name, args, ynabClient);
+          return await runToolCall(name, args, ynabClient);
         } catch (error) {
           if (releaseSlot !== undefined && isInputValidationError(error)) releaseSlot();
           // A write that failed before its client method recorded it (rate
@@ -331,7 +339,7 @@ export function createServerFromClient(
           throw error;
         }
       };
-      let result: string;
+      let result: ToolCallOutput;
       if (toolCalls === undefined) {
         result = await call();
       } else {
@@ -355,9 +363,15 @@ export function createServerFromClient(
         }
         result = outcome.value;
       }
-      return {
-        content: [{ type: 'text' as const, text: result }],
-      };
+      const content = [{ type: 'text' as const, text: result.text }];
+      if (result.structured === undefined) return { content };
+      // Structured output (#45, ADR-0001 D15): the object the text block was
+      // serialized from, projected for the connection's era against the same
+      // schema tools/list advertises. Error results never carry it.
+      return server.projectCallToolResult(
+        { content, structuredContent: result.structured },
+        getTool(name)?.outputSchema
+      );
     } catch (error) {
       return {
         content: [{ type: 'text' as const, text: formatErrorResponse(error) }],

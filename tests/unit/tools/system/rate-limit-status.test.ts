@@ -15,8 +15,7 @@ describe('handleRateLimitStatus', () => {
   });
 
   it('reports healthy status with default mock (low usage)', async () => {
-    const result = await handleRateLimitStatus({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
 
     expect(parsed.status).toBe('healthy');
     expect(parsed.message).toContain('Plenty');
@@ -38,17 +37,17 @@ describe('handleRateLimitStatus', () => {
       rejectedLastHour: 3,
       maxWaitMs: 0,
     });
-    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
     expect(parsed.usage).toEqual({ requests_last_hour: 170, rejected_last_hour: 3, max_wait_ms: 0 });
   });
 
   it("reports the calling client's share of the user's usage (#58)", async () => {
-    expect(JSON.parse(await handleRateLimitStatus({}, mockClient as never)).client_usage).toBeNull();
+    expect((await handleRateLimitStatus({}, mockClient as never)).client_usage).toBeNull();
     mockClient.getClientUsage.mockReturnValue({ clientId: 'client-a', sentLastHour: 7, rejectedLastHour: 1 });
-    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
     expect(parsed.client_usage).toEqual({ client_id: 'client-a', requests_last_hour: 7, rejected_last_hour: 1 });
     mockClient.getClientUsage.mockReturnValue({ clientId: undefined, sentLastHour: 2, rejectedLastHour: 0 });
-    expect(JSON.parse(await handleRateLimitStatus({}, mockClient as never)).client_usage).toEqual({
+    expect((await handleRateLimitStatus({}, mockClient as never)).client_usage).toEqual({
       client_id: null,
       requests_last_hour: 2,
       rejected_last_hour: 0,
@@ -56,7 +55,7 @@ describe('handleRateLimitStatus', () => {
   });
 
   it('reports a closed circuit and no cache figures by default', async () => {
-    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
     expect(parsed.upstream).toEqual({ circuit: 'closed', consecutive_failures: 0 });
     expect(parsed.cache).toBeNull();
   });
@@ -66,7 +65,7 @@ describe('handleRateLimitStatus', () => {
       circuit: { state: 'open', consecutiveFailures: 20, retryAfterMs: 12_500, trips: 1 },
       cache: { bytes: 1024, maxBytes: 8_388_608 },
     });
-    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
     expect(parsed.upstream).toEqual({ circuit: 'open', consecutive_failures: 20, retry_after_seconds: 13 });
     expect(parsed.cache).toEqual({ bytes: 1024, max_bytes: 8_388_608 });
     expect(parsed.timing.can_make_request_now).toBe(false);
@@ -84,8 +83,7 @@ describe('handleRateLimitStatus', () => {
       resetTimeMs: 120000,
     });
 
-    const result = await handleRateLimitStatus({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
 
     expect(parsed.status).toBe('warning');
     expect(parsed.message).toContain('being consumed');
@@ -104,8 +102,7 @@ describe('handleRateLimitStatus', () => {
       resetTimeMs: 3600000,
     });
 
-    const result = await handleRateLimitStatus({}, mockClient as never);
-    const parsed = JSON.parse(result);
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
 
     expect(parsed.status).toBe('critical');
     expect(parsed.message).toContain('low');
@@ -125,7 +122,7 @@ describe('handleRateLimitStatus', () => {
       resetTimeMs: 120000,
     });
 
-    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
 
     expect(parsed.status).toBe('warning');
   });
@@ -141,13 +138,13 @@ describe('handleRateLimitStatus', () => {
       resetTimeMs: 120000,
     });
 
-    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
 
     expect(parsed.status).toBe('critical');
   });
 
   it('reports null ynab_exhausted when YNAB has not rate-limited us', async () => {
-    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
     expect(parsed.ynab_exhausted).toBeNull();
   });
 
@@ -163,7 +160,7 @@ describe('handleRateLimitStatus', () => {
       ynabExhausted: { active: true, exhaustedAtMs: Date.UTC(2026, 9, 30, 12, 0, 0), untilMs: Date.UTC(2026, 9, 30, 12, 1, 30), retryAfterMs: 90000 },
     });
 
-    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
 
     expect(parsed.status).toBe('critical');
     expect(parsed.message).toContain('429');
@@ -189,7 +186,7 @@ describe('handleRateLimitStatus', () => {
       ynabExhausted: { active: false, exhaustedAtMs: 1000, untilMs: 61000, retryAfterMs: 0 },
     });
 
-    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    const parsed = await handleRateLimitStatus({}, mockClient as never);
 
     expect(parsed.status).toBe('healthy');
     expect(parsed.ynab_exhausted.active).toBe(false);

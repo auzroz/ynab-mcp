@@ -129,7 +129,7 @@ async function connectServer(readOnly: boolean, accountContext?: AccountToolCont
     async call(name: string, args: Record<string, unknown> = {}) {
       const res = await client.callTool({ name, arguments: args });
       const text = (res.content as Array<{ text: string }>)[0]?.text ?? '';
-      return { isError: res.isError === true, text };
+      return { isError: res.isError === true, text, structured: res.structuredContent };
     },
     async names() {
       return (await client.listTools()).tools.map((t) => t.name);
@@ -190,6 +190,25 @@ describe('the server with and without an account context', () => {
     expect((await s.call('ynab_revoke_connection', { family_id: 'B'.repeat(43) })).isError).toBe(false);
     expect((await s.call('ynab_disconnect', { confirm: 'DISCONNECT' })).isError).toBe(false);
     expect(calls).toEqual(['revoke', 'erase', 'after']);
+    await s.close();
+  });
+
+  it('answers with a text block only: no outputSchema, no structuredContent (until #45b gives them schemas)', async () => {
+    const { ctx } = stubContext(RW);
+    const s = await connectServer(false, ctx);
+    const listed = (await s.client.listTools()).tools.filter((t) => (ACCOUNT_TOOL_NAMES as readonly string[]).includes(t.name));
+    expect(listed).toHaveLength(3);
+    for (const t of listed) expect(t.outputSchema, t.name).toBeUndefined();
+    for (const [name, args] of [
+      ['ynab_list_connections', {}],
+      ['ynab_revoke_connection', { family_id: 'B'.repeat(43) }],
+      ['ynab_disconnect', { confirm: 'DISCONNECT' }],
+    ] as const) {
+      const res = await s.call(name, args);
+      expect(res.isError, name).toBe(false);
+      expect(res.structured, name).toBeUndefined();
+      expect(() => JSON.parse(res.text), name).not.toThrow();
+    }
     await s.close();
   });
 
