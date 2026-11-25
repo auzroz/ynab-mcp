@@ -41,6 +41,7 @@ import type {
   RefreshedAccessToken,
   InactiveUserCondition,
 } from './types.js';
+import { MemoryAuditStore, type AuditGuard, type AuditQuery, type AuditRecord } from './audit-rows.js';
 import { assertFloorAllows, compareKeyCheck, isBelowFloor, keyCheckMetaKey, signInCiphertext } from './encryption-meta.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
 import {
@@ -129,6 +130,8 @@ export class MemoryStorage implements Storage, OAuthRowStore {
   private retiredKeyFloor = 0;
   private retiringKeyFloor = 0;
   private keyChecks = new Map<string, string>();
+  /** `audit_log` (#60a): each user's newest rows, bounded as the 0.4.x ring was. */
+  private readonly audit = new MemoryAuditStore();
   private readonly retention: RetentionPolicy;
 
   constructor(options: StorageDriverOptions = {}) {
@@ -362,7 +365,28 @@ export class MemoryStorage implements Storage, OAuthRowStore {
         this.oauthRows.delete(key);
       }
     }
+    // audit_log (D-7b).
+    this.audit.deleteUser(userId);
     return true;
+  }
+
+  // The audit log (#60a). A guarded write needs the user row of its generation, as in the SQL drivers.
+
+  async appendAuditEntry(entry: AuditRecord, guard?: AuditGuard): Promise<boolean> {
+    if (guard !== undefined) {
+      const user = this.users.get(entry.userId);
+      if (!user || (user.createdAt ?? 0) !== guard.generation) return false;
+    }
+    this.audit.append(entry);
+    return true;
+  }
+
+  async listAuditEntries(userId: string, query: AuditQuery, limit: number): Promise<AuditRecord[]> {
+    return this.audit.listAuditEntries(userId, query, limit);
+  }
+
+  async countAuditEntries(userId: string, query: AuditQuery): Promise<Record<string, number>> {
+    return this.audit.countAuditEntries(userId, query);
   }
 
   /** #54e: the erase condition, as the SQL drivers check it (src/storage/user-data.ts, USER_LIVE_GRANT_SQL). */

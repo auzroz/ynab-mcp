@@ -63,6 +63,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MCP_REQUIRE_RESOURCE=false` until it can. That setting is deprecated and is
   removed in 0.6.
 
+- **HTTP mode is stateless** (#41, ADR-0001). `/mcp` no longer issues an
+  `Mcp-Session-Id`, and `GET` and `DELETE /mcp` answer `405`, so nothing needs
+  sticky sessions: remove any sticky-session routing at your proxy. Each
+  request is authenticated on its own and gets a fresh server.
+  - `MCP_MAX_SESSIONS`, `MCP_MAX_SESSIONS_PER_USER` and
+    `MCP_SESSION_IDLE_TIMEOUT_MS` still parse but have no effect. A set one
+    logs a startup warning naming its replacements, and 0.6 removes them.
+  - New caps replace them: at most 8 requests in flight per user
+    (`MCP_MAX_INFLIGHT_PER_USER`), 4 per client and user
+    (`MCP_MAX_INFLIGHT_PER_CLIENT`) and 64 per process (`MCP_MAX_INFLIGHT`).
+    A request past a cap gets `429` with `Retry-After: 1`. A request that runs
+    longer than 60 seconds (`MCP_REQUEST_TIMEOUT_MS`) is ended.
+  - In header mode every request needs a YNAB token (`X-YNAB-Token`, or
+    `YNAB_ACCESS_TOKEN`), not only the first.
+- HTTP mode requires `AUTH_MODE` (#56). Set `AUTH_MODE=oauth` or
+  `AUTH_MODE=header`: without it the server refuses to start. 0.4.x guessed
+  `oauth` when the four OAuth variables were set and `header` otherwise, so
+  set the one you were running. Related rules, all checked at startup (every
+  problem is listed in one message that never echoes a value):
+  - `oauth` mode refuses `YNAB_ACCESS_TOKEN` and `YNAB_BUDGET_ID`.
+  - `header` mode with `YNAB_ACCESS_TOKEN` refuses to start on a bind other
+    than loopback, which includes the default of every interface, unless you
+    set `MCP_ALLOW_ANONYMOUS_FALLBACK=true` or bind to loopback with
+    `MCP_BIND_HOST=127.0.0.1`. Behind a reverse proxy on the same host a
+    loopback bind does not protect the token. A Docker deployment in header
+    mode with a token needs `MCP_ALLOW_ANONYMOUS_FALLBACK=true`.
+  - Numeric settings are bounds-checked: for example `RATE_LIMIT_PER_HOUR` is
+    1 to 195 in HTTP mode (stdio still allows 200).
+  - `/health` returns only `{"status":"ok"}`.
+  - An `MCP_TRANSPORT` other than `stdio` or `http` refuses to start (0.4.x
+    ran stdio for any other value).
+- `YNAB_OAUTH_ALLOW_WRITE` now defaults to `false` and is checked on every
+  request (#56, #68). Unless it is `true`, no connection can write, including
+  one granted read-write on 0.4.x (the default was `true`). To keep writes,
+  set `YNAB_OAUTH_ALLOW_WRITE=true` (with `YNAB_READ_ONLY=false`).
+- Stored MCP tokens, codes, `state` and client secrets are hashed (#52, #68).
+  The token, code and `state` hashes are keyed by `TOKEN_PEPPER`, or by a
+  pepper derived from `ENCRYPTION_KEY` when it is unset, and the database
+  records the pepper's fingerprint at the first 0.5.0 start. After that, a
+  different `TOKEN_PEPPER` (or a new `ENCRYPTION_KEY` with no `TOKEN_PEPPER`)
+  refuses to start. Before any key change, pin `TOKEN_PEPPER` (see "Rotating
+  ENCRYPTION_KEY" in docs/REMOTE_HOSTING.md). Rolling back means restoring the
+  pre-upgrade backup (see Upgrading from 0.4.x).
+- MCP refresh tokens expire after 30 days without use or 90 days after the
+  sign-in that issued them, whichever comes first (#54, #68). A client then
+  sends the user through sign-in again. Change the windows with
+  `MCP_REFRESH_TOKEN_IDLE_DAYS` and `MCP_REFRESH_TOKEN_TTL_DAYS` (1 to 3650).
+  Tokens issued before the upgrade stop working at it anyway (see the
+  authorization-server note above).
+- Client registration and `/authorize` follow the server's own rules (#55).
+  Before upgrading, check that your clients fit them:
+  - `/register` refuses a redirect URI that is plain `http://` to a host other
+    than `localhost`, `127.0.0.1` or `[::1]`, has userinfo or a fragment, is
+    over 512 characters, or uses a private-use scheme that isn't on
+    `MCP_DCR_PRIVATE_USE_SCHEMES` (empty by default). It refuses more than 5
+    redirect URIs with `invalid_client_metadata`, and a `client_name` over 100
+    characters or with control, bidi or zero-width characters. Fields the
+    server doesn't use (`jwks`, `contacts`, `logo_uri`, `software_statement`
+    and the like) are dropped.
+  - `/authorize` refuses a `state` over 512 characters, a `code_challenge`
+    that isn't 43 base64url characters, and more than 5 scopes. Unknown scopes
+    are dropped.
+  - A client registered before 0.5.0 with a non-loopback `http://` redirect
+    URI is refused at `/authorize` and must register again.
+  - An authorization error for a client whose redirect URI isn't verified
+    (`MCP_VERIFIED_REDIRECT_URIS`, or loopback) is shown on the server's own
+    page instead of being redirected to the client. To have your own clients'
+    errors redirected, add their callbacks to `MCP_VERIFIED_REDIRECT_URIS`,
+    which replaces the default list (Claude's two callbacks): include those
+    too. See "Using other MCP clients" in docs/REMOTE_HOSTING.md.
+  - Request bodies over 8 KB on the authorization server routes get `413`.
+- When the YNAB request budget is used up, calls fail at once with
+  `retry_after_seconds` instead of queueing (#58). A call may still wait up to
+  `RATE_LIMIT_MAX_WAIT_MS` (default 2000; `0` never waits) for a token, and
+  only one call waits at a time. The error `type` is now `rate_limited` (was
+  `rate_limit`): anything that matches on the old value must change. This
+  applies to stdio too.
+- The `ynab-mcp-server` command is removed (#43); use `ynab-mcp`. That name
+  belongs to an unrelated npm package. `npx -y ynab-mcp` is unchanged.
+
 ### Changed
 
 - A read-only sign-in no longer downgrades a user's other connections (#64).
@@ -74,9 +154,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the new client stays read-only. YNAB keeps both authorizations valid
   (checked against YNAB on 2026-11-23), so nothing breaks. A read-write token
   YNAB has refused (`invalid_grant`) is not kept: the refusal is recorded
-  (best-effort), and the next sign-in, read-only included, replaces it. No setting and no
-  migration.
-
+  (best-effort), and the next sign-in, read-only included, replaces it. No
+  setting and no migration.
+- `ynab_audit_log` changes (#60a):
+  - Entry fields are snake_case: `timestamp`, `tool`, `operation`,
+    `resource_type` (was `resourceType`), `resource_id` (was `resourceId`),
+    `budget_id` (was `budgetId`), `outcome`, `success`, `client_id`,
+    `family_id` and `request_id`.
+  - Entries no longer carry `details` (amounts, dates, presence flags) or
+    `error` text.
+  - New `outcome` filter. The `operation` and `resource_type` filters accept
+    every value the log records (`move`, `import`, `audit_suppressed`;
+    `category_group`, `payee`, `scheduled_transaction`).
+  - `success: false` now matches every outcome but `success`, refusals
+    included.
+  - In OAuth mode it shows only the calling client's entries; another client
+    of the same user no longer sees them.
+  - The summary adds `by_outcome`.
 - **What operators see after the authorization server move** (#47):
   - The consent page is now at `/oauth/interaction/<id>`, reached by a
     redirect from `/authorize`. Its choices go to `.../start`, and Cancel to
@@ -134,6 +228,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `estimated_monthly_total` is now summed from milliunits, so it can differ by a
   milliunit or two.
 
+- **MCP SDK v2** (#41, ADR-0001). The server moves from `@modelcontextprotocol/sdk`
+  1.x to the v2 packages (`@modelcontextprotocol/server`, `node` and
+  `express`), and serves MCP protocol revision 2026-07-28 next to 2025-11-25 on
+  both transports. stdio runs through `serveStdio`. Tool names, arguments and
+  output are unchanged.
+- HTTP read-only access is computed on every request (#41), so a downgraded
+  token or grant loses write tools on its next request. In OAuth mode a
+  request whose YNAB grant can no longer be resolved gets the same `401`
+  challenge as an invalid token, so the client signs in again. Any failure
+  while checking an access token (a storage error or timeout) is now that
+  `401` too, logged without the upstream text; it was a `500`.
+- A tool call that reaches the request timeout returns a timeout error (#41).
+  For a write that had started it says the change may still have been
+  applied, so check before retrying.
+- Every call to YNAB has a 10 second timeout, never longer than the request's
+  own deadline (#58). A timed-out write reports that its outcome is unknown
+  and is not retried.
+- Analytics tools that make several YNAB requests reserve them all up front,
+  or return `rate_limited` with `retry_after_seconds` before sending any
+  (#58). Each user's caches are capped at 8 MiB together, and expired entries
+  are pruned.
+- Authorization server rate limits are keyed by client address as well as
+  `client_id`, so behind a reverse proxy one client no longer uses up everyone's
+  allowance (#59). Authenticated requests are keyed by user. `/authorize`,
+  `/token` and `/revoke` also have an address-only ceiling (1000, 500 and 500
+  per 15 minutes), because a `client_id` is free to invent. IPv6 addresses
+  count by their /64. `/register` allows 100 per address per hour (was 20),
+  plus 20 per redirect host per hour. Set `TRUST_PROXY` to your proxy hop
+  count: the server now warns at startup when it is `0` and `PUBLIC_URL`
+  isn't loopback. See "Client addresses and rate limits" in
+  docs/REMOTE_HOSTING.md.
+- The `ynab` SDK is now 5.0.0 (#44). Tool output is unchanged: fields the API
+  returns as null are still left out.
+- The Docker image no longer installs python3, make and g++, and the release
+  and Docker builds install with `npm ci --ignore-scripts`. The SQLite driver
+  comes as a prebuilt binary for amd64 and arm64 (#62).
+- Storage waits are bounded, so a request can no longer hang on the database
+  (#99). Postgres cancels a statement after 10 seconds, a query after 15
+  seconds and a connection attempt after 10 seconds, and SQLite waits at most
+  5 seconds for a lock (60 seconds during the startup migration). A write that
+  times out fails the request and is not retried. There are no settings.
+- The consent page tells the user how to end the access later: open the YNAB
+  settings at app.ynab.com/settings, find Authorized Applications, and choose
+  Revoke next to this server's app, which is listed under the name you gave
+  your YNAB OAuth application (#85).
+- The database records a schema version and a minimum compatible release
+  (#73). A start that finds the database's floor above its own release, or an
+  unreadable one, refuses to start. The 0.5.0 migrations add nullable columns
+  and indexes (retention clocks for #54), which briefly lock each table at
+  startup, so take the backup first.
+- Tool descriptions and the server's MCP `instructions` tell the model that
+  budget free text (payee, account and category names, memos) is untrusted
+  data, not instructions (#61). Only descriptions change; schemas and output
+  are unchanged. Every write tool and the 17 read tools that return memos or
+  notes carry the note.
 ### Security
 
 - A refresh whose response was lost can be retried (#64, OAUTH-15). An
@@ -145,6 +294,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The record is kept in the database, so it works across replicas, encrypted
   under a key that needs the old refresh token (never stored), and is swept
   after the 60 seconds. No migration and no setting.
+- Audit entries hold ids only (#60a): no amount or other financial value, no
+  payee, account, category or memo text, and no error message, by
+  construction (the table has no column for one). Before, an entry's details
+  could carry a transaction's amount and date.
 - Stored YNAB refresh tokens are bound to their user and column, and carry a
   key id (#57). The new format is `v2.<kid>.<iv>.<tag>.<ct>`, with AAD
   `ynab-mcp|<column>|v2|<user id>`, so a ciphertext copied into another user's
@@ -187,15 +340,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run outside an approved release can't push an image (#62). The
   image's attestation remains its proof of origin.
 
+- MCP access tokens, refresh tokens, authorization codes and sign-in `state`
+  are stored only as keyed hashes, and client secrets as SHA-256 hashes (#52).
+  A copy of the database holds no usable MCP credential. A token or code that
+  isn't 43 base64url characters is refused without a database read, and so is
+  a `state` that isn't a correctly tagged `ymcp1_` value. `TOKEN_PEPPER` is
+  optional (32 bytes, base64 or hex): when unset the pepper is derived from
+  `ENCRYPTION_KEY`. A change to the pepper refuses to start (see Breaking).
+  `TOKEN_PEPPER` is redacted in logs. 0.4.x rows are converted on the first
+  start.
+- Replaying an authorization code revokes the tokens issued for it and every
+  refresh since (#42, RFC 9700). A replayed, an unknown and an expired code get
+  the same `invalid_grant` answer. The record of spent codes is in the
+  database, so every replica and a restart see it.
+- `/authorize` no longer redirects an authorization error to a redirect URI
+  that isn't verified (#55). This closes an open redirect: the error is shown
+  on the server's own page, with a link back the user can choose to follow.
+  Dynamic client registration is checked against the server's own rules (see
+  Breaking). The consent page shows the host the browser returns to in bold,
+  labels an unverified client "calls itself" and loopback addresses, strips
+  bidi and invisible characters from the client's name, and is served with a
+  strict `Content-Security-Policy` and `no-store`. A shared per-address limit
+  runs before any request body is read.
+- Releases publish only from a `v*.*.*` tag on a commit already on `main` or a
+  `release/*` branch, after the tests, the build, `npm audit` and both image
+  builds pass (#62). Each publish job waits for approval on the `production`
+  environment, and only the publish jobs and the opt-in MCP Registry job hold
+  an OIDC identity. The release and Docker builds install with
+  `--ignore-scripts`, and the npm publish job runs no checkout and no
+  install. Releases include `SHA256SUMS`, build provenance attestations for every
+  release file and the image, and SPDX SBOM attestations for the npm tarball
+  and the image's npm dependencies. Verify them with `gh attestation verify`.
+- Text from the budget in tool output (payee, account and category names,
+  memos, notes) has Unicode bidirectional control characters removed, so it
+  can't be visually reordered to mislead the user or the model (#61).
+- A stored access level other than `read-only` or `read-write` is read as
+  read-only, so a corrupted or hand-edited row can't widen a connection (#73).
+- Erasing an account is supported by the storage layer (#53, #54): tokens
+  issued before an account was erased stay dead if the same person connects
+  again. A YNAB token refresh that finishes after the account was erased
+  fails instead of recreating the user, and the user reconnects (#93).
 ### Added
 
+- **A durable, attributable audit log** (#60a). Every write tool call is
+  recorded with how it ended: `success`, `denied_read_only`, `denied_scope`
+  (a read-only grant), `denied_write_limit` or `error`. Refused writes are
+  recorded too, up to 20 read-only or scope refusals per user per hour, then
+  one `audit_suppressed` entry marks that later ones are missing; a call that
+  fails input validation is not. Recording never fails a write and holds it up
+  for at most 1 second: a slower insert finishes in the background, and if the
+  store can't be written the write stands and the entry is lost (logged). Each entry names
+  the user, the MCP client, its grant and the request, the tool, the operation,
+  and the resource and budget ids. In OAuth mode entries go to the storage
+  driver, so with `sqlite` or `postgres` they survive restarts and are shared
+  by replicas. In header mode and on stdio they stay in memory, newest 1,000
+  per user. Erasing an account erases its entries. This needs schema 7: one
+  `audit_log` table with two indexes, added on startup.
+  See "The audit log" in docs/REMOTE_HOSTING.md.
+- `ynab_rate_limit_status` reports the calling client's share of the user's
+  requests and refusals in the last hour, under `client_usage` (#58).
+  `client_id` is `null` on stdio and in header mode.
 - `YNAB_WRITE_LIMIT_PER_HOUR`: a per-user write cap on every transport (#61c).
   One write tool call is one write request, so a bulk call such as
   `ynab_create_transactions` counts as 1. It is checked once, before the tool
   runs, so a refused write takes no YNAB request and changes nothing. The error
   names the limit and when the next write is allowed. A call that fails input
   validation gives its slot back; one YNAB rejects keeps it. The first refusal of
-  each episode is recorded in the audit log as `write_limit_refused`. It is separate
+  each episode is recorded in the audit log as `denied_write_limit`. It is separate
   from `RATE_LIMIT_PER_HOUR`, which counts YNAB requests.
 - Retention windows are settings, and a sweep enforces them (#54): a
   background job deletes expired credentials and clients every 15 minutes.
@@ -209,6 +420,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sign-in and no YNAB token refresh for that many days and has no live
   connection. It re-checks both inside the erase's transaction and logs a
   count only. For existing users the clock starts at the upgrade.
+- Client ID Metadata Documents (#46), the replacement the MCP specification of
+  2026-07-28 gives for Dynamic Client Registration:
+  `MCP_CLIENT_ID_METADATA_DOCUMENTS=true` (experimental, off by default) lets a
+  client use an https URL as its `client_id`. The server fetches the client's
+  metadata from that URL and holds it to the `/register` rules, and discovery
+  advertises `client_id_metadata_document_supported`. The fetch is guarded
+  against server-side request forgery:
+  - public addresses only, resolved once and pinned against DNS rebinding;
+  - no redirects;
+  - 16 KB and 2.5 seconds at most;
+  - a per-address fetch budget.
+
+  A refusal never echoes the document. `/register` keeps working. See
+  docs/REMOTE_HOSTING.md, "Client ID Metadata Documents".
+
+- `MCP_MAX_INFLIGHT_PER_USER`, `MCP_MAX_INFLIGHT_PER_CLIENT`,
+  `MCP_MAX_INFLIGHT` and `MCP_REQUEST_TIMEOUT_MS` (#41). The first three take
+  1 to 64, 1 to 64 and 1 to 1024 (a per-client cap above the per-user cap, or a
+  per-user cap above the process cap, refuses to start), and the timeout takes
+  5000 to 300000 ms.
+- The server reports a short description in `serverInfo`, and marks its
+  `tools/list` result private with a TTL of 0 for 2026-07-28 clients, because
+  the tool list depends on the caller's read-only state (#41).
+- `AUTH_MODE` (required), `MCP_BIND_HOST` and `MCP_ALLOW_ANONYMOUS_FALLBACK`
+  (#56); see Breaking.
+- `RATE_LIMIT_MAX_WAIT_MS` (0 to 60000, default 2000): how long a call may wait
+  for a YNAB rate-limit token (#58). `ynab_rate_limit_status` gains a `usage`
+  block (`requests_last_hour`, `rejected_last_hour`, `max_wait_ms`), the
+  circuit-breaker state under `upstream`, and the cache size.
+- A per-user circuit breaker for YNAB (#58). After 20 consecutive 5xx
+  responses or timeouts within 60 seconds, requests fail at once for 30
+  seconds with `upstream_unavailable` and `retry_after_seconds`; then one probe
+  goes through.
+- `MCP_VERIFIED_REDIRECT_URIS`, `MCP_DCR_PRIVATE_USE_SCHEMES` and
+  `MCP_TRUST_LOOPBACK_REDIRECTS` (#55). By default Claude's two callbacks are
+  verified, no private-use scheme is accepted, and loopback redirects are
+  trusted. See "Using other MCP clients" in docs/REMOTE_HOSTING.md.
+- `TRUST_CF_CONNECTING_IP` (default `false`, separate from `TRUST_PROXY`),
+  `REGISTER_RATE_LIMIT_PER_IP` and `REGISTER_RATE_LIMIT_PER_HOST` (#59).
+- `SECURITY_CONTACT` and `SECURITY_POLICY_URL` enable
+  `/.well-known/security.txt` (RFC 9116, #65). It is not served (404) while
+  `SECURITY_CONTACT` is unset.
 
 ### Fixed
 
@@ -236,6 +489,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serve the new version before it publishes `server.json`, and retries the
   publish twice on the registry's "version not found" error, so a release no
   longer needs a manual re-run when npm is slow (#121).
+- Creating or updating a category target with a frequency (`goal_frequency`)
+  works through the `ynab` SDK, with no direct-API workaround (#22, #44).
+- Completing a sign-in is one transaction (#94): the user's stored YNAB
+  token and the authorization code are written together or not at all. A
+  failed or late sign-in no longer replaces the user's stored YNAB refresh
+  token, and the retention sweep can no longer remove the client between the
+  callback's last check and the code being saved.
 
 ## [0.4.3] - 2026-11-23
 

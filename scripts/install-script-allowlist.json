@@ -1,0 +1,7 @@
+{
+  "_comment": "Lockfile entries allowed to have hasInstallScript: true, as package path -> pinned version. Checked by scripts/check-lockfile.mjs. See CONTRIBUTING.md.",
+  "packages": {
+    "node_modules/esbuild": "0.28.2",
+    "node_modules/fsevents": "2.3.3"
+  }
+}

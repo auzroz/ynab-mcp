@@ -221,11 +221,11 @@ describe('per-request wiring', () => {
     const user = { accessToken: 'tok', defaultBudgetId: undefined, readOnly: true, rateLimitPerHour: 100, cacheTtlMs: 60_000 };
     const components = createUserComponents(user);
     fetchMock.mockImplementation(async () => new Response('x', { status: 503, headers: { 'Content-Type': 'text/plain' } }));
-    const client = buildYnabClient(user, components, Date.now() + 5000);
+    const client = buildYnabClient(user, components, { deadline: Date.now() + 5000 });
     await expect(client.getUser()).rejects.toThrow();
     expect(components.breaker.status().consecutiveFailures).toBe(1);
 
-    const late = buildYnabClient(user, components, Date.now() - 1);
+    const late = buildYnabClient(user, components, { deadline: Date.now() - 1 });
     fetchMock.mockClear();
     await expect(late.getUser()).rejects.toBeInstanceOf(OutboundTimeoutError);
     expect(fetchMock).not.toHaveBeenCalled();

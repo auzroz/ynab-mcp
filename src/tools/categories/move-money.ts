@@ -143,36 +143,22 @@ function causeOf(error: unknown): unknown {
   }
 }
 
-function recordAudit(
-  client: YnabClient,
-  entry: {
-    budgetId: string;
-    month: string;
-    from: string;
-    to: string;
-    amountMilliunits: number;
-    success: boolean;
-    outcome: string;
-  }
-): void {
-  try {
-    client.getAuditLog().log({
-      operation: 'move',
-      tool: 'ynab_move_money',
-      budgetId: entry.budgetId,
-      resourceType: 'category',
-      resourceId: entry.from,
-      details: {
-        month: entry.month,
-        to_category_id: entry.to,
-        amount_milliunits: entry.amountMilliunits,
-        outcome: entry.outcome,
-      },
-      success: entry.success,
-    });
-  } catch {
-    // Audit failures must not mask the result of a completed write.
-  }
+/**
+ * The move as one audit row (#60a), besides the two category updates the
+ * client records: which category, and whether the move as a whole went
+ * through. The detailed outcome (rolled back, outcome unknown) is in the
+ * tool's result; the row holds no amount.
+ */
+async function recordAudit(client: YnabClient, budgetId: string, fromId: string, success: boolean): Promise<void> {
+  // Never throws: an audit failure must not mask the result of a completed write.
+  await client.getAuditLog().record({
+    operation: 'move',
+    tool: 'ynab_move_money',
+    budgetId,
+    resourceType: 'category',
+    resourceId: fromId,
+    outcome: success ? 'success' : 'error',
+  });
 }
 
 // Handler function
@@ -217,16 +203,9 @@ export async function handleMoveMoney(
   const newFromBudgeted = subtractMilliunits(from.budgeted, amount);
   const newToBudgeted = addMilliunits(to.budgeted, amount);
 
-  const audit = (success: boolean, outcome: string): void =>
-    recordAudit(client, {
-      budgetId: budget,
-      month,
-      from: from.id,
-      to: to.id,
-      amountMilliunits: amount,
-      success,
-      outcome,
-    });
+  // The detailed outcome names (first_update_failed, rolled back, ...) say why;
+  // the row records only whether the move went through.
+  const audit = (success: boolean, _outcome: string): Promise<void> => recordAudit(client, budget, from.id, success);
 
   const money = await moneyFormatterFor(client, budget);
   const sides = {
@@ -250,7 +229,7 @@ export async function handleMoveMoney(
       error instanceof ValidationError ||
       error instanceof YnabAuthError
     ) {
-      audit(false, 'first_update_failed');
+      await audit(false, 'first_update_failed');
       throw error;
     }
 
@@ -266,7 +245,7 @@ export async function handleMoveMoney(
 
     if (observedFrom === from.budgeted) {
       // Confirmed unchanged: nothing was written.
-      audit(false, 'first_update_failed');
+      await audit(false, 'first_update_failed');
       throw error;
     }
 
@@ -275,7 +254,7 @@ export async function handleMoveMoney(
       fromUpdated = { data: { category: rereadFrom } };
     } else {
       // Re-read failed or shows an unexpected value: do not attempt leg 2.
-      audit(false, 'first_update_outcome_unknown');
+      await audit(false, 'first_update_outcome_unknown');
       return JSON.stringify(
         {
           error: true,
@@ -323,7 +302,7 @@ export async function handleMoveMoney(
       if (observed !== to.budgeted) {
         // Could not confirm the state of "to" (re-read failed or value is unexpected).
         // Restoring "from" could create money if the write landed, so leave both alone.
-        audit(false, 'second_update_outcome_unknown');
+        await audit(false, 'second_update_outcome_unknown');
         return JSON.stringify(
           {
             error: true,
@@ -352,7 +331,7 @@ export async function handleMoveMoney(
       }
 
       if (fromNow !== newFromBudgeted) {
-        audit(false, 'second_update_failed_rollback_skipped');
+        await audit(false, 'second_update_failed_rollback_skipped');
         return JSON.stringify(
           {
             error: true,
@@ -383,7 +362,7 @@ export async function handleMoveMoney(
         // restore does not prove "from" is still at the reduced value.
         rolledBack = false;
       }
-      audit(
+      await audit(
         false,
         rolledBack ? 'second_update_failed_rolled_back' : 'second_update_failed_rollback_outcome_unknown'
       );
@@ -406,7 +385,7 @@ export async function handleMoveMoney(
     }
   }
 
-  audit(true, appliedDespiteError || fromAppliedDespiteError ? 'moved_confirmed_after_error' : 'moved');
+  await audit(true, appliedDespiteError || fromAppliedDespiteError ? 'moved_confirmed_after_error' : 'moved');
 
   const fromAfter = fromUpdated.data.category;
   if (!toUpdated) {

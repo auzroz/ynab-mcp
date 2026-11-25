@@ -42,6 +42,19 @@ describe('handleRateLimitStatus', () => {
     expect(parsed.usage).toEqual({ requests_last_hour: 170, rejected_last_hour: 3, max_wait_ms: 0 });
   });
 
+  it("reports the calling client's share of the user's usage (#58)", async () => {
+    expect(JSON.parse(await handleRateLimitStatus({}, mockClient as never)).client_usage).toBeNull();
+    mockClient.getClientUsage.mockReturnValue({ clientId: 'client-a', sentLastHour: 7, rejectedLastHour: 1 });
+    const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
+    expect(parsed.client_usage).toEqual({ client_id: 'client-a', requests_last_hour: 7, rejected_last_hour: 1 });
+    mockClient.getClientUsage.mockReturnValue({ clientId: undefined, sentLastHour: 2, rejectedLastHour: 0 });
+    expect(JSON.parse(await handleRateLimitStatus({}, mockClient as never)).client_usage).toEqual({
+      client_id: null,
+      requests_last_hour: 2,
+      rejected_last_hour: 0,
+    });
+  });
+
   it('reports a closed circuit and no cache figures by default', async () => {
     const parsed = JSON.parse(await handleRateLimitStatus({}, mockClient as never));
     expect(parsed.upstream).toEqual({ circuit: 'closed', consecutive_failures: 0 });

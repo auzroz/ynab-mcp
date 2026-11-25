@@ -1733,6 +1733,7 @@
         "rejected_last_hour": 0,
         "max_wait_ms": 2000
       },
+      "client_usage": null,
       "upstream": {
         "circuit": "closed",
         "consecutive_failures": 0
@@ -1754,7 +1755,8 @@
       "summary": {
         "total_operations": 0,
         "success_count": 0,
-        "failure_count": 0
+        "failure_count": 0,
+        "by_outcome": {}
       },
       "message": "No matching audit log entries found"
     }

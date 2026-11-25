@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/server';
 import type { YnabClient } from '../../services/ynab-client.js';
+import { sanitizeString } from '../../utils/sanitize.js';
 
 // Input schema (strict - rejects unexpected properties)
 const inputSchema = z.object({}).strict();
@@ -23,7 +24,7 @@ Use when you need to:
 
 YNAB allows 200 requests per hour. This server uses 180 as a safety margin. If YNAB itself has answered 429 (too many requests), ynab_exhausted shows when that happened and when requests are allowed again; until then requests fail fast.
 
-When the budget is used up, tool calls fail at once with a rate_limited error and retry_after_seconds (they wait at most max_wait_ms for a token, and only one call waits at a time). In HTTP mode each user has their own budget, shared by that user's sessions; usage shows this user's requests and refusals over the last hour.
+When the budget is used up, tool calls fail at once with a rate_limited error and retry_after_seconds (they wait at most max_wait_ms for a token, and only one call waits at a time). In HTTP mode each user has their own budget, shared by all of that user's clients; usage shows this user's requests and refusals over the last hour, and client_usage the calling client's share of them (client_id is null on stdio and in header mode, where there is one caller).
 
 upstream.circuit is the circuit breaker: after 20 consecutive YNAB 5xx responses or timeouts within 60 seconds it opens for 30 seconds, and tool calls fail at once with an upstream_unavailable error and retry_after_seconds. cache shows the bytes this user's cache holds against its budget (8 MiB).`,
   inputSchema: {
@@ -46,6 +47,7 @@ export async function handleRateLimitStatus(
 
   const status = client.getRateLimitStatus();
   const upstream = client.getUpstreamStatus();
+  const clientUsage = client.getClientUsage();
 
   // Calculate human-readable times
   const circuitRetrySeconds = upstream.circuit ? Math.ceil(upstream.circuit.retryAfterMs / 1000) : 0;
@@ -99,6 +101,14 @@ export async function handleRateLimitStatus(
         rejected_last_hour: status.rejectedLastHour,
         max_wait_ms: status.maxWaitMs,
       },
+      // The calling client's share of the user's usage (#58).
+      client_usage: clientUsage
+        ? {
+            client_id: clientUsage.clientId === undefined ? null : sanitizeString(clientUsage.clientId, 200),
+            requests_last_hour: clientUsage.sentLastHour,
+            rejected_last_hour: clientUsage.rejectedLastHour,
+          }
+        : null,
       // The circuit breaker (#58): after repeated YNAB failures or timeouts, calls fail fast for a while.
       upstream: {
         circuit: upstream.circuit?.state ?? 'closed',

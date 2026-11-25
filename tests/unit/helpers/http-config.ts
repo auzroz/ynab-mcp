@@ -51,6 +51,7 @@ export function makeHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig 
     verifiedRedirectUris: DEFAULT_VERIFIED_REDIRECT_URIS,
     privateUseSchemes: [],
     trustLoopbackRedirects: true,
+    clientIdMetadataDocuments: false,
     // The loader's defaults (#54b).
     refreshTokenIdleDays: 30,
     refreshTokenTtlDays: 90,

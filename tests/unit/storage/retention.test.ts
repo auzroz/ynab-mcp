@@ -304,11 +304,28 @@ for (const driver of testDrivers) {
           );
         }
 
+        // Audit rows (#60a, D-7b): erased with the account, the other user's kept.
+        const auditRow = (userId: string) => ({
+          ts: Date.now(),
+          userId,
+          clientId: 'c1',
+          familyId: undefined,
+          requestId: undefined,
+          tool: 'ynab_create_payee',
+          operation: 'create',
+          resourceType: 'payee',
+          resourceId: undefined,
+          budgetId: undefined,
+          outcome: 'success',
+        });
+        expect(await s.appendAuditEntry(auditRow('u'))).toBe(true);
+        expect(await s.appendAuditEntry(auditRow('v'))).toBe(true);
+
         const before = await h.userRows('u');
         const expected =
           h.kind === 'memory'
-            ? ['users', 'authCodes', 'accessTokens', 'refreshTokens', 'consumedRefreshTokens', 'consumedAuthCodes']
-            : ['users', 'auth_codes', 'access_tokens', 'refresh_tokens', 'consumed_refresh_tokens', 'consumed_auth_codes'];
+            ? ['users', 'authCodes', 'accessTokens', 'refreshTokens', 'consumedRefreshTokens', 'consumedAuthCodes', 'audit']
+            : ['users', 'auth_codes', 'access_tokens', 'refresh_tokens', 'consumed_refresh_tokens', 'consumed_auth_codes', 'audit_log'];
         for (const table of expected) expect(before[table], table).toBeGreaterThan(0);
 
         await s.deleteUserData('u');
@@ -330,6 +347,7 @@ for (const driver of testDrivers) {
         expect(await s.getAccessToken(kept.access.token)).toBeDefined();
         expect(await s.getRefreshToken(kept.refresh.token)).toBeDefined();
         expect((await h.userRows('v'))[h.kind === 'memory' ? 'consumedAuthCodes' : 'consumed_auth_codes']).toBe(1);
+        expect(await s.listAuditEntries('v', {}, 10)).toHaveLength(1);
       });
 
       it('an exchange in flight is refused once the user is erased, even after they connect again', async () => {

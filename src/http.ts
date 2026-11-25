@@ -5,7 +5,7 @@
  *  - `header`  — interim: YNAB token supplied per request via `X-YNAB-Token`
  *                (or the `YNAB_ACCESS_TOKEN` fallback). TLS required.
  *  - `oauth`   — multi-tenant: the server is an OAuth 2.1 Authorization Server
- *                (DCR + PKCE via the SDK) federated to YNAB. Each MCP access
+ *                (DCR + PKCE via oidc-provider, ADR-0002) federated to YNAB. Each MCP access
  *                token maps to a YNAB-identified user; per request we resolve and
  *                refresh that user's YNAB token and build an isolated server.
  *
@@ -38,6 +38,7 @@ import {
   type McpServerFactory,
 } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
+import { drainRequest, refuseOversizedBody } from './http/refuse-oversized.js';
 import { sanitizeErrorMessage } from './utils/sanitize.js';
 import { createServerForRequest, type RequestContext, type UserContext } from './server.js';
 import { UserRegistry, headerUserKey } from './services/user-registry.js';
@@ -52,6 +53,7 @@ import { retentionPolicyFromSettings } from './config/http/retention.js';
 import { TokenHasher } from './auth/token-hash.js';
 import type { GrantedScope, Storage } from './storage/types.js';
 import { mountAuthorizationServer, type AuthorizationServer } from './auth/as-router.js';
+import type { MetadataTransport } from './auth/client-id-metadata.js';
 import { YnabTokenResolver, YnabTokenUnavailableError } from './auth/user-session.js';
 import { grantLifetimeSec } from './auth/oidc/provider.js';
 import { deriveOriginsFromHosts, hostValidation, originValidation } from './middleware/origin-validation.js';
@@ -86,7 +88,7 @@ const MCP_PATH = '/mcp';
 export const INFLIGHT_RETRY_AFTER_SEC = 1;
 
 /**
- * The provider's refusal text for a token (`verifyAccessToken`), reused for a
+ * The verifier's refusal text for a token (`verifyAccessToken`), reused for a
  * request-context failure so every 401 /mcp answers in oauth mode is the same:
  * a client can't tell a revoked YNAB grant from a bad token, and either way it
  * re-authorizes.
@@ -109,6 +111,10 @@ export function toolDeadlineMarginMs(requestTimeoutMs: number): number {
 }
 
 type JsonRpcId = string | number | null;
+
+function sendPayloadTooLarge(res: Response): void {
+  res.status(413).json(jsonRpcError(-32600, 'Invalid Request: payload too large'));
+}
 
 function jsonRpcError(code: number, message: string, id: JsonRpcId = null): unknown {
   return { jsonrpc: '2.0', error: { code, message }, id };
@@ -197,6 +203,8 @@ export interface HttpAppOptions {
   observeStage?: StageObserver | undefined;
   /** The SDK's SSE keepalive interval (default 15 s), shortened by tests of a stream that times out. */
   mcpKeepAliveMs?: number;
+  /** Tests only: how Client ID Metadata Documents are fetched (#46), so nothing reaches the network. */
+  clientIdMetadataTransport?: MetadataTransport | undefined;
 }
 
 /**
@@ -217,17 +225,21 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   app.set('trust proxy', config.trustProxy);
 
   // Host/Origin validation (DNS rebinding + cross-site requests), the single
-  // source of truth for these checks (the SDK's handler has none of its own).
+  // source of truth for these checks (neither oidc-provider nor the MCP SDK
+  // handler has its own).
   //  - Host is checked on every route except /health (probed by orchestrators
   //    by pod IP). That includes the OAuth endpoints and well-known metadata.
   //  - Origin is checked on /mcp only (its pipeline's origin-validation stage).
   //    The OAuth endpoints carry no ambient credentials (PKCE / client
-  //    authentication) and the SDK serves them, and the well-known metadata,
-  //    with permissive CORS on purpose so browser-based MCP clients can
-  //    discover and register; /mcp is the credentialed, state-changing
-  //    surface. The one cookie (the SameSite=Lax consent cookie the federation
-  //    legs require) only proves which browser saw the consent page; it grants
-  //    nothing by itself.
+  //    authentication) and oidc-provider serves them, with permissive CORS on
+  //    purpose so browser-based MCP clients can discover and register. The
+  //    protected-resource metadata (/.well-known/oauth-protected-resource)
+  //    comes from our `metadata` stage (src/auth/metadata-document.ts), which
+  //    sets its own any-origin CORS. /mcp is the credentialed, state-changing
+  //    surface. The cookies (oidc-provider's signed, SameSite=Lax
+  //    `_interaction`, `_interaction_resume` and `_session`, which the
+  //    federation legs require) only prove which browser saw the consent
+  //    page; they grant nothing by themselves.
   const upstreamStages: string[] = [];
   if (config.enableDnsRebindingProtection) {
     const hosts = config.allowedHosts ?? [];
@@ -282,6 +294,7 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
         tokenHasher,
         ynab,
         observeStage: options.observeStage,
+        clientIdMetadataTransport: options.clientIdMetadataTransport,
       }),
       resolver: new YnabTokenResolver(
         storage,
@@ -497,6 +510,10 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     // writes off cannot write), a read-write grant on this token (per client grant, not the user's latest consent), and
     // a read-write YNAB token for the user (YNAB enforces that one anyway).
     const tokenScope = auth === undefined ? 'read-only' : tokenAccessLevel(auth);
+    // The audit log (#60a) says why a write was refused: the operator's
+    // setting wins over the grant, as the error the caller gets names it.
+    const operatorReadOnly = config.readOnly || !config.allowWrite;
+    const grantReadOnly = tokenScope === 'read-only' || grantedScope === 'read-only';
     return {
       user: {
         ...limits,
@@ -504,8 +521,10 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
         accessToken: resolver.accessTokenFor(userId, generation),
         // A token YNAB rejects is dropped on every replica; the call is not retried.
         onUnauthorized: (rejected: string) => resolver.invalidate(userId, rejected),
-        readOnly:
-          config.readOnly || !config.allowWrite || tokenScope === 'read-only' || grantedScope === 'read-only',
+        readOnly: operatorReadOnly || grantReadOnly,
+        readOnlyReason: operatorReadOnly ? 'read_only' : 'scope',
+        // Audit rows are written only while this account generation exists.
+        generation,
       },
     };
   };
@@ -534,10 +553,15 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     }
     const lease = registry.acquire(identity.userKey);
     if (!lifetime.hold(() => lease.release())) return;
+    const grantId = req.auth?.extra?.['grantId'];
     const ctx: RequestContext = Object.freeze({
       requestId: randomUUID(),
       userKey: identity.userKey,
       clientId: identity.clientId,
+      // The token's grant (oauth mode), for the audit log; not part of the caps' identity.
+      familyId: oauth && typeof grantId === 'string' ? grantId : undefined,
+      // Durable storage in oauth mode; header mode has none and keeps the user's rows in memory.
+      auditStore: storage ?? lease.components.auditStore,
       user: resolved.user,
       components: lease.components,
       toolCalls: Object.freeze({
@@ -584,16 +608,17 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
   mcpStages.push(
     stage('request-ceiling', requestCeiling),
     // Inside the ceiling, so a slow upload hits the deadline (D12).
-    stage('json-512kb', live(express.json({ limit: MAX_JSON_BODY }))),
+    // The size pre-check answers 413 on Content-Length and drains the upload (#137).
+    stage('json-512kb', live(refuseOversizedBody(sendPayloadTooLarge)), live(express.json({ limit: MAX_JSON_BODY }))),
     stage('reject-batch', live(rejectBatch)),
     oauth
       ? stage(
           'bearer',
           // v2's middleware answers 401 with the challenge only for v2's
-          // OAuthError: the provider throws that for every refused token
-          // (ADR-0001 D14). expectedResource makes the SDK refuse (401
-          // invalid_token) any token whose audience is not this resource; the
-          // provider also checks it, and reports 0.3.x tokens as bound to it.
+          // OAuthError: the verifier (src/auth/oidc/verifier.ts) throws a
+          // subclass of it for every refused token (ADR-0001 D14). expectedResource makes the SDK
+          // refuse (401 invalid_token) any token whose audience is not this
+          // resource; the verifier checks the audience too.
           live(
             requireBearerAuth({
               verifier: oauth.as.provider,
@@ -649,7 +674,9 @@ export async function buildHttpApp(config: HttpConfig, options: HttpAppOptions =
     }
     const type = (err as { type?: string } | null)?.type;
     if (type === 'entity.too.large') {
-      res.status(413).json(jsonRpcError(-32600, 'Invalid Request: payload too large'));
+      sendPayloadTooLarge(res);
+      // A body the parser stopped reading: discard the rest, bounded.
+      drainRequest(_req);
     } else if (type === 'entity.parse.failed') {
       res.status(400).json(jsonRpcError(-32700, 'Parse error: invalid JSON'));
     } else if (typeof (err as { status?: unknown } | null)?.status === 'number' && (err as { status: number }).status < 500) {

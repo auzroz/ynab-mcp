@@ -13,6 +13,7 @@ import { rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { Storage, StorageDriverOptions } from '../../../src/storage/types.js';
 import { MemoryStorage } from '../../../src/storage/memory.js';
+import { MemoryAuditStore } from '../../../src/storage/audit-rows.js';
 import { TEST_TOKEN_HASHER } from './token-hasher.js';
 
 export type DriverKind = 'memory' | 'sqlite' | 'postgres';
@@ -57,7 +58,7 @@ export async function cleanupDrivers(): Promise<void> {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 }
 
-/** Count map entries that mention `userId` (as the key of `users`, or a record's userId). */
+/** Count map entries that mention `userId` (as the key of `users`, or a record's userId), and audit rows. */
 function memoryUserRows(storage: MemoryStorage, userId: string): Record<string, number> {
   const mentions = (value: unknown): boolean => {
     if (typeof value !== 'object' || value === null) return false;
@@ -66,6 +67,10 @@ function memoryUserRows(storage: MemoryStorage, userId: string): Record<string, 
   };
   const out: Record<string, number> = {};
   for (const [field, value] of Object.entries(storage)) {
+    if (value instanceof MemoryAuditStore) {
+      out[field] = value.countFor(userId);
+      continue;
+    }
     if (!(value instanceof Map)) continue;
     let n = 0;
     for (const [key, entry] of value) {

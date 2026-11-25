@@ -19,8 +19,9 @@ import {
   YnabAuthError,
 } from '../utils/errors.js';
 import { WriteLimiter } from './write-limiter.js';
+import { NO_CLIENT, type ClientUsage, type ClientUsageStatus } from './client-usage.js';
 import { WRITE_LIMIT_DEFAULT_PER_HOUR } from '../config/write-limit.js';
-import { getAuditLog, type AuditLog } from './audit-log.js';
+import type { AuditLog } from './audit-log.js';
 import { sanitizeErrorMessage } from '../utils/sanitize.js';
 import { isBudgetIdSentinel, type BudgetIdSentinel } from '../utils/schemas.js';
 import { DeltaCache, type Snapshot } from './delta-cache.js';
@@ -57,6 +58,18 @@ export interface YnabClientOptions {
   breaker?: CircuitBreaker | undefined;
   /** The user's write cap (#61c); a client built without one gets the default cap of its own. */
   writeLimiter?: WriteLimiter | undefined;
+  /** The calling MCP client (oauth mode), for the per-client usage report (#58). */
+  clientId?: string | undefined;
+  /** The user's per-client usage (#58); none: not reported. */
+  clientUsage?: ClientUsage | undefined;
+  /** The user's budget of audited refusals (#60a); none: every refusal is recorded. */
+  auditedDenials?: WriteLimiter | undefined;
+  /**
+   * Why a read-only client is read-only (#60a), so a refused write is audited
+   * as `denied_read_only` (the operator's setting) or `denied_scope` (the
+   * caller's grant). Default `read_only`.
+   */
+  readOnlyReason?: ReadOnlyReason | undefined;
   /**
    * The request's absolute deadline (epoch ms). No YNAB call outlives it and
    * none starts after it, so work a timed-out request left running ends with
@@ -84,6 +97,9 @@ function bearerOf(init: RequestInit | undefined): string | undefined {
   const match = value === null ? null : /^Bearer (.+)$/.exec(value);
   return match?.[1];
 }
+
+/** Why writes are refused: the operator's read-only mode, or the caller's read-only grant. */
+export type ReadOnlyReason = 'read_only' | 'scope';
 
 /** Tokens a fan-out reserved up front (see YnabClient.withFanOut). */
 interface FanOutReservation {
@@ -121,33 +137,6 @@ class ConfiguredApi extends ynab.API {
   }
 }
 
-
-/** Audit details for category creation: presence flags only, no amounts or names. */
-function createCategoryAuditDetails(data: ynab.PostCategoryWrapper): Record<string, unknown> {
-  const c = data.category;
-  return {
-    has_name: !!c.name,
-    category_group_id: c.category_group_id,
-    ...(c.goal_target !== undefined ? { has_goal_target: true } : {}),
-    ...(c.goal_target_date !== undefined ? { has_goal_target_date: true } : {}),
-    ...(c.goal_needs_whole_amount !== undefined ? { has_goal_needs_whole_amount: true } : {}),
-    ...(c.goal_frequency !== undefined ? { has_goal_frequency: true } : {}),
-  };
-}
-
-/** Audit details for category detail updates: presence flags only, no names, notes or amounts. */
-function updateCategoryDetailsAuditDetails(data: ynab.PatchCategoryWrapper): Record<string, unknown> {
-  const c = data.category;
-  return {
-    ...(c.name !== undefined ? { has_name: true } : {}),
-    ...(c.note !== undefined ? { has_note: true } : {}),
-    ...(c.category_group_id !== undefined ? { category_group_id: c.category_group_id } : {}),
-    ...(c.goal_target !== undefined ? { has_goal_target: true } : {}),
-    ...(c.goal_target_date !== undefined ? { has_goal_target_date: true } : {}),
-    ...(c.goal_needs_whole_amount !== undefined ? { has_goal_needs_whole_amount: true } : {}),
-    ...(c.goal_frequency !== undefined ? { has_goal_frequency: true } : {}),
-  };
-}
 
 /** Query options for the account/category/payee transaction endpoints. */
 export interface ScopedTransactionOptions {
@@ -381,6 +370,10 @@ export class YnabClient {
   private readonly feedState: TransactionFeedState;
   private readonly breaker: CircuitBreaker | undefined;
   private readonly writeLimiter: WriteLimiter;
+  private readonly clientKey: string;
+  private readonly clientUsage: ClientUsage | undefined;
+  private readonly readOnlyReason: ReadOnlyReason;
+  private readonly auditedDenials: WriteLimiter | undefined;
 
   // Track server knowledge for delta sync. Keyed by budget, resource and any
   // request parameters that change the result set (see knowledgeKey), because a
@@ -392,11 +385,10 @@ export class YnabClient {
     defaultBudgetId: string | undefined,
     rateLimiter: RequestLimiter,
     cache: Cache,
-    readOnly = true,
-    // Injected per-instance audit log. Defaults to the process-wide singleton so
-    // single-user (stdio) usage is unchanged; multi-tenant callers pass a
-    // per-user instance so one user's write history never leaks to another.
-    auditLog: AuditLog = getAuditLog(),
+    readOnly: boolean,
+    // Required (#60a): the caller's audit log, bound to its user (and in HTTP
+    // its client, grant and request). There is no process-wide fallback.
+    auditLog: AuditLog,
     // Delta-sync snapshots. Per user like the cache (HTTP requests of one user
     // share it); a client built without one gets its own.
     deltaCache: DeltaCache = new DeltaCache(),
@@ -443,16 +435,23 @@ export class YnabClient {
     ];
     // Every call to YNAB goes through outboundFetch: a deadline (never past the
     // request's), the body read inside it, and the user's circuit breaker.
-    const fetchApi = (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
-      outboundFetch(input instanceof Request ? input.url : input, init, {
+    // It is also where a request is counted for its client (#58): only a
+    // request that reaches here is one, and its own refund undoes only it.
+    const fetchApi = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const refund = this.clientUsage?.sent(this.clientKey);
+      return outboundFetch(input instanceof Request ? input.url : input, init, {
         timeoutMs: options.outboundTimeoutMs,
         deadline: options.deadline,
         breaker: options.breaker,
         now: options.now,
         fetch: options.fetch,
         // Taken at acquire(), but nothing was sent: give the token back.
-        onNotSent: () => this.giveBackToken(),
+        onNotSent: () => {
+          refund?.();
+          this.giveBackToken();
+        },
       });
+    };
     if (typeof accessToken === 'string') {
       this.api = new ConfiguredApi(
         new ynab.Configuration({ accessToken, basePath: ynab.BASE_PATH, middleware, fetchApi })
@@ -482,6 +481,10 @@ export class YnabClient {
     this.feedState = feedState;
     this.breaker = options.breaker;
     this.writeLimiter = options.writeLimiter ?? new WriteLimiter(WRITE_LIMIT_DEFAULT_PER_HOUR, options.now);
+    this.clientKey = options.clientId ?? NO_CLIENT;
+    this.clientUsage = options.clientUsage;
+    this.readOnlyReason = options.readOnlyReason ?? 'read_only';
+    this.auditedDenials = options.auditedDenials;
   }
 
   // In-flight budget settings requests, one per budget UUID (#49).
@@ -500,18 +503,27 @@ export class YnabClient {
    * reservation while it lasts, else from the limiter (which fails fast).
    */
   private takeToken(): Promise<void> {
+    // A refusal is counted for the client here (#58); a sent request is
+    // counted in fetchApi, when it is sent, so nothing is counted up front and
+    // nothing has to be taken back on a refusal or a token given back.
+    const usage = this.clientUsage;
+    const client = this.clientKey;
     const reservation = this.fanOut.getStore();
     if (reservation !== undefined && !reservation.closed && reservation.remaining > 0) {
       // A 429 mid-fan-out starts YNAB's cooldown; the reserved calls honour it too.
       try {
         this.rateLimiter.throwIfExhaustedByYnab();
       } catch (error) {
+        usage?.rejected(client);
         return Promise.reject(error);
       }
       reservation.remaining--;
       return Promise.resolve();
     }
-    return this.rateLimiter.acquire();
+    // The caller awaits the limiter's own promise (no extra tick); a refusal is noted beside it.
+    const acquired = this.rateLimiter.acquire();
+    if (usage !== undefined) acquired.catch(() => usage.rejected(client));
+    return acquired;
   }
 
   /** Return a token taken by takeToken() for a request that was never sent. */
@@ -531,7 +543,13 @@ export class YnabClient {
    */
   async withFanOut<T>(requests: number, work: () => Promise<T>): Promise<T> {
     if (requests <= 1) return work();
-    const taken = await this.rateLimiter.acquireMany(requests);
+    let taken: number;
+    try {
+      taken = await this.rateLimiter.acquireMany(requests);
+    } catch (error) {
+      this.clientUsage?.rejected(this.clientKey);
+      throw error;
+    }
     const reservation: FanOutReservation = { remaining: taken, closed: false };
     try {
       return await this.fanOut.run(reservation, work);
@@ -549,31 +567,43 @@ export class YnabClient {
   }
 
   /**
+   * How the audit log treats this refused write (#60a): `record` it while the
+   * user's hourly budget of audited refusals lasts; for the first one past it,
+   * `mark` (record one `audit_suppressed` row instead, and log one stderr
+   * line), so a reader of the log and the operator can both see the gap;
+   * `skip` the rest until the budget frees up.
+   */
+  admitDeniedAudit(): 'record' | 'mark' | 'skip' {
+    const admission = this.auditedDenials?.tryAcquire();
+    if (admission === undefined || admission.allowed) return 'record';
+    if (!admission.firstRefusal) return 'skip';
+    console.error(
+      `[AUDIT] more than ${admission.limit} refused writes this hour for one user; further ones are not recorded until ${new Date(admission.resetsAt).toISOString()}`
+    );
+    return 'mark';
+  }
+
+  /** Why writes are refused when read-only (see YnabClientOptions.readOnlyReason). */
+  getReadOnlyReason(): ReadOnlyReason {
+    return this.readOnlyReason;
+  }
+
+  /**
    * Count one write request against the user's per-hour cap (#61c). The one
    * place the cap is enforced: the tools/call handler calls it for every
    * non-read-only tool before the handler runs, so a refused write never
    * reaches YNAB and takes no YNAB rate-limit token. A bulk call is one write
-   * request. The first refusal of each episode is audited (the log keeps 1000
-   * entries, so a looping agent cannot push real entries out).
+   * request. The error says whether it is the first refusal of the episode,
+   * the one the tools/call handler records in the audit log (so a looping
+   * agent adds one row, not one per call).
    * Returns a handle that gives the slot back; the caller uses it only when
    * the call failed input validation, before any YNAB request.
    * @throws WriteLimitError when the cap is used up
    */
-  admitWrite(tool: string): () => void {
+  admitWrite(_tool: string): () => void {
     const admission = this.writeLimiter.tryAcquire();
     if (admission.allowed) return admission.release;
-    if (admission.firstRefusal) {
-      this.auditLog.log({
-        operation: 'write_limit_refused',
-        tool,
-        budgetId: 'n/a',
-        resourceType: 'write_limit',
-        details: { limit_per_hour: admission.limit, resets_at: new Date(admission.resetsAt).toISOString() },
-        success: false,
-        error: 'Write limit reached',
-      });
-    }
-    throw new WriteLimitError(admission.limit, admission.resetsAt, admission.retryAfterMs);
+    throw new WriteLimitError(admission.limit, admission.resetsAt, admission.retryAfterMs, admission.firstRefusal);
   }
 
   /**
@@ -588,6 +618,19 @@ export class YnabClient {
    */
   getRateLimitStatus(): ReturnType<RequestLimiter['getStatus']> {
     return this.rateLimiter.getStatus();
+  }
+
+  /**
+   * The calling client's share of the user's requests over the last hour
+   * (#58): its client id (undefined on stdio and in header mode, where the
+   * user is the only caller) and counts; undefined when not tracked.
+   */
+  getClientUsage(): ({ clientId: string | undefined } & ClientUsageStatus) | undefined {
+    if (this.clientUsage === undefined) return undefined;
+    return {
+      clientId: this.clientKey === NO_CLIENT ? undefined : this.clientKey,
+      ...this.clientUsage.status(this.clientKey),
+    };
   }
 
   /**
@@ -1212,25 +1255,22 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.accounts.createAccount(budgetId, data);
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_account',
         budgetId,
         resourceType: 'account',
         resourceId: response.data.account.id,
-        details: { type: data.account.type, has_name: !!data.account.name },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_account',
         budgetId,
         resourceType: 'account',
-        details: { type: data.account.type, has_name: !!data.account.name },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     } finally {
@@ -1298,26 +1338,23 @@ export class YnabClient {
     try {
       const response = await this.api.categories.updateMonthCategory(budgetId, month, categoryId, data);
       this.invalidateMoneyMovementGroups(budgetId);
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_category',
         budgetId,
         resourceType: 'category',
         resourceId: categoryId,
-        details: { month, budgeted: data.category.budgeted },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_category',
         budgetId,
         resourceType: 'category',
         resourceId: categoryId,
-        details: { month, budgeted: data.category.budgeted },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     } finally {
@@ -1346,26 +1383,23 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.categories.updateCategory(budgetId, categoryId, data);
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_category_details',
         budgetId,
         resourceType: 'category',
         resourceId: categoryId,
-        details: updateCategoryDetailsAuditDetails(data),
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_category_details',
         budgetId,
         resourceType: 'category',
         resourceId: categoryId,
-        details: updateCategoryDetailsAuditDetails(data),
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     } finally {
@@ -1396,26 +1430,22 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.categories.createCategory(budgetId, data);
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_category',
         budgetId,
         resourceType: 'category',
         resourceId: response.data.category.id,
-        // Category names may be sensitive; log only presence and grouping.
-        details: createCategoryAuditDetails(data),
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_category',
         budgetId,
         resourceType: 'category',
-        details: createCategoryAuditDetails(data),
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     } finally {
@@ -1435,25 +1465,22 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.categories.createCategoryGroup(budgetId, data);
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_category_group',
         budgetId,
         resourceType: 'category_group',
         resourceId: response.data.category_group.id,
-        details: { has_name: !!data.category_group.name },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_category_group',
         budgetId,
         resourceType: 'category_group',
-        details: { has_name: !!data.category_group.name },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     } finally {
@@ -1478,26 +1505,23 @@ export class YnabClient {
         categoryGroupId,
         data
       );
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_category_group',
         budgetId,
         resourceType: 'category_group',
         resourceId: categoryGroupId,
-        details: { has_name: !!data.category_group.name },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_category_group',
         budgetId,
         resourceType: 'category_group',
         resourceId: categoryGroupId,
-        details: { has_name: !!data.category_group.name },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     } finally {
@@ -1613,54 +1637,28 @@ export class YnabClient {
     await this.takeToken();
 
     const auditLog = this.auditLog;
-    // Single-body requests use `transaction`; the skip-duplicates form uses a one-item `transactions`.
-    const txn = data.transaction ?? data.transactions?.[0];
-    // Count of split parts across the request (counts only; split memos/payees are never logged).
-    const splitCount = [data.transaction, ...(data.transactions ?? [])].reduce(
-      (n, t) => n + (t?.subtransactions?.length ?? 0),
-      0
-    );
-    // A bulk create logs only the first row's details, so record how many rows it carried.
-    const requestedCount = data.transactions?.length ?? 1;
     try {
       const response = await this.api.transactions.createTransaction(budgetId, data);
       this.invalidateTransactionHistory(budgetId);
-      // Redact PII from audit logs - payee_name may contain personal information
-      const logEntry: Parameters<typeof auditLog.log>[0] = {
+      // One row per call; it names the transaction when the call created exactly one.
+      const created = response.data.transaction?.id ??
+        (response.data.transactions?.length === 1 ? response.data.transactions[0]?.id : undefined);
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_transaction',
         budgetId,
         resourceType: 'transaction',
-        details: {
-          amount: txn?.amount,
-          date: txn?.date,
-          has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
-          account_id: txn?.account_id,
-          ...(splitCount > 0 ? { split_count: splitCount } : {}),
-          ...(requestedCount > 1 ? { requested_count: requestedCount } : {}),
-        },
-        success: true,
-      };
-      const createdId = response.data.transaction?.id ?? response.data.transactions?.[0]?.id;
-      if (createdId !== undefined) logEntry.resourceId = createdId;
-      auditLog.log(logEntry);
+        resourceId: created,
+        outcome: 'success',
+      });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_transaction',
         budgetId,
         resourceType: 'transaction',
-        details: {
-          amount: txn?.amount,
-          date: txn?.date,
-          has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
-          account_id: txn?.account_id,
-          ...(splitCount > 0 ? { split_count: splitCount } : {}),
-          ...(requestedCount > 1 ? { requested_count: requestedCount } : {}),
-        },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     }
@@ -1675,47 +1673,26 @@ export class YnabClient {
     await this.takeToken();
 
     const auditLog = this.auditLog;
-    const txn = data.transaction;
-    // Fields explicitly cleared with null (names only, never values).
-    const clearedFields = (['category_id', 'payee_id', 'memo'] as const).filter(
-      (f) => txn[f] === null
-    );
     try {
       const response = await this.api.transactions.updateTransaction(budgetId, transactionId, data);
       this.invalidateTransactionHistory(budgetId);
-      // Redact memo from audit logs - may contain sensitive user data
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_transaction',
         budgetId,
         resourceType: 'transaction',
         resourceId: transactionId,
-        details: {
-          amount: txn.amount,
-          date: txn.date,
-          has_memo: txn.memo !== undefined && txn.memo !== null && txn.memo !== '',
-          category_id: txn.category_id,
-          ...(clearedFields.length > 0 ? { cleared_fields: clearedFields } : {}),
-        },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_transaction',
         budgetId,
         resourceType: 'transaction',
         resourceId: transactionId,
-        details: {
-          amount: txn.amount,
-          date: txn.date,
-          has_memo: txn.memo !== undefined && txn.memo !== null && txn.memo !== '',
-          category_id: txn.category_id,
-          ...(clearedFields.length > 0 ? { cleared_fields: clearedFields } : {}),
-        },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     }
@@ -1729,43 +1706,24 @@ export class YnabClient {
     await this.takeToken();
 
     const auditLog = this.auditLog;
-    // Counts only: how many rows are addressed by import_id and how many fields are cleared with null.
-    const byImportId = data.transactions.filter((t) => t.id === undefined && t.import_id != null).length;
-    const clearedFieldCount = data.transactions.reduce(
-      (n, t) =>
-        n + (['category_id', 'payee_id', 'memo'] as const).filter((f) => t[f] === null).length,
-      0
-    );
-    const extra = {
-      ...(byImportId > 0 ? { addressed_by_import_id_count: byImportId } : {}),
-      ...(clearedFieldCount > 0 ? { cleared_field_count: clearedFieldCount } : {}),
-    };
     try {
       const response = await this.api.transactions.updateTransactions(budgetId, data);
       this.invalidateTransactionHistory(budgetId);
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_transactions',
         budgetId,
         resourceType: 'transaction',
-        // Bulk operation; log counts only (no PII).
-        details: {
-          requested_count: data.transactions.length,
-          updated_count: response.data.transaction_ids.length,
-          ...extra,
-        },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_transactions',
         budgetId,
         resourceType: 'transaction',
-        details: { requested_count: data.transactions.length, ...extra },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     }
@@ -1782,30 +1740,23 @@ export class YnabClient {
     try {
       const response = await this.api.transactions.deleteTransaction(budgetId, transactionId);
       this.invalidateTransactionHistory(budgetId);
-      // Redact PII from audit logs - payee_name may contain personal information
-      auditLog.log({
+      await auditLog.record({
         operation: 'delete',
         tool: 'ynab_delete_transaction',
         budgetId,
         resourceType: 'transaction',
         resourceId: transactionId,
-        details: {
-          deleted_amount: response.data.transaction.amount,
-          deleted_date: response.data.transaction.date,
-        },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'delete',
         tool: 'ynab_delete_transaction',
         budgetId,
         resourceType: 'transaction',
         resourceId: transactionId,
-        details: {},
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     }
@@ -1964,44 +1915,27 @@ export class YnabClient {
     await this.takeToken();
 
     const auditLog = this.auditLog;
-    const txn = data.scheduled_transaction;
     try {
       const response = await this.api.scheduledTransactions.createScheduledTransaction(
         budgetId,
         data
       );
-      // Redact PII from audit logs - payee_name may contain personal information
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_scheduled_transaction',
         budgetId,
         resourceType: 'scheduled_transaction',
         resourceId: response.data.scheduled_transaction.id,
-        details: {
-          amount: txn?.amount,
-          date: txn?.date,
-          frequency: txn?.frequency,
-          has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
-          account_id: txn?.account_id,
-        },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_scheduled_transaction',
         budgetId,
         resourceType: 'scheduled_transaction',
-        details: {
-          amount: txn?.amount,
-          date: txn?.date,
-          frequency: txn?.frequency,
-          has_payee: txn?.payee_name !== undefined && txn?.payee_name !== null,
-          account_id: txn?.account_id,
-        },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     }
@@ -2016,46 +1950,29 @@ export class YnabClient {
     await this.takeToken();
 
     const auditLog = this.auditLog;
-    const txn = data.scheduled_transaction;
     try {
       const response = await this.api.scheduledTransactions.updateScheduledTransaction(
         budgetId,
         scheduledTransactionId,
         data
       );
-      // Redact memo from audit logs - may contain sensitive user data
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_scheduled_transaction',
         budgetId,
         resourceType: 'scheduled_transaction',
         resourceId: scheduledTransactionId,
-        details: {
-          amount: txn?.amount,
-          date: txn?.date,
-          frequency: txn?.frequency,
-          has_memo: txn?.memo !== undefined && txn?.memo !== null && txn?.memo !== '',
-          category_id: txn?.category_id,
-        },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_scheduled_transaction',
         budgetId,
         resourceType: 'scheduled_transaction',
         resourceId: scheduledTransactionId,
-        details: {
-          amount: txn?.amount,
-          date: txn?.date,
-          frequency: txn?.frequency,
-          has_memo: txn?.memo !== undefined && txn?.memo !== null && txn?.memo !== '',
-          category_id: txn?.category_id,
-        },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     }
@@ -2074,30 +1991,23 @@ export class YnabClient {
         budgetId,
         scheduledTransactionId
       );
-      // Redact PII from audit logs - payee_name may contain personal information
-      auditLog.log({
+      await auditLog.record({
         operation: 'delete',
         tool: 'ynab_delete_scheduled_transaction',
         budgetId,
         resourceType: 'scheduled_transaction',
         resourceId: scheduledTransactionId,
-        details: {
-          deleted_amount: response.data.scheduled_transaction.amount,
-          deleted_date: response.data.scheduled_transaction.date_next,
-        },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'delete',
         tool: 'ynab_delete_scheduled_transaction',
         budgetId,
         resourceType: 'scheduled_transaction',
         resourceId: scheduledTransactionId,
-        details: {},
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     }
@@ -2139,26 +2049,22 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.payees.createPayee(budgetId, data);
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_payee',
         budgetId,
         resourceType: 'payee',
         resourceId: response.data.payee.id,
-        // Payee names are PII; log only presence.
-        details: { has_name: !!data.payee.name },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'create',
         tool: 'ynab_create_payee',
         budgetId,
         resourceType: 'payee',
-        details: { has_name: !!data.payee.name },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     } finally {
@@ -2182,27 +2088,23 @@ export class YnabClient {
     const auditLog = this.auditLog;
     try {
       const response = await this.api.payees.updatePayee(budgetId, payeeId, data);
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_payee',
         budgetId,
         resourceType: 'payee',
         resourceId: payeeId,
-        // Payee names are PII; log only presence.
-        details: { has_name: !!data.payee.name },
-        success: true,
+        outcome: 'success',
       });
       return response;
     } catch (error) {
-      auditLog.log({
+      await auditLog.record({
         operation: 'update',
         tool: 'ynab_update_payee',
         budgetId,
         resourceType: 'payee',
         resourceId: payeeId,
-        details: { has_name: !!data.payee.name },
-        success: false,
-        error: sanitizeErrorMessage(error),
+        outcome: 'error',
       });
       throw error;
     } finally {

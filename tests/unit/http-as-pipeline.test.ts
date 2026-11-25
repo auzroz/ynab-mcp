@@ -50,6 +50,7 @@ const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
       'bounded-parser',
       'method-check',
       'route-limiter',
+      'cimd-context',
       'authorize-validation',
       'authorize-guard',
       'as-library',
@@ -64,6 +65,7 @@ const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
       'cors-origin',
       'method-check',
       'route-limiter',
+      'cimd-context',
       'client-auth',
       'refresh-guard',
       'grant-guard',
@@ -93,11 +95,12 @@ const EXPECTED: ReadonlyArray<{ route: string; stages: readonly string[] }> = [
       'cors-origin',
       'method-check',
       'route-limiter',
+      'cimd-context',
       'client-auth',
       'as-library',
     ],
   },
-  { route: '/oauth', stages: ['host-validation', 'oauth-leg-limiter', 'bounded-parser', 'ynab-federation'] },
+  { route: '/oauth', stages: ['host-validation', 'oauth-leg-limiter', 'bounded-parser', 'cimd-context', 'ynab-federation'] },
 ];
 const stagesOf = (route: string): readonly string[] => EXPECTED.find((e) => e.route === route)!.stages;
 

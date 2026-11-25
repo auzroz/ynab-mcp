@@ -68,7 +68,8 @@ Set these environment variables (see `.env.example`):
 | `MCP_VERIFIED_REDIRECT_URIS` | no | Comma-separated redirect URIs of trusted clients. Default: Claude's connector callbacks, `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`. An authorization error at `/authorize` is redirected back only to these (and to loopback, see below); for any other client it is shown on this server's own page with a "Return to" link, so the server can't be used as an open redirector. The consent page names a verified client plainly and any other as "calls itself". `none` empties the list. Each entry must be https (http only for loopback), at most 512 characters, with no userinfo or fragment |
 | `MCP_DCR_PRIVATE_USE_SCHEMES` | no | Comma-separated private-use URI schemes (RFC 8252, e.g. `com.example.app`) a registering native app may use for its redirect URI. Default: none, so registrations need `https://` or `http://` to `localhost`, `127.0.0.1` or `[::1]` |
 | `MCP_TRUST_LOOPBACK_REDIRECTS` | no | Redirect authorization errors back to loopback redirect URIs (default `true`). The consent page labels a loopback address either way |
-| `MCP_REQUIRE_RESOURCE` | no | Clients registered on 0.5.0 or later must send the RFC 8707 `resource` parameter at `/authorize` (default `true`; `/token` never requires it). Clients registered before 0.5.0 never need it. `false` turns the requirement off for every client. **Deprecated: removed in 0.6.** See "Token audience (RFC 8707)" |
+| `MCP_REQUIRE_RESOURCE` | no | Clients registered on 0.5.0 or later (Client ID Metadata Document clients included) must send the RFC 8707 `resource` parameter at `/authorize` (default `true`; `/token` never requires it). Clients registered before 0.5.0 never need it. `false` turns the requirement off for every client. **Deprecated: removed in 0.6.** See "Token audience (RFC 8707)" |
+| `MCP_CLIENT_ID_METADATA_DOCUMENTS` | no | `true` to accept Client ID Metadata Documents: an https URL as `client_id`, with the client's metadata fetched from it instead of registered at `/register` (default `false`). It makes the server fetch URLs that clients name. See "Client ID Metadata Documents" |
 | `MCP_INACTIVE_USER_DAYS` | no | Erase users inactive for this many days who have no live connection (integer 30-3650). Default: off. See "Erasing inactive users" |
 | `MCP_REFRESH_TOKEN_IDLE_DAYS` | no | A refresh token not used for this many days expires (integer 1-3650, default `30`). Must not exceed `MCP_REFRESH_TOKEN_TTL_DAYS`. See "Retention and the sweep" |
 | `MCP_REFRESH_TOKEN_TTL_DAYS` | no | A connection ends this many days after its sign-in, however often it is refreshed (integer 1-3650, default `90`) |
@@ -135,6 +136,8 @@ volumes: { ynab-data: {} }
   ```bash
   npx mcp-remote https://YOUR_PUBLIC_URL/mcp
   ```
+- **Any other MCP client** — see "Using other MCP clients" below for the
+  redirect URIs it may register and what to set for a client you trust.
 
 ### Consent screen and browser binding
 
@@ -222,6 +225,141 @@ with an `http://` redirect URI to a host other than loopback is refused at
 `/authorize`, and a redirect URI with a fragment can't be used. Such a client
 has to register again. The server logs, once per client, any
 other rule an older registration breaks.
+
+### Using other MCP clients
+
+The server registers any MCP client that follows the rules in "Client
+registration and authorization errors"; nothing needs configuring for a client
+that registers itself (RFC 7591) and uses PKCE. What you may need to set is the
+list of clients you vouch for, and which private-use schemes you accept. By
+callback type:
+
+- **Claude (claude.ai, Claude Desktop connectors).** Out of the box. Claude's
+  two callbacks, `https://claude.ai/api/mcp/auth_callback` and
+  `https://claude.com/api/mcp/auth_callback`, are the default
+  `MCP_VERIFIED_REDIRECT_URIS`.
+- **Loopback clients** (a CLI or desktop app that listens on
+  `http://localhost`, `http://127.0.0.1` or `http://[::1]`, such as
+  `mcp-remote`). They register as they are, and the port may differ from the
+  one registered (RFC 8252 section 7.3). Authorization errors are redirected
+  back to them while `MCP_TRUST_LOOPBACK_REDIRECTS` is `true` (the default).
+  The consent page labels the address as one on the user's own device.
+- **Hosted clients with an `https://` callback.** They register as they are.
+  Until their callback is on `MCP_VERIFIED_REDIRECT_URIS`, the consent page
+  says "an application at *host* that calls itself *name*", and an
+  authorization error is shown on your server's page, with a link back the
+  user can choose to follow, instead of being redirected. A sign-in that
+  succeeds is unaffected. To vouch for such a client, add its exact callback
+  URI to `MCP_VERIFIED_REDIRECT_URIS`.
+- **Native apps with a custom scheme** (`com.example.app:/callback`). A
+  registration naming a private-use scheme is refused with
+  `invalid_redirect_uri` until you list the scheme in
+  `MCP_DCR_PRIVATE_USE_SCHEMES`. **The default is empty**: no private-use
+  scheme is accepted. `http`, `https` and browser schemes can't be listed.
+  A private-use callback can't go on `MCP_VERIFIED_REDIRECT_URIS` (entries
+  are `https://` or loopback `http://`), so an authorization error for such a
+  client is always shown on your server's page rather than redirected.
+  That covers the initial `/authorize` request only. When the user cancels
+  the consent page, or YNAB denies access, the browser is redirected back to
+  the client's registered callback with `access_denied` through the resume
+  route, for any registered callback, including private-use and unverified
+  `https://` ones. A client must handle `access_denied` there.
+- **Clients that use a Client ID Metadata Document** (an https URL as
+  `client_id`) instead of registering. They are refused until you set
+  `MCP_CLIENT_ID_METADATA_DOCUMENTS=true`; see "Client ID Metadata Documents"
+  below. Their callbacks then get the same treatment as above.
+
+Rules for the two lists:
+
+- **`MCP_VERIFIED_REDIRECT_URIS` replaces the default list; it doesn't add to
+  it.** Setting it to your own client's callback drops Claude's two callbacks,
+  so Claude's connector then gets the unverified treatment above. Include
+  Claude's callbacks in your value if you still want them:
+  ```
+  MCP_VERIFIED_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback,https://app.example.com/mcp/callback
+  ```
+  `none` empties the list. Entries are matched as whole URIs, not by host
+  (at most 20 entries, 512 characters each, `https://` or loopback `http://`,
+  no userinfo or fragment).
+- **`MCP_DCR_PRIVATE_USE_SCHEMES` is a comma-separated list of scheme names**
+  (`com.example.app`, with or without the colon), empty by default. Only the
+  schemes you list are accepted; `none` is the same as unset.
+- A registration with **more than 5 `redirect_uris` is refused** with
+  `400 invalid_client_metadata`. A single invalid URI (plain `http://` to a
+  non-loopback host, a fragment, userinfo, over 512 characters, an unlisted
+  scheme) is refused with `invalid_redirect_uri`.
+- A malformed value in either variable refuses to start, naming the variable
+  and never its value.
+
+### Client ID Metadata Documents
+
+The MCP specification of 2026-07-28 deprecates Dynamic Client Registration
+(`/register`) in favour of Client ID Metadata Documents: the client publishes
+a JSON document at an https URL and uses that URL as its `client_id`. The
+server fetches the document when the client first appears and holds it to the
+same rules as a registration. Support is experimental in the OAuth library
+(draft 03 of the specification) and **off by default**. Set
+`MCP_CLIENT_ID_METADATA_DOCUMENTS=true` to turn it on. The discovery document
+then advertises `client_id_metadata_document_supported: true`.
+
+A document is accepted when:
+- it is served at the `client_id` URL itself with `200`, as a JSON object of
+  at most 16 KB, and its `client_id` equals that URL character for character;
+- its redirect URIs, client name and other fields pass the `/register` rules
+  above: 1 to 5 redirect URIs, `https://`, loopback `http://` or a scheme on
+  `MCP_DCR_PRIVATE_USE_SCHEMES`. Fields a registration would drop are dropped
+  here too;
+- it describes a public client: `token_endpoint_auth_method` absent or `none`,
+  with no `client_secret`.
+
+From there it is treated like a registered client. `MCP_VERIFIED_REDIRECT_URIS`
+and `MCP_TRUST_LOOPBACK_REDIRECTS` decide where authorization errors go, and
+the consent page shows the name as "calls itself" unless the redirect URI is
+verified. A document is cached for its `Cache-Control: max-age`, at least 5
+minutes and at most 24 hours. A document that couldn't be fetched or was
+refused is not fetched again for a minute. Every refusal is the same
+`400 invalid_client`, and the response never includes the document or any
+address. The server log records the reason and the URL's host.
+
+Fetching a URL a client chooses is a server-side request forgery risk, so the
+fetch is our own, not the library's:
+- **https only**, on the default port, with no userinfo or fragment.
+- **Public addresses only.** The host is resolved once. If any address it
+  resolves to is private, loopback, link-local (cloud metadata endpoints such
+  as `169.254.169.254` included), CGNAT, multicast, unspecified or otherwise
+  reserved, the fetch is refused. That covers IPv4, IPv6 and IPv4-mapped IPv6.
+  An IP-address URL is checked the same way. NAT64 addresses (`64:ff9b::/96`)
+  are refused too, so a server that reaches IPv4 only through NAT64/DNS64
+  can't fetch metadata documents.
+- **No DNS rebinding.** The connection goes only to the addresses that were
+  checked, trying each in turn so an unreachable one (an IPv6 address on a
+  server without IPv6, say) falls back to the next. It uses the URL's host as
+  `Host` and TLS server name, and once connected the peer address must be one
+  of the checked addresses. A DNS answer that changes in between can't
+  redirect it.
+- **No redirects, small and quick.** Any status other than `200`, a redirect
+  included, is refused. The body is capped at 16 KB as it streams; a
+  compressed body is refused rather than inflated. The whole fetch must finish
+  within 2.5 seconds (the library's limit).
+- **A fetch budget.** Each client address (an IPv6 /64) may cause 20
+  document fetches per 15 minutes. A cached document costs nothing. Past the
+  budget the request is refused without a fetch.
+
+The caches and the budget are in memory, so each replica fetches on its own.
+A client using a metadata document gets one row in storage when its first
+sign-in completes (it has no registration), which the unused-client cleanup
+removes like any other client.
+
+Turning the setting off again stops new authorizations and token requests from
+these clients at once. Access tokens already issued keep working until they
+expire (`MCP_ACCESS_TOKEN_TTL_SEC`).
+
+**`/register` stays.** Clients that still use Dynamic Client Registration keep
+working, whether or not metadata documents are on. `/register` can be
+removed once the MCP clients people connect with (Claude's connector among
+them) use metadata documents. That would happen in a later release, after this
+setting has been on by default for at least one release, and the CHANGELOG
+would announce it first.
 
 ### Access level per connection
 
@@ -324,8 +462,11 @@ start.
 All requests of one user share one rate limit, one cache (including the
 delta-sync snapshots, see README "Caching") and one audit log, so several
 clients can't exceed the per-user YNAB budget (`RATE_LIMIT_PER_HOUR`), a
-snapshot one request built saves the next a full fetch, and `ynab_audit_log`
-shows the user's writes from every client. Users never share any of it.
+snapshot one request built saves the next a full fetch, and the audit log
+holds the user's writes from every client (see "The audit log"). Users never
+share any of it. `ynab_rate_limit_status` shows the user's usage and, under
+`client_usage`, the calling client's share of it (requests sent and refused in
+the last hour).
 Snapshots are bounded per user (32 snapshots, 20,000 entities, dropped after 30
 minutes unused), so budget roughly that much memory per active user. This state
 is kept for an hour after the user's last request, so a quiet hour doesn't reset
@@ -441,7 +582,7 @@ Off by default. Set `MCP_INACTIVE_USER_DAYS` (30 to 3650) to erase users who
 have been inactive that long and have no live connection. A background job
 runs about a minute after startup, then hourly. It erases each such user with
 the same step as deleting an account: their stored YNAB grant, connections,
-tokens and codes.
+tokens, codes and audit log.
 
 - **Inactive** means no sign-in, no re-consent and no YNAB token refresh. A
   refresh happens about every two hours while the user makes requests, so any
@@ -461,6 +602,74 @@ tokens and codes.
 An erased user who comes back signs in again as a new account. The YNAB grant
 itself is not revoked at YNAB: the user can remove it under "Connected Apps" in
 YNAB's settings.
+
+### The audit log
+
+Every write tool call is recorded with how it ended (#60a). In OAuth mode the
+entries go to the storage driver's `audit_log` table, so with `sqlite` or
+`postgres` they survive restarts and every replica writes to one log. In
+header mode, which has no storage, and on stdio they are kept in memory, the
+newest 1,000 per user.
+
+Each entry holds:
+
+- `ts`: when (epoch ms; the tool shows an ISO time).
+- `user_id`: the YNAB user id (OAuth), the token's SHA-256 digest (header
+  mode) or `local` (stdio).
+- `client_id`, `family_id`: the MCP client and its grant (OAuth mode).
+- `request_id`: the HTTP request (on stdio, one per tool call).
+- `tool`, `operation` (`create`, `update`, `delete`, `move`, `import`, or
+  `audit_suppressed`, below), `resource_type`, `resource_id` and `budget_id`
+  (a UUID, `last-used` or `default`; anything else is left out).
+- `outcome`: `success`; `denied_read_only` (`YNAB_READ_ONLY`, or
+  `YNAB_OAUTH_ALLOW_WRITE` off); `denied_scope` (a read-only grant, on the
+  token or the user's YNAB connection); `denied_write_limit` (the write cap,
+  first refusal of each episode only); or `error` (YNAB refused it, or it
+  failed before reaching YNAB, for example rate-limited).
+
+A bulk call is one entry, with no `resource_id` unless it touched one record.
+`ynab_move_money` adds one `move` entry beside its two category updates. A
+call that fails input validation is not a write attempt and is not recorded,
+and neither is a successful call of the deprecated `ynab_import_transactions`,
+which does nothing. Refused writes are bounded so a looping client can't fill
+the table: the write cap records only the first refusal of each episode, and
+read-only and scope refusals are recorded up to 20 per user per hour (per
+process). The first refusal past that is recorded as one `audit_suppressed`
+entry (with the refusal's outcome, tool and client), and the server logs one
+stderr line; the refusals after it in that hour are refused but not recorded.
+So an `audit_suppressed` entry tells a reader of the log that entries are
+missing after it.
+
+Recording an entry never fails or holds up the write. A write waits at most 1
+second for its entry (less when its request is close to its deadline), so a
+slow database can't turn a write YNAB applied into a timeout; a slower insert
+finishes in the background. If the store can't be written (the database is
+unreachable, say), the write's own result stands, the entry is lost, and the
+server logs `[AUDIT] could not record an entry` (sanitized). A write can
+therefore succeed with no audit entry; watch for that log line.
+
+Entries hold ids only. There is no column for an amount or other financial
+value, a payee, account, category or memo text, or an error message: those
+stay in the tool's result and in the server's sanitized logs. The server also
+writes one stderr line per entry (`[AUDIT] <outcome>: <operation> on
+<resource type> (<id>) via <tool>`).
+
+Erasing an account (deleting it, or the inactive-user erase) erases its
+entries in the same transaction. A write that finishes after its account was
+erased, or erased and connected again, writes no entry: the insert checks the
+user row of the request's account generation, and on Postgres holds it, so an
+erase in flight either waits for the insert and deletes the entry or finds
+nothing to delete.
+
+`ynab_audit_log` shows the calling client's own entries in OAuth mode (another
+client of the same user can't read them), and the user's entries on stdio and
+in header mode, where there is one caller. It lists them newest first, filtered
+by operation, resource type, outcome or success. Entries are kept until the
+account is erased; a retention window and an option to see every client's
+entries come in a later release (#60b).
+
+The table comes with schema 7 (0.5.0): `audit_log` and two indexes,
+`(user_id, ts)` and `(ts)`, created on startup. Older releases ignore it.
 
 ### Discovery (RFC 9728 / RFC 8414)
 
@@ -798,6 +1007,37 @@ Clients, tokens and codes now live in one `oauth_rows` table, which the first
   `/oauth/ynab/start` and `/oauth/cancel` are gone. The YNAB redirect URI
   (`/oauth/ynab/callback`) is unchanged, so nothing changes at YNAB.
 
+### Upgrading to 0.5.0: configuration
+
+Settings and defaults that change for an existing HTTP deployment (the
+changelog has the full list):
+
+- **Set `AUTH_MODE`** to `oauth` or `header`. Without it the server refuses to
+  start (0.4.x guessed it from the OAuth variables).
+- **`YNAB_OAUTH_ALLOW_WRITE` defaults to `false`.** Set it to `true` (with
+  `YNAB_READ_ONLY=false`) to let connections write. It is checked on every
+  request, so a read-write grant from 0.4.x can't write while it is off.
+- **`oauth` mode refuses `YNAB_ACCESS_TOKEN` and `YNAB_BUDGET_ID`.** Remove
+  them.
+- **Header mode with `YNAB_ACCESS_TOKEN`** refuses a non-loopback bind unless
+  `MCP_ALLOW_ANONYMOUS_FALLBACK=true`. A Docker deployment binds every
+  interface (`MCP_BIND_HOST` unset), so it needs that setting or a loopback
+  `MCP_BIND_HOST`. **Warning:** with the fallback on, anyone who can reach the
+  server without an `X-YNAB-Token` header acts as the owner of
+  `YNAB_ACCESS_TOKEN`: they can read the whole budget, and write if writes are
+  enabled. Enable it only behind proxy authentication or on a private
+  network; otherwise leave `YNAB_ACCESS_TOKEN` out and have each client send
+  its own `X-YNAB-Token`.
+- **Remove sticky sessions** at your proxy: `/mcp` is stateless. The
+  `MCP_MAX_SESSIONS*` settings have no effect (see "Requests, limits and
+  timeouts").
+- **MCP refresh tokens expire** after 30 days without use or 90 days in
+  total. A client that was idle for longer signs in again.
+- **Choose the pepper** (see "Hashed tokens and the pepper (0.5.0)"), and back
+  up the database first.
+- **Out-of-range numeric settings refuse to start**, and every problem is
+  listed in one startup message that never shows a value.
+
 ### Changing TOKEN_PEPPER
 
 Changing the pepper logs every user out (every stored token stops matching).
@@ -1047,8 +1287,10 @@ any MCP client that supports the `prompts` capability:
   the server refuses to start because the derived pepper would change).
 - MCP tokens, authorization codes and `state` are stored only as keyed hashes,
   and DCR client secrets only as SHA-256 hashes, so a copy of the database holds
-  no usable MCP credential. A value that isn't a correctly tagged `ymcp1_` token
-  (or a 0.4.x-shaped one) is refused without a database read. `/token` and
+  no usable MCP credential. A token or code that isn't 43 base64url characters
+  is refused before its credential row is read (on `/token`, client
+  authentication reads the client record first), and so is a `state` that
+  isn't a correctly tagged `ymcp1_` value. `/token` and
   `/revoke` verify client secrets behind a per-(client_id, address) limit (50
   per 15 minutes per route); see "Client addresses and rate limits".
 - Access is read-only or read-write **per connection**, per the consent choice

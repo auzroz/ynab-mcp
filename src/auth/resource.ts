@@ -41,7 +41,7 @@ export function isSameResource(requested: string | URL, configured: string): boo
  * The RFC 9728 metadata URL for a protected resource: the path-aware
  * `/.well-known/oauth-protected-resource` location on the resource's origin,
  * with the resource's path appended (none for `/`). The query is dropped and
- * a trailing slash kept, as server-legacy's helper derived it before the move
+ * a trailing slash kept, as the MCP SDK's helper derived it before the move
  * (#47-4), so the URL advertised in `/mcp`'s challenges doesn't change.
  */
 export function protectedResourceMetadataUrl(resource: URL): string {

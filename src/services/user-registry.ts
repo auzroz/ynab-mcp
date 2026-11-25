@@ -4,9 +4,12 @@
  * YNAB rate-limits per access token (200 requests/hour), so every request of one
  * user must draw on one RateLimiter: per-request (or per-client) limiters would
  * give a user several independent budgets. The requests also share one Cache,
- * one DeltaCache (delta-sync snapshots), one AuditLog and the transaction feed
- * state, so ynab_audit_log shows the user's writes from every client and a
- * snapshot one request built saves the next a full fetch. /mcp is stateless
+ * one DeltaCache (delta-sync snapshots), the per-client usage report, the
+ * transaction feed state and (when there is no durable storage: stdio,
+ * header mode) a memory audit store, so ynab_audit_log shows the user's writes
+ * from every client and a snapshot one request built saves the next a full
+ * fetch. Each request records into the audit log with its own client and
+ * request ids (src/services/audit-log.ts). /mcp is stateless
  * (ADR-0001), so each request builds its own YnabClient on top (its read-only
  * flag is computed per request), and the user's components live here between
  * requests: every request holds a lease while it runs (released per D5).
@@ -16,7 +19,8 @@ import { createHash } from 'node:crypto';
 import { RateLimiter } from './rate-limiter.js';
 import { Cache } from './cache.js';
 import { DeltaCache } from './delta-cache.js';
-import { AuditLog } from './audit-log.js';
+import { MemoryAuditStore } from '../storage/audit-rows.js';
+import { ClientUsage } from './client-usage.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 import { WriteLimiter } from './write-limiter.js';
 import { WRITE_LIMIT_DEFAULT_PER_HOUR } from '../config/write-limit.js';
@@ -32,12 +36,29 @@ export const CACHE_PRUNE_INTERVAL_MS = 60 * 1000;
 /** Default bound on retained users (see UserRegistryOptions.maxEntries). */
 export const DEFAULT_MAX_USER_ENTRIES = 10_000;
 
+/**
+ * Refused writes (read-only mode, a read-only grant) recorded in the audit log
+ * per user per hour (#60a). Such a refusal costs no YNAB request and no write
+ * slot, so without a bound a looping client could add a row per call; past it
+ * the refusals still happen, unrecorded, and one stderr line says so.
+ */
+export const AUDITED_DENIALS_PER_HOUR = 20;
+
 /** The state one user's requests share. */
 export interface UserComponents {
   readonly rateLimiter: RateLimiter;
   readonly cache: Cache;
   readonly deltaCache: DeltaCache;
-  readonly auditLog: AuditLog;
+  /**
+   * The user's audit rows when there is no durable storage: stdio and header
+   * mode (D-7c). Kept while the user's entry is; oauth mode writes to the
+   * storage driver instead.
+   */
+  readonly auditStore: MemoryAuditStore;
+  /** Which of the user's clients sent their YNAB requests (#58), for ynab_rate_limit_status. */
+  readonly clientUsage: ClientUsage;
+  /** How many refused writes the audit log still records this hour (#60a; see AUDITED_DENIALS_PER_HOUR). */
+  readonly auditedDenials: WriteLimiter;
   /** Fails this user's YNAB calls fast while YNAB is failing (#58); per user, never shared. */
   readonly breaker: CircuitBreaker;
   /** The user's write cap (#61c), shared by all their requests like the rate limiter. */
@@ -70,7 +91,9 @@ export function createUserComponents(
     rateLimiter: new RateLimiter(limits.rateLimitPerHour, now, limits.rateLimitMaxWaitMs),
     cache: new Cache(limits.cacheTtlMs, budget),
     deltaCache: new DeltaCache({ now, budget }),
-    auditLog: new AuditLog(),
+    auditStore: new MemoryAuditStore(),
+    clientUsage: new ClientUsage(now),
+    auditedDenials: new WriteLimiter(AUDITED_DENIALS_PER_HOUR, now),
     breaker: new CircuitBreaker({ now }),
     writeLimiter: new WriteLimiter(limits.writeLimitPerHour ?? WRITE_LIMIT_DEFAULT_PER_HOUR, now),
     feedState: { sinceDateRejected: false },

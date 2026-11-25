@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildYnabClient, createServerForRequest, type RequestContext, type UserContext } from '../../src/server.js';
 import { createUserComponents } from '../../src/services/user-registry.js';
+import { MemoryAuditStore } from '../../src/storage/audit-rows.js';
 
 const baseCtx: Omit<UserContext, 'accessToken' | 'readOnly'> = {
   defaultBudgetId: undefined,
@@ -20,21 +21,20 @@ describe('buildYnabClient (per-user isolation)', () => {
     expect(a.getAuditLog()).not.toBe(b.getAuditLog());
   });
 
-  it('does not leak audit entries between users', () => {
+  it('does not leak audit entries between users', async () => {
     const a = buildYnabClient({ ...baseCtx, accessToken: 'token-a', readOnly: false });
     const b = buildYnabClient({ ...baseCtx, accessToken: 'token-b', readOnly: false });
 
-    a.getAuditLog().log({
+    await a.getAuditLog().record({
       operation: 'create',
       tool: 'ynab_create_payee',
       budgetId: 'bud-a',
       resourceType: 'payee',
-      details: {},
-      success: true,
+      outcome: 'success',
     });
 
-    expect(a.getAuditLog().getFiltered({}).length).toBe(1);
-    expect(b.getAuditLog().getFiltered({}).length).toBe(0);
+    expect(await a.getAuditLog().list({}, 10)).toHaveLength(1);
+    expect(await b.getAuditLog().list({}, 10)).toHaveLength(0);
   });
 
   it('honors per-context read-only setting', () => {
@@ -53,6 +53,8 @@ describe('createServerForRequest', () => {
       requestId: 'r1',
       userKey: 'u1',
       clientId: undefined,
+      familyId: undefined,
+      auditStore: new MemoryAuditStore(),
       user,
       components: createUserComponents(user),
       toolCalls: { deadline: Date.now() + 60_000, run: (work) => work() },
@@ -63,13 +65,15 @@ describe('createServerForRequest', () => {
     expect(typeof server.close).toBe('function');
   });
 
-  it("builds the request's YnabClient on the user's shared components", () => {
+  it("builds the request's YnabClient on the user's shared components", async () => {
     const user = { ...baseCtx, accessToken: 't', readOnly: false };
     const components = createUserComponents(user);
     const a = buildYnabClient(user, components);
     const b = buildYnabClient(user, components);
-    expect(a.getAuditLog()).toBe(components.auditLog);
-    expect(b.getAuditLog()).toBe(a.getAuditLog());
+    // Each client has an audit log of its own over the user's one store (#60a).
+    await a.getAuditLog().record({ operation: 'create', tool: 'ynab_create_payee', resourceType: 'payee', outcome: 'success' });
+    expect(await b.getAuditLog().list({}, 10)).toHaveLength(1);
+    expect(components.auditStore.countFor('local')).toBe(1);
     expect(b.getRateLimitStatus()).toEqual(a.getRateLimitStatus());
   });
 });

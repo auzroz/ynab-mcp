@@ -29,7 +29,9 @@ export class WriteLimitError extends Error {
     public readonly limit: number,
     /** Epoch ms at which the next write is allowed. */
     public readonly resetsAt: number,
-    public readonly retryAfterMs: number
+    public readonly retryAfterMs: number,
+    /** The first refusal of this episode: the one the audit log records (#60a). */
+    public readonly firstRefusal = false
   ) {
     super(`Write limit of ${limit} per hour reached.`);
     this.name = 'WriteLimitError';

@@ -61,8 +61,8 @@ export const MAX_CLIENT_ID_LENGTH = 255;
 const ClientIdSchema = z.string().min(1).max(MAX_CLIENT_ID_LENGTH);
 
 /**
- * The first check the SDK's authorization handler made (server-legacy 2.4.0's
- * ClientAuthorizationParamsSchema), kept so a client_id refused here is
+ * The first check the SDK's authorization handler made (the MCP SDK's
+ * ClientAuthorizationParamsSchema, in the handlers oidc-provider replaced), kept so a client_id refused here is
  * answered as before the move: 400 `invalid_request` with the same
  * description when the parameters fail it, and otherwise (an empty or overlong
  * string the handler would have looked up and not found) 400
@@ -200,11 +200,13 @@ export function authorizeValidation(options: AuthorizeValidationOptions): Reques
       res.status(500).json({ error: 'server_error', error_description: 'Internal Server Error' });
       return;
     }
+    // #46: a client identified by a Client ID Metadata Document (a URL client_id) resolves
+    // through this same `clients.getClient` (the library's Client.find), so it gets the checks
+    // below, step 6 included. It counts as registered on 0.5.0 or later (lead decision): it has
+    // no `client_id_issued_at`, and a URL id is never the pre-0.5.0 UUID shape
+    // (resource-required.ts), so it must send `resource`.
     if (client === undefined) {
-      // An unknown client goes to the library's invalid_client. #46: a client identified by a
-      // Client ID Metadata Document (a URL client_id) must resolve through this same
-      // `clients.getClient`, so it gets the checks below, step 6 included: a URL id is never
-      // pre-0.5.0 (resource-required.ts), so it must send `resource` (lead decision).
+      // An unknown client goes to the library's invalid_client.
       next();
       return;
     }

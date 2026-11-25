@@ -54,6 +54,16 @@ import {
   signInCiphertext,
 } from './encryption-meta.js';
 import { resolveStorageTimeouts } from './timeouts.js';
+import {
+  auditCountSql,
+  auditInsert,
+  auditListSql,
+  auditRecordFromRow,
+  type AuditGuard,
+  type AuditQuery,
+  type AuditRecord,
+  type AuditRow,
+} from './audit-rows.js';
 import { applyMigrations, MIGRATION_PLAN, type MigrationDeps, type MigrationTx } from './migrations.js';
 import type { TokenKeyDeriver } from '../auth/token-hash.js';
 import { parseGrantedScope, parseOptionalGrantedScope } from '../auth/scope.js';
@@ -973,6 +983,27 @@ export class PostgresStorage implements Storage, OAuthRowStore {
       [seenBefore, afterUserId ?? null, limit]
     );
     return res.rows.map((r) => r.user_id);
+  }
+
+  // The audit log (#60a). One statement each; a guarded insert holds the user row FOR KEY SHARE (see AuditGuard).
+
+  async appendAuditEntry(entry: AuditRecord, guard?: AuditGuard): Promise<boolean> {
+    const { sql, params } = auditInsert('postgres', entry, guard);
+    return ((await this.db.query(sql, params)).rowCount ?? 0) === 1;
+  }
+
+  async listAuditEntries(userId: string, query: AuditQuery, limit: number): Promise<AuditRecord[]> {
+    const { sql, params } = auditListSql('postgres', userId, query, limit);
+    return (await this.db.query<AuditRow & QueryResultRow>(sql, params)).rows.map(auditRecordFromRow);
+  }
+
+  async countAuditEntries(userId: string, query: AuditQuery): Promise<Record<string, number>> {
+    const { sql, params } = auditCountSql('postgres', userId, query);
+    const counts: Record<string, number> = {};
+    for (const r of (await this.db.query<{ outcome: string; n: string }>(sql, params)).rows) {
+      counts[r.outcome] = Number(r.n);
+    }
+    return counts;
   }
 
   // Account self-service
