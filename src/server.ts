@@ -281,14 +281,19 @@ export function createServerFromClient(ynabClient: YnabClient, toolCalls?: ToolC
       // The first refusal of an episode is audited, so a looping agent adds one row.
       // With RATE_LIMIT_STORE=postgres the cap is shared by every replica (#67);
       // when it can't be read the write is refused (fail closed) and recorded
-      // as an error, like any write that failed before reaching YNAB.
+      // as an error, like any write that failed before reaching YNAB. Such a
+      // refusal takes no write slot, so it is bounded like the read-only ones
+      // (#60a: 20 per user per hour, then one marker row).
       let releaseSlot: (() => void) | undefined;
       if (isWrite) {
         try {
           releaseSlot = await ynabClient.admitWrite(name);
         } catch (error) {
           if (error instanceof WriteLimitError && error.firstRefusal) await recordWrite(name, 'denied_write_limit');
-          if (error instanceof RateLimitStoreUnavailableError) await recordWrite(name, 'error');
+          if (error instanceof RateLimitStoreUnavailableError) {
+            const audit = ynabClient.admitDeniedAudit();
+            if (audit !== 'skip') await recordWrite(name, 'error', audit === 'mark');
+          }
           throw error;
         }
       }

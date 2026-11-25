@@ -8,6 +8,8 @@ import { buildYnabClient, createServerFromClient, createStdioServerFactory, type
 import { tools } from '../../src/tools/index.js';
 import { createUserComponents } from '../../src/services/user-registry.js';
 import { WriteLimiter, WRITE_WINDOW_MS } from '../../src/services/write-limiter.js';
+import { SharedWriteLimiter } from '../../src/services/shared-write-limiter.js';
+import { SharedLimitUnavailableError, type SharedLimitStore } from '../../src/storage/shared-limits.js';
 import { parseWriteLimitPerHour } from '../../src/config/write-limit.js';
 import { loadConfig, loadHttpConfig } from '../../src/config/environment.js';
 
@@ -146,7 +148,7 @@ describe('the write cap in the tools/call handler', () => {
     vi.stubGlobal('fetch', fetchSpy);
     const components = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 1 });
     const ynabClient = buildYnabClient(userCtx({ writeLimitPerHour: 1 }), components);
-    ynabClient.admitWrite('ynab_create_payee'); // uses the single slot
+    await ynabClient.admitWrite('ynab_create_payee'); // uses the single slot
     const client = await connect(createServerFromClient(ynabClient));
 
     for (const name of WRITE_TOOLS) {
@@ -164,7 +166,7 @@ describe('the write cap in the tools/call handler', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network disabled in unit test')));
     const components = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 1 });
     const ynabClient = buildYnabClient(userCtx({ writeLimitPerHour: 1 }), components);
-    ynabClient.admitWrite('ynab_create_payee');
+    await ynabClient.admitWrite('ynab_create_payee');
     const client = await connect(createServerFromClient(ynabClient));
     for (const name of READ_TOOLS) {
       const result = await client.callTool({ name, arguments: {} });
@@ -177,7 +179,7 @@ describe('the write cap in the tools/call handler', () => {
   it('names the limit and the reset time, and carries no upstream text', async () => {
     const components = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 3 });
     const ynabClient = buildYnabClient(userCtx({ writeLimitPerHour: 3 }), components);
-    for (let i = 0; i < 3; i++) ynabClient.admitWrite('ynab_create_payee');
+    for (let i = 0; i < 3; i++) await ynabClient.admitWrite('ynab_create_payee');
     const client = await connect(createServerFromClient(ynabClient));
     const result = await client.callTool({ name: 'ynab_delete_transaction', arguments: {} });
     const body = JSON.parse(textOf(result)) as Record<string, unknown>;
@@ -312,7 +314,7 @@ describe('the write cap in the tools/call handler', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const components = createUserComponents({ rateLimitPerHour: 180, cacheTtlMs: 1000, writeLimitPerHour: 1 });
     const ynabClient = buildYnabClient(userCtx({ writeLimitPerHour: 1 }), components);
-    ynabClient.admitWrite('ynab_create_payee');
+    await ynabClient.admitWrite('ynab_create_payee');
     const client = await connect(createServerFromClient(ynabClient));
     for (let i = 0; i < 4; i++) {
       await client.callTool({ name: 'ynab_create_payee', arguments: { name: 'Secret Payee' } });
@@ -327,6 +329,35 @@ describe('the write cap in the tools/call handler', () => {
       resourceId: undefined,
     });
     expect(JSON.stringify(entries)).not.toContain('Secret Payee');
+    await client.close();
+  });
+
+  it('a shared cap whose store is down refuses before YNAB, auditing the errors under the refusal bound (#67, #60a)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const down = async (): Promise<never> => {
+      throw new SharedLimitUnavailableError();
+    };
+    const store = { admitWrite: down, releaseWrite: down } as unknown as SharedLimitStore;
+    const components = createUserComponents(
+      { rateLimitPerHour: 180, cacheTtlMs: 1000 },
+      Date.now,
+      undefined,
+      new SharedWriteLimiter(store, 'local', 20)
+    );
+    const ynabClient = buildYnabClient(userCtx(), components);
+    const client = await connect(createServerFromClient(ynabClient));
+    for (let i = 0; i < 25; i++) {
+      const result = await client.callTool({ name: 'ynab_create_payee', arguments: { budget_id: BUDGET, name: 'X' } });
+      expect(JSON.parse(textOf(result))).toMatchObject({ type: 'upstream_unavailable', retry_after_seconds: 5 });
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const entries = await components.auditStore.listAuditEntries('local', {}, 100);
+    // 20 errors, then one marker that later ones this hour are missing.
+    expect(entries.filter((e) => e.operation === 'create' && e.outcome === 'error')).toHaveLength(20);
+    expect(entries.filter((e) => e.operation === 'audit_suppressed')).toHaveLength(1);
+    expect(entries).toHaveLength(21);
     await client.close();
   });
 });

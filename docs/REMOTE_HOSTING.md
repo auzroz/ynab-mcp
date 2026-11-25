@@ -601,8 +601,9 @@ The limiters use a small pool of their own (four connections) with short
 bounds: a statement is cancelled after 1 second, a reply is given up on after
 2 seconds, and a connection must open within 2 seconds. A limiter that can't
 answer within them refuses the request: a tool call gets `upstream_unavailable`
-with `retry_after_seconds: 5` (nothing is sent to YNAB; a write is recorded in
-the audit log as `error`), and a rate-limited
+with `retry_after_seconds: 5` (nothing is sent to YNAB; a refused write is
+recorded in the audit log as `error`, under the same bound of 20 per user per
+hour as read-only refusals), and a rate-limited
 authorization-server request gets its route's usual `429` with
 `Retry-After: 5`. There is no fallback to per-process limits, which would
 hand each replica the whole budget again. One stderr line every 30 seconds
